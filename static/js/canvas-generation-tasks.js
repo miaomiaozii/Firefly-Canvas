@@ -631,7 +631,7 @@ async function pollSmartCanvasTask(taskId){
             }
             if(task.status === 'failed'){
                 const failureResult = absorbProjectGenerationResult(task.result || {}, taskId);
-                if(!failureResult?.history_recorded) failSmartPendingHistoryLog(taskId, task.error || tr('smart.errRunFailed'));
+                const pendingHistoryRecorded = !failureResult?.history_recorded && failSmartPendingHistoryLog(taskId, task.error || tr('smart.errRunFailed'));
                 const recoverTaskId = task.upstream_task_id || extractUpstreamTaskId(task.error || '');
                 const error = recoverTaskId
                     ? new ImageTaskRecoverSignal({taskId, recoverTaskId, providerId:task.provider_id, kind:task.kind || 'image', message:task.error || tr('smart.errRunFailed')})
@@ -640,7 +640,7 @@ async function pollSmartCanvasTask(taskId){
                 // 不能按关键词误判成网络错误做 3 轮无效重试（用户反馈的
                 // “失败取回机制不生效”根因之一）。
                 error.providerFailure = true;
-                if(failureResult?.history_recorded) error.smartGenerationLogged = true;
+                if(failureResult?.history_recorded || pendingHistoryRecorded) error.smartGenerationLogged = true;
                 if(failureResult?.project_node_applied) error.projectNodeApplied = true;
                 throw error;
             }
@@ -648,11 +648,11 @@ async function pollSmartCanvasTask(taskId){
                 // #41：任务级硬超时是终态——按失败处理，立即清理 pending/计时器，
                 // 不再进入 30 分钟轮询超时路径。
                 const timeoutResult = absorbProjectGenerationResult(task.result || {}, taskId);
-                if(!timeoutResult?.history_recorded) failSmartPendingHistoryLog(taskId, task.error || tr('smart.errRunTimeout'));
+                const pendingHistoryRecorded = !timeoutResult?.history_recorded && failSmartPendingHistoryLog(taskId, task.error || tr('smart.errRunTimeout'));
                 const error = new Error(task.error || tr('smart.errRunTimeout'));
                 error.generationTimedOut = true;
                 error.providerFailure = true;
-                if(timeoutResult?.history_recorded) error.smartGenerationLogged = true;
+                if(timeoutResult?.history_recorded || pendingHistoryRecorded) error.smartGenerationLogged = true;
                 if(timeoutResult?.project_node_applied) error.projectNodeApplied = true;
                 throw error;
             }
@@ -798,7 +798,7 @@ async function resumeSmartPendingNode(node, logContext={}){
     node.running = false;
     canvasCore.render();
     const failures = [];
-    await Promise.all(tasks.map(async task => {
+    const outcomes = await Promise.all(tasks.map(async task => {
         if(task.failed && task.recoverTaskId) return;
         try {
             const result = await pollSmartCanvasTask(task.taskId);
@@ -813,6 +813,7 @@ async function resumeSmartPendingNode(node, logContext={}){
             }
             canvasCore.render();
             canvasCore.scheduleSave();
+            return {succeeded:true};
         } catch(e) {
             if(e && e.imageTaskRecover && e.recoverTaskId){
                 // #41：任务在服务端已丢失（终态），不能继续留在 pendingTasks 里让节点
@@ -823,17 +824,22 @@ async function resumeSmartPendingNode(node, logContext={}){
                 task.recoverTaskId = e.recoverTaskId;
                 task.providerId = e.providerId || task.providerId || providerIdForSmartTask(node, task);
                 task.error = e.message || tr('smart.errRunFailed');
-                if(!e?.smartGenerationLogged) logTaskFailure(task.error, task);
+                if(!e?.smartGenerationLogged){
+                    logTaskFailure(task.error, task);
+                    if(logContext?.run) e.smartGenerationLogged = true;
+                }
                 node.recoveredGenerationTasks = Array.isArray(node.recoveredGenerationTasks) ? node.recoveredGenerationTasks : [];
                 if(!node.recoveredGenerationTasks.some(item => item.taskId === task.taskId && item.recoverTaskId === task.recoverTaskId)){
                     node.recoveredGenerationTasks.push({taskId:task.taskId, recoverTaskId:task.recoverTaskId, providerId:task.providerId, kind:task.kind || 'image', error:task.error, failed:true, at:nowMs()});
                 }
-                finalizeSmartPendingTask(node, task.taskId, [], task.kind || 'image', task.count || 1);
+                if(smartPendingTasks(node).some(item => item.taskId === task.taskId)){
+                    finalizeSmartPendingTask(node, task.taskId, [], task.kind || 'image', task.count || 1);
+                }
                 node.running = false;
                 toast(tr('smart.taskNotLostLater'));
                 canvasCore.render();
                 canvasCore.scheduleSave();
-                return;
+                return {failure:e, recoverable:true};
             }
             if(e?.generationCancelled && e?.cancelledByUser){
                 // #237 用户主动停止（stop≠error）：后端 /cancel 已写即时终态快照
@@ -861,7 +867,7 @@ async function resumeSmartPendingNode(node, logContext={}){
                 if(taskStillPending) toast(tr('smart.taskCancelled'));
                 canvasCore.render();
                 canvasCore.scheduleSave();
-                return;
+                return {cancelled:true};
             }
             // 区分服务商失败和网络问题：服务端终态失败带 providerFailure 标记；
             // 其余情况再按错误文本关键词兜底判断。
@@ -878,7 +884,6 @@ async function resumeSmartPendingNode(node, logContext={}){
                     node.failedGenerationTasks.push({taskId:task.taskId, error:String(e?.message || tr('smart.errRunFailed')).slice(0, 240), at:nowMs()});
                 }
                 if(!e?.projectNodeApplied){
-                    // 服务端未同步节点状态时，前端负责清理该任务的 pending
                     const remainingTasks = smartPendingTasks(node).filter(item => item.taskId !== task.taskId);
                     node.pendingTasks = remainingTasks;
                     node.pending = remainingTasks.length
@@ -895,28 +900,27 @@ async function resumeSmartPendingNode(node, logContext={}){
                 }
                 if(!e?.smartGenerationLogged){
                     logTaskFailure(e.message || tr('smart.errRunFailed'), task);
-                    if(e && typeof e === 'object') e.smartGenerationLogged = true;
+                    if(logContext?.run && e && typeof e === 'object') e.smartGenerationLogged = true;
                 }
                 toast((e.message || tr('smart.errRunFailed')).slice(0, 160));
                 canvasCore.render();
                 canvasCore.scheduleSave();
-                return;
+                return {failure:e};
             }
             
-            // 网络问题，自动重试
             task._retryCount = (task._retryCount || 0) + 1;
             if(task._retryCount <= 3){
                 const delay = task._retryCount * 5000; // 5s, 10s, 15s
                 toast(canvasCore.trf('smart.writeFailedRetry', {n: task._retryCount, s: delay/1000}));
                 await sleep(delay);
-                // 图片回载后取消重试
                 if(activeSmartTaskPolls.has(task.taskId)){
-                    return; // 图片已回载，取消重试
+                    return;
                 }
-                return resumeSmartPendingNode(node, logContext);
+                // Retry only this task: siblings already have their own pollers and
+                // must not be finalized a second time by the recursive call.
+                return resumeSmartPendingNode(node, {...logContext, taskIds:[task.taskId]});
             }
             
-            // 重试耗尽
             if(!e?.projectNodeApplied){
                 const remainingTasks = smartPendingTasks(node).filter(item => item.taskId !== task.taskId);
                 node.pendingTasks = remainingTasks;
@@ -939,7 +943,7 @@ async function resumeSmartPendingNode(node, logContext={}){
             failures.push(e);
             if(!e?.smartGenerationLogged){
                 logTaskFailure(e.message || tr('smart.errRunFailed'), task);
-                if(e && typeof e === 'object') e.smartGenerationLogged = true;
+                if(logContext?.run && e && typeof e === 'object') e.smartGenerationLogged = true;
             }
             toast(tr('smart.writeFailedMaxRetries'));
             canvasCore.render();
@@ -949,6 +953,14 @@ async function resumeSmartPendingNode(node, logContext={}){
     if(failures.length){
         throw failures[0];
     }
+    // Foreground callers need the original failure's history ownership, while
+    // background recovery must continue to resolve on ordinary terminal errors.
+    return {
+        failure:outcomes.find(outcome => outcome?.failure)?.failure,
+        cancelled:outcomes.some(outcome => outcome?.cancelled),
+        recoverable:outcomes.some(outcome => outcome?.recoverable),
+        succeeded:outcomes.some(outcome => outcome?.succeeded)
+    };
 }
 
 async function retryFailedGeneration(nodeId){
@@ -967,7 +979,6 @@ async function retryFailedGeneration(nodeId){
 async function retryFailedGenerationInner(node){
     const failedTasks = Array.isArray(node.failedGenerationTasks) ? node.failedGenerationTasks.slice() : [];
     if(failedTasks.length){
-        // 1) 先尝试取回失败任务里已归档成功的图（服务端兑底 outputs）
         const projectId = canvas.project_id || canvas.project || canvasCore.canvasId;
         for(const failedTask of failedTasks){
             try{
@@ -986,17 +997,15 @@ async function retryFailedGenerationInner(node){
                     return;
                 }
             }catch(_){
-                // #348: 取回失败则继续尝试重新提交（下方路径）；记日志便于排查。
-                console.warn('[generation-tasks] 失败任务取回请求出错，转重新提交', _);
+                // #348: 取回失败仍可检查原请求是否能重新提交，保留日志用于排查。
+                console.warn('[generation-tasks] 失败任务取回请求出错，将检查是否可重新提交', _);
             }
         }
     }
-    // 2) 无已归档结果 → 用原请求重新生成。
-    // 显式重试是用户主动的新尝试：换新的幂等键，避免服务端按幂等重放
-    // 同一个已失败的任务（那样重试永远返回旧失败，取回机制无法生效）。
-    node.failedGenerationTasks = [];
     const submission = smartGenerationSubmissions(node).find(item => item && item.requestPayload);
     if(submission){
+        node.failedGenerationTasks = [];
+        // 显式重试使用新幂等键，避免服务端重放同一个已失败任务。
         submission.idempotencyKey = `regen-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
         await resumeSmartGenerationSubmission(node, submission);
         canvasCore.render();

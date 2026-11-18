@@ -87,6 +87,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
 import { createCanvasContext, loadModules, globalFunction, evaluate, fromContext } from './harness.mjs';
 
 // 宿主侧微任务排空：被测代码里的 fire-and-forget（void async）用宿主 tick 等它落定。
@@ -239,6 +240,257 @@ function loadGenerationTasksModule({ nodes = [], canvasPayload = null } = {}) {
     void toastEl;
     return { ctx, harness, calls };
 }
+
+// Exercise the actual foreground caller with the real polling and resume functions.
+// The server responses are fixtures: they test frontend history ownership, not
+// whether the real server persists exactly one foreground history record.
+for (const scenario of [
+    {name:'server recorded image failure', server:true},
+    {name:'server recorded recoverable failure', server:true, upstream:true},
+    {name:'unrecorded recoverable failure', upstream:true, legacy:1},
+    {name:'failure with old image is not success', server:true, old:true},
+    {name:'group branch failure keeps retry state', server:true, group:true},
+    {name:'group branch partial failure keeps output and retry state', server:true, group:true, partial:true},
+    {name:'server recorded video failure', server:true, kind:'video'},
+    {name:'server recorded timeout', server:true, timeout:true},
+    {name:'unrecorded failure without pending history', legacy:1},
+    {name:'unrecorded failure converts pending history', pending:true},
+    {name:'server failure with partial output', server:true, partial:true},
+    {name:'mixed failed and successful tasks', server:true, mixed:true},
+    {name:'user cancellation with partial output', server:true, partial:true, cancelled:true},
+    {name:'user cancellation without output', server:true, cancelled:true},
+    {name:'video cancellation with partial output', server:true, kind:'video', partial:true, cancelled:true},
+    {name:'video cancellation without output', server:true, kind:'video', cancelled:true},
+    {name:'group image source restored on cancellation', server:true, group:true, source:true, cancelled:true},
+    {name:'group image source restored on video cancellation', server:true, group:true, source:true, kind:'video', cancelled:true},
+    {name:'transient network error retries to success', retry:true},
+    {name:'transient network error retries to terminal failure', retry:true, retryFail:true},
+]) test(`foreground ${scenario.name}`, async () => {
+    const node = {id:'n1', images:scenario.source ? [{url:'/source.png'}] : []};
+    const {ctx, harness} = loadGenerationTasksModule({nodes:[node]});
+    const history = [], restores = [], clears = [];
+    let recoverableChecks = 0;
+    Object.assign(ctx, {
+        selectedNode:()=>node, buildPromptRequest:()=>({prompt:'test', displayPrompt:'test', refs:[]}),
+        smartNodeInFlight:()=>false, cloneSmartSettings:s=>({...s}), smartSettingsForNode:()=>({engine:'api', apiKind:scenario.kind || 'image', count:1}),
+        smartRunNeedsPrompt:()=>true, isApiLikeEngine:e=>e === 'api', snapshotRunMeta:()=>({}),
+        smartRunSnapshot:()=>({}), rememberRecentSmartSettings:()=>{}, isSmartGroupNode:()=>!!scenario.group,
+        isSmartImageNode:()=>!!scenario.source, imagesForNode:()=>node.images, stripRunInputMeta:meta=>meta,
+        restoreSourceVisualState:(source, state)=>restores.push({source, state}),
+        createPendingOutputFromSource:()=>{ const branch = {id:'branch', images:[]}; ctx.canvasState.nodes.push(branch); return branch; },
+        smartImageUsesWorkflowInput:()=>false, pushUndo:()=>{}, pendingBoxSize:()=>({w:100,h:100}),
+        attachRunMeta:()=>{}, coolNodeRunningState:()=>{}, syncRunButtonState:()=>{},
+        acceptProjectGenerationRegistration:async()=>true, liveNode:n=>n,
+        smartRecoverableImageTask:()=>{ recoverableChecks++; return false; }, addSmartGenerationHistory:entry=>history.push(entry),
+        clearPromptInput:options=>clears.push(options), smartLoopContext:null,
+    });
+    ctx.sleep = async()=>{};
+    if(scenario.pending){
+        // Use the real pending-history transition, not a second fake ledger.
+        ctx.smartPendingHistoryId = id=>`pending-${id}`;
+        ctx.smartHistoryLogTimestamp = ()=>0;
+        ctx.sortSmartHistoryLogs = logs=>logs;
+        ctx.uid = ()=>'converted-failure';
+        evaluate(ctx, "canvas.history.push({id:'pending-task-1', status:'pending'})");
+        const media = readFileSync('static/js/canvas-media-history.js', 'utf8');
+        const start = media.indexOf('function failSmartPendingHistoryLog(');
+        const end = media.indexOf('\n}', start) + 2;
+        assert.ok(start >= 0 && end > start);
+        evaluate(ctx, media.slice(start, end));
+    }
+    ctx.__taskIds = scenario.mixed ? ['task-1', 'task-2'] : ['task-1'];
+    evaluate(ctx, "settings = {engine:'api', apiKind:'image', count:1}; runApiGeneration = async () => ({taskIds:__taskIds, count:1}); runApiVideoGeneration = runApiGeneration;");
+    const source = readFileSync('static/js/smart-canvas.js', 'utf8');
+    const start = source.indexOf('async function runGeneration(){');
+    const end = source.indexOf('// Local ComfyUI generation execution was removed.', start);
+    assert.ok(start >= 0 && end > start);
+    evaluate(ctx, source.slice(start, end));
+    let polls = 0;
+    harness.fetchResponder = url => {
+        polls++;
+        if(scenario.retry && polls === 1) throw new Error('connection lost');
+        const second = scenario.mixed && url.endsWith('/task-2');
+        const status = (scenario.retry && !scenario.retryFail) || second ? 'succeeded' : scenario.cancelled ? 'cancelled' : scenario.timeout ? 'timeout' : 'failed';
+        const images = scenario.partial || (scenario.retry && !scenario.retryFail) || second ? [{url:'/partial.png', kind:'image'}] : [];
+        return fakeResponse({data:{status, error:'provider failed', upstream_task_id:scenario.upstream ? 'upstream-1' : '', cancelled_by_user:!!scenario.cancelled, result:{
+            history_recorded:!!scenario.server || !!scenario.retry,
+            history_record:{id:second ? 'server-history-2' : 'server-history', status}, result_node_id:scenario.group ? 'branch' : 'n1',
+            final_node:{id:scenario.group ? 'branch' : 'n1', images:scenario.old ? [{url:'/old.png'}] : images, pending:0, pendingTasks:[]}
+        }}});
+    };
+    let settled = false;
+    const promise = globalFunction(ctx, 'runGeneration')().finally(()=>{settled = true;});
+    for(let i=0; i<20 && !settled; i++){ harness.advanceTimers(); await tick(); }
+    assert.ok(settled, 'foreground run settled');
+    await promise;
+    assert.equal(harness.fetchLog.length, scenario.retry || scenario.mixed ? 2 : 1, 'real poll reached');
+    const resultNode = scenario.group ? ctx.canvasState.nodes.find(item=>item.id === 'branch') : node;
+    assert.ok(resultNode, 'foreground result node survives');
+    assert.equal(resultNode.failedGenerationTasks?.length || 0, scenario.upstream || scenario.cancelled || (scenario.retry && !scenario.retryFail) ? 0 : 1, 'retry UI only for ordinary failure');
+    if(scenario.upstream) assert.equal(resultNode.recoveredGenerationTasks?.length, 1);
+    assert.equal(fromContext(evaluate(ctx, 'canvas.history')).length, scenario.mixed ? 2 : scenario.server || scenario.pending || scenario.retry ? 1 : 0);
+    assert.equal(history.length, scenario.legacy || 0, 'exactly one owner records the failure');
+    assert.equal(resultNode.images.length, scenario.old || scenario.partial || (scenario.retry && !scenario.retryFail) || scenario.mixed ? 1 : 0, 'partial/success output retained');
+    if(scenario.cancelled){
+        assert.equal(recoverableChecks, 0, 'cancellation does not query recoverable task state');
+        assert.equal(clears.length, 1, 'prompt draft cleanup runs once');
+        assert.equal(clears[0].preserveDraft, true);
+        assert.equal(restores.length, scenario.source ? 1 : 0, 'source visual state restored once');
+        if(scenario.source) assert.equal(restores[0].state.images[0].url, '/source.png');
+    }
+    if(scenario.group && !scenario.cancelled){
+        // Exercise the actual retry action against archived server outputs, not a
+        // stubbed retry implementation. No new paid submission is needed here.
+        harness.fetchResponder = () => fakeResponse({data:{status:'failed', result:{history_record:{outputs:[{asset_id:'a1', kind:'image'}]}}}});
+        await globalFunction(ctx, 'retryFailedGeneration')('branch');
+        assert.equal(resultNode.failedGenerationTasks.length, 0);
+        assert.ok(resultNode.images.some(image=>image.url === '/api/project-library/proj-1/media/a1'));
+        assert.equal(harness.fetchLog.length, 2);
+    }
+});
+
+test('retry of one task does not finalize its still-polling sibling twice', async () => {
+    const node = {id:'multi', images:[], pending:3, pendingTasks:[{taskId:'a', count:1}, {taskId:'b', count:1}, {taskId:'c', count:1}]};
+    const {ctx, harness} = loadGenerationTasksModule({nodes:[node]});
+    ctx.sleep = async()=>{};
+    let resolveB, aPolls = 0;
+    const held = new Promise(resolve=>{ resolveB = resolve; });
+    harness.fetchResponder = url => {
+        if(url.endsWith('/a') && ++aPolls === 1) throw new Error('connection lost');
+        if(url.endsWith('/b')) return held;
+        if(url.endsWith('/c')) return new Promise(()=>{});
+        return fakeResponse({data:{status:'succeeded', result:{images:[{url:'/a.png'}]}}});
+    };
+    const promise = globalFunction(ctx, 'resumeSmartPendingNode')(node, {taskIds:['a','b']});
+    for(let i=0; i<5; i++){ harness.advanceTimers(); await tick(); }
+    resolveB(fakeResponse({data:{status:'succeeded', result:{images:[{url:'/b.png'}]}}}));
+    for(let i=0; i<5; i++){ harness.advanceTimers(); await tick(); }
+    await promise;
+    assert.equal(node.pending, 1, 'unscoped sibling still pending');
+    assert.deepEqual(fromContext(node.pendingTasks.map(task=>task.taskId)), ['c']);
+});
+
+test('background recovery retries network errors and resolves ordinary failures', async () => {
+    for(const retry of [false, true]){
+        const node = {id:'bg', images:[], pending:1, pendingTasks:[{taskId:'task-1', count:1}]};
+        const {ctx, harness} = loadGenerationTasksModule({nodes:[node]});
+        ctx.sleep = async()=>{};
+        let polls = 0;
+        harness.fetchResponder = () => {
+            polls++;
+            if(retry && polls === 1) throw new Error('connection lost');
+            return fakeResponse({data:{status:retry ? 'succeeded' : 'failed', error:'provider failed',
+                result:{history_recorded:true, history_record:{id:'server', status:retry ? 'succeeded' : 'failed'},
+                    result_node_id:'bg', final_node:{id:'bg', images:retry ? [{url:'/ok.png'}] : [], pending:0, pendingTasks:[]}}}});
+        };
+        let settled = false;
+        const promise = globalFunction(ctx, 'resumeSmartPendingNode')(node).finally(()=>{settled = true;});
+        for(let i=0; i<20 && !settled; i++){ harness.advanceTimers(); await tick(); }
+        assert.ok(settled);
+        const outcome = await promise;
+        assert.equal(polls, retry ? 2 : 1);
+        assert.equal(!!outcome.succeeded, retry);
+        assert.equal(!!outcome.failure, !retry);
+        assert.equal(node.failedGenerationTasks?.length || 0, retry ? 0 : 1);
+    }
+});
+
+// Real history ledger: the poller either absorbs the server record, converts a
+// pending entry, or writes one legacy record. Recoverable failures obey the same rule.
+for(const server of [false, true]) for(const upstream of [false, true]) for(const pending of [false, true])
+    test(`real history server=${server} upstream=${upstream} pending=${pending}`, async () => {
+    const node = {id:'ledger', images:[], pending:1, pendingTasks:[{taskId:'task-1', count:1}]};
+    const {ctx, harness} = loadGenerationTasksModule({nodes:[node]});
+    loadModules(ctx, ['canvas-media-history.js', 'canvas-generation-cascade.js']);
+    Object.assign(ctx, {
+        hydrateProjectMediaReferences:value=>value, cloneSmartSettings:s=>({...s}),
+        smartRunPlatformLabel:()=>'', smartRunTaskLabel:()=>'', smartRunRequestMeta:()=>({}),
+    });
+    if(pending) evaluate(ctx, "canvas.history.push({id:smartPendingHistoryId('task-1'), status:'pending', createdAt:1})");
+    harness.fetchResponder = () => fakeResponse({data:{status:'failed', error:'provider failed',
+        upstream_task_id:upstream ? 'upstream-1' : '', result:server ? {
+            history_recorded:true, history_record:{id:'server', status:'failed', task_id:'task-1'},
+            result_node_id:'ledger', final_node:{id:'ledger', images:[], pending:0, pendingTasks:[]}
+        } : {}}});
+    let settled = false;
+    const promise = globalFunction(ctx, 'resumeSmartPendingNode')(node, {run:{nodeId:'ledger'}, taskIds:['task-1']})
+        .finally(()=>{settled = true;});
+    for(let i=0; i<20 && !settled; i++){ harness.advanceTimers(); await tick(); }
+    assert.ok(settled);
+    const outcome = await promise;
+    assert.equal(outcome.failure?.smartGenerationLogged, true);
+    assert.equal(!!outcome.recoverable, upstream);
+    const history = fromContext(evaluate(ctx, 'canvas.history'));
+    assert.equal(history.length, 1);
+    assert.equal(history[0].status, 'failed');
+    if(server) assert.equal(history[0].id, 'server');
+});
+
+test('direct cascade poll propagates server history ownership', async () => {
+    const node = {id:'direct', images:[]};
+    const {ctx, harness} = loadGenerationTasksModule({nodes:[node]});
+    loadModules(ctx, ['canvas-generation-cascade.js']);
+    Object.assign(ctx, {isApiLikeEngine:e=>e === 'api', mergeSmartPendingTaskLists:(a,b)=>[...a,...b]});
+    evaluate(ctx, "runApiGeneration = async () => ({taskIds:['project_img_1'], count:1, projectRevision:1})");
+    const source = readFileSync('static/js/smart-canvas.js', 'utf8');
+    const start = source.indexOf('async function pollGenerationTaskResultForNode(');
+    const end = source.indexOf('\nfunction pendingBoxSize(', start);
+    assert.ok(start >= 0 && end > start);
+    evaluate(ctx, source.slice(start, end));
+    harness.fetchResponder = () => fakeResponse({data:{status:'failed', error:'provider failed', result:{
+        history_recorded:true, history_record:{id:'server', status:'failed'}, result_node_id:'direct',
+        final_node:{id:'direct', images:[], pending:0, pendingTasks:[]}
+    }}});
+    let settled = false;
+    const promise = globalFunction(ctx, 'generateUrlsForCurrentSettings')(node, 'test', [], {engine:'api', apiKind:'image'})
+        .then(value=>({value}), error=>({error})).finally(()=>{settled = true;});
+    for(let i=0; i<20 && !settled; i++){ harness.advanceTimers(); await tick(); }
+    assert.ok(settled);
+    const {error} = await promise;
+    assert.equal(error?.message, 'provider failed');
+    assert.equal(error.smartGenerationLogged, true);
+    assert.equal(fromContext(evaluate(ctx, 'canvas.history')).length, 1);
+});
+
+// The loop caller must propagate the original marked failure rather than fabricate
+// a new no-output error; cancellation remains a neutral empty round.
+for(const mode of ['failure', 'recoverable', 'cancelled', 'cancelled-partial']) test(`loop slot preserves ${mode}`, async () => {
+    const cancelled = mode.startsWith('cancelled');
+    const partial = mode === 'cancelled-partial';
+    const node = {id:'slot', images:[]};
+    const {ctx, harness} = loadGenerationTasksModule({nodes:[node]});
+    loadModules(ctx, ['canvas-generation-cascade.js']);
+    const legacy = [];
+    Object.assign(ctx, {
+        cloneSmartSettings:s=>({...s}), liveSmartNode:n=>n,
+        smartSettingsForNode:()=>({engine:'api', apiKind:'image', count:1}),
+        isApiLikeEngine:e=>e === 'api', outputImagesForNode:()=>[],
+        buildPromptRequestForNode:()=>({prompt:'test', displayPrompt:'test', refs:[]}),
+        smartRunNeedsPrompt:()=>true, smartRunSnapshot:()=>({}),
+        acceptProjectGenerationRegistration:async()=>true,
+        addSmartGenerationHistory:entry=>legacy.push(entry), smartRecoverableImageTask:()=>false,
+    });
+    evaluate(ctx, "settings = {engine:'api', apiKind:'image', count:1}; runApiGeneration = async () => ({taskIds:['task-1'], count:1});");
+    harness.fetchResponder = () => fakeResponse({data:{status:cancelled ? 'cancelled' : 'failed',
+        cancelled_by_user:cancelled, upstream_task_id:mode === 'recoverable' ? 'upstream-1' : '', error:'provider failed', result:{history_recorded:true,
+            history_record:{id:'server-history', status:cancelled ? 'cancelled' : 'failed'},
+            result_node_id:'slot', final_node:{id:'slot', images:partial ? [{url:'/partial.png'}] : [], pending:0, pendingTasks:[]}}}});
+    let settled = false;
+    const promise = globalFunction(ctx, 'runLoopRoundIntoSlot')({id:'loop'}, {id:'root'}, node, 1, {})
+        .then(value=>({value}), error=>({error})).finally(()=>{settled = true;});
+    for(let i=0; i<20 && !settled; i++){ harness.advanceTimers(); await tick(); }
+    assert.ok(settled);
+    const result = await promise;
+    assert.equal(harness.fetchLog.length, 1);
+    if(cancelled || mode === 'recoverable') assert.deepEqual(fromContext(result.value), partial ? [{url:'/partial.png'}] : []);
+    else {
+        assert.equal(result.error?.message, 'provider failed');
+        assert.equal(result.error?.smartGenerationLogged, true);
+        assert.equal(node.failedGenerationTasks.length, 1);
+    }
+    assert.equal(legacy.length, 0);
+    assert.equal(fromContext(evaluate(ctx, 'canvas.history')).length, 1);
+});
 
 // 构造一个 Response 替身（postProjectImageTaskWithReplay 只用 ok/status/json）。
 function fakeResponse({ ok = true, status = 200, data = {} } = {}) {
@@ -936,6 +1188,43 @@ test('smartPendingActionReplaySucceeded: local-edit 以 output_asset_id 变化�
     assert.equal(fn('conversation', '', null), true);
 });
 
+for (const scenario of ['no outputs', 'cancelled', 'http error', 'network error']) test(`unavailable retry preserves failure card: ${scenario}`, async () => {
+    const failures = [{taskId:'failed-1', error:'provider failed', at:123}];
+    const node = {id:'branch', type:'smart-image', images:[], failedGenerationTasks:failures};
+    const {ctx, harness} = loadGenerationTasksModule({nodes:[node]});
+    const source = readFileSync('static/js/smart-canvas.js', 'utf8');
+    for(const name of ['nodeBodyHtml', 'failedGenerationBodyHtml']){
+        const start = source.indexOf(`function ${name}(`);
+        const end = source.indexOf('\n}', start) + 2;
+        assert.ok(start >= 0 && end > start);
+        evaluate(ctx, source.slice(start, end));
+    }
+    Object.assign(ctx, {
+        isSmartAgentTaskNode:()=>false, isSmartConversationNode:()=>false,
+        isSmartAgentNode:()=>false, isSmartImageNode:()=>true,
+        smartRecoverableImageTask:()=>null, imageForDisplay:image=>image,
+        escapeHtml:String, escapeAttr:String,
+    });
+    let rendered = '';
+    ctx.render = () => { rendered = globalFunction(ctx, 'nodeBodyHtml')(node, {width:100, height:100}); };
+    ctx.render();
+    const before = rendered;
+    assert.match(before, /data-image-task-retry="branch"/);
+    assert.match(before, /provider failed/);
+    harness.fetchResponder = () => {
+        if(scenario === 'network error') throw new Error('network down');
+        if(scenario === 'http error') return fakeResponse({ok:false, status:503});
+        return fakeResponse({data:{status:scenario === 'cancelled' ? 'cancelled' : 'failed', result:{}}});
+    };
+    await globalFunction(ctx, 'retryFailedGeneration')('branch');
+    assert.deepEqual(fromContext(node.failedGenerationTasks), failures);
+    assert.equal(rendered, before, 'render retains the failure and retry actions');
+    assert.equal(harness.element('toast').textContent, 'smart.noRetryableRequest');
+    assert.equal(node._retryInFlight, false);
+    assert.equal(harness.fetchLog.length, 1);
+    assert.ok(harness.fetchLog.every(entry => !entry.options || !entry.options.method || entry.options.method === 'GET'), 'no POST without a submission');
+});
+
 test('retryFailedGeneration: 先取回已归档输出（无新计费），无归档则换新幂等键重新生成', async () => {
     // ---- 路径 1：服务端已归档成功输出 → 直接取回，零 POST ----
     {
@@ -992,6 +1281,7 @@ test('retryFailedGeneration: 先取回已归档输出（无新计费），无归
         assert.notEqual(body.idempotency_key, 'k-old');
         assert.equal(body.result_node_id, 'img-2');
         assert.equal(body.prompt, 'p');
+        assert.deepEqual(fromContext(node.failedGenerationTasks), [], '重新提交时清除旧失败');
         // 此刻 pending 任务已进节点、轮询在等 2000ms 受控定时器。
         assert.equal(node.pendingTasks.length, 1);
         assert.equal(node.pendingTasks[0].taskId, 'project_img_2');

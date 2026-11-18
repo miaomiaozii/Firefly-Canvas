@@ -112,12 +112,10 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         self.assertNotIn("fetch(`/api/canvas-image-tasks/${encodeURIComponent(taskId)}`)", self.source)
 
     def test_server_recorded_failures_do_not_create_legacy_duplicate_history(self):
-        self.assertIn("if(failureResult?.history_recorded) error.smartGenerationLogged = true", self.source)
         self.assertIn("if(!e?.smartGenerationLogged){", self.source)
         self.assertIn("result.history_record?.status === 'succeeded'", self.source)
         self.assertIn("if(failures.length){", self.source)
         self.assertNotIn("if(failures.length && !(node.images || []).length){", self.source)
-        self.assertIn("void resumeSmartPendingNode(node).catch(() => {});", self.source)
 
     def test_project_completion_applies_server_node_and_only_advances_contiguous_revision(self):
         self.assertIn("result.project_node_applied = true", self.source)

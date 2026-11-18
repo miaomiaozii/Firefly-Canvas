@@ -771,6 +771,7 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
     outputSlot = canvasCore.liveSmartNode(outputSlot);
     const previousSettings = cloneSmartSettings(settings);
     const edgeKey = `${rootNode.id}->${outputSlot.id}`;
+    let generationOutcome;
     const runSettings = smartLoopRoundSettings({...cloneSmartSettings(settings), ...cloneSmartSettings(canvasCore.smartSettingsForNode(rootNode) || {})}, ctx);
     settings = runSettings;
     try {
@@ -909,8 +910,13 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
                 canvasCore.scheduleSave();
                 await saveCanvas();
             }
-            await resumeSmartPendingNode(outputSlot, {run:runLog, runLogStart});
-            if(canvasCore.smartRecoverableImageTask(outputSlot)){
+            generationOutcome = await resumeSmartPendingNode(outputSlot, {run:runLog, runLogStart});
+            if(generationOutcome?.cancelled && !generationOutcome.succeeded && !generationOutcome.failure){
+                outputSlot.queued = false;
+                return rememberRoundOutputs(ctx, outputSlot, (outputSlot.images || []).filter(img => img?.url));
+            }
+            if(!generationOutcome?.recoverable && !(outputSlot.images || []).length && generationOutcome?.failure) throw generationOutcome.failure;
+            if(generationOutcome?.recoverable || canvasCore.smartRecoverableImageTask(outputSlot)){
                 outputSlot.queued = false;
                 return [];
             }
@@ -940,7 +946,7 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
             runPath.states[edgeKey] = 'done';
             scheduleConnectionLayerRefresh();
         }
-        if(!outputSlot._serverGenerationHistoryRecorded) addSmartGenerationHistory({run:{...runLog, kind:result.kind || logKind}, outputs:result.urls, runMs:nowMs() - runLogStart});
+        if(!outputSlot._serverGenerationHistoryRecorded && (!generationOutcome?.failure || generationOutcome.succeeded)) addSmartGenerationHistory({run:{...runLog, kind:result.kind || logKind}, outputs:result.urls, runMs:nowMs() - runLogStart});
         delete outputSlot._serverGenerationHistoryRecorded;
         return rememberRoundOutputs(ctx, outputSlot, additions);
     } catch(e) {

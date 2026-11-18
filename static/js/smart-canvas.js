@@ -14811,9 +14811,11 @@ async function runGeneration(){
                     scheduleSave();
                     await saveCanvas();
                 }
-                await resumeSmartPendingNode(pendingNode, {run:runLog, runLogStart, taskIds});
+                const outcome = await resumeSmartPendingNode(pendingNode, {run:runLog, runLogStart, taskIds});
                 const completedVideoNode = liveNode(pendingNode);
-                if(smartRecoverableImageTask(completedVideoNode)){
+                const cancelled = outcome?.cancelled && !outcome.succeeded && !outcome.failure;
+                if(!cancelled && !outcome?.recoverable && !(completedVideoNode.images || []).length && outcome?.failure) throw outcome.failure;
+                if(cancelled || outcome?.recoverable || smartRecoverableImageTask(completedVideoNode)){
                     if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
                     clearPromptInput({preserveDraft:true});
                     settings = previousSettings;
@@ -14822,7 +14824,7 @@ async function runGeneration(){
                 }
                 if(!(completedVideoNode.images || []).length) throw new Error(tr('smart.errNoOutVideos'));
                 if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
-                if(!completedVideoNode._serverGenerationHistoryRecorded) addSmartGenerationHistory({run:runLog, outputs:completedVideoNode.images || [], runMs:nowMs() - runLogStart});
+                if(!completedVideoNode._serverGenerationHistoryRecorded && (!outcome?.failure || outcome.succeeded)) addSmartGenerationHistory({run:runLog, outputs:completedVideoNode.images || [], runMs:nowMs() - runLogStart});
                 delete completedVideoNode._serverGenerationHistoryRecorded;
                 clearPromptInput({preserveDraft:true});
                 settings = previousSettings;
@@ -14880,9 +14882,11 @@ async function runGeneration(){
                 scheduleSave();
                 await saveCanvas();
             }
-            await resumeSmartPendingNode(pendingNode, {run:runLog, runLogStart, taskIds});
+            const outcome = await resumeSmartPendingNode(pendingNode, {run:runLog, runLogStart, taskIds});
             const completedImageNode = liveNode(pendingNode);
-            if(smartRecoverableImageTask(completedImageNode)){
+            const cancelled = outcome?.cancelled && !outcome.succeeded && !outcome.failure;
+            if(!cancelled && !outcome?.recoverable && !(completedImageNode.images || []).length && outcome?.failure) throw outcome.failure;
+            if(cancelled || outcome?.recoverable || smartRecoverableImageTask(completedImageNode)){
                 if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
                 clearPromptInput({preserveDraft:true});
                 settings = previousSettings;
@@ -14892,7 +14896,7 @@ async function runGeneration(){
             if(!(completedImageNode.images || []).length) throw new Error(tr('smart.errNoOutImages'));
             if(outpaintSize) delete node.outpaintSize;
             if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
-            if(!completedImageNode._serverGenerationHistoryRecorded) addSmartGenerationHistory({run:runLog, outputs:completedImageNode.images || [], runMs:nowMs() - runLogStart});
+            if(!completedImageNode._serverGenerationHistoryRecorded && (!outcome?.failure || outcome.succeeded)) addSmartGenerationHistory({run:runLog, outputs:completedImageNode.images || [], runMs:nowMs() - runLogStart});
             delete completedImageNode._serverGenerationHistoryRecorded;
             clearPromptInput({preserveDraft:true});
             settings = previousSettings;
@@ -14929,7 +14933,9 @@ async function runGeneration(){
         pendingNode.pending = remainingTasks.length
             ? Math.max(remainingTasks.length, remainingTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0))
             : 0;
-        if(branchNode){
+        // A terminal task failure stores its retry state on the result branch.
+        // Removing that branch here would discard both the state and its UI.
+        if(branchNode && !(liveNode(pendingNode).failedGenerationTasks || []).length){
             canvasState.nodes = canvasState.nodes.filter(n => n.id !== branchNode.id); if(canvas) canvas.nodes = canvasState.nodes;
             canvas.connections = (canvas.connections || []).filter(c => c.from !== branchNode.id && c.to !== branchNode.id);
             canvasState.selectedId = node.id;
