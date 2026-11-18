@@ -16,6 +16,7 @@ from pathlib import Path as _bootstrap_Path
 _REPO_ROOT = str(_bootstrap_Path(__file__).resolve().parents[1])
 if _REPO_ROOT not in _bootstrap_sys.path:
     _bootstrap_sys.path.insert(0, _REPO_ROOT)
+from tools.browser_process import browser_popen
 from tools.process_tree import kill_process_tree
 import io
 import json
@@ -196,7 +197,7 @@ def launch_chrome(browser, base_url, fixture, role):
     url = (
         f"{base_url}/static/smart-canvas.html?id={urllib.parse.quote(fixture['project_id'])}&{query}"
     )
-    process = subprocess.Popen(
+    process = browser_popen(
         [
             str(browser),
             '--headless=new',

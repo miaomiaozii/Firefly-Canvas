@@ -2,13 +2,16 @@
 from __future__ import annotations
 
 import http.server
-import subprocess
+import sys
 import tempfile
 import threading
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from tools.browser_process import browser_run
 CONNECTOR = ROOT / "tools" / "photoshop-asset-connector"
 
 
@@ -32,7 +35,7 @@ def main() -> int:
     profile = Path(tempfile.mkdtemp(prefix="firefly-issue16-connector-browser-"))
     try:
         url = f"http://127.0.0.1:{server.server_port}/index.html"
-        result = subprocess.run(
+        result = browser_run(
             [str(browser), "--headless=new", "--disable-gpu", "--no-first-run", "--disable-extensions",
              f"--user-data-dir={profile}", "--dump-dom", url],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,

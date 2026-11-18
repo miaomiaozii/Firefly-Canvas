@@ -5,6 +5,7 @@ from pathlib import Path as _bootstrap_Path
 _REPO_ROOT = str(_bootstrap_Path(__file__).resolve().parents[1])
 if _REPO_ROOT not in _bootstrap_sys.path:
     _bootstrap_sys.path.insert(0, _REPO_ROOT)
+from tools.browser_process import browser_popen
 from tools.process_tree import kill_process_tree
 import io, json, sys, tempfile, urllib.parse, subprocess
 from pathlib import Path
@@ -31,7 +32,7 @@ def seed(store):
 def launch(browser,server,pid,viewport):
     w,h=viewport;profile=Path(tempfile.mkdtemp(prefix='firefly-issue15-browser-'));before=len(server.results)
     url=f'{server.base_url}/static/smart-canvas.html?id={urllib.parse.quote(pid)}&project={urllib.parse.quote(pid)}&browserTest=1'
-    proc=subprocess.Popen([str(browser),'--headless=new','--disable-gpu','--disable-background-networking','--disable-extensions','--no-first-run','--window-size=%d,%d'%(w,h),f'--user-data-dir={profile}',url],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,cwd=ROOT)
+    proc=browser_popen([str(browser),'--headless=new','--disable-gpu','--disable-background-networking','--disable-extensions','--no-first-run','--window-size=%d,%d'%(w,h),f'--user-data-dir={profile}',url],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,cwd=ROOT)
     try:return server.wait_for_result(before,timeout=60)
     finally:
       kill_process_tree(proc);proc.wait(timeout=5);harness.remove_profile(profile)

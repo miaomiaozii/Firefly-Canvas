@@ -5,6 +5,7 @@ from pathlib import Path as _bootstrap_Path
 _REPO_ROOT = str(_bootstrap_Path(__file__).resolve().parents[1])
 if _REPO_ROOT not in _bootstrap_sys.path:
     _bootstrap_sys.path.insert(0, _REPO_ROOT)
+from tools.browser_process import browser_popen
 from tools.process_tree import kill_process_tree
 import json, sys, tempfile, urllib.parse, subprocess
 from pathlib import Path
@@ -22,7 +23,7 @@ def seed(store, prefix):
 
 def launch(browser,server,url,viewport,segments):
     w,h=viewport;profile=Path(tempfile.mkdtemp(prefix='firefly-nav-browser-'))
-    proc=subprocess.Popen([str(browser),'--headless=new','--disable-gpu','--disable-background-networking','--disable-extensions','--no-first-run','--window-size=%d,%d'%(w,h),f'--user-data-dir={profile}',url],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,cwd=ROOT)
+    proc=browser_popen([str(browser),'--headless=new','--disable-gpu','--disable-background-networking','--disable-extensions','--no-first-run','--window-size=%d,%d'%(w,h),f'--user-data-dir={profile}',url],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,cwd=ROOT)
     try:
         results=[]
         for _ in range(segments):

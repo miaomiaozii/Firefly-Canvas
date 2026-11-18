@@ -512,7 +512,9 @@ class QualityGateTests(unittest.TestCase):
         offenders = []
         for runner in sorted((ROOT / "tests").glob("*browser*.py")):
             text = runner.read_text(encoding="utf-8")
-            if "Popen(" in text and "process_tree" not in text:
+            if runner.name == "test_browser_process.py":  # Contains synthetic launch examples.
+                continue
+            if ("Popen(" in text or "browser_popen(" in text) and "process_tree" not in text:
                 offenders.append(runner.name)
         self.assertEqual([], offenders, "起子进程的 browser 夹具必须走 kill_process_tree")
 

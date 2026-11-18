@@ -13,6 +13,7 @@ from pathlib import Path as _bootstrap_Path
 _REPO_ROOT = str(_bootstrap_Path(__file__).resolve().parents[1])
 if _REPO_ROOT not in _bootstrap_sys.path:
     _bootstrap_sys.path.insert(0, _REPO_ROOT)
+from tools.browser_process import browser_popen
 from tools.process_tree import kill_process_tree
 import argparse
 import json
@@ -50,7 +51,7 @@ def run_one(browser, store: ProjectStore, work_root: Path, artifacts: Path, shot
     profile = Path(tempfile.mkdtemp(prefix="firefly-settle-retry-"))
     url = (f"{server.base_url}{harness.HTML_PAGE_PATH}"
            f"?id={urllib.parse.quote(cid)}&project={urllib.parse.quote(pid)}&browserTest=1")
-    proc = subprocess.Popen(
+    proc = browser_popen(
         [str(browser), "--headless=new", "--disable-gpu", "--disable-background-networking",
          "--disable-extensions", "--no-first-run", "--window-size=1424,900",
          f"--user-data-dir={profile}", url],

@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import urllib.request
@@ -24,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from tools.browser_process import browser_run  # noqa: E402
 from firefly_projects import ProjectStore  # noqa: E402
 import conversation_browser as harness  # noqa: E402
 from test_excel_importer import make_xlsx_bytes  # noqa: E402
@@ -73,7 +73,7 @@ def screenshot(browser: str, url: str, out: Path) -> bool:
         f"--screenshot={out}", url,
     ]
     try:
-        subprocess.run(cmd, timeout=90, capture_output=True)
+        browser_run(cmd, timeout=90, capture_output=True)
         return out.exists() and out.stat().st_size > 0
     except Exception as exc:  # noqa: BLE001
         print(f"  [screenshot 失败] {exc}", flush=True)

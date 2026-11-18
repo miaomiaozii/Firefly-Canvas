@@ -3,6 +3,7 @@ from pathlib import Path as _bootstrap_Path
 _REPO_ROOT = str(_bootstrap_Path(__file__).resolve().parents[1])
 if _REPO_ROOT not in _bootstrap_sys.path:
     _bootstrap_sys.path.insert(0, _REPO_ROOT)
+from tools.browser_process import browser_popen
 from tools.process_tree import kill_process_tree
 import sys
 import tempfile
@@ -32,7 +33,7 @@ def launch(browser, server, viewport):
     before = len(server.results)
     url = f'{server.base_url}/static/global-settings.html?browserTest=1'
     import subprocess
-    process = subprocess.Popen(
+    process = browser_popen(
         [str(browser), '--headless=new', '--disable-gpu', '--disable-background-networking', '--disable-component-update', '--disable-extensions', '--no-first-run', '--no-default-browser-check', '--hide-scrollbars', f'--window-size={width},{height}', f'--user-data-dir={profile}', url],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )

@@ -5,6 +5,7 @@ from pathlib import Path as _bootstrap_Path
 _REPO_ROOT = str(_bootstrap_Path(__file__).resolve().parents[1])
 if _REPO_ROOT not in _bootstrap_sys.path:
     _bootstrap_sys.path.insert(0, _REPO_ROOT)
+from tools.browser_process import browser_popen
 from tools.process_tree import kill_process_tree
 
 import base64
@@ -268,7 +269,7 @@ class NativeBrowser:
     def launch(cls, executable: Path, *, startup_timeout: float = 30) -> "NativeBrowser":
         profile = Path(tempfile.mkdtemp(prefix="firefly-native-browser-profile-"))
         log_stream = (profile / "browser.stderr.log").open("w+b")
-        process = subprocess.Popen(
+        process = browser_popen(
             [
                 str(executable),
                 "--headless=new",
