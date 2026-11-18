@@ -2444,7 +2444,11 @@ function renderSmartHistoryWindow(force=false){
         smartHistoryVirtualState.force = smartHistoryVirtualState.force || force;
         return;
     }
-    const logs = canvas?.history || [];
+    // Keep tombstones in server history for undo and stable ordering, but do
+    // not show a record whose last original output has been deleted.
+    const logs = (canvas?.history || []).filter(log =>
+        !(log?.originalDeleted || log?.status === 'original_deleted') || (log?.outputs || []).length
+    );
     if(!logs.length){
         smartHistoryList.innerHTML = `<div class="log-empty">${escapeHtml(tr('canvas.noLogs'))}</div>`;
         smartHistoryVirtualState.start = 0;

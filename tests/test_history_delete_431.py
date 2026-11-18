@@ -42,6 +42,25 @@ class OriginalHistory431(unittest.TestCase):
         self.assertEqual({r['id']: r for r in restored['canvas']['history']}['one']['outputs'][0]['output_id'], self.a1['output_id'])
         self.assertEqual(self.canvas()['history'], restored['canvas']['history'])
 
+    def test_project_wide_restore_keeps_order_and_intervening_history_changes(self):
+        before = self.canvas()
+        deleted = self.store.delete_generated_original_project_wide(self.pid, self.a, base_revision=before['revision'])
+        history = deleted['canvas']['history']
+        self.assertEqual([r['id'] for r in history], ['one', 'multi', 'other'])
+        history[-1]['prompt'] = 'edited while deleted'
+        history.insert(0, {'id': 'new', 'status': 'pending', 'outputs': []})
+        self.store.apply_mutations(self.pid, [{'op': 'set_canvas_meta', 'history': history}],
+            base_revision=deleted['canvas']['revision'])
+        current = self.canvas()
+        restored = self.store.restore_deleted_original_project_wide(self.pid, self.a, base_revision=current['revision'])
+        result = restored['canvas']['history']
+        self.assertEqual([r['id'] for r in result], [r['id'] for r in current['history']])
+        by_id = {r['id']: r for r in result}
+        self.assertIn('new', by_id)
+        self.assertEqual(by_id['other']['prompt'], 'edited while deleted')
+        self.assertEqual([x['asset_id'] for x in by_id['multi']['outputs']], [self.a, self.b])
+        self.assertEqual(self.canvas()['history'], result)
+
     def test_project_wide_delete_restore_and_failure(self):
         before = self.canvas()
         with self.assertRaises(ProjectStoreError):

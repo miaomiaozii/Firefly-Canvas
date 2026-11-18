@@ -18,7 +18,7 @@ function fixture(){
     Object.assign(e.ctx,{smartNodeRunTokens:new Map(),smartRunTokens:new Map(),smartGenerationNodeRevisions:new Map(),smartHistoryModal:null,smartHistoryDeletingBusy:false,activeAssetLibraryId:'local',PROJECT_ASSET_LIBRARY_ID:'project'});
     evaluate(e.ctx,declarations('canvas-agent-tui.js'));
     let server=fromContext(e.ctx.canvasForStorage());
-    server.revision=1; server.history=[record('one',[a]),record('multi',[a,b]),record('other',[c])];
+    server.revision=1; server.history=[record('other',[c]),record('one',[a]),record('multi',[a,b])];
     e.ctx.applyMergedServerCanvas(server);
     e.ctx.ffDialog={ask:async()=>true};
     e.ctx.ffToast={info(){},error(message){e.harness.toasts.push(String(message));}};
@@ -86,6 +86,17 @@ test('real store responses refresh a mounted list across broadcast-before-respon
     e.ctx.ensureSmartPendingHistoryLogs(active,active.pendingTasks);
     const html=()=>e.harness.element('smartHistoryList').innerHTML;
     const activeCount=()=>fromContext(evaluate(e.ctx,'canvas.history')).filter(r=>r.request?.task_id==='task-inflight').length;
+    const coldHtml=canvas=>{
+        const fresh=editor([], harness=>{
+            harness.element('smartHistoryModal').classList.add('open');
+            Object.assign(harness.element('smartHistoryList'),{contains:()=>false,scrollLeft:0,scrollWidth:1000,clientWidth:1000});
+        });
+        Object.assign(fresh.ctx,{smartNodeRunTokens:new Map(),smartRunTokens:new Map(),smartGenerationNodeRevisions:new Map(),smartHistoryDeletingBusy:false,smartTitleText:null,resumeSmartPendingTasks(){}});
+        evaluate(fresh.ctx,declarations('canvas-agent-tui.js'));
+        fresh.ctx.applyMergedServerCanvas(canvas);
+        fresh.ctx.renderSmartCanvasHistory();
+        return fresh.harness.element('smartHistoryList').innerHTML;
+    };
     assert.match(html(),/data-canvas-history-id="one"/);
     let stage=0;
     e.ctx.fetch=async(url)=>{
@@ -99,7 +110,8 @@ test('real store responses refresh a mounted list across broadcast-before-respon
     await e.ctx.deleteSmartProjectOriginal('one',0);
     assert.equal(stage,1,JSON.stringify(e.harness.toasts));
     assert.equal(evaluate(e.ctx,"canvas.history.find(r=>r.id==='one').status"),'original_deleted',JSON.stringify(e.harness.toasts));
-    assert.ok(html().includes('log-thumb-deleted'),`mounted list should show deleted original: ${JSON.stringify(e.harness.toasts)}`);
+    assert.doesNotMatch(html(), /data-canvas-history-id="one"/, 'occurrence deletion must also hide a single-output record');
+    assert.doesNotMatch(coldHtml(data.occurrence.canvas), /data-canvas-history-id="one"/, 'reload must match occurrence deletion');
     assert.equal(activeCount(),1);
     assert.match(html(),/data-canvas-history-id="multi"/);
     await e.ctx.performUndo();
@@ -109,10 +121,19 @@ test('real store responses refresh a mounted list across broadcast-before-respon
     assert.match(html(),new RegExp(data.asset));
     await e.ctx.deleteProjectOriginalWide(data.asset);
     assert.equal(stage,3,JSON.stringify(e.harness.toasts));
-    assert.ok(html().includes('log-thumb-deleted'));
+    assert.doesNotMatch(html(), /data-canvas-history-id="one"/);
+    assert.match(html(), /data-canvas-history-id="multi"/);
+    assert.equal(activeCount(),1);
+    assert.doesNotMatch(coldHtml(data.wide.canvas), /data-canvas-history-id="one"/);
+    assert.match(coldHtml(data.wide.canvas), /data-canvas-history-id="multi"/);
+    e.ctx.applyMergedServerCanvas(data.wide.canvas);
+    e.ctx.renderSmartCanvasHistory();
+    assert.doesNotMatch(html(), /data-canvas-history-id="one"/);
     await e.ctx.performUndo();
     assert.equal(stage,4,JSON.stringify(e.harness.toasts));
-    assert.ok(!html().includes('log-thumb-deleted'),JSON.stringify(e.harness.toasts));
+    assert.match(html(), /data-canvas-history-id="one"/);
+    assert.equal(activeCount(),1);
+    assert.match(coldHtml(data.wide_restored.canvas), /data-canvas-history-id="one"/);
     await e.ctx.deleteCanvasLogEntry('one');
     assert.equal(stage,5,JSON.stringify(e.harness.toasts));
     assert.ok(!html().includes('data-canvas-history-id="one"'),JSON.stringify(e.harness.toasts));
@@ -296,35 +317,39 @@ test('history delete removes its rendered card immediately and after refresh, pr
     assert.match(e.card('multi'),/asset-b/);
 });
 
-test('project-wide deletion renders recoverable deleted state, preserves other outputs and restores it',async()=>{
+test('project-wide deletion hides single-output row, preserves remaining outputs and restores its position',async()=>{
     const e=fixture();
+    const ids=()=>[...e.html().matchAll(/data-canvas-history-id="([^"]+)"/g)].map(m=>m[1]);
+    const before=ids();
+    assert.deepEqual(before,['other','one','multi']);
     await e.ctx.deleteProjectOriginalWide('asset-a');
-    assert.match(e.html(), /log-thumb-deleted/);
-    assert.equal(e.logs().find(r=>r.id==='one').status,'original_deleted');
-    assert.match(e.card('one'),/log-thumb-deleted/);
-    assert.match(e.card('one'),/data-history-restore-original="asset-a"/);
+    assert.deepEqual(ids(),['other','multi']);
     assert.match(e.card('multi'),/asset-b/);
+    assert.doesNotMatch(e.card('multi'),/data-asset-id="asset-a"/);
     assert.match(e.card('other'),/asset-c/);
     e.ctx.applyMergedServerCanvas(e.server());
-    assert.match(e.card('one'),/log-thumb-deleted/);
+    e.ctx.renderSmartCanvasHistory();
+    assert.deepEqual(ids(),['other','multi']);
     await e.ctx.performUndo();
-    assert.doesNotMatch(e.html(), /log-thumb-deleted/);
-    assert.match(e.html(), /asset-a/);
-    assert.equal(e.logs().find(r=>r.id==='one').outputs[0].asset_id,'asset-a');
+    assert.deepEqual(ids(),before);
     assert.match(e.card('one'),/asset-a/);
+    e.ctx.applyMergedServerCanvas(e.server());
+    e.ctx.renderSmartCanvasHistory();
+    assert.deepEqual(ids(),before);
 });
 
-test('history original deletion renders a tombstone, then undo restores the original',async()=>{
+test('history original deletion hides the empty record, then undo restores it',async()=>{
     const e=fixture();
     await e.ctx.deleteSmartProjectOriginal('one',0);
     assert.equal(e.logs().find(r=>r.id==='one').status,'original_deleted');
-    assert.match(e.card('one'),/log-thumb-deleted/);
-    assert.match(e.card('one'),/data-deletion-id="deletion-a"/);
+    assert.doesNotMatch(e.html(),/data-canvas-history-id="one"/);
     assert.match(e.card('multi'),/asset-b/);
     e.ctx.applyMergedServerCanvas(e.server());
-    assert.match(e.card('one'),/log-thumb-deleted/);
+    e.ctx.renderSmartCanvasHistory();
+    assert.doesNotMatch(e.html(),/data-canvas-history-id="one"/);
     await e.ctx.performUndo();
     assert.equal(e.logs().find(r=>r.id==='one').outputs[0].asset_id,'asset-a');
+    assert.match(e.html(),/data-canvas-history-id="one"/);
 });
 
 test('manual project-wide restore after refresh uses the project-wide endpoint',async()=>{
