@@ -236,8 +236,10 @@ def run_image_organization(
           const floatingMenu = element.querySelector('.smart-node-floating-menu');
           const floatingMenuRect = floatingMenu ? floatingMenu.getBoundingClientRect() : null;
           const hoverBlocked = (x, y, r) => r && x >= r.left - 6 && x <= r.right + 6 && y >= r.top - 6 && y <= r.bottom + 6;
-          for (const yFraction of [0.42, 0.62, 0.5, 0.3, 0.78]) {{
-            for (const xFraction of [0.5, 0.38, 0.62, 0.25, 0.75]) {{
+          // A thumbnail starts image detachment, not a node drag. Probe the node
+          // padding first and reject all surfaces consumed by beginNodeDrag.
+          for (const yFraction of [0.02, 0.98, 0.42, 0.62, 0.5, 0.3, 0.78]) {{
+            for (const xFraction of [0.02, 0.98, 0.5, 0.38, 0.62, 0.25, 0.75]) {{
               const x = rect.left + rect.width * xFraction;
               const y = rect.top + rect.height * yFraction;
               const endX = x + {multi_drag_dx};
@@ -245,7 +247,7 @@ def run_image_organization(
               if (endX < 0 || endX >= innerWidth || endY < 0 || endY >= innerHeight) continue;
               if (hoverBlocked(x, y, hoverActionRect) || hoverBlocked(x, y, floatingMenuRect)) continue;
               const hit = document.elementFromPoint(x, y);
-              const blocked = hit?.closest('.smart-node-floating-menu,.node-resize-handle,button,input,select,textarea,a');
+              const blocked = hit?.closest('.thumb-item,.mini-x,.smart-node-floating-menu,.node-resize-handle,.node-port,.prompt-node-control,.conversation-node-message-text,button,input,select,textarea,a');
               if (blocked) continue;
               if (hit === element || element.contains(hit)) {{
                 return {{xFraction, yFraction}};
@@ -272,12 +274,27 @@ def run_image_organization(
         raise AssertionError(
             f"multi-image node has no unobscured native drag surface: {multi_surface_state!r}"
         )
+    multi_before = browser.evaluate(
+        f"""(() => {{
+          const node = canvasState.nodes.find(item => item.id === {json.dumps(multi_id)});
+          return {{x:node.x, y:node.y, assets:node.images.map(image => image.asset_id), count:canvasState.nodes.length}};
+        }})()"""
+    )
     browser.native_drag(
         multi_selector,
         dx=multi_drag_dx,
         dy=multi_drag_dy,
         relative=(multi_drag_point["xFraction"], multi_drag_point["yFraction"]),
     )
+    multi_after = browser.evaluate(
+        f"""(() => {{
+          const node = canvasState.nodes.find(item => item.id === {json.dumps(multi_id)});
+          return {{x:node.x, y:node.y, assets:node.images.map(image => image.asset_id), count:canvasState.nodes.length}};
+        }})()"""
+    )
+    if (multi_after["x"] == multi_before["x"] or multi_after["y"] == multi_before["y"]
+            or multi_after["assets"] != multi_before["assets"] or multi_after["count"] != multi_before["count"]):
+        raise AssertionError(f"multi-image node drag must move the node without detaching images: before={multi_before!r}, after={multi_after!r}")
     blank_point = browser.evaluate(
         """(() => {
           const shell = document.querySelector('#shell').getBoundingClientRect();
