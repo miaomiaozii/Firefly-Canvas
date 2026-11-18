@@ -447,3 +447,60 @@ A2 2a 相对之前的 253 个反向名字净增 2，到 a3fbcc4 为 255。保留
 
 四个 Agent 设置响应通过 `receiveAgentSettingsCanvas`（`hub`）进入既有权威接收和 pending
 重放，不另造合并算法。该接口增加的引用按原口径计数，不因走 `canvasCore` 或已分类而豁免。
+
+### #418：244→257 的逐名对账与 fast 守卫
+
+以 3146f38 为旧钉值、936655c 为新值：244→257 是 **14 个新增、1 个消失**，
+不是 13 个新增。以下分类仅标职责，不排除或折减任何引用；`hub` 为有状态/界面
+行为服务，`state` 为配置。调用方向为核心编排模块，不能仅凭数量认定结构债。
+
+| 新出现的反向名字（owner） | 分类和职责 |
+|---|---|
+| `agentHeadActionButtonsHtml`（agent-tui） | hub：Agent 菜单渲染（#407） |
+| `bindAgentHeadControls`（agent-tui） | hub：Agent 头部 DOM 操作绑定（#407） |
+| `normalizeAgentDockNodes`（agent-tui） | hub：维护唯一停靠节点（#407） |
+| `syncAgentDock`（agent-tui） | hub：同步停靠 DOM 与布局（#407） |
+| `rebuildMarkedAssetIdsFromNodeFlags`（media-history） | hub：从节点标记重建共享索引（#392 D3，review 接受） |
+| `reconcileCanvasDeltaMediaReferences`（media-history） | util：动作差量媒体身份变换（#392） |
+| `toggleGroupRefFrame`（node-ops） | hub：变更组参考框并记录历史（#323） |
+| `UNDO_LIMIT`（undo） | state：撤销栈容量配置 |
+| `canvasUndoConversationIntentsAllowed`（undo） | hub：恢复历史前校验实时会话意图（#392 D3，review 接受） |
+| `finalizePendingCanvasUndo`（undo） | hub：撤销动作封口（#392） |
+| `pushAgentHostSettingsUndo`（undo） | hub：记录已确认的 Agent 设置历史（#392） |
+| `refreshProjectMediaLibraryItems`（undo） | hub：刷新权威媒体列表（#392） |
+| `scheduleUndoStackPersist`（undo） | hub：防抖保存撤销栈 |
+| `snapshotForUndo`（undo） | hub：读取画布状态生成快照 |
+
+消失：`mergeSmartConnections`（connections）不再由核心引用；并不表示实现或所有
+耦合消失。完整旧/新逐行对账以 `reverse_coupling()` 的 owner、名字及引用数为准。
+`resumeSmartPendingActionResumes` 的核心引用 **2→3**（#392 A2 2b-2c，review
+明确接受 +1）仍计入。以相同 #418 报告口径测隔离源码：#431 前 `fbb6299` 为
+**257 / 961 / 172 / 783**；main 基线 `936655c` 为 **257 / 965 / 171 / 785**，
+依次是名字、核心引用、核心主导名字、核心主导引用。见 #418 原票和两条 review 评论。
+
+`e4f1095`（#431）净增四处，均在 `static/js/smart-canvas.js`：
+`sortSmartHistoryLogs` 3→4（5263 行，owner `canvas-media-history.js`）；
+`removeProjectOriginalUndoTokens` 2→3（6226 行，owner `canvas-undo.js`）；
+`pushUndo` 31→32（6624 行，owner `canvas-undo.js`）；
+`renderSmartCanvasHistory` 7→8（6625 行，owner `canvas-media-history.js`）。
+同一提交还把 `mergeSmartHistoryRecordLists` 的 owner 自引从 0 增至 1，核心引用仍为 1，
+不再满足核心引用严格多于 owner 的条件，因此核心主导名字 172→171、主导引用净增
+3−1=2（783→785）；`sortSmartHistoryLogs` 从 3/5 到 4/4，仍不属主导集合。
+后续 `8e54c0e`（#431）及 `936655c`（#432）未再改变这四项；这些是词频口径，
+并非断言每个名字的所有出现都一定是运行时调用。
+
+模块→核心棘轮按真实数重核（总数/自由侧；未列模块不变）：cascade 152/50→154/52，
+media-history 103/54→105/55，node-ops 71/23→78/26，connections 41/12→42/12，
+undo 7/7→8/7，agent-tui 12/12→43/39，image-editor 87/43→77/43。Agent 增长
+来自停靠/导航及状态同步，非计数器误差；未分类的 `focusRevealNode`、
+`isNodeSelected`、`focusAndSelectNode`、`hideRunTimerForNode`、`syncSelectionUi`
+均为核心状态/界面服务，现按 hub 分类，8 处仍全计数。全表 **617 = 276 自由 + 341 接口**。
+
+fast 运行完整核心层和报告套件；保留 30 秒预算，不豁免任何引用。对普通词字符名
+采用单次词频扫描，含 `$` 等边界特殊名回退原正则，重叠接口引用逐名保持原语义；
+合成边界及原始报告对账用于防止优化改口径。fast 中只把 JS 语法检查、离线类型
+检查和耦合守卫并行（类型检查只向隔离工作区的 node_modules 解包，不修改源码），
+使用已有每步骤独立事件流与失败聚合。一次串行实测 29.219 秒；三步并行的
+fast 实测 23.953 秒（同机原基线 26.422 秒）；均不是跨机器耗时保证。隔离夹具给
+模块添加一处 `render()` 后，真实逐模块棘轮报告 2 > 1；将该失败暴露给三步并行
+fast 时整门 exit 1，恢复后通过，具体证据见本次 QA 记录。

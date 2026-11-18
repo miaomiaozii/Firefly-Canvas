@@ -416,6 +416,10 @@ STEP_DEFINITIONS = {
         "-b",
         "tests.test_javascript_types",
     ],
+    "canvas-coupling": lambda python: [
+        python, "-m", "unittest", "-b",
+        "tests.test_canvas_core_layer", "tests.test_canvas_coupling_report",
+    ],
     "excel-api-smoke": lambda python: [
         python,
         "-m",
@@ -543,7 +547,7 @@ def step_exit_code(step: dict) -> int:
 
 
 MODE_STEPS = {
-    "fast": ("javascript-syntax", "javascript-types", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate"),
+    "fast": ("javascript-syntax", "javascript-types", "canvas-coupling", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate"),
     "domain": (
         "javascript-syntax",
         "javascript-types",
@@ -2517,11 +2521,12 @@ def browser_step_spec(
     return None
 
 
-def execution_groups(names: tuple[str, ...]) -> list[tuple[str, list[str]]]:
+def execution_groups(names: tuple[str, ...], *, fast: bool = False) -> list[tuple[str, list[str]]]:
     """Group adjacent isolated steps while keeping all others sequential."""
     groups: list[tuple[str, list[str]]] = []
     for name in names:
-        if name in PARALLEL_STEP_NAMES or is_unit_contract_shard(name):
+        if (name in PARALLEL_STEP_NAMES or is_unit_contract_shard(name)
+                or (fast and name in {"javascript-syntax", "javascript-types", "canvas-coupling"})):
             if groups and groups[-1][0] == "parallel":
                 groups[-1][1].append(name)
             else:
@@ -3712,7 +3717,8 @@ def main(argv: list[str] | None = None) -> int:
                     return STEP_DEFINITIONS[name](sys.executable), None
 
                 for group_kind, group_names in execution_groups(
-                    expand_unit_contract_steps(MODE_STEPS[args.mode], unit_shards)
+                    expand_unit_contract_steps(MODE_STEPS[args.mode], unit_shards),
+                    fast=args.mode == "fast",
                 ):
                     remaining = run_budget - (time.monotonic() - started)
                     if remaining <= 0:

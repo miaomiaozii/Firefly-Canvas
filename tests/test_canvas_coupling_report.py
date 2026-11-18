@@ -184,6 +184,10 @@ class CanvasCouplingReportTests(unittest.TestCase):
         self.assertEqual(rev["reverse_core_refs"], sum(row["core_refs"] for row in rev["reverse_rows"]))
         self.assertTrue(all("category" in row for row in rev["reverse_rows"]))
 
+    def test_reviewed_resume_reference_is_included(self):
+        rows = {row["name"]: row for row in _cached_reverse()["reverse_rows"]}
+        self.assertEqual(rows["resumeSmartPendingActionResumes"]["core_refs"], 3)
+
     def test_reverse_coupling_is_measurable_and_pinned(self):
         # ADR 0020 把轨道 3 写成「17 个名字 / 40 处」，而这个数无法从本工具任何字段
         # 重现——`coupling()` 只测「模块引用核心声明的名字」，方向刚好相反。后果：
@@ -217,10 +221,12 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # 242/959/170/805：#236 即梦全量退役——smart-canvas.js / canvas-generation-tasks.js /
         # canvas-image-editor.js 删除即梦模型过滤/发图发视频/轮询取回/编辑态整块，
         # 四个口径全降（-5/-8/-4/-7），纯还债，非新债（见 ADR 0020 漂移日志）。
-        self.assertEqual(rev["reverse_names"], 244)
-        self.assertEqual(rev["reverse_core_refs"], 961)
+        # 936655c（#431）：fbb6299 的 257/961/172/783 → 257/965/171/785。
+        # 四处新增引用及主导集合变化逐项对账见 ADR 0020；保持四项精确相等。
+        self.assertEqual(rev["reverse_names"], 257)
+        self.assertEqual(rev["reverse_core_refs"], 965)
         self.assertEqual(rev["core_dominant_names"], 171)
-        self.assertEqual(rev["core_dominant_core_refs"], 806)
+        self.assertEqual(rev["core_dominant_core_refs"], 785)
         # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。
         self.assertNotIn("canvas-core.js", rev["by_owner"])
         self.assertNotIn("smart-canvas.js", rev["by_owner"])

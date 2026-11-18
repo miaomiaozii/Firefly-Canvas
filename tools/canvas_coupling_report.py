@@ -40,6 +40,7 @@ from tests.test_canvas_core_layer import (  # noqa: E402
     JS_DIR,
     _is_canvas_script,
     _locally_declared_names,
+    _reference_counts,
     _script_order,
     _strip_comment_lines,
     _top_level_names,
@@ -142,6 +143,23 @@ CATEGORY_BY_NAME = {
     "receiveAgentSettingsCanvas": "hub",
     "syncAgentInputNodeRefs": "hub",  # #409: TUI-owned draft/DOM synchronization, not a pure lower-layer utility.
     "canvasForStorage": "hub",  # #392: canonical storage service; also reads project/default/UI compatibility state.
+    # #418: classify actual responsibilities, without filtering either direction.
+    "focusRevealNode": "hub",
+    "isNodeSelected": "hub",
+    "focusAndSelectNode": "hub",
+    "hideRunTimerForNode": "hub",
+    "syncSelectionUi": "hub",
+    "agentHeadActionButtonsHtml": "hub",
+    "bindAgentHeadControls": "hub",
+    "normalizeAgentDockNodes": "hub",
+    "syncAgentDock": "hub",
+    "rebuildMarkedAssetIdsFromNodeFlags": "hub",
+    "toggleGroupRefFrame": "hub",
+    "canvasUndoConversationIntentsAllowed": "hub",
+    "pushAgentHostSettingsUndo": "hub",
+    "scheduleUndoStackPersist": "hub",
+    "snapshotForUndo": "hub",
+    "UNDO_LIMIT": "state",
     # --- 纯工具：应该下沉到 canvas-core.js，不该留在 smart-canvas.js ---
     "parseSizeValue": "util",
     # --- 共享可变状态 ---
@@ -338,14 +356,7 @@ def count_references(text: str, core_names: set[str], local_names: set[str]) -> 
     点号后的名字，所以改写成接口后总数不降（#201 陷阱 2 的守卫见
     tests/test_canvas_coupling_report.py）。
     """
-    hits: Counter[str] = Counter()
-    for name in core_names:
-        if name in local_names:
-            continue  # 同名局部变量不是对核心的耦合
-        count = len(re.findall(rf"\b{re.escape(name)}\b", text))
-        if count:
-            hits[name] = count
-    return hits
+    return Counter(_reference_counts(text, core_names, local_names))
 
 
 def count_interface_references(
@@ -357,14 +368,7 @@ def count_interface_references(
     守卫的 FREE_GLOBAL_REFERENCE_CEILINGS 只对自由侧棘轮（只许降）——
     自由侧独立名字越少，模块独立单测要桩的外部名字就越少（ADR 0020 轨道 1）。
     """
-    hits: Counter[str] = Counter()
-    for name in core_names:
-        if name in local_names:
-            continue
-        count = len(re.findall(rf"canvasCore\.{re.escape(name)}\b", text))
-        if count:
-            hits[name] = count
-    return hits
+    return Counter(_reference_counts(text, core_names, local_names, interface=True))
 
 
 def coupling() -> dict[str, dict[str, int]]:
@@ -475,7 +479,12 @@ def summarize(data: dict[str, dict[str, int]]) -> dict[str, object]:
 
     core_text = _core_text()
     stripped_core = _strip_comment_lines(core_text)
-    # 核心有 16354 行，每个名字都跑一遗正则会把本测试拖到 70s+。缓存名字→结果。
+    # Word-only names share a single scan, with the original per-name regex
+    # retained for unusual identifiers such as those containing `$`.
+    calls_by_name = Counter(re.findall(r"\b(\w+)\s*\(", stripped_core))
+    definitions_by_name = Counter(re.findall(
+        r"^(?:async\s+)?function\s+(\w+)\s*\(", stripped_core, re.M
+    ))
     call_cache: dict[str, int] = {}
 
     def core_internal_calls(name: str) -> int:
@@ -485,10 +494,14 @@ def summarize(data: dict[str, dict[str, int]]) -> dict[str, object]:
         """
         if name in call_cache:
             return call_cache[name]
-        calls = len(re.findall(rf"\b{re.escape(name)}\s*\(", stripped_core))
-        definitions = len(
-            re.findall(rf"^(?:async\s+)?function\s+{re.escape(name)}\s*\(", stripped_core, re.M)
-        )
+        if name and re.fullmatch(r"\w+", name):
+            calls = calls_by_name[name]
+            definitions = definitions_by_name[name]
+        else:
+            calls = len(re.findall(rf"\b{re.escape(name)}\s*\(", stripped_core))
+            definitions = len(
+                re.findall(rf"^(?:async\s+)?function\s+{re.escape(name)}\s*\(", stripped_core, re.M)
+            )
         result = max(0, calls - definitions)
         call_cache[name] = result
         return result

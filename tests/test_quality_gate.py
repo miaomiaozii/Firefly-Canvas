@@ -34,6 +34,7 @@ from tools.quality_gate import (
     discover_unit_contract_modules,
     expected_native_focus,
     expand_unit_contract_steps,
+    execution_groups,
     merge_gate_exit_code,
     failed_native_browser_evidence,
     step_exit_code,
@@ -77,6 +78,22 @@ def unattributable_noise_source(targets, kind):
         "",
     ]
     return "\n".join(lines) + "\n"
+
+
+class CanvasCouplingGateWiringTests(unittest.TestCase):
+    def test_fast_parallel_group_is_limited_to_independent_checks(self):
+        self.assertEqual(execution_groups(MODE_STEPS['fast'], fast=True)[0],
+                         ('parallel', ['javascript-syntax', 'javascript-types', 'canvas-coupling']))
+        self.assertEqual(execution_groups(MODE_STEPS['fast'])[0],
+                         ('sequential', ['javascript-syntax']))
+
+    def test_fast_mode_runs_canvas_coupling_ratchet(self):
+        step = "canvas-coupling"
+        self.assertIn(step, MODE_STEPS["fast"])
+        self.assertEqual(
+            STEP_DEFINITIONS[step](sys.executable),
+            [sys.executable, "-m", "unittest", "-b", "tests.test_canvas_core_layer", "tests.test_canvas_coupling_report"],
+        )
 
 
 class QualityGateTests(unittest.TestCase):
@@ -653,6 +670,13 @@ class QualityGateTests(unittest.TestCase):
             "            self.assertEqual(result.returncode, 0, script.name + ': ' + result.stderr.strip())\n",
             encoding="utf-8",
         )
+        # #418: the minimal fixture exercises gate wiring, not the real canvas analysis.
+        for module_name in ("test_canvas_core_layer.py", "test_canvas_coupling_report.py"):
+            (self.fixture_root / "tests" / module_name).write_text(
+                "import unittest\nclass CanvasFixture(unittest.TestCase):\n"
+                "    def test_wiring(self): self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
         # #232：egress-attribution 步骤跑的是产品自己的取远端素材路径（app.core）。
         # 这里合成的是最小仓库骨架，没有 app/，所以给一个不碰网络的桩：这个
         # 套件验的是「门真的把这一步排进了每种模式」，探针行为由真门跑验。
@@ -1040,7 +1064,7 @@ class QualityGateTests(unittest.TestCase):
         self.assertEqual(report["mode"], "fast")
         self.assertEqual(report["budget_seconds"], 30)
         self.assertEqual(report["verdict"], "passed")
-        self.assertEqual([step["name"] for step in report["steps"]], ["javascript-syntax", "javascript-types", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate"])
+        self.assertEqual([step["name"] for step in report["steps"]], ["javascript-syntax", "javascript-types", "canvas-coupling", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate"])
         self.assertTrue(all(step["status"] == "passed" for step in report["steps"]))
         self.assertTrue(report["dirty_worktree"]["before"]["dirty"])
         self.assertFalse(report["dirty_worktree"]["changed_during_run"])
@@ -2916,7 +2940,7 @@ class QualityGateTests(unittest.TestCase):
         # (a) 各模式预算、(b) MODE_STEPS 的槽位顺序、(c) 真实步骤列表恰好是
         # 槽位按当前分片方案的确定性展开。
         expected = {
-            "fast": (30, ("javascript-syntax", "javascript-types", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate")),
+            "fast": (30, ("javascript-syntax", "javascript-types", "canvas-coupling", "excel-api-smoke", "surface-contract", "egress-attribution", "doc-link-check", "i18n-validate")),
             "domain": (180, ("javascript-syntax", "javascript-types", "surface-contract", "project-contract", "provider-contract", "native-browser-evidence", "generation-lifecycle-evidence", "canvas-hidden-visibility-evidence", "egress-attribution")),
             "trial": (300, ("javascript-syntax", "javascript-types", "unit-contract-quality-gate", "unit-contract-remainder", "native-browser-evidence", "project-linked-generation-evidence", "generation-lifecycle-evidence", "complete-generation-lifecycle-evidence", "composer-flow-evidence", "long-content-evidence", "ui-integrity-evidence", "excel-import-evidence", "canvas-boundaries-evidence", "layers-panel-evidence", "canvas-hidden-visibility-evidence", "canvas-project-gone-evidence", "ws-stats-reconnect-evidence", "video-failure-evidence", "node-flow-cascade-evidence", "fly-fixes-evidence", "tabbit-e2e-evidence", "unit-contract-browser", "browser-tracer", "egress-attribution")),
             "release": (
