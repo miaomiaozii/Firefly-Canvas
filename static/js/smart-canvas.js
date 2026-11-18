@@ -966,7 +966,9 @@ function persistActiveSmartSettings(){
     if(!composer?.classList?.contains('open')) return;
     const subject = activeComposerNode();
     if(!subject) return;
-    subject.runSettings = settingsForStorage(settings);
+    const next = settingsForStorage(settings);
+    if(smartCanvasDataEqual(next, settingsForStorage(smartSettingsForNode(subject)))) return;
+    subject.runSettings = next;
     rememberRecentSmartSettings(settings, subject);
 }
 function smartHumanSettingsEditable(){
@@ -8768,6 +8770,8 @@ function conversationNodeBodyHtml(node){
 }
 
 function promptNodeBodyHtml(node){
+    // Display normalization must not turn opening an old canvas into an edit.
+    node = {...node};
     node.llmProvider = resolveChatProviderId(node.llmProvider || '');
     node.llmModel = resolveChatModel(node.llmModel || '', node.llmProvider);
     node.llmSystemEnabled = node.llmSystemEnabled === true;
@@ -12463,10 +12467,13 @@ function savePromptDraftForCurrent({human=false, nodeId}={}){
         delete promptInput.dataset.preserveDraftOnce;
         return;
     }
+    const draft = {nodeId:subject.id, html:promptInput.innerHTML, text:promptPlainText()};
+    // Loading a legacy draft may render fallback HTML; displaying it is not an edit.
+    if(smartCanvasDataEqual(loadPromptDraft.current, draft)) return;
     const action = human ? beginSmartNodeHumanEdit([subject], ['promptDraftHtml', 'promptDraftText'], true) : null;
-    subject.promptDraftHtml = promptInput.innerHTML;
-    subject.promptDraftText = promptPlainText();
-    subject.runSettings = cloneSmartSettings(settings);
+    subject.promptDraftHtml = draft.html;
+    subject.promptDraftText = draft.text;
+    loadPromptDraft.current = draft;
     if(action) finishSmartNodeHumanEdit(action);
 }
 function loadPromptDraft(subject){
@@ -12482,6 +12489,7 @@ function loadPromptDraft(subject){
     } else {
         setPromptText('');
     }
+    loadPromptDraft.current = {nodeId:subject?.id || '', html:promptInput.innerHTML, text:promptPlainText()};
 }
 function restoreLongContentTriggerFocus(identity, fallback){
     let target = fallback?.isConnected ? fallback : null;
