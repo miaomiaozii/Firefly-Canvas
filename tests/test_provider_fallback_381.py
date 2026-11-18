@@ -10,14 +10,17 @@ globals，所以 patch main.<name> 就能换表；路由模块是 import 时把�
 要 patch 路由模块自己的属性。测试只换内存里的假服务商表，不碰网络，也不碰 data/api_providers.json。
 """
 import asyncio
+from contextlib import closing
 import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from firefly_projects import ProjectStore
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -26,7 +29,7 @@ if str(ROOT) not in sys.path:
 import main
 from app.core import (AssetLibraryClassifyRequest, LocalAssetCaptionRequest,
                       LocalAssetClassifyRequest, LocalAssetUrlImportRequest, OnlineImageRequest)
-from app.routers import api_local_assets
+from app.routers import api_canvas_llm, api_local_assets
 from app.services import conversation as conversation_svc
 from app.services import generation as generation_svc
 from app.services import misc as misc_svc
@@ -194,11 +197,72 @@ class ConversationNodeAdapterTests(unittest.TestCase):
                     'app/routers/api_project_library.py', 'app/services/conversation.py'):
             self.assertNotIn("or 'comfly'", self._code(rel), f'{rel} 还在拿 comfly 当兜底')
 
+    def test_empty_provider_uses_current_default_and_logs_actual_provider(self):
+        upstream = AsyncMock(return_value=({'choices': [{'message': {'content': 'ok'}}]}, 'chat'))
+        providers = [dict(p) for p in PROVIDERS]
+        with patch.object(main, 'load_api_providers', side_effect=lambda: [dict(p) for p in providers]), \
+             patch.object(main, 'provider_env_key_value', return_value='test-key'), \
+             patch.object(api_canvas_llm, 'chat_request_latest', upstream), \
+             self.assertLogs('app.routers.api_canvas_llm', level='INFO') as logs:
+            for index, settings in enumerate(({}, {'provider': ''})):
+                providers[0]['primary'] = index == 0
+                providers[1]['primary'] = index == 1
+                result = asyncio.run(main.project_conversation_adapter(
+                    {'project_id': 'offline', 'message': '你好', 'references': [], 'model': 'm-chat', **settings}))
+                expected = providers[index]
+                self.assertEqual(result['text'], 'ok')
+                self.assertEqual(upstream.await_args.args[1], expected['base_url'])
+                self.assertEqual(upstream.await_args.kwargs['provider_cfg']['id'], expected['id'])
+        self.assertTrue(any('alpha' in line for line in logs.output))
+        self.assertTrue(any('beta' in line for line in logs.output))
+        self.assertEqual(upstream.await_count, 2)
+
+    def test_missing_default_and_unknown_provider_fail_before_upstream(self):
+        upstream = AsyncMock(side_effect=AssertionError('不应请求上游'))
+        for providers, provider in (([], ''), ([{**PROVIDERS[0], 'enabled': False}], ''),
+                                    (PROVIDERS, UNKNOWN_ID)):
+            with self.subTest(providers=providers, provider=provider), \
+                 patch.object(main, 'load_api_providers', return_value=providers), \
+                 patch.object(api_canvas_llm, 'chat_request_latest', upstream):
+                with self.assertRaises(HTTPException) as raised:
+                    asyncio.run(main.project_conversation_adapter(
+                        {'project_id': 'offline', 'message': '你好', 'references': [], 'provider': provider}))
+                self.assertEqual(raised.exception.status_code, 400)
+                self.assertTrue(raised.exception.detail)
+                if provider:
+                    self.assertIn(provider, str(raised.exception.detail))
+                else:
+                    self.assertIn('默认', str(raised.exception.detail))
+                upstream.assert_not_awaited()
+
     def test_node_adapter_keeps_empty_provider(self):
-        # 存上去的必须是空，不是 'comfly'：写死一个不存在的平台，下次跑只能靠后端瞎换。
-        src = self._code('app/routers/api_project_library.py')
-        self.assertIn("stored_adapter.get('provider') or ''", src,
-                      '存对话节点适配配置时不该把没选写成 comfly')
+        with tempfile.TemporaryDirectory() as tmp, \
+             closing(ProjectStore(Path(tmp) / 'projects', snapshot_delay=0.01)) as store:
+            with patch.object(main, 'FIREFLY_PROJECT_STORE', store):
+                project = store.create_project('offline')
+                node = {'id': 'conversation', 'type': 'smart-conversation', 'x': 0, 'y': 0,
+                        'messages': [], 'conversation_adapter': {'model': 'm-chat'}}
+                store.apply_mutations(project['id'], [{'op': 'upsert_node', 'node': node}], base_revision=0)
+                for index, settings in enumerate(({}, {'provider': ''}, {'model': 'm-chat'})):
+                    with self.subTest(settings=settings):
+                        message = {'role': 'user', 'status': 'pending', 'request_id': f'offline-{index}',
+                                   'text': '你好', 'references': []}
+                        canvas, _ = asyncio.run(main.persist_project_conversation_pending(
+                            project['id'], node['id'], message, node_adapter=settings))
+                        saved = next(item for item in canvas['nodes'] if item['id'] == node['id'])
+                        adapter = saved['conversation_adapter']
+                        self.assertEqual(adapter.get('provider', ''), '')
+                        self.assertEqual('provider' in adapter, index > 0)
+                        self.assertEqual(adapter['model'], 'm-chat')
+
+    def test_node_adapter_forwards_explicit_provider(self):
+        canvas_llm = AsyncMock(return_value={'text': 'ok', 'model': 'm-chat'})
+        with patch.object(main, 'load_api_providers', return_value=[dict(p) for p in PROVIDERS]), \
+             patch.object(main, 'canvas_llm', canvas_llm):
+            result = asyncio.run(main.project_conversation_adapter(
+                {'project_id': 'offline', 'message': '你好', 'references': [], 'provider': 'beta'}))
+        self.assertEqual(result['text'], 'ok')
+        self.assertEqual(canvas_llm.await_args.args[0].provider, 'beta')
 
 
 class OldLookupCallSiteScanTests(unittest.TestCase):

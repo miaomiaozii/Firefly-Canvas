@@ -503,7 +503,7 @@ async def run_project_conversation_task(project_id: str, node_id: str, request_i
             return False
         if ready is None:
             adapter_config = conversation.get('conversation_adapter') if isinstance(conversation.get('conversation_adapter'), dict) else user_message.get('adapter') if isinstance(user_message.get('adapter'), dict) else {}
-            # #381：对话节点没存服务商就传空（由 canvas_llm 按主平台走），不写 'comfly'。
+            # #381：空配置保持为空，在发送边界解析当前默认平台。
             adapter_request = {'project_id': project_id, 'node_id': node_id, 'request_id': request_id, 'message': str(user_message.get('text') or ''), 'messages': copy.deepcopy([item for item in messages[:user_index + 1] if item.get('role') != 'user' or is_registered_conversation_user_message(item)]), 'current_message_id': str(user_message.get('id') or ''), 'references': copy.deepcopy(user_message.get('references') or []), 'provider': str(adapter_config.get('provider') or ''), 'model': str(adapter_config.get('model') or ''), 'ms_model': str(adapter_config.get('ms_model') or ''), 'system_prompt': str(adapter_config.get('system_prompt') or '')}
             conversation_adapter = adapter if adapter is not None else _app_main.project_conversation_adapter
             await asyncio.to_thread(save_project_conversation_durable, project_id, node_id, request_id, {'state': 'dispatching', 'user_message_id': user_message_id})

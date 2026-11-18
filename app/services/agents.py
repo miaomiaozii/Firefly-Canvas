@@ -229,8 +229,7 @@ async def project_conversation_adapter(request: Dict[str, Any]) -> Dict[str, Any
         audio_references = [{'asset_id': str(item['asset_id']).strip(), 'kind': 'audio', 'name': str(item.get('name') or item['asset_id']).strip()[:160], 'url': _svc.media_adapter_data_url(project_media_adapter_reference(project_id, item['asset_id']), 'audio', max_bytes=_svc._main('PROJECT_CONVERSATION_MEDIA_MAX_FILE_BYTES'))} for item in references if str(item.get('kind') or '').strip().lower() == 'audio' and item.get('asset_id')]
     finally:
         PROJECT_MEDIA_ADAPTER_PROJECT.reset(scope_token)
-    # #381（接 #349）：没存服务商就传空——canvas_llm 会按主平台走并记日志。
-    # 以前这里默认 'comfly'，把“没选”和“选了一个不存在的平台”揉成了同一个值。
+    # 空配置交给发送边界按当前默认平台解析，不写死平台名。
     payload = CanvasLLMRequest(message=current_message, system_prompt=str(request.get('system_prompt') or ''), model=str(request.get('model') or ''), messages=llm_messages, provider=str(request.get('provider') or ''), ms_model=str(request.get('ms_model') or ''), images=images, videos=videos, audios=[item['url'] for item in audio_references], audio_references=audio_references)
     result = await _svc._main('canvas_llm')(payload)
     return {'text': str(result.get('text') or '接口返回了空回复。'), 'model': result.get('model') or str(request.get('model') or ''), 'raw_usage': result.get('raw_usage')}

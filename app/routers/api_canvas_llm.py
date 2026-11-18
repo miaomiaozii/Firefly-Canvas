@@ -56,8 +56,16 @@ async def canvas_llm(payload: CanvasLLMRequest):
     finally:
         if project_scope is not None:
             PROJECT_MEDIA_ADAPTER_PROJECT.reset(project_scope)
-    # #349：指定了就按指定的走。认不出的平台以前会被悄悄换成主服务商，结果其实来自别家。
-    _provider = _app_main.get_api_provider_required(payload.provider)
+    # 空配置在发送时解析当前默认；固定解析结果，避免后续重查时默认平台发生变化。
+    requested_provider = (payload.provider or '').strip()
+    try:
+        _provider = _app_main.get_api_provider_required(requested_provider)
+    except HTTPException as exc:
+        if not requested_provider:
+            raise HTTPException(status_code=400, detail='没有可用的默认 API 平台，请在设置中启用服务商。') from exc
+        raise
+    payload.provider = str(_provider['id'])
+    logger.info('[canvas-llm] selected provider=%s', payload.provider)
     audio_references = [item for item in payload.audio_references or [] if isinstance(item, dict) and str(item.get('asset_id') or item.get('url') or '').strip()]
     if (payload.audios or audio_references) and (not chat_provider_supports_audio(_provider)):
         raise HTTPException(status_code=400, detail={'code': 'unsupported_audio_input', 'message': '当前对话适配器不支持音频参考输入'})
