@@ -5,6 +5,9 @@ over stdin/stdout. This service handles spawning, event forwarding, command
 sending, and crash recovery.
 """
 import asyncio
+import base64
+import hashlib
+import hmac
 import inspect
 import json
 import logging
@@ -38,6 +41,20 @@ RPC_SPAWN_TIMEOUT_SECONDS = 60.0
 EVENTS_LOG_MAX_LINES = 2000      # 每节点保留尾 N 行（截头不清 seq）
 EVENTS_REPLAY_TURNS = 20         # 降级重建重放最近 N 轮（不足按实际全量，含 user 侧）
 EVENTS_REPLAY_MAX_CHARS = 12000  # 重放文本块字符预算（保最近轮）
+_EVENTS_PAGE_KEY = os.urandom(32)
+_EVENTS_PAGE_CHUNK = 65536
+
+
+class InvalidEventsCursor(ValueError):
+    """Malformed, modified, or incompatible paging cursor."""
+
+
+class StaleEventsCursor(Exception):
+    """The snapshot no longer identifies the same retained file."""
+
+
+class CorruptEventsLog(Exception):
+    """A scanned record is incomplete or malformed."""
 # 单条 RPC 命令响应超时（wait_for 硬超时 → finally 必杀）。
 RPC_TIMEOUT_SECONDS = 10.0
 
@@ -1944,6 +1961,156 @@ class AgentHostManager:
             return {"events": [], "last_seq": since}
         # OSError 上抛——HTTP 语义归路由层（service 层不依赖 fastapi）
         return {"events": out, "last_seq": last_seq}
+
+    def load_events_page(self, project_id: str, node_id: str, host: str,
+                         turns: int = 5, cursor: Optional[str] = None) -> dict:
+        """Read complete retained turns backwards from an append-stable snapshot.
+
+        Cursors are authenticated and process-local. Retention may have removed the
+        beginning of the oldest turn; its surviving records accompany the last page.
+        """
+        if host not in ('pi', 'codex') or not 1 <= turns <= 50:
+            raise InvalidEventsCursor('invalid host or turns')
+        # Both identifiers become path components. Reject Windows separators
+        # even when running on a different OS; never let this new read endpoint
+        # escape the selected project's events directory.
+        if any(not isinstance(part, str) or not part or part in ('.', '..')
+               or any(char in part for char in ('/', '\\', ':', '\0'))
+               for part in (project_id, node_id)):
+            raise InvalidEventsCursor('invalid project or node identifier')
+        state = None
+        if cursor is not None:
+            try:
+                if len(cursor) > 4096:
+                    raise ValueError()
+                raw = base64.urlsafe_b64decode(cursor.encode('ascii') + b'=' * (-len(cursor) % 4))
+                body, signature = raw[:-32], raw[-32:]
+                if not hmac.compare_digest(signature, hmac.digest(_EVENTS_PAGE_KEY, body, 'sha256')):
+                    raise ValueError()
+                state = json.loads(body)
+                if state['host'] != host or state['project'] != project_id or state['node'] != node_id:
+                    raise ValueError()
+                if any(type(state[k]) is not int or state[k] < 0 for k in ('pos', 'size', 'seq', 'dev', 'ino')):
+                    raise ValueError()
+                if state['pos'] > state['size']:
+                    raise ValueError()
+            except (ValueError, TypeError, KeyError, UnicodeError, json.JSONDecodeError):
+                raise InvalidEventsCursor('invalid cursor') from None
+
+        path = os.path.join(self._get_project_dir(project_id), 'agent-events', f'{node_id}.jsonl')
+        try:
+            f = open(path, 'rb')
+        except FileNotFoundError:
+            if state is not None:
+                raise StaleEventsCursor('events log disappeared') from None
+            return {'events': [], 'last_seq': 0, 'has_more': False, 'cursor': None}
+
+        def identity(st):
+            return (st.st_dev, st.st_ino)
+
+        def fingerprint(fh, size):
+            n = min(size, 256)
+            fh.seek(0)
+            first = fh.read(n)
+            fh.seek(size - n)
+            last = fh.read(n)
+            return hashlib.sha256(first + last).hexdigest()
+
+        def reverse_lines(fh, end):
+            # Carry partial UTF-8 bytes across chunks; decode only complete lines.
+            pos, pending = end, b''
+            while pos:
+                length = min(_EVENTS_PAGE_CHUNK, pos)
+                pos -= length
+                fh.seek(pos)
+                block = fh.read(length)
+                if len(block) != length:
+                    raise StaleEventsCursor('events log changed while reading')
+                parts = (block + pending).split(b'\n')
+                pending = parts[0]
+                offset = pos + len(pending) + 1
+                offsets = []
+                for part in parts[1:]:
+                    offsets.append(offset)
+                    offset += len(part) + 1
+                for start, part in reversed(list(zip(offsets, parts[1:]))):
+                    yield start, part
+            if pending:
+                yield 0, pending
+
+        with f:
+            st = os.fstat(f.fileno())
+            if state is None:
+                size, pos = st.st_size, st.st_size
+                digest = fingerprint(f, size)
+                last_seq = 0
+            else:
+                size, pos, last_seq = state['size'], state['pos'], state['seq']
+                if identity(st) != (state['dev'], state['ino']) or st.st_size < size:
+                    raise StaleEventsCursor('events log replaced or truncated')
+                digest = fingerprint(f, size)
+                if digest != state['digest']:
+                    raise StaleEventsCursor('events log changed')
+            if size:
+                f.seek(size - 1)
+                if f.read(1) != b'\n':
+                    raise CorruptEventsLog('incomplete events record')
+            selected, prefix, boundaries, next_pos = [], [], 0, None
+            previous_seq = None
+            for start, line in reverse_lines(f, pos):
+                # A cursor points at the start of a line; the preceding newline
+                # produces exactly one empty trailing segment.
+                if start == pos and not line:
+                    continue
+                try:
+                    rec = json.loads(line.decode('utf-8'))
+                    if not isinstance(rec, dict) or type(rec.get('seq')) is not int or rec['seq'] < 1 or not isinstance(rec.get('event'), dict):
+                        raise ValueError()
+                    seq = rec['seq']
+                    if previous_seq is not None and seq >= previous_seq:
+                        raise ValueError()
+                    previous_seq = seq
+                except (ValueError, UnicodeError):
+                    raise CorruptEventsLog('invalid events record') from None
+                if state is None and last_seq == 0:
+                    last_seq = seq
+                record_host = rec.get('host', 'pi')
+                if record_host != host:
+                    continue
+                is_prompt = rec['event'].get('type') == 'user_prompt'
+                if is_prompt and boundaries == turns:
+                    next_pos = oldest_start
+                    break
+                rec['host'] = record_host
+                rec.setdefault('generation', 0)
+                rec['event']['host'] = record_host
+                rec['event']['generation'] = rec['generation']
+                if boundaries == turns:
+                    prefix.append(rec)
+                else:
+                    selected.append(rec)
+                if is_prompt:
+                    boundaries += 1
+                    oldest_start = start
+            if next_pos is None:
+                selected.extend(prefix)
+            try:
+                final = os.stat(path)
+                opened = os.fstat(f.fileno())
+                if (identity(final) != identity(st) or identity(opened) != identity(st)
+                        or final.st_size < size or opened.st_size < size or fingerprint(f, size) != digest):
+                    raise StaleEventsCursor('events log changed while reading')
+            except FileNotFoundError:
+                raise StaleEventsCursor('events log disappeared') from None
+            token = None
+            if next_pos is not None:
+                payload = {'project': project_id, 'node': node_id, 'host': host,
+                           'pos': next_pos, 'size': size, 'seq': last_seq,
+                           'dev': st.st_dev, 'ino': st.st_ino, 'digest': digest}
+                body = json.dumps(payload, separators=(',', ':')).encode('utf-8')
+                token = base64.urlsafe_b64encode(body + hmac.digest(_EVENTS_PAGE_KEY, body, 'sha256')).decode('ascii').rstrip('=')
+            return {'events': list(reversed(selected)), 'last_seq': last_seq,
+                    'has_more': token is not None, 'cursor': token}
 
     def _build_replay_context(self, session: AgentSession) -> tuple:
         """从活跃宿主回放派生最近 EVENTS_REPLAY_TURNS 轮文本（含 user 侧）。

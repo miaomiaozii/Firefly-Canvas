@@ -7,7 +7,9 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Requ
 
 from app.core import ensure_agent_same_origin, ensure_same_origin_request
 from app.constants import NODE_TYPE_AGENT
-from app.services.agent_host import agent_host_manager
+from app.services.agent_host import (
+    agent_host_manager, InvalidEventsCursor, StaleEventsCursor, CorruptEventsLog,
+)
 from app.services.agent_errors import agent_error, translate_detail
 from app.services.agent_message_refs import resolve_node_refs
 from app.services.agent_node_host_settings import AgentHostTransaction
@@ -646,6 +648,22 @@ async def get_agent_node_events(
     try:
         return agent_host_manager.load_events(project_id, node_id, since, host=host)
     except OSError as e:
+        raise HTTPException(status_code=500, detail=f"events log read failed: {e}")
+
+
+@router.get("/{node_id}/events/page")
+async def get_agent_node_events_page(
+    project_id: str, node_id: str, host: str, cursor: Optional[str] = None,
+    turns: int = Query(5, ge=1, le=50),
+):
+    """Read newest or older retained turns, without changing the legacy API."""
+    try:
+        return agent_host_manager.load_events_page(project_id, node_id, host, turns, cursor)
+    except InvalidEventsCursor as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except StaleEventsCursor as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except (CorruptEventsLog, OSError) as e:
         raise HTTPException(status_code=500, detail=f"events log read failed: {e}")
 
 

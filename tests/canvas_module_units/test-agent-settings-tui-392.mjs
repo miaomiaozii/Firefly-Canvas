@@ -165,8 +165,9 @@ test('cleanup during response JSON or inside the receiver leaves neither retaine
 test('real bound settings handlers declare human intent without optimistic persisted changes', async () => {
     const m = setup();
     const before = persisted(m.ctx);
-    // Already connected/fetched: no transport or model-pool implementation is needed to bind controls.
+    // This settings-only fixture starts connected with its existing history already loaded.
     m.state.socket = { readyState: 1 };
+    m.state.historyLoaded = true;
     m.state.chatModelsFetched = true;
     const el = m.harness.makeElement('div');
     const controls = Object.fromEntries(['model-picker', 'autonomy-choice', 'more-branch', 'fork'].map(key => {
@@ -276,7 +277,10 @@ test('session-only model success updates runtime display without inventing persi
     assert.equal(m.state.model, 'runtime-model');
     assert.deepEqual(persisted(m.ctx), []);
     assert.deepEqual(m.received, []);
+    // Rendering here exercises the model label, not history prefetch or replay.
+    m.state.historyLoaded = true;
     const body = fn(m.ctx, 'agentNodeBodyHtml')({ id: 'n1', type: 'smart-agent' });
+    assert.equal(m.calls.length, 1, 'rendering the loaded view must not add a history request');
     assert.match(body, /data-agent-model-picker="n1"[^>]*aria-label="模型 runtime-model"[^>]*><span[^>]*>模型<\/span><b>runtime-model<\/b>/);
 
     const withCanvas = setup();
@@ -287,6 +291,7 @@ test('session-only model success updates runtime display without inventing persi
     assert.deepEqual(withCanvas.received, [unchangedCanvas], 'available authoritative canvas still goes through the receiver');
     assert.deepEqual(persisted(withCanvas.ctx), [originalNode()], 'runtime model does not stamp persisted ownership even if a node exists locally');
     assert.equal(withCanvas.state.model, 'runtime-model');
+    withCanvas.state.historyLoaded = true;
 
     const stale = fn(m.ctx, 'setAgentModel')('n1', 'project', 'old-model');
     const current = fn(m.ctx, 'setAgentModel')('n1', 'project', 'runtime-model');

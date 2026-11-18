@@ -71,7 +71,9 @@ test('r3 composer has no duplicate internal header; real parameters and more men
     for (const attr of ['chat-frame', 'ref-frame', 'dock-set', 'more-fork', 'more-cli', 'more-delete']) assert.ok(menu.includes(`data-agent-${attr}`));
     assert.equal(fn(m.ctx, 'agentDockNodeWidth')({}), 480);
     assert.equal(fn(m.ctx, 'agentDockNodeWidth')({ w: 382 }), 382);
-    assert.equal(m.calls.length, 0, 'render must never request capabilities or legacy chat-models');
+    assert.equal(m.calls.length, 1, 'render may only prefetch the initial history page, not metadata');
+    assert.equal(m.calls[0].url, '/api/projects/project/agent-nodes/a/events/page?host=pi&turns=5');
+    assert.equal(m.calls[0].opts.method, undefined, 'history prefetch is a GET');
 });
 
 test('capabilities are fetched only during the shared model+effort picker lifecycle, with native IDs/source', async () => {
@@ -80,19 +82,23 @@ test('capabilities are fetched only during the shared model+effort picker lifecy
     el.querySelectorAll = selector => selector === '[data-agent-model-picker],[data-agent-effort-picker]' ? [effort] : [];
     m.state.socket = { readyState: 1 };
     fn(m.ctx, 'bindAgentNodeControls')(el, m.node);
-    assert.equal(m.calls.length, 0, 'bind must not probe metadata');
+    assert.equal(m.calls.length, 1, 'bind may request only history, not metadata');
+    assert.equal(m.calls[0].url, '/api/projects/project/agent-nodes/a/events/page?host=pi&turns=5');
+    assert.equal(m.calls[0].opts.method, undefined, 'history replay is a GET');
+    m.calls[0].resolve(reply({ events: [], has_more: false, cursor: null })); await flush();
+    assert.equal(m.state.historyLoaded, true);
     effort.dispatchEvent(event('click'));
-    assert.equal(m.calls.length, 1); assert.match(m.calls[0].url, /capabilities\?host=pi&model=native%2Fa$/);
-    m.calls[0].resolve(reply(native('pi', 'native/a', ['low', 'high', 'ultra']))); await flush();
+    assert.equal(m.calls.length, 2); assert.match(m.calls[1].url, /capabilities\?host=pi&model=native%2Fa$/);
+    m.calls[1].resolve(reply(native('pi', 'native/a', ['low', 'high', 'ultra']))); await flush();
     const picker = m.state.modelPicker;
     assert.match(picker.dialog.innerHTML, /Native A/); assert.match(picker.dialog.innerHTML, /native:levels/);
     assert.doesNotMatch(picker.dialog.innerHTML, /value="ultra"/);
     picker.dialog.querySelector('[data-agent-picker-model]').dispatchEvent(event('change', { target: { value: 'native/b' } }));
-    assert.match(m.calls[1].url, /model=native%2Fb$/);
+    assert.match(m.calls[2].url, /model=native%2Fb$/);
     fn(m.ctx, 'closeAgentModelPicker')(m.state);
-    m.calls[1].resolve(reply(native('pi', 'native/b', ['low']))); await flush();
+    m.calls[2].resolve(reply(native('pi', 'native/b', ['low']))); await flush();
     assert.equal(m.state.modelPicker, null, 'closed picker cannot be reopened by late capability response');
-    assert.equal(m.calls.length, 2);
+    assert.equal(m.calls.length, 3);
 });
 
 test('unsupported previous effort requires explicit confirmation and submits model+null effort atomically; 409 is visible', async () => {
@@ -176,20 +182,24 @@ test('readonly history uses only host-filtered GET events and rejects late frame
     const m = setup(), socket = fn(m.ctx, 'openAgentWebSocket')('a', 'project');
     m.state.status = 'idle';
     await fn(m.ctx, 'agentViewHost')('a', 'project', 'codex');
-    assert.equal(m.sockets.length, 1); assert.match(m.calls[0].url, /events\?since=0&host=codex$/); assert.equal(m.calls[0].opts.method, undefined);
+    assert.equal(m.sockets.length, 1); assert.equal(m.calls[0].url, '/api/projects/project/agent-nodes/a/events/page?host=codex&turns=5'); assert.equal(m.calls[0].opts.method, undefined);
     socket.onmessage({ data: JSON.stringify({ host: 'pi', type: 'user_prompt', text: 'late old frame', seq: 7 }) });
     for (const sender of ['sendAgentPrompt', 'sendAgentSteer', 'sendAgentFollowUp']) fn(m.ctx, sender)('a', 'project', 'must not send');
     fn(m.ctx, 'sendAgentAbort')('a', 'project');
     assert.equal(m.calls.length, 1); assert.equal(m.state.messages.length, 0);
     m.calls[0].resolve(reply({ events: [ { seq: 1, host: 'pi', event: { type: 'user_prompt', text: 'wrong host' } },
-        { seq: 2, host: 'codex', event: { host: 'codex', type: 'user_prompt', text: 'saved Codex' } } ] }));
+        { seq: 2, host: 'codex', event: { host: 'codex', type: 'user_prompt', text: 'saved Codex' } } ], has_more: false, cursor: null }));
     await flush(); assert.equal(m.state.messages.length, 1); assert.equal(m.state.messages[0].text, 'saved Codex');
     assert.match(fn(m.ctx, 'agentNodeBodyHtml')(m.node), /agent-tui-readonly-banner/);
     assert.equal(fn(m.ctx, 'connectAgentWebSocket')('a', 'project'), null);
     await fn(m.ctx, 'agentViewHost')('a', 'project', 'pi');
     const piReplay = m.calls[1];
+    assert.equal(piReplay.url, '/api/projects/project/agent-nodes/a/events/page?host=pi&turns=5');
+    assert.equal(piReplay.opts.method, undefined);
     await fn(m.ctx, 'agentViewHost')('a', 'project', 'codex');
-    piReplay.resolve(reply({ events: [{ seq: 10, host: 'pi', event: { type: 'user_prompt', text: 'late Pi replay' } }] }));
+    assert.equal(m.calls[2].url, '/api/projects/project/agent-nodes/a/events?since=2&host=codex');
+    assert.equal(m.calls[2].opts.method, undefined);
+    piReplay.resolve(reply({ events: [{ seq: 10, host: 'pi', event: { type: 'user_prompt', text: 'late Pi replay' } }], has_more: false, cursor: null }));
     await flush(); assert.equal(m.state.messages[0].text, 'saved Codex');
     m.calls[2].resolve(reply({ events: [] })); await flush();
 });

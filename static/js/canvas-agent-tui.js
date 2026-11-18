@@ -27,6 +27,9 @@ function createAgentHostView() {
         timelineSourceMessages: null, timelineSourceTools: null, toolGroupExpanded: {}, thoughtExpanded: {},
         _timelineContent: null, _turnTextMessage: null, _turnSeq: 0, _turnFailed: false, _aborted: false,
         lastSeq: 0, _replayBuffer: [], _replayInFlight: false, _applyingReplay: false,
+        historyLoaded: false, historyCursor: null, historyHasMore: false, historyLoadingOlder: false,
+        historyBlocked: false, historyRetry: '', olderPageSerial: 0, _batchHistory: false,
+        _historyPrefetch: null, _replayAgain: false, _historyGapSince: null,
         confirm: null, confirmModalShown: null, stopPending: false, queuedInputs: new Set(),
         effortState: null, eventsError: '', stopStatusError: '', lastError: '', sessionModel: undefined,
     };
@@ -63,6 +66,7 @@ function agentChangeHostView(nodeId, state, host) {
     disposeAgentScroll(state);
     state.hostViews.set(state.viewHost, Object.fromEntries(Object.keys(createAgentHostView()).map(key => [key, state[key]])));
     state.hostViews.get(state.viewHost)._replayInFlight = false;
+    state.hostViews.get(state.viewHost).historyLoadingOlder = false;
     const view = state.hostViews.get(host) || createAgentHostView();
     Object.assign(state, view);
     agentNodeRefsInit(state);
@@ -814,67 +818,224 @@ function agentMessageTimestamp(ms) {
     return Number.isFinite(ms) && ms > 0 && ms <= 8.64e15 ? ms : undefined;
 }
 
+// Start the read-only first page as soon as the render has node and project IDs.
+// A failed speculative request is discarded; the mounted view retries normally.
+async function agentReadHistoryResponse(url) {
+    const r = await fetch(url);
+    const data = await r.json();
+    if (!r.ok) throw new Error(agentNodeRefsError(data, `HTTP ${r.status}`));
+    if (!Array.isArray(data.events)) throw new Error('Invalid Agent events response');
+    return data;
+}
+function agentPrefetchInitialHistory(nodeId, projectId, state) {
+    if (!projectId || state.historyLoaded || state.historyBlocked || state._replayInFlight || state._historyPrefetch) return;
+    const host = state.viewHost;
+    const url = `/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/events/page?host=${encodeURIComponent(host)}&turns=5`;
+    const prefetch = { projectId, host, epoch: state.viewEpoch, generation: state._timelineGeneration || 0 };
+    prefetch.promise = agentReadHistoryResponse(url).then(data => {
+        if (typeof data.has_more !== 'boolean' || (data.has_more && typeof data.cursor !== 'string')) throw new Error('Invalid Agent history cursor');
+        return data;
+    }).catch(() => null);
+    state._historyPrefetch = prefetch;
+}
+
 // #318 票 C：事件回放。WS session 确认事件后拉 GET events?since=lastSeq 重建：
 // 页面刷新=全量（lastSeq 0）；断线重连=补缺口。竞态：回放在途时 live 事件先进
 // 缓冲，批处理完再按 seq 刷（去重统一由 seq 承担）。
 function replayAgentEvents(nodeId, state) {
     const projectId = state.projectId;
-    if (!projectId || state._replayInFlight) return;
+    if (!projectId) return;
+    if (state._replayInFlight) {
+        if (!state._applyingReplay) state._replayAgain = true;
+        return;
+    }
     state._replayInFlight = true;
     state._replayBuffer = state._replayBuffer || [];
     const since = state.lastSeq || 0;
+    const initial = !state.historyLoaded && !since;
+    const beforeInitial = initial ? new Set(state.messages) : null;
     let generation = state._timelineGeneration || 0;
     const epoch = state.viewEpoch, host = state.viewHost;
     const current = () => agentTuiState.get(nodeId) === state && state.viewEpoch === epoch
         && generation === (state._timelineGeneration || 0) && !state.closing;
-    fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/events?since=${since}&host=${encodeURIComponent(host)}`)
-        .then(async r => {
-            const data = await r.json();
-            if (!r.ok) throw new Error(agentNodeRefsError(data, `HTTP ${r.status}`));
-            if (!Array.isArray(data.events)) throw new Error('Invalid Agent events response');
-            return data;
-        })
-        .catch(e => {
-            if (!current()) return null;
-            state.eventsError = `读取宿主历史失败：${e.message || e}`;
-            console.warn('[agent-tui] 事件回放请求失败', e);
-            return null;
-        })
-        .then(d => {
-            if (!d || !current()) return;
-            state.eventsError = '';
-            if (!since && Array.isArray(d.events)) {
-                state.messages = [];
-                state.toolActivities.clear();
-                resetAgentTimeline(state);
-                generation = state._timelineGeneration;
-            }
-            state._applyingReplay = true;
-            try {
-                for (const rec of (d.events || [])) {
-                    const ev = rec && rec.event;
-                    if (!ev || (ev.host || rec.host || 'pi') !== host) continue;
-                    const s = Number(rec.seq || ev.seq || 0);
-                    if (s && s > (state.lastSeq || 0)) {
-                        state.lastSeq = s;
-                        const recordedAt = Number.isFinite(rec.ts) ? agentMessageTimestamp(rec.ts * 1000) : undefined;
-                        applyAgentEventBody(nodeId, ev, recordedAt);
-                    }
+    const base = `/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/events`;
+    const url = initial ? `${base}/page?host=${encodeURIComponent(host)}&turns=5`
+        : `${base}?since=${since}&host=${encodeURIComponent(host)}`;
+    let succeeded = false;
+    const prefetch = state._historyPrefetch;
+    state._historyPrefetch = null;
+    const usablePrefetch = initial && prefetch && prefetch.projectId === projectId && prefetch.host === host
+        && prefetch.epoch === epoch && prefetch.generation === generation;
+    const request = usablePrefetch ? prefetch.promise.then(data => data || agentReadHistoryResponse(url)) : agentReadHistoryResponse(url);
+    request.then(data => {
+        if (initial && (typeof data.has_more !== 'boolean' || (data.has_more && typeof data.cursor !== 'string'))) {
+            throw new Error('Invalid Agent history cursor');
+        }
+        return data;
+    }).then(d => {
+        if (!current()) return;
+        state.eventsError = '';
+        let optimistic = [];
+        if (initial) {
+            // A prompt may be submitted after the server took the snapshot. Its
+            // user_prompt is persisted but not broadcast, so keep local rows.
+            optimistic = state.messages.filter(message => !beforeInitial.has(message)
+                || (message.request_id && message.delivery && message.delivery !== 'accepted'));
+            state.messages = [];
+            state.toolActivities.clear();
+            resetAgentTimeline(state);
+            generation = state._timelineGeneration;
+            state.historyCursor = d.cursor || null;
+            state.historyHasMore = d.has_more;
+            state.historyLoaded = true;
+        }
+        state._applyingReplay = true;
+        state._batchHistory = true;
+        try {
+            for (const rec of d.events) {
+                const ev = rec && rec.event;
+                if (!ev || (ev.host || rec.host || 'pi') !== host) continue;
+                const s = Number(rec.seq || ev.seq || 0);
+                if (s && s > (state.lastSeq || 0)) {
+                    state.lastSeq = s;
+                    const recordedAt = Number.isFinite(rec.ts) ? agentMessageTimestamp(rec.ts * 1000) : undefined;
+                    applyAgentEventBody(nodeId, ev, recordedAt);
                 }
-            } finally { state._applyingReplay = false; }
-        })
-        .finally(() => {
-            if (!current()) return;
-            state._replayInFlight = false;
+            }
+            state.lastSeq = Math.max(state.lastSeq || 0, Number(d.last_seq) || 0);
+            for (const message of optimistic) {
+                const index = message.request_id ? state.messages.findIndex(row => row.request_id === message.request_id) : -1;
+                if (index < 0) {
+                    agentAppendMessage(state, message);
+                } else {
+                    const canonical = state.messages[index];
+                    Object.assign(message, canonical);
+                    state.messages[index] = message;
+                    const entry = state.timelineMessages.get(canonical);
+                    if (entry) { entry.message = message; state.timelineMessages.set(message, entry); }
+                }
+            }
+        } finally { state._applyingReplay = false; state._batchHistory = false; }
+        succeeded = true;
+        state.historyBlocked = false;
+        state.historyRetry = '';
+    }).catch(e => {
+        if (!current()) return;
+        state.eventsError = `读取宿主历史失败：${e.message || e}`;
+        state.historyBlocked = true;
+        state.historyRetry = 'replay';
+        console.warn('[agent-tui] 事件回放请求失败', e);
+    }).finally(() => {
+        if (!current()) return;
+        state._replayInFlight = false;
+        const replayAgain = state._replayAgain;
+        state._replayAgain = false;
+        // Catch up from the snapshot high-water before consuming later live events.
+        // Otherwise a buffered higher seq can hide an unbroadcast user prompt.
+        if (succeeded && replayAgain) {
+            renderAgentNode(nodeId);
+            replayAgentEvents(nodeId, state);
+            return;
+        }
+        if (succeeded) {
             const buf = state._replayBuffer || [];
             state._replayBuffer = [];
             buf.sort((a, b) => (Number(a.seq) || 0) - (Number(b.seq) || 0));
-            for (const ev of buf) {
-                const s = Number(ev.seq) || 0;
-                if (s && s <= (state.lastSeq || 0)) continue;
-                if (s) state.lastSeq = s;
-                applyAgentEventBody(nodeId, ev);
+            let gap = false;
+            state._batchHistory = true;
+            try {
+                for (let i = 0; i < buf.length; i++) {
+                    const ev = buf[i], s = Number(ev.seq) || 0;
+                    if (s && s <= (state.lastSeq || 0)) continue;
+                    // A persisted user_prompt is not broadcast. A higher buffered
+                    // live seq cannot advance the cursor across that missing row.
+                    if (s && s > (state.lastSeq || 0) + 1) {
+                        state._replayBuffer = buf.slice(i);
+                        gap = true;
+                        break;
+                    }
+                    if (s) state.lastSeq = s;
+                    applyAgentEventBody(nodeId, ev);
+                }
+            } finally { state._batchHistory = false; }
+            if (gap) {
+                const since = state.lastSeq || 0;
+                if (state._historyGapSince === since) {
+                    state.eventsError = '历史事件存在缺口，请重试历史加载。';
+                    state.historyBlocked = true;
+                    state.historyRetry = 'replay';
+                } else {
+                    state._historyGapSince = since;
+                    renderAgentNode(nodeId);
+                    replayAgentEvents(nodeId, state);
+                    return;
+                }
+            } else {
+                state._historyGapSince = null;
             }
+        }
+        renderAgentNode(nodeId);
+    });
+}
+
+// Older pages are complete turns. Reduce into an isolated view, then prepend
+// its timeline without changing the active run or the existing anchor keys.
+function loadOlderAgentEvents(nodeId, state) {
+    if (!state.projectId || !state.historyHasMore || !state.historyCursor || state.historyLoadingOlder) return;
+    state.historyLoadingOlder = true;
+    const cursor = state.historyCursor, host = state.viewHost, epoch = state.viewEpoch;
+    const generation = state._timelineGeneration || 0;
+    const current = () => agentTuiState.get(nodeId) === state && state.viewEpoch === epoch
+        && generation === (state._timelineGeneration || 0) && !state.closing && state.historyCursor === cursor;
+    const base = `/api/projects/${encodeURIComponent(state.projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/events/page`;
+    fetch(`${base}?host=${encodeURIComponent(host)}&turns=5&cursor=${encodeURIComponent(cursor)}`)
+        .then(async r => {
+            const d = await r.json();
+            if (!r.ok) {
+                const error = new Error(agentNodeRefsError(d, `HTTP ${r.status}`));
+                error.status = r.status;
+                throw error;
+            }
+            if (!Array.isArray(d.events) || typeof d.has_more !== 'boolean' || (d.has_more && typeof d.cursor !== 'string')) throw new Error('Invalid Agent history page');
+            return d;
+        }).then(d => {
+            if (!current()) return;
+            const older = { ...createAgentHostView(), activeHost: host, viewHost: host, viewEpoch: epoch,
+                _applyingReplay: true, _batchHistory: true, _replayInFlight: true };
+            agentTuiState.set(nodeId, older);
+            try {
+                for (const rec of d.events) {
+                    const ev = rec && rec.event;
+                    if (!ev || (ev.host || rec.host || 'pi') !== host) continue;
+                    const recordedAt = Number.isFinite(rec.ts) ? agentMessageTimestamp(rec.ts * 1000) : undefined;
+                    applyAgentEventBody(nodeId, ev, recordedAt);
+                }
+                agentTimelineSync(older);
+            } finally { agentTuiState.set(nodeId, state); }
+            const prefix = `older:${++state.olderPageSerial}:`;
+            for (const [id, activity] of older.toolActivities) {
+                state.toolActivities.set(prefix + id, activity);
+                state.timelineTools.set(prefix + id, activity);
+            }
+            for (const entry of older.timeline || []) {
+                entry.key = prefix + entry.key;
+                if (entry.kind === 'tools') entry.items.forEach(item => { item.toolCallId = prefix + item.toolCallId; });
+                else if (entry.message) state.timelineMessages.set(entry.message, entry);
+            }
+            state.messages.unshift(...older.messages);
+            state.timeline.unshift(...(older.timeline || []));
+            state.historyCursor = d.cursor || null;
+            state.historyHasMore = d.has_more;
+            state.eventsError = '';
+            state.historyRetry = '';
+        }).catch(e => {
+            if (!current()) return;
+            state.eventsError = e.status === 409 ? '历史已变化，重试将重新加载最近消息。' : `读取更早历史失败：${e.message || e}`;
+            state.historyRetry = e.status === 409 ? 'reload' : 'older';
+        }).finally(() => {
+            if (agentTuiState.get(nodeId) !== state || state.viewEpoch !== epoch
+                || generation !== (state._timelineGeneration || 0) || state.closing) return;
+            state.historyLoadingOlder = false;
             renderAgentNode(nodeId);
         });
 }
@@ -886,12 +1047,17 @@ function handleAgentEvent(nodeId, event) {
     // #318 票 C：seq 去重（live/回放共用一条链）；回放在途先缓冲防丢缺口。
     const seq = Number(event.seq);
     if (Number.isFinite(seq)) {
-        if (state._replayInFlight) {
+        if (state._replayInFlight || state.historyBlocked) {
             state._replayBuffer = state._replayBuffer || [];
             state._replayBuffer.push(event);
             return;
         }
         if (seq <= (state.lastSeq || 0)) return;
+        if (state.historyLoaded && state.projectId && seq > (state.lastSeq || 0) + 1) {
+            state._replayBuffer.push(event);
+            replayAgentEvents(nodeId, state);
+            return;
+        }
         state.lastSeq = seq;
     }
     applyAgentEventBody(nodeId, event);
@@ -1133,7 +1299,7 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
             if (state.confirm && state.confirm.confirm_id === event.confirm_id) {
                 state.confirm = null;
                 if (state.status === 'waiting_confirm') state.status = 'busy';
-                if (window.ffDialog && window.ffDialog.close) window.ffDialog.close();
+                if (!state._applyingReplay && window.ffDialog && window.ffDialog.close) window.ffDialog.close();
                 const outcome = event.approved ? '已批准'
                     : (event.reason === 'timeout' ? '已超时' : '已拒绝');
                 agentAppendMessage(state, { role: 'system',
@@ -1376,6 +1542,13 @@ function resetAgentSettingsHistory(request) {
     state.lastSeq = 0;
     state._replayBuffer = [];
     state._replayInFlight = false;
+    state.historyLoaded = false;
+    state.historyCursor = null;
+    state.historyHasMore = false;
+    state.historyLoadingOlder = false;
+    state.historyBlocked = false;
+    state.historyRetry = '';
+    state.eventsError = '';
 }
 
 function isCurrentAgentSettingsRequest(nodeId, request) {
@@ -2065,6 +2238,7 @@ function agentNodeBodyHtml(node) {
     const nodeId = node.id;
     const state = getAgentTuiState(nodeId);
     agentSyncHostView(node, state);
+    agentPrefetchInitialHistory(nodeId, canvasId || '', state);
     const readonly = agentIsReadonly(state);
     const parameterDisabled = readonly || agentParametersLocked(state);
     const timeline = agentTimelineSync(state);
@@ -2248,7 +2422,8 @@ function agentNodeBodyHtml(node) {
 
     return `<div class="agent-tui-card">
         ${readonlyBanner}
-        ${state.settingsError || state.eventsError || state.stopStatusError ? `<div class="agent-tui-error-banner" role="alert">${escapeHtml(state.settingsError || state.eventsError || state.stopStatusError)}</div>` : ''}
+        ${state.settingsError || state.stopStatusError ? `<div class="agent-tui-error-banner" role="alert">${escapeHtml(state.settingsError || state.stopStatusError)}</div>` : ''}
+        ${state.eventsError ? `<div class="agent-tui-error-banner" role="alert">${escapeHtml(state.eventsError)} <button type="button" data-agent-events-retry>重试历史加载</button></div>` : ''}
         ${agentReconnectBannerHtml(state)}
         ${state.stopPending && !readonly ? `<div class="agent-tui-parameter-hint" role="status">等待宿主确认停止，参数仍锁定。<button type="button" data-agent-stop-status>重新核验停止状态</button></div>` : ''}
         ${agentProgressHtml(node)}
@@ -2257,6 +2432,7 @@ function agentNodeBodyHtml(node) {
         <nav class="agent-message-navigation" aria-label="用户消息导航"></nav>
         <div class="agent-tui-body${hasTuiContent ? '' : ' agent-tui-body-empty'}" data-agent-tui-body="${escapeAttr(nodeId)}">
             <div class="agent-tui-messages" data-agent-tui-messages="${escapeAttr(nodeId)}" aria-live="polite" aria-atomic="false"> <!-- #317：流式输出对读屏可见 -->
+                ${state.historyHasMore ? `<button type="button" data-agent-events-older${state.historyLoadingOlder ? ' disabled' : ''}>${state.historyLoadingOlder ? '加载中…' : '加载更早的消息'}</button>` : ''}
                 ${timelineHtml || '<div class="agent-tui-empty">Agent TUI 已就绪：在下方输入创作指令，Enter 发送 / Shift+Enter 换行</div>'}
                 ${confirmHtml}
             </div>
@@ -2502,6 +2678,7 @@ function bindAgentScroll(el, state) {
         binding.programTop = null;
         armIntent();
         updateAgentBackLatest(state);
+        if (body.scrollTop <= 96 && state.historyHasMore && !state.historyRetry) loadOlderAgentEvents(body.getAttribute('data-agent-tui-body'), state);
     }, { passive: true });
     // A resize/load can arrive between a wheel event and its native scroll event.
     // Do not erase that in-progress user intent.
@@ -2604,6 +2781,24 @@ function bindAgentNodeControls(el, node){
     // Connect WebSocket when node is rendered
     // #280：普通路径不再无条件建连——退避在途/已触顶停止时直接跳过（见 connectAgentWebSocket）。
     connectAgentWebSocket(nodeId, projectId);
+    const initialState = getAgentTuiState(nodeId);
+    if (!initialState.historyLoaded && !initialState.historyBlocked && !initialState._replayInFlight) replayAgentEvents(nodeId, initialState);
+
+    const historyRetry = el.querySelector('[data-agent-events-retry]');
+    if (historyRetry) historyRetry.addEventListener('click', event => {
+        event.stopPropagation();
+        const state = getAgentTuiState(nodeId);
+        if (state.historyRetry === 'older') loadOlderAgentEvents(nodeId, state);
+        else {
+            if (state.historyRetry === 'reload') { state.historyLoaded = false; state.lastSeq = 0; }
+            replayAgentEvents(nodeId, state);
+        }
+    });
+    const olderHistory = el.querySelector('[data-agent-events-older]');
+    if (olderHistory) olderHistory.addEventListener('click', event => {
+        event.stopPropagation();
+        loadOlderAgentEvents(nodeId, getAgentTuiState(nodeId));
+    });
 
     const stopStatus = el.querySelector('[data-agent-stop-status]');
     if (stopStatus) stopStatus.addEventListener('click', event => {
@@ -2914,6 +3109,7 @@ function bindAgentNodeControls(el, node){
 function renderAgentNode(nodeId) {
     // #314：IME 组合进行中——推迟重建，compositionend 后补渲染（中文输入不被杀）
     const st314 = agentTuiState.get(nodeId);
+    if (st314 && st314._batchHistory) return;
     if (st314 && st314.composing) { st314.pendingRerender = true; return; }
 
     // Find the rendered element for this node and re-render its body

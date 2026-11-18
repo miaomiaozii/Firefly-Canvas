@@ -1615,6 +1615,8 @@ test('bindAgentNodeControls: confirm 批准/取消、model/autonomy/branch chang
         return element;
     };
     const tree = buildAgentControlTree(harness);
+    // This controls-only fixture starts with history already loaded.
+    fn(ctx, 'getAgentTuiState')('n1').historyLoaded = true;
     fn(ctx, 'bindAgentNodeControls')(tree.el, { id: 'n1', type: 'agent' });
     // open:false → 命令全走 HTTP，便于断言 URL/body。
 
@@ -2451,7 +2453,7 @@ test('r3 history: replay envelope and Pi native time, calendar boundaries, safe 
         rec(3, undefined, { type: 'user_prompt', text: '没有日志时间的旧消息' }),
         rec(4, next.getTime() / 1000, { type: 'turn_end', message: { role: 'assistant', content: [{ type: 'text', text: '日志时间' }] } }),
     ];
-    const { ctx } = loadAgentTuiModule({ nodes: [node], fetchResponse: { ok: true, json: async () => ({ events: records }) } });
+    const { ctx } = loadAgentTuiModule({ nodes: [node], fetchResponse: { ok: true, json: async () => ({ events: records, has_more: false, cursor: null, last_seq: 4 }) } });
     const state = fn(ctx, 'getAgentTuiState')(node.id);
     state.projectId = 'p1';
     fn(ctx, 'replayAgentEvents')(node.id, state);
@@ -2510,6 +2512,7 @@ function r3ActionHarness(fetchResponse) {
     const m = loadAgentTuiModule({ nodes: [node], fetchResponse });
     const { ctx, harness } = m;
     const state = fn(ctx, 'getAgentTuiState')(node.id);
+    state.historyLoaded = true; // Seeded messages represent an already-loaded view.
     const append = fn(ctx, 'agentAppendMessage');
     append(state, { role: 'user', text: '原始提示' });
     const reply = append(state, { role: 'assistant', text: '**回复** <安全>' });
@@ -2792,7 +2795,7 @@ test('#408 D2 进度停止和 footer 停止均绑定，失败保留真实快照/
 
 test('#408 D2 seq 去重、刷新全回放重建与增量回放不重复/不重排', async () => {
     const records = [{ type: 'agent_start' }, { type: 'user_prompt', text: 'history' }, d2Text('think', true), d2Tool('a'), d2Tool('b'), { type: 'tool_execution_end', toolCallId: 'a', duration_ms: 0 }, { type: 'agent_end' }].map((event, i) => ({ seq: i + 1, event }));
-    const { ctx } = loadAgentTuiModule({ fetchResponse: { ok: true, json: async () => ({ events: records }) } });
+    const { ctx } = loadAgentTuiModule({ fetchResponse: { ok: true, json: async () => ({ events: records, has_more: false, cursor: null, last_seq: 7 }) } });
     ctx.document.hidden = true; ctx.document.title = 'Canvas';
     const state = fn(ctx, 'getAgentTuiState')('n1'); state.projectId = 'p1';
     fn(ctx, 'agentAppendMessage')(state, { role: 'system', text: 'stale' });
@@ -2816,7 +2819,7 @@ test('#408 D2 seq 去重、刷新全回放重建与增量回放不重复/不重�
 
 test('#408 D2 历史替换/branch/fork 重置元数据，迟到的旧回放不能污染新分支', async () => {
     let resolveReplay;
-    const { ctx } = loadAgentTuiModule({ nodes: [d2Node()], fetchResponse: url => url.includes('/events?')
+    const { ctx } = loadAgentTuiModule({ nodes: [d2Node()], fetchResponse: url => url.includes('/events/page?')
         ? new Promise(resolve => { resolveReplay = resolve; })
         : { ok: true, json: async () => ({ current_branch: 'new', branches: [],
             canvas: { revision: 2, nodes: [{ ...d2Node(), current_branch: 'new', branches: [] }] } }) } });
@@ -3245,4 +3248,213 @@ test('#408 D2 后台仅新 agent_end 完成加自有前缀，前台清除；失�
     assert.equal(ctx.document.title, '画布');
     delete ctx.document.title; delete ctx.document.addEventListener;
     assert.doesNotThrow(() => { handle('n1', { type: 'agent_start' }); handle('n1', { type: 'agent_end' }); });
+});
+
+// #425: first paint must request only the newest whole-turn page.
+test('#425 prefetch is reused on mount and session catches up after an in-flight snapshot', async () => {
+    let resolveFirst;
+    const node = d2Node();
+    const { ctx, fetchCalls } = loadAgentTuiModule({ nodes: [node], fetchResponse: (url) => {
+        if (url.includes('/page?')) return new Promise(resolve => { resolveFirst = resolve; });
+        return { ok: true, json: async () => ({ events: [{ seq: 12, event: { type: 'user_prompt', text: '后续', request_id: 'later' } }] }) };
+    }});
+    const state = fn(ctx, 'getAgentTuiState')('n1'); state.projectId = 'p';
+    fn(ctx, 'agentPrefetchInitialHistory')('n1', 'p', state);
+    fn(ctx, 'replayAgentEvents')('n1', state);
+    fn(ctx, 'handleAgentEvent')('n1', { type: 'session' });
+    fn(ctx, 'handleAgentEvent')('n1', { type: 'user_prompt', seq: 13, text: '实时' });
+    resolveFirst({ ok: true, json: async () => ({ events: [{ seq: 11, event: { type: 'user_prompt', text: '快照', request_id: 'snapshot' } }], last_seq: 11, has_more: false, cursor: null }) });
+    await d2Drain(); await d2Drain();
+    assert.deepEqual(fromContext(state.messages.map(row => row.text)), ['快照', '后续', '实时']);
+    assert.equal(fetchCalls.filter(call => call.url.includes('/page?')).length, 1);
+    assert.ok(fetchCalls.some(call => call.url.includes('since=11')));
+});
+
+test('#425 a failed prefetch falls back to normal load and exposes retry if it also fails', async () => {
+    const { ctx, fetchCalls } = loadAgentTuiModule({ nodes: [d2Node()], fetchResponse: () => Promise.reject(new Error('offline')) });
+    const state = fn(ctx, 'getAgentTuiState')('n1'); state.projectId = 'p';
+    fn(ctx, 'agentPrefetchInitialHistory')('n1', 'p', state);
+    fn(ctx, 'replayAgentEvents')('n1', state);
+    await d2Drain(); await d2Drain();
+    assert.equal(fetchCalls.length, 2);
+    assert.equal(state.historyRetry, 'replay');
+    assert.match(state.eventsError, /offline/);
+});
+
+test('#425 initial history requests latest page and buffers live without duplication', async () => {
+    let resolvePage;
+    const { ctx, fetchCalls } = loadAgentTuiModule({ fetchResponse: url => url.includes('/events/page?')
+        ? new Promise(resolve => { resolvePage = resolve; })
+        : { ok: true, json: async () => ({ events: [{ seq: 12, event: { type: 'user_prompt', text: 'live' } }], last_seq: 12 }) } });
+    const state = fn(ctx, 'getAgentTuiState')('n1'); state.projectId = 'p';
+    fn(ctx, 'replayAgentEvents')('n1', state);
+    assert.match(fetchCalls[0].url, /\/events\/page\?host=pi&turns=5/);
+    fn(ctx, 'handleAgentEvent')('n1', { type: 'user_prompt', text: 'live', seq: 12 });
+    resolvePage({ ok: true, json: async () => ({ events: [{ seq: 10, event: { type: 'user_prompt', text: 'latest' } }], last_seq: 10, has_more: true, cursor: 'older' }) });
+    await d2Drain(); await d2Drain();
+    assert.deepEqual(fromContext(state.messages.map(m => m.text)), ['latest', 'live']);
+    assert.equal(state.lastSeq, 12);
+});
+
+test('#425 concurrent unbroadcast prompt is recovered before buffered higher seq', async () => {
+    let resolvePage;
+    const record = (seq, event) => ({ seq, event });
+    const { ctx, fetchCalls } = loadAgentTuiModule({ fetchResponse: url => url.includes('/events/page?')
+        ? new Promise(resolve => { resolvePage = resolve; })
+        : { ok: true, json: async () => ({ events: [record(11, { type: 'user_prompt', text: 'other client' }), record(12, { type: 'agent_end' })], last_seq: 12 }) } });
+    const state = fn(ctx, 'getAgentTuiState')('n1'); state.projectId = 'p';
+    fn(ctx, 'replayAgentEvents')('n1', state);
+    fn(ctx, 'handleAgentEvent')('n1', { type: 'agent_end', seq: 12 });
+    resolvePage({ ok: true, json: async () => ({ events: [record(10, { type: 'user_prompt', text: 'page' })], last_seq: 10, has_more: false, cursor: null }) });
+    await d2Drain(); await d2Drain();
+    assert.match(fetchCalls[1].url, /\/events\?since=10&host=pi/);
+    assert.deepEqual(fromContext(state.messages.map(m => m.text)), ['page', 'other client']);
+    assert.equal(state.lastSeq, 12);
+});
+
+test('#425 live seq gap triggers catch-up before advancing the cursor', async () => {
+    const record = (seq, event) => ({ seq, event });
+    const { ctx, fetchCalls } = loadAgentTuiModule({ fetchResponse: () => ({ ok: true, json: async () => ({
+        events: [record(11, { type: 'user_prompt', text: 'other client' }), record(12, { type: 'agent_end' })], last_seq: 12,
+    }) }) });
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    state.projectId = 'p'; state.historyLoaded = true; state.lastSeq = 10;
+    fn(ctx, 'handleAgentEvent')('n1', { type: 'agent_end', seq: 12 });
+    await d2Drain();
+    assert.match(fetchCalls[0].url, /\/events\?since=10&host=pi/);
+    assert.deepEqual(fromContext(state.messages.map(m => m.text)), ['other client']);
+    assert.equal(state.lastSeq, 12);
+});
+
+test('#425 unresolved live seq gap stops and exposes retry rather than looping', async () => {
+    const { ctx, fetchCalls } = loadAgentTuiModule({ fetchResponse: () => ({ ok: true, json: async () => ({ events: [], last_seq: 10 }) }) });
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    state.projectId = 'p'; state.historyLoaded = true; state.lastSeq = 10;
+    fn(ctx, 'handleAgentEvent')('n1', { type: 'agent_end', seq: 12 });
+    await d2Drain(); await d2Drain();
+    assert.equal(fetchCalls.length, 2);
+    assert.equal(state.lastSeq, 10);
+    assert.equal(state.historyBlocked, true);
+    assert.equal(state.historyRetry, 'replay');
+    assert.match(state.eventsError, /缺口/);
+});
+
+test('#425 a prompt sent while initial history is in flight survives the snapshot', async () => {
+    let resolvePage;
+    const { ctx } = loadAgentTuiModule({ nodes: [d2Node()], fetchResponse: () => new Promise(resolve => { resolvePage = resolve; }) });
+    const state = fn(ctx, 'getAgentTuiState')('n1'); state.projectId = 'p';
+    fn(ctx, 'replayAgentEvents')('n1', state);
+    const pending = fn(ctx, 'agentNodeRefsPrepare')('n1', 'prompt', '刚发送');
+    fn(ctx, 'handleAgentEvent')('n1', { type: 'input_accepted', input_type: 'prompt', request_id: pending.id, node_refs: [] });
+    resolvePage({ ok: true, json: async () => ({ events: [{ seq: 10, event: { type: 'user_prompt', text: '旧消息' } }], last_seq: 10, has_more: false, cursor: null }) });
+    await d2Drain();
+    assert.deepEqual(fromContext(state.messages.map(m => m.text)), ['旧消息', '刚发送']);
+    assert.equal(state.messages[1], pending.row);
+});
+
+test('#425 snapshot containing an in-flight optimistic prompt reconciles one row', async () => {
+    let resolvePage;
+    const { ctx } = loadAgentTuiModule({ nodes: [d2Node()], fetchResponse: () => new Promise(resolve => { resolvePage = resolve; }) });
+    const state = fn(ctx, 'getAgentTuiState')('n1'); state.projectId = 'p';
+    fn(ctx, 'replayAgentEvents')('n1', state);
+    const pending = fn(ctx, 'agentNodeRefsPrepare')('n1', 'prompt', '刚发送');
+    resolvePage({ ok: true, json: async () => ({ events: [{ seq: 11, event: { type: 'user_prompt', text: '刚发送', request_id: pending.id, node_refs: [] } }], last_seq: 11, has_more: false, cursor: null }) });
+    await d2Drain();
+    assert.equal(state.messages.length, 1);
+    assert.equal(state.messages[0], pending.row);
+    assert.equal(pending.row.delivery, 'accepted');
+    assert.equal(state.timeline.length, 1);
+    assert.equal(state.timeline[0].message, pending.row);
+});
+
+test('#425 older snapshot conflict retry obtains a fresh page, not the stale cursor', async () => {
+    const calls = [];
+    const { ctx, harness } = loadAgentTuiModule({ nodes: [d2Node()], fetchResponse: url => {
+        calls.push(url);
+        if (url.includes('cursor=')) return { ok: false, status: 409, json: async () => ({ detail: 'events log replaced or truncated' }) };
+        const first = calls.length === 1;
+        return { ok: true, json: async () => ({ events: [{ seq: first ? 10 : 20, event: { type: 'user_prompt', text: first ? '旧快照' : '新快照' } }], last_seq: first ? 10 : 20, has_more: first, cursor: first ? 'c1' : null }) };
+    } });
+    const state = fn(ctx, 'getAgentTuiState')('n1'); state.projectId = 'p';
+    fn(ctx, 'replayAgentEvents')('n1', state); await d2Drain();
+    fn(ctx, 'loadOlderAgentEvents')('n1', state); await d2Drain();
+    assert.ok(state.eventsError);
+    const retry = harness.makeElement('button'); const el = harness.makeElement('div');
+    el.querySelector = selector => selector === '[data-agent-events-retry]' ? retry : null;
+    fn(ctx, 'bindAgentNodeControls')(el, d2Node());
+    retry.dispatchEvent(ev('click')); await d2Drain();
+    assert.equal(calls.length, 3);
+    assert.match(calls[2], /\/events\/page\?host=pi&turns=5$/);
+    assert.deepEqual(fromContext(state.messages.map(m => m.text)), ['新快照']);
+    assert.equal(state.lastSeq, 20);
+});
+
+test('#425 older pages prepend in order with stable keys and retry after failure', async () => {
+    let attempt = 0;
+    const page = (events, cursor, more, last_seq = 10) => ({ ok: true, json: async () => ({ events, cursor, has_more: more, last_seq }) });
+    const record = (seq, text) => ({ seq, event: { type: 'user_prompt', text } });
+    const { ctx, fetchCalls } = loadAgentTuiModule({ nodes: [d2Node()], fetchResponse: url => {
+        if (!url.includes('cursor=')) return page([record(10, 'latest')], 'c1', true);
+        if (++attempt === 1) return { ok: false, status: 503, json: async () => ({}) };
+        return url.includes('c1') ? page([record(5, 'middle')], 'c2', true) : page([record(1, 'oldest')], null, false);
+    } });
+    const state = fn(ctx, 'getAgentTuiState')('n1'); state.projectId = 'p';
+    fn(ctx, 'replayAgentEvents')('n1', state); await d2Drain();
+    const key = state.timeline[0].key;
+    fn(ctx, 'loadOlderAgentEvents')('n1', state); await d2Drain();
+    assert.ok(state.eventsError); assert.match(fn(ctx, 'agentNodeBodyHtml')(d2Node()), /data-agent-events-retry/);
+    fn(ctx, 'loadOlderAgentEvents')('n1', state); await d2Drain();
+    fn(ctx, 'loadOlderAgentEvents')('n1', state); await d2Drain();
+    assert.deepEqual(fromContext(state.messages.map(m => m.text)), ['oldest', 'middle', 'latest']);
+    assert.equal(state.timeline[2].key, key);
+    assert.equal(new Set(state.timeline.map(e => e.key)).size, 3);
+    assert.equal(fetchCalls.filter(c => c.url.includes('cursor=c1')).length, 2);
+});
+
+test('#425 reconnect requests incremental catch-up from page snapshot high-water', async () => {
+    const record = (seq, text) => ({ seq, event: { type: 'user_prompt', text } });
+    const { ctx, fetchCalls } = loadAgentTuiModule({ fetchResponse: url => ({ ok: true, json: async () =>
+        url.includes('/events/page?') ? { events: [record(4, 'page')], last_seq: 8, has_more: false, cursor: null }
+            : { events: [record(9, 'missed')] } }) });
+    const state = fn(ctx, 'getAgentTuiState')('n1'); state.projectId = 'p';
+    fn(ctx, 'replayAgentEvents')('n1', state); await d2Drain();
+    assert.equal(state.lastSeq, 8);
+    fn(ctx, 'replayAgentEvents')('n1', state); await d2Drain();
+    assert.match(fetchCalls[1].url, /\/events\?since=8&host=pi/);
+    assert.deepEqual(fromContext(state.messages.map(m => m.text)), ['page', 'missed']);
+});
+
+test('#425 late older page is invalidated by host change', async () => {
+    let resolveOlder;
+    const { ctx } = loadAgentTuiModule({ nodes: [d2Node()], fetchResponse: url => url.includes('cursor=')
+        ? new Promise(resolve => { resolveOlder = resolve; })
+        : { ok: true, json: async () => ({ events: [{ seq: 10, event: { type: 'user_prompt', text: 'pi latest' } }], last_seq: 10, has_more: true, cursor: 'c1' }) } });
+    const state = fn(ctx, 'getAgentTuiState')('n1'); state.projectId = 'p';
+    fn(ctx, 'replayAgentEvents')('n1', state); await d2Drain();
+    fn(ctx, 'loadOlderAgentEvents')('n1', state);
+    fn(ctx, 'agentChangeHostView')('n1', state, 'codex');
+    resolveOlder({ ok: true, json: async () => ({ events: [{ seq: 1, event: { type: 'user_prompt', text: 'stale pi' } }], last_seq: 10, has_more: false, cursor: null }) });
+    await d2Drain();
+    assert.equal(state.viewHost, 'codex');
+    assert.deepEqual(fromContext(state.messages), []);
+});
+
+test('#425 an older page and a live event coexist even with repeated tool ids', async () => {
+    let resolveOlder;
+    const record = (seq, event) => ({ seq, event });
+    const { ctx } = loadAgentTuiModule({ nodes: [d2Node()], fetchResponse: url => url.includes('cursor=')
+        ? new Promise(resolve => { resolveOlder = resolve; })
+        : { ok: true, json: async () => ({ events: [record(10, { type: 'user_prompt', text: 'latest' }), record(11, d2Tool('same'))], last_seq: 11, has_more: true, cursor: 'c1' }) } });
+    const state = fn(ctx, 'getAgentTuiState')('n1'); state.projectId = 'p';
+    fn(ctx, 'replayAgentEvents')('n1', state); await d2Drain();
+    fn(ctx, 'loadOlderAgentEvents')('n1', state);
+    fn(ctx, 'handleAgentEvent')('n1', { type: 'user_prompt', text: 'live', seq: 12 });
+    resolveOlder({ ok: true, json: async () => ({ events: [record(1, { type: 'user_prompt', text: 'older' }), record(2, d2Tool('same')), record(3, { type: 'agent_end' })], last_seq: 11, has_more: false, cursor: null }) });
+    await d2Drain();
+    const html = fn(ctx, 'agentNodeBodyHtml')(d2Node());
+    assert.deepEqual(fromContext(state.messages.map(m => m.text)), ['older', 'latest', 'live']);
+    assert.equal(state.lastSeq, 12);
+    assert.equal(state.toolActivities.size, 2);
+    assert.equal((html.match(/data-tool-call-id=/g) || []).length, 2);
+    assert.equal(new Set(state.timeline.map(e => e.key)).size, state.timeline.length);
 });
