@@ -2096,7 +2096,6 @@ def process_matches_recorded_target(pid: int, target: str) -> bool:
             result = subprocess.run(
                 [str(tasklist), "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
                 capture_output=True,
-                text=True,
                 timeout=5,
                 check=False,
             )
@@ -2104,10 +2103,18 @@ def process_matches_recorded_target(pid: int, target: str) -> bool:
             return not private_identity
         if result.returncode != 0:
             return not private_identity
-        rows = [row for row in csv.reader(result.stdout.splitlines()) if row]
-        if not rows or rows[0][0].lower().startswith("info:"):
+        # CSV records start with a quoted image name; localized informational lines do not.
+        if not result.stdout.startswith(b'"'):
             return False
-        return matches(rows[0][0])
+        # Preserve bytes through CSV parsing, then decode only the image using the OEM code page.
+        rows = list(csv.reader(line.decode('latin-1') for line in result.stdout.splitlines()))
+        if not rows or len(rows[0]) < 2 or rows[0][1] != str(pid):
+            return False
+        try:
+            name = rows[0][0].encode('latin-1').decode('oem')
+        except UnicodeDecodeError:
+            return False
+        return matches(name)
     proc_executable = Path(f"/proc/{pid}/exe")
     try:
         current_name = proc_executable.resolve(strict=True).name.lower()

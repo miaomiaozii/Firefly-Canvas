@@ -816,9 +816,8 @@ async function resumeSmartPendingNode(node, logContext={}){
             return {succeeded:true};
         } catch(e) {
             if(e && e.imageTaskRecover && e.recoverTaskId){
-                // #41：任务在服务端已丢失（终态），不能继续留在 pendingTasks 里让节点
-                // 永远“生成中”。把可手动查询的恢复信息移入 recoveredGenerationTasks，
-                // 再按终态清理 pending，停止计时器/轮询/loading。
+                // #41：本地任务已终态失败，但有上游任务 ID 可供手动查询；
+                // 恢复信息移入 recoveredGenerationTasks，再清理 pending，停止计时器和轮询。
                 task.failed = true;
                 task.querying = false;
                 task.recoverTaskId = e.recoverTaskId;
@@ -826,7 +825,7 @@ async function resumeSmartPendingNode(node, logContext={}){
                 task.error = e.message || tr('smart.errRunFailed');
                 if(!e?.smartGenerationLogged){
                     logTaskFailure(task.error, task);
-                    if(logContext?.run) e.smartGenerationLogged = true;
+                    if(logContext.run) e.smartGenerationLogged = true;
                 }
                 node.recoveredGenerationTasks = Array.isArray(node.recoveredGenerationTasks) ? node.recoveredGenerationTasks : [];
                 if(!node.recoveredGenerationTasks.some(item => item.taskId === task.taskId && item.recoverTaskId === task.recoverTaskId)){
@@ -900,7 +899,7 @@ async function resumeSmartPendingNode(node, logContext={}){
                 }
                 if(!e?.smartGenerationLogged){
                     logTaskFailure(e.message || tr('smart.errRunFailed'), task);
-                    if(logContext?.run && e && typeof e === 'object') e.smartGenerationLogged = true;
+                    if(logContext.run && e && typeof e === 'object') e.smartGenerationLogged = true;
                 }
                 toast((e.message || tr('smart.errRunFailed')).slice(0, 160));
                 canvasCore.render();
@@ -943,7 +942,7 @@ async function resumeSmartPendingNode(node, logContext={}){
             failures.push(e);
             if(!e?.smartGenerationLogged){
                 logTaskFailure(e.message || tr('smart.errRunFailed'), task);
-                if(logContext?.run && e && typeof e === 'object') e.smartGenerationLogged = true;
+                if(logContext.run && e && typeof e === 'object') e.smartGenerationLogged = true;
             }
             toast(tr('smart.writeFailedMaxRetries'));
             canvasCore.render();

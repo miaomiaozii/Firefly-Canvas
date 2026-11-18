@@ -1,5 +1,6 @@
 """Privacy regression tests for project-contract diagnostics (#435)."""
 import contextlib
+import hashlib
 import io
 import os
 import socket
@@ -16,6 +17,27 @@ from tools.quality_gate import (BrowserDenyProxy, blocking_guard_events, isolate
                                 run_step, stop_leaked_children, write_report)
 
 SECRET = 'SECRET_MALICIOUS_435'
+
+
+@unittest.skipUnless(os.name == 'nt', 'tasklist is Windows-specific')
+class TasklistIdentityTests(unittest.TestCase):
+    def test_localized_information_is_not_a_process(self):
+        output = '信息: 没有运行的任务匹配指定标准。\r\n'.encode('gbk')
+        result = subprocess.CompletedProcess([], 0, stdout=output, stderr=b'')
+        with mock.patch('tools.quality_gate.subprocess.run', return_value=result) as run:
+            self.assertFalse(process_matches_recorded_target(12345, '信息: 没有运行的任务匹配指定标准。'))
+        self.assertNotIn('text', run.call_args.kwargs)
+
+    def test_csv_process_identity_and_pid(self):
+        output = '"python.exe","12345","控制台","1","12,345 K"\r\n'.encode('gbk')
+        result = subprocess.CompletedProcess([], 0, stdout=output, stderr=b'')
+        with mock.patch('tools.quality_gate.subprocess.run', return_value=result):
+            self.assertTrue(process_matches_recorded_target(12345, 'PYTHON.EXE'))
+            private_target = 'sha256:' + hashlib.sha256(b'python.exe').hexdigest()
+            self.assertTrue(process_matches_recorded_target(12345, private_target))
+            self.assertFalse(process_matches_recorded_target(12345, 'other.exe'))
+            self.assertFalse(process_matches_recorded_target(12345, private_target + 'x'))
+            self.assertFalse(process_matches_recorded_target(54321, 'python.exe'))
 
 
 class ProjectContractDiagnosticsTests(unittest.TestCase):

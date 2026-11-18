@@ -349,6 +349,75 @@ for (const scenario of [
     }
 });
 
+// Exercise the actual foreground caller and ledger for both the normal per-task
+// pending entries and a missing task entry (legacy fallback to logTaskFailure).
+for(const taskPending of [true, false]) test(`mixed unrecorded failure real ledger taskPending=${taskPending}`, async () => {
+    const node = {id:'mixed-ledger', images:[]};
+    const {ctx, harness} = loadGenerationTasksModule({nodes:[node]});
+    loadModules(ctx, ['canvas-media-history.js']);
+    Object.assign(ctx, {
+        selectedNode:()=>node, buildPromptRequest:()=>({prompt:'test', displayPrompt:'test', refs:[]}),
+        smartNodeInFlight:()=>false, cloneSmartSettings:s=>({...s}),
+        smartSettingsForNode:()=>({engine:'api', apiKind:'image', count:1}),
+        smartRunNeedsPrompt:()=>true, isApiLikeEngine:e=>e === 'api', snapshotRunMeta:()=>({}),
+        smartRunSnapshot:()=>({nodeId:node.id, prompt:'test'}), rememberRecentSmartSettings:()=>{},
+        isSmartGroupNode:()=>false, smartImageUsesWorkflowInput:()=>false, pushUndo:()=>{},
+        pendingBoxSize:()=>({w:100,h:100}), attachRunMeta:()=>{}, coolNodeRunningState:()=>{},
+        syncRunButtonState:()=>{}, acceptProjectGenerationRegistration:async()=>true, liveNode:n=>n,
+        smartRecoverableImageTask:()=>false, clearPromptInput:()=>{}, smartLoopContext:null,
+        smartRunPlatformLabel:()=>'', smartRunTaskLabel:()=>'', smartRunRequestMeta:()=>({}),
+        playGenerationCompleteSound:()=>{}, recoverStuckLoopOutputsFromHistory:()=>false,
+        cleanHistoryImages:images=>images,
+    });
+    if(!taskPending) ctx.ensureSmartPendingHistoryLogs = ()=>false;
+    const ledgerWrites = [];
+    const realAddHistory = ctx.addSmartGenerationHistory;
+    ctx.addSmartGenerationHistory = entry=>{
+        const before = fromContext(evaluate(ctx, 'canvas.history'));
+        realAddHistory(entry);
+        ledgerWrites.push({error:entry.error, before, after:fromContext(evaluate(ctx, 'canvas.history'))});
+    };
+    evaluate(ctx, "settings = {engine:'api', apiKind:'image', count:1}; runApiGeneration = async () => ({taskIds:['task-1','task-2'], count:1});");
+    const source = readFileSync('static/js/smart-canvas.js', 'utf8');
+    const start = source.indexOf('async function runGeneration(){');
+    const end = source.indexOf('// Local ComfyUI generation execution was removed.', start);
+    assert.ok(start >= 0 && end > start);
+    evaluate(ctx, source.slice(start, end));
+    harness.fetchResponder = url => url.endsWith('/task-1')
+        ? fakeResponse({data:{status:'failed', error:'provider failed', result:{history_recorded:false}}})
+        : fakeResponse({data:{status:'succeeded', result:{history_recorded:false, images:[{url:'/ok.png', kind:'image'}]}}});
+    let settled = false;
+    const promise = globalFunction(ctx, 'runGeneration')().finally(()=>{settled = true;});
+    for(let i=0; i<20 && !settled; i++){ harness.advanceTimers(); await tick(); }
+    assert.ok(settled, 'foreground run settled');
+    await promise;
+    assert.equal(harness.fetchLog.length, 2);
+    const history = fromContext(evaluate(ctx, 'canvas.history'));
+    assert.equal(history.length, 2, JSON.stringify({history, ledgerWrites}));
+    const failed = history.find(entry=>entry.status === 'failed');
+    const success = history.find(entry=>entry.status === 'success');
+    assert.ok(failed, JSON.stringify({history, ledgerWrites}));
+    assert.ok(success, JSON.stringify({history, ledgerWrites}));
+    assert.equal(failed.error, 'provider failed');
+    assert.deepEqual(failed.outputs, []);
+    assert.deepEqual(success.outputs.map(output=>output.url), ['/ok.png']);
+    assert.deepEqual(fromContext(node.images.map(image=>image.url)), ['/ok.png']);
+    assert.equal(node.failedGenerationTasks.length, 1);
+    assert.equal(node.failedGenerationTasks[0].taskId, 'task-1');
+    assert.equal(ledgerWrites.length, taskPending ? 1 : 2);
+    if(taskPending){
+        assert.equal(failed.request.task_id, 'task-1');
+        assert.deepEqual(ledgerWrites[0].before.map(entry=>entry.status).sort(), ['failed', 'pending']);
+        assert.equal(ledgerWrites[0].before.find(entry=>entry.status === 'pending').request.task_id, 'task-2');
+    } else {
+        assert.equal(ledgerWrites[0].error, 'provider failed');
+        assert.equal(ledgerWrites[0].before.length, 1);
+        assert.equal(ledgerWrites[0].before[0].status, 'pending');
+        assert.deepEqual(ledgerWrites[0].after.map(entry=>entry.status), ['failed']);
+    }
+    assert.deepEqual(ledgerWrites[ledgerWrites.length - 1].after.map(entry=>entry.status).sort(), ['failed', 'success']);
+});
+
 test('retry of one task does not finalize its still-polling sibling twice', async () => {
     const node = {id:'multi', images:[], pending:3, pendingTasks:[{taskId:'a', count:1}, {taskId:'b', count:1}, {taskId:'c', count:1}]};
     const {ctx, harness} = loadGenerationTasksModule({nodes:[node]});
