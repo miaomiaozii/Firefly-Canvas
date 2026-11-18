@@ -106,7 +106,7 @@ body.smart-node-drag-settling .composer { pointer-events:none !important; }
 .image-node.history-group-node { border-color:rgba(148,163,184,.34); background:rgba(248,250,252,.66); }
 .theme-dark .image-node.history-group-node { border-color:rgba(148,163,184,.28); background:rgba(30,41,59,.28); }
 .image-node.selected { outline:0; }
-.image-node.selected:not(.empty-node):not(.group-node):not(.prompt-smart-node):not(.loop-smart-node):not(.smart-group-node) { box-shadow:none; border-radius:12px; }
+.image-node.selected:not(.empty-node):not(.group-node):not(.prompt-smart-node):not(.loop-smart-node):not(.smart-group-node):not(:where(.agent-smart-node)) { box-shadow:none; border-radius:12px; }
 .image-node.selected:not(.empty-node):not(.group-node) .image-wrap > img, .image-node.selected:not(.empty-node):not(.group-node) .image-wrap > .node-img { border-color:var(--strong); box-shadow:0 0 0 1px var(--strong); }
 .image-node.group-node:hover, .image-node.group-node.selected { border-color:var(--strong); box-shadow:0 10px 30px rgba(15,23,42,.08); }
 .image-node.group-node.selected { box-shadow:0 0 0 1px var(--strong), 0 14px 36px var(--shadow); }
@@ -190,9 +190,9 @@ body.smart-node-drag-settling .composer { pointer-events:none !important; }
 .conversation-node-composer textarea:focus { border-color:var(--strong); }
 .conversation-node-composer button { flex:0 0 auto; height:30px; padding:0 10px; border:0; border-radius:8px; background:var(--strong); color:var(--strong-text); font-size:10px; font-weight:850; cursor:pointer; }
 .conversation-node-composer button:disabled { opacity:.55; cursor:wait; }
-.image-node.agent-smart-node { display:flex; flex-direction:column; padding:0; max-width:calc(100vw - 24px); background:var(--surface, var(--card)); border:1px solid var(--line); border-radius:var(--radius-panel, 12px); box-shadow:0 18px 46px var(--shadow); overflow:visible; }
+.image-node.agent-smart-node { display:flex; flex-direction:column; padding:0; max-width:calc(100vw - 24px); background:var(--surface, var(--card)); border:1px solid var(--line); border-radius:var(--agent-panel-radius); box-shadow:var(--agent-panel-shadow); overflow:visible; }
 .image-node.agent-smart-node:hover,
-.image-node.agent-smart-node.selected { border-color:var(--strong); box-shadow:0 0 0 1px var(--strong), 0 18px 46px var(--shadow); }
+.image-node.agent-smart-node.selected { border-color:var(--line); box-shadow:var(--agent-panel-shadow); }
 .image-node.agent-smart-node > .node-body { flex:1; width:100%; height:auto; min-width:0; min-height:0; padding:0; align-items:stretch; justify-content:stretch; cursor:default; }
 /* #316：死样式层已删（原 199-244：.agent-node-* 一代旧 Agent 草稿 UI 全家族 + .agent-plan-task-*，JS 零引用；现存 Agent UI 为 .agent-tui-*，任务节点为 .agent-task-* */
 .agent-task-node { min-width:280px; }
@@ -3717,6 +3717,37 @@ dialog.agent-tui-model-picker {
     --shadow:rgba(0,0,0,.35);
     color-scheme:dark;
 }
+/* Agent r3 surface and typography; do not retheme the rest of the canvas. */
+.agent-smart-node {
+    --agent-font:"Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+    --agent-panel-radius:16px;
+    --agent-panel-shadow:0 18px 65px #0002;
+    --agent-popover-shadow:0 8px 30px #0002;
+    --agent-accent-soft:#eef3db;
+    --agent-accent-text:#fff;
+    --agent-scroll:#a8a8a4;
+    --danger:#c2382b;
+}
+.theme-dark .agent-smart-node {
+    --agent-accent-soft:#2e3321;
+    --agent-accent-text:#121212;
+    --agent-scroll:#72726e;
+    --danger:#ff7a6e;
+}
+.agent-smart-node.agent-dock-node {
+    --agent-panel-radius:14px;
+    --agent-panel-shadow:0 10px 42px #0000000c;
+}
+.theme-dark .agent-smart-node.agent-dock-node { --agent-panel-shadow:0 10px 42px #0003; }
+.image-node.agent-dock-node:not(.dock-collapsed, .drag-out) {
+    top:64px;
+    bottom:0;
+    border-width:0;
+    border-radius:0;
+}
+.image-node.agent-dock-node.dock-left:not(.dock-collapsed, .drag-out) { left:0; border-right-width:1px; }
+.image-node.agent-dock-node.dock-right:not(.dock-collapsed, .drag-out) { right:0; border-left-width:1px; }
+.agent-dock-node:not(.dock-collapsed, .drag-out) > .node-body { --agent-panel-radius:0; }
 .agent-tui-card {
     display:flex;
     flex-direction:column;
@@ -3726,10 +3757,8 @@ dialog.agent-tui-model-picker {
     min-height:0;
     background:var(--surface, var(--card));
     color:var(--ink, var(--text));
-    border-radius:0 0 var(--radius-panel, 12px) var(--radius-panel, 12px);
-    font-family:var(--font-sans);
-    font-size:14px;
-    line-height:1.6;
+    border-radius:0 0 var(--agent-panel-radius) var(--agent-panel-radius);
+    font:13px/1.6 var(--agent-font, var(--font-sans));
     cursor:default;
 }
 /* #316：卡内图标统一尺寸（emoji→SVG 后与画布其余节点同一视觉语言） */
@@ -3827,9 +3856,64 @@ dialog.agent-tui-model-picker {
     display:flex;
     align-items:center;
     flex-wrap:wrap;
-    gap:4px;
+    gap:4px 0;
     min-width:0;
     padding:4px 7px 9px;
+}
+.agent-tui-setting-toolbar > .agent-tui-host-picker { position:relative; min-width:0; max-width:100%; }
+.agent-tui-setting-toolbar > .agent-tui-setting-trigger,
+.agent-tui-host-picker summary.agent-tui-setting-trigger {
+    display:flex;
+    flex:0 1 auto;
+    align-items:center;
+    gap:4px;
+    min-width:0;
+    max-width:100%;
+    min-height:0;
+    padding:4px;
+    border:0;
+    border-radius:5px;
+    background:transparent;
+    color:var(--ink, var(--text));
+    font:inherit;
+    font-size:12px;
+    list-style:none;
+    white-space:nowrap;
+    cursor:pointer;
+}
+.agent-tui-host-picker summary.agent-tui-setting-trigger::-webkit-details-marker { display:none; }
+.agent-tui-setting-caption { flex:none; color:var(--ink-2, var(--muted)); }
+.agent-tui-setting-dot { flex:none; margin-inline:1px; color:var(--ink-3, var(--faint)); font-size:12px; }
+.agent-tui-setting-trigger > b { min-width:0; max-width:126px; overflow:hidden; text-overflow:ellipsis; font-weight:550; }
+.agent-tui-setting-trigger > svg { flex:none; width:11px; height:11px; color:var(--ink-3, var(--faint)); }
+.agent-tui-host-picker .agent-tui-host-options {
+    position:absolute;
+    z-index:4;
+    left:0;
+    bottom:calc(100% + 8px);
+    width:200px;
+    max-width:calc(100vw - 48px);
+    max-height:310px;
+    overflow:auto;
+    padding:5px;
+    border:1px solid var(--line);
+    border-radius:9px;
+    background:var(--surface, var(--card));
+    box-shadow:var(--agent-popover-shadow);
+}
+.agent-tui-host-options > button {
+    display:block;
+    width:100%;
+    padding:8px 9px;
+    border-radius:5px;
+    background:transparent;
+    color:inherit;
+    text-align:left;
+    font-size:12px;
+}
+.agent-tui-host-options > button:is([aria-selected="true"], [aria-pressed="true"]) {
+    background:var(--agent-accent-soft);
+    color:var(--ink, var(--text));
 }
 .agent-tui-setting-toolbar > label {
     display:inline-flex;
@@ -3866,8 +3950,10 @@ dialog.agent-tui-model-picker {
 .agent-tui-host-select { max-width:120px; }
 .agent-tui-effort-select { max-width:142px; }
 .agent-tui-autonomy-select { max-width:100px; }
-.agent-tui-setting-toolbar :is(button, select):hover { background:var(--surface-sunken, var(--soft)); }
-.agent-tui-setting-toolbar :is(button, select):disabled { opacity:.45; cursor:not-allowed; }
+.agent-tui-setting-toolbar :is(button, select):hover:not(:disabled),
+.agent-tui-host-picker summary.agent-tui-setting-trigger:hover:not([aria-disabled="true"]) { background:var(--surface-sunken, var(--soft)); }
+.agent-tui-setting-toolbar :is(button, select):disabled,
+.agent-tui-host-picker summary.agent-tui-setting-trigger[aria-disabled="true"] { opacity:.45; cursor:not-allowed; }
 dialog.agent-tui-model-picker {
     width:460px;
     max-width:calc(100vw - 32px);
@@ -3913,7 +3999,7 @@ dialog.agent-tui-model-picker :disabled { opacity:.45; cursor:not-allowed; }
     min-width:0;
     min-height:0;
     overflow:auto;
-    padding:12px 20px 20px 32px;
+    padding:8px 20px 20px 32px;
     overscroll-behavior:contain;
     overflow-anchor:none;
     user-select:text;
@@ -3922,13 +4008,14 @@ dialog.agent-tui-model-picker :disabled { opacity:.45; cursor:not-allowed; }
     scrollbar-color:transparent transparent;
 }
 .agent-tui-body:hover,
-.agent-tui-body:focus-within { scrollbar-color:var(--ink-3, var(--faint)) transparent; }
+.agent-tui-body:focus-within { scrollbar-color:var(--agent-scroll, var(--faint)) transparent; }
 .agent-tui-body::-webkit-scrollbar { width:4px; height:4px; }
 .agent-tui-body::-webkit-scrollbar-track { background:transparent; }
 .agent-tui-body::-webkit-scrollbar-thumb { border-radius:4px; background:transparent; }
 .agent-tui-body:hover::-webkit-scrollbar-thumb,
-.agent-tui-body:focus-within::-webkit-scrollbar-thumb { background:var(--ink-3, var(--faint)); }
-.agent-tui-messages { display:flex; flex-direction:column; min-width:0; gap:20px; }
+.agent-tui-body:focus-within::-webkit-scrollbar-thumb { background:var(--agent-scroll, var(--faint)); }
+.agent-tui-messages { display:flex; flex-direction:column; min-width:0; }
+.agent-tui-conversation-date { margin:12px 0 20px; color:var(--ink-3, var(--faint)); font-size:12px; text-align:center; }
 
 .agent-tui-empty { color:var(--ink-2, var(--muted)); padding:32px 0; text-align:center; font-size:14px; line-height:1.9; overflow-wrap:anywhere; }
 
@@ -3952,10 +4039,20 @@ dialog.agent-tui-model-picker :disabled { opacity:.45; cursor:not-allowed; }
     overflow-wrap:anywhere;
     user-select:text;
 }
-.agent-tui-msg-user { width:100%; padding:13px 14px; border:0; border-radius:10px; background:var(--surface-sunken, var(--soft)); }
-.agent-tui-msg-user .agent-tui-msg-role { display:none; }
+.agent-tui-msg-user { width:100%; padding:13px 14px; border:0; border-radius:10px; background:var(--surface-sunken, var(--soft)); white-space:normal; }
+.agent-tui-msg-user > .agent-tui-msg-role { display:none; }
+.agent-tui-msg-user > .agent-tui-msg-text { display:block; margin:9px 0; white-space:pre-wrap; }
 .agent-tui-msg-assistant { width:100%; padding:0 3px; border:0; background:transparent; white-space:normal; }
 .agent-tui-msg-assistant .agent-tui-msg-text { display:block; }
+.agent-tui-msg-byline { display:flex; align-items:center; gap:7px; font-size:12px; font-weight:600; line-height:1.6; white-space:normal; }
+.agent-tui-msg-byline > span:has(> .agent-tui-msg-mark) { display:inline-flex; align-items:center; gap:inherit; }
+.agent-tui-msg-byline .agent-tui-msg-role { margin:0; color:inherit; }
+.agent-tui-msg-byline time { flex:none; margin-inline-start:auto; color:var(--ink-3, var(--faint)); font-size:12px; font-weight:400; }
+.agent-tui-msg-mark { flex:none; color:var(--ink, var(--text)); font:15px/1.6 serif; }
+.agent-tui-msg-actions { display:flex; flex-wrap:wrap; gap:0 15px; margin-top:13px; }
+.agent-tui-msg-actions > button { width:auto; height:auto; padding:2px 0; border:0; background:transparent; color:var(--ink-2, var(--muted)); font:inherit; font-size:12px; line-height:1.6; }
+.agent-tui-msg-actions > button:hover:not(:disabled) { background:transparent; color:var(--ink-2, var(--muted)); text-decoration:underline; }
+.agent-tui-msg-actions > button:disabled { opacity:.45; cursor:not-allowed; }
 .agent-tui-msg-system { padding:4px 0; border:0; background:transparent; color:var(--ink-2, var(--muted)); font-size:12px; }
 .agent-tui-msg-role { color:var(--ink-2, var(--muted)); font-weight:600; margin-right:4px; }
 
@@ -3971,14 +4068,16 @@ dialog.agent-tui-model-picker :disabled { opacity:.45; cursor:not-allowed; }
 .agent-tui-confirm-reject { color:var(--danger); }
 
 /* r3：三行输入 + 参数 + 操作行；附件、运行中排队/steer/停止仍可达。 */
-.agent-tui-composer { flex:none; min-width:0; padding:0 16px 13px; background:var(--surface, var(--card)); border-radius:0 0 var(--radius-panel, 12px) var(--radius-panel, 12px); }
+.agent-tui-composer { flex:none; min-width:0; padding:0 16px 13px; background:var(--surface, var(--card)); border-radius:0 0 var(--agent-panel-radius) var(--agent-panel-radius); }
 .agent-tui-input-row { display:flex; flex-direction:column; flex:none; min-width:0; border:1px solid var(--line-strong, var(--line)); border-radius:12px; background:var(--surface, var(--card)); }
-.agent-tui-input-row:focus-within { border-color:var(--ink, var(--text)); box-shadow:0 0 0 2px color-mix(in srgb, var(--ink, var(--text)) 8%, transparent); }
+.agent-tui-input-row:focus-within { border-color:var(--ink, var(--text)); box-shadow:0 0 0 2px var(--agent-accent-soft); }
 .agent-tui-input-line { display:flex; align-items:flex-start; min-width:0; }
-.agent-tui-action-row { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin:0 10px; padding:7px 0; border-top:1px solid var(--line); }
-.agent-tui-composer-hint { display:flex; justify-content:space-between; flex-wrap:wrap; gap:0 8px; padding:7px 3px 0; color:var(--ink-3, var(--faint)); font-size:12px; line-height:1.6; }
+.agent-tui-action-row { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:0 10px; padding:7px 0; border-top:1px solid var(--line); }
 .agent-tui-composer .agent-tui-parameter-hint { padding:6px 3px; }
-.agent-tui-composer .agent-tui-effort-hint { color:var(--ink-3, var(--faint)); font-size:11px; }
+.agent-tui-composer-hint { display:flex; justify-content:space-between; flex-wrap:wrap; gap:0 8px; padding:7px 3px 0; color:var(--ink-3, var(--faint)); font-size:12px; line-height:1.7; overflow-wrap:anywhere; }
+.agent-tui-composer-hint > span { min-width:0; }
+.agent-tui-composer-hint > .agent-tui-effort-hint { margin-inline-start:auto; padding:0; color:inherit; text-align:end; line-height:inherit; }
+.agent-tui-composer-hint > .agent-tui-effort-hint:empty { display:none; }
 
 /* #268：待发送附件行（图片/视频 contact sheet/音频波形卡） */
 .agent-tui-attach-row { display:flex; flex-wrap:wrap; flex:none; gap:6px; min-width:0; padding:6px 16px; }
@@ -3994,7 +4093,16 @@ dialog.agent-tui-model-picker :disabled { opacity:.45; cursor:not-allowed; }
 .agent-tui-msg-attach { margin-top:4px; font-size:12px; color:var(--ink-2, var(--muted)); }
 .agent-tui-prompt { display:none; }
 
-.agent-tui-action-buttons { display:flex; align-items:center; min-width:0; flex:1 1 auto; gap:2px; flex-wrap:wrap; }
+.agent-tui-action-buttons { display:flex; align-items:center; min-width:0; flex:1; gap:1px; flex-wrap:wrap; }
+.agent-tui-action-buttons > .agent-tui-btn { width:30px; min-width:30px; height:30px; padding:5px; border:0; }
+.agent-tui-action-buttons > .agent-tui-btn svg { width:18px; height:18px; }
+.agent-tui-runtime-actions { justify-content:flex-start; }
+.agent-tui-action-divider { flex:none; width:1px; height:14px; margin:0 8px; background:var(--line); }
+.agent-tui-autonomy { display:inline-flex; flex:none; gap:1px; padding:2px; border-radius:5px; background:var(--surface-sunken, var(--soft)); }
+.agent-tui-autonomy > button { width:auto; height:auto; padding:4px 7px; border:0; border-radius:4px; background:transparent; color:var(--ink-2, var(--muted)); font:inherit; font-size:12px; line-height:1.4; white-space:nowrap; }
+.agent-tui-autonomy > button:hover:not(:disabled) { color:var(--ink, var(--text)); }
+.agent-tui-autonomy > button[aria-pressed="true"] { background:var(--surface, var(--card)); color:var(--ink, var(--text)); box-shadow:0 1px 3px #0001; }
+.agent-tui-autonomy > button:disabled { opacity:.45; cursor:not-allowed; }
 .agent-tui-btn {
     display:inline-flex;
     flex:none;
@@ -4012,7 +4120,7 @@ dialog.agent-tui-model-picker :disabled { opacity:.45; cursor:not-allowed; }
     transition:background .15s, border-color .15s;
 }
 .agent-tui-btn:hover:not(:disabled) { background:var(--surface-sunken, var(--soft)); color:var(--ink, var(--text)); }
-.agent-tui-btn:disabled { opacity:.35; cursor:not-allowed; }
+.agent-tui-btn:disabled { opacity:.45; cursor:not-allowed; }
 .agent-tui-btn-thinking.agent-tui-btn-active { background:var(--surface-sunken, var(--soft)); border-color:var(--line); color:var(--ink, var(--text)); }
 
 /* 会话框/参考框的真实入口与激活态保留在更多菜单内。 */
@@ -4030,8 +4138,9 @@ dialog.agent-tui-model-picker :disabled { opacity:.45; cursor:not-allowed; }
 .agent-tui-btn-abort:hover:not(:disabled) { color:var(--danger); }
 
 /* 发送采用 r3 中性反色；与停止/排队操作保持独立。 */
-.agent-tui-btn-send { width:auto; min-width:40px; margin-left:auto; padding:0 10px; border-radius:8px; background:var(--ink, var(--text)); color:var(--surface, var(--card)); font-weight:600; }
-.agent-tui-btn-send:hover:not(:disabled) { background:var(--ink, var(--text)); color:var(--surface, var(--card)); filter:brightness(.92); }
+.agent-tui-btn-send { width:30px; height:30px; margin-inline-start:auto; padding:0; border-radius:50%; background:var(--ink, var(--text)); color:var(--agent-accent-text, var(--surface)); }
+.agent-tui-btn-send svg { width:18px; height:18px; }
+.agent-tui-btn-send:hover:not(:disabled) { background:var(--ink, var(--text)); color:var(--agent-accent-text, var(--surface)); filter:brightness(.92); }
 
 /* Agent node card status light + last line preview */
 .node-head-meta {
@@ -4043,7 +4152,9 @@ dialog.agent-tui-model-picker :disabled { opacity:.45; cursor:not-allowed; }
     justify-content: flex-end;
 }
 /* 只去掉 Agent 外头的重复预览/说明，不隐藏错误、状态或只读提示。 */
-.agent-smart-node > .node-head :is(.agent-card-preview, .agent-chat-frame-status) { display:none; }
+.agent-smart-node > .node-head .agent-card-preview { display:none; }
+.agent-tui-more .agent-chat-frame-status { margin-inline-start:auto; }
+.agent-tui-more .agent-chat-frame-status.is-unbound { display:none; }
 
 /* Collapsible tool activity rows */
 .agent-tui-tool { cursor:default; user-select:text; }
@@ -4083,12 +4194,7 @@ dialog.agent-tui-model-picker :disabled { opacity:.45; cursor:not-allowed; }
 
 /* Markdown rendering in TUI messages */
 .agent-tui-msg-text { line-height:inherit; user-select:text; }
-.agent-tui-msg-text p {
-    margin: 0 0 8px 0;
-}
-.agent-tui-msg-text p:last-child {
-    margin-bottom: 0;
-}
+.agent-tui-msg-text p { margin:9px 0; }
 .agent-md-code-block { min-width:0; max-width:100%; margin:8px 0; padding:10px; border-radius:6px; background:var(--surface-sunken, var(--soft)); overflow:auto; white-space:pre; font:12px/1.6 var(--font-mono); user-select:text; cursor:text; }
 .agent-md-code-block code { font-family:inherit; color:var(--ink, var(--text)); user-select:text; }
 .agent-md-inline-code { padding:1px 4px; border-radius:3px; background:var(--surface-sunken, var(--soft)); color:var(--ink, var(--text)); font:12px/1.6 var(--font-mono); user-select:text; }
@@ -4099,6 +4205,10 @@ dialog.agent-tui-model-picker :disabled { opacity:.45; cursor:not-allowed; }
 .agent-md-list li {
     margin: 2px 0;
 }
+.agent-tui-msg-assistant ol.agent-md-list { margin:17px 0 20px; padding-left:22px; list-style:decimal; }
+.agent-tui-msg-assistant ol.agent-md-list > li { margin:0 0 14px; padding-left:4px; }
+.agent-tui-msg-assistant ol.agent-md-list > li > strong { font-size:12px; font-weight:600; }
+.agent-tui-msg-assistant ol.agent-md-list > li > span { display:block; margin-top:3px; color:var(--ink-2, var(--muted)); font-size:12px; line-height:1.8; }
 .agent-tui-msg-text a { color:var(--ink, var(--text)); text-decoration:underline; text-underline-offset:2px; }
 
 /* JS 自动增高仍有上限；CSS 的 96px 下限不受 rows/内联旧高度影响。 */
@@ -4107,6 +4217,7 @@ dialog.agent-tui-model-picker :disabled { opacity:.45; cursor:not-allowed; }
     flex:1;
     width:100%;
     min-width:0;
+    height:96px;
     min-height:96px;
     max-height:192px;
     padding:12px 13px;
@@ -4114,14 +4225,14 @@ dialog.agent-tui-model-picker :disabled { opacity:.45; cursor:not-allowed; }
     border-radius:12px 12px 0 0;
     background:transparent;
     color:var(--ink, var(--text));
-    font:14px/24px var(--font-sans);
+    font:14px/24px var(--agent-font, var(--font-sans));
     resize:none;
     overflow-y:auto;
     user-select:text;
     cursor:text;
 }
 .agent-tui-input:focus { outline:none; }
-.agent-tui-input::placeholder { color:var(--ink-3, var(--faint)); }
+.agent-tui-input::placeholder { color:var(--ink-3, var(--faint)); opacity:1; }
 
 /* #284：Agent 会话内 MEDIA: 缩略图（点开大图） */
 .agent-tui-media-thumb { display:inline-block; margin:4px 6px 0 0; vertical-align:top; }
@@ -4194,7 +4305,7 @@ dialog.agent-tui-model-picker :disabled { opacity:.45; cursor:not-allowed; }
 }
 /* 左侧 24px 独立热区；正文从 32px 开始，不与文字选区重叠。
    刻度 top/宽度与压缩命中由导航模块负责，浮卡坐标由 viewport DOMRect 计算。 */
-.agent-message-navigation { position:absolute; left:0; top:0; bottom:0; z-index:2; width:24px; cursor:pointer; user-select:none; }
+.agent-message-navigation { position:absolute; left:2px; top:14px; bottom:0; z-index:2; width:24px; cursor:pointer; user-select:none; }
 .agent-message-navigation-rail,
 .agent-message-track,
 .agent-message-hitarea { position:relative; width:24px; height:100%; }
@@ -4213,13 +4324,16 @@ dialog.agent-tui-model-picker :disabled { opacity:.45; cursor:not-allowed; }
     border-radius:12px;
     background:var(--surface, var(--card));
     color:var(--ink, var(--text));
-    box-shadow:0 8px 28px var(--shadow);
-    font-family:var(--font-sans);
+    box-shadow:0 8px 28px #00000018;
+    font-family:"Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
     pointer-events:none;
 }
+.theme-dark .agent-message-preview { box-shadow:0 8px 28px #0006; }
 .agent-message-preview-source { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:650; line-height:1.6; }
 .agent-message-preview-text { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; max-height:3.2em; margin:4px 0 0; overflow:hidden; overflow-wrap:anywhere; color:var(--ink-2, var(--muted)); font-size:12px; line-height:1.6; }
 .agent-tui-entry { min-width:0; flex-shrink:0; }
+.agent-tui-entry + .agent-tui-entry { margin-top:20px; }
+.agent-tui-entry:has(> .agent-tui-msg-user) + .agent-tui-entry { margin-top:25px; }
 .agent-tui-tool-group {
     margin:0;
     padding:0;
@@ -4318,7 +4432,9 @@ dialog.agent-tui-model-picker :disabled { opacity:.45; cursor:not-allowed; }
 .agent-tui-tool-group > summary:focus-visible,
 .agent-tui-thought > summary:focus-visible,
 .agent-tui-btn:focus-visible,
-.agent-tui-setting-toolbar :is(button, select):focus-visible,
+.agent-tui-setting-toolbar :is(button, select, summary):focus-visible,
+.agent-tui-msg-actions > button:focus-visible,
+.agent-tui-autonomy > button:focus-visible,
 .agent-tui-more > :is(summary, button):focus-visible,
 button.agent-tui-more:focus-visible { outline:2px solid var(--ink, var(--text)); outline-offset:2px; }
 
@@ -4328,15 +4444,21 @@ button.agent-tui-more:focus-visible { outline:2px solid var(--ink, var(--text));
     display:grid;
     grid-template-columns:minmax(0, 1fr) auto auto;
     align-items:center;
-    gap:8px;
+    gap:10px;
     height:auto;
-    min-height:50px;
-    padding:8px 16px;
+    min-height:66px;
+    padding:0 16px;
+    font:14px/1.6 var(--agent-font, var(--font-sans));
     user-select:none;
     cursor:grab;
 }
 .image-node.agent-smart-node > .node-head .node-title { display:block; min-width:0; color:var(--ink, var(--text)); font-size:14px; font-weight:600; letter-spacing:0; text-transform:none; }
+.agent-smart-node .node-title > .agent-title-kind { display:inline-block; margin-inline-end:8px; color:var(--ink-2, var(--muted)); font-size:12px; font-weight:400; }
 .image-node.agent-smart-node > .node-head .node-head-meta { flex:none; min-width:0; max-width:8rem; overflow:hidden; }
+.agent-smart-node > .node-head .agent-card-status { display:flex; align-items:center; gap:5px; padding:0; background:transparent; color:var(--ink-2, var(--muted)); font-weight:400; line-height:1.6; animation:none; }
+.agent-smart-node > .node-head .agent-card-status::before { content:""; flex:none; width:5px; height:5px; border-radius:50%; background:var(--agent-status-dot, var(--ink, var(--text))); }
+.agent-smart-node > .node-head .agent-card-status.agent-tui-status-error { --agent-status-dot:var(--danger); color:var(--danger); }
+.agent-smart-node > .node-head .agent-card-status.agent-tui-status-disconnected { --agent-status-dot:var(--ink-3, var(--faint)); color:var(--ink-3, var(--faint)); }
 .image-node.agent-smart-node > .node-head .node-actions { justify-content:flex-end; }
 .image-node.agent-smart-node > .node-head:has(.agent-tui-more[open]) { z-index:7; }
 .agent-tui-more { position:relative; flex:none; }
@@ -4348,26 +4470,26 @@ button.agent-tui-more:hover,
 .agent-tui-more svg { width:18px; height:18px; }
 .agent-tui-more > :is([data-agent-more-content], .agent-tui-more-menu) {
     position:absolute;
-    top:calc(100% + 8px);
-    right:0;
+    top:calc(100% + 9px);
+    right:-4px;
     z-index:6;
     display:flex;
     flex-direction:column;
-    gap:4px;
     width:224px;
     max-width:calc(100vw - 48px);
-    max-height:min(380px, 60dvh);
-    padding:8px;
+    max-height:min(420px, 60dvh);
+    padding:5px;
     overflow:auto;
     border:1px solid var(--line);
     border-radius:9px;
     background:var(--surface, var(--card));
     color:var(--ink, var(--text));
-    box-shadow:0 8px 28px var(--shadow);
+    box-shadow:var(--agent-popover-shadow);
 }
 .agent-tui-more [data-agent-more-content] :is(button, select),
-.agent-tui-more-menu :is(button, select) { flex:none; width:100%; max-width:100%; height:auto; min-height:30px; padding:6px 8px; text-align:left; justify-content:flex-start; font-size:12px; line-height:1.5; }
-.agent-tui-more :is(button, select):hover { background:var(--surface-sunken, var(--soft)); }
+.agent-tui-more-menu :is(button, select) { flex:none; width:100%; max-width:100%; height:auto; min-height:30px; padding:8px 9px; border-radius:5px; text-align:left; justify-content:flex-start; font:inherit; font-size:12px; line-height:1.6; }
+.agent-tui-more [data-agent-more-delete] { border-top:1px solid var(--line); border-radius:0 0 5px 5px; color:var(--danger); }
+.agent-tui-more :is(button, select):hover:not(:disabled) { background:var(--surface-sunken, var(--soft)); }
 .image-node.agent-smart-node.dock-collapsed > .node-head :is(.node-title, .node-head-meta, .node-actions) { display:none; }
 .agent-dock-btn,
 .agent-chat-frame-btn,
@@ -4384,11 +4506,12 @@ button.agent-tui-more:hover,
 }
 .agent-dock-node.dock-collapsed .node-head { display:flex; min-height:0; padding:0; }
 @media (max-width:480px) {
-    .image-node.agent-smart-node > .node-head { padding:10px; gap:6px; }
-    .agent-tui-composer { padding:0 10px 10px; }
-    .agent-tui-body { padding-right:12px; }
-    .agent-tui-setting-toolbar { gap:2px; }
+    .image-node.agent-smart-node:not(.dock-collapsed) > .node-head { padding-inline:10px; gap:6px; }
+    .agent-tui-composer { padding-inline:10px; }
+    .agent-tui-body { padding-right:15px; }
     .agent-tui-model-select { max-width:150px; }
+    .agent-tui-action-divider { margin-inline:4px; }
+    .agent-tui-autonomy > button { padding-inline:5px; }
     .agent-tui-attach-row { padding:6px 0; }
 }
 @media (prefers-reduced-motion:reduce) {
@@ -4399,11 +4522,13 @@ button.agent-tui-more:hover,
 }
 
 /* #409 D3: per-input references and @ search; no canvas-node persistence. */
-.agent-node-refs { position:relative; flex:none; min-width:0; margin:0 .75rem; }
+.agent-node-refs { position:relative; flex:none; min-width:0; margin:0 20px; }
+.agent-tui-composer > .agent-node-refs { margin-inline:4px; }
 .agent-node-refs:empty { display:none; }
 .agent-node-ref-chips,
-.agent-node-ref-message { display:flex; flex-wrap:wrap; gap:.375rem; min-width:0; }
-.agent-node-ref-chips { max-height:6rem; overflow:auto; padding:.375rem 0; }
+.agent-node-ref-message { display:flex; flex-wrap:wrap; gap:6px; min-width:0; }
+.agent-node-ref-chips { align-items:center; max-height:6rem; overflow:auto; margin-top:8px; padding-bottom:12px; border-bottom:1px solid var(--line); }
+.agent-tui-ref-label { flex:none; color:var(--ink-2, var(--muted)); font-size:12px; }
 .agent-node-ref-chip,
 .agent-node-ref-jump {
     display:inline-flex;
@@ -4420,16 +4545,18 @@ button.agent-tui-more:hover,
     font-size:var(--text-xs, .75rem);
     line-height:1.25;
 }
-.agent-node-ref-chip { padding:.125rem .125rem .125rem .375rem; }
+.agent-node-ref-chip { min-height:0; padding:3px 7px; border-radius:5px; background:var(--surface-sunken, var(--soft)); line-height:1.6; }
 .agent-node-ref-title,
 .agent-node-ref-jump > span:last-child { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .agent-node-ref-chip > button {
     display:grid;
     place-items:center;
     flex:none;
-    width:1.5rem;
-    height:1.5rem;
+    width:16px;
+    height:16px;
+    padding:0;
     border:0;
+    border-radius:4px;
     background:transparent;
     color:var(--ink-3, var(--muted));
     cursor:pointer;
@@ -4459,6 +4586,7 @@ button.agent-tui-more:hover,
     background:var(--surface, var(--card));
     color:var(--ink, var(--text));
 }
+.agent-tui-card > .agent-node-refs .agent-node-refs-menu { inset:100% 0 auto; z-index:3; }
 .agent-node-refs-menu > button {
     display:flex;
     align-items:center;
@@ -4484,6 +4612,15 @@ button.agent-tui-more:hover,
 .agent-node-refs-menu > button:focus-visible { outline:2px solid var(--glow, var(--accent)); outline-offset:1px; }
 @keyframes agent-node-ref-flash { 0%,100% { outline-color:transparent; } 35% { outline-color:var(--glow, var(--accent)); } }
 .agent-node-ref-flash { outline:2px solid transparent; outline-offset:3px; animation:agent-node-ref-flash .9s ease 1; }
+@media (max-height:800px) {
+    .image-node.agent-dock-node:not(.dock-collapsed, .drag-out) { top:56px; }
+    .agent-node-ref-chips { margin-top:2px; padding-bottom:7px; }
+    .agent-tui-conversation-date { margin:6px 0 13px; }
+    .agent-tui-body { padding-top:5px; }
+    .agent-tui-entry:has(> .agent-tui-msg-user) + .agent-tui-entry { margin-top:18px; }
+    .agent-tui-composer { padding-bottom:8px; }
+    .agent-tui-composer-hint { padding-top:4px; }
+}
 @media (prefers-reduced-motion:reduce) {
     .agent-node-ref-flash { animation-duration:.01s; outline-color:var(--glow, var(--accent)); }
 }

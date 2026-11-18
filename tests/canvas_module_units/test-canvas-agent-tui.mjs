@@ -1056,18 +1056,25 @@ test('agentNodeBodyHtml: 用户/系统消息走转义、assistant 走 renderMark
     assert.ok(html.includes('agent-tui-msg-assistant'), html);
 });
 
-test('agentNodeBodyHtml: steer/followup/abort 三个按钮只在 busy 时可用', () => {
+test('agentNodeBodyHtml: runtime controls are available only during the corresponding operations', () => {
     const { ctx } = loadAgentTuiModule();
-    const body = fn(ctx, 'agentNodeBodyHtml');
-    const idleHtml = fromContext(body({ id: 'n1', type: 'agent' }));
-    assert.equal((idleHtml.match(/disabled/g) || []).length, 3, idleHtml);
-    evaluate(ctx, 'getAgentTuiState("n2").status = "busy"');
-    const busyHtml = fromContext(body({ id: 'n2', type: 'agent' }));
-    assert.ok(!/data-agent-steer[^>]*disabled/.test(busyHtml), busyHtml);
-    assert.ok(!/data-agent-abort[^>]*disabled/.test(busyHtml), busyHtml);
+    const node = { id: 'n1', type: 'agent' }, body = () => fn(ctx, 'agentNodeBodyHtml')(node);
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    for (const status of ['idle', 'busy', 'retrying', 'waiting_confirm', 'stopping']) {
+        state.status = status;
+        const html = body();
+        for (const hook of ['steer', 'followup', 'abort']) {
+            const visible = ['busy', 'retrying'].includes(status) || hook === 'abort' && status === 'waiting_confirm';
+            const button = new RegExp(`<button[^>]*data-agent-${hook}=[^>]*>`).exec(html);
+            assert.equal(Boolean(button), visible, `${status}/${hook}`);
+            if (button) assert.doesNotMatch(button[0], / disabled/);
+        }
+    }
+    state.status = 'busy'; state.stopPending = true;
+    assert.doesNotMatch(body(), /data-agent-(steer|followup|abort)=/);
 });
 
-test('agentNodeBodyHtml: 模型/自治/分支下拉按节点真值选中最优项，无分支时不渲染分支下拉', () => {
+test('agentNodeBodyHtml: 模型触发器、自治分段、更多菜单分支按节点真值显示', () => {
     const { ctx } = loadAgentTuiModule({
         chatProviders: [{ id: 'openai' }, { id: 'deepseek' }],
         modelsByProvider: { openai: ['gpt-a', 'gpt-b'], deepseek: [] },
@@ -1078,16 +1085,17 @@ test('agentNodeBodyHtml: 模型/自治/分支下拉按节点真值选中最优�
         branches: [{ id: 'b1', name: '主线' }, { id: 'b2', name: '支线' }],
         current_branch: 'b2', title: '我的 Agent',
     }));
-    assert.match(html, /data-agent-model-picker="n1"[^>]*>模型 · gpt-b<\/button>/);
+    assert.match(html, /data-agent-model-picker="n1"[^>]*title="gpt-b"[^>]*><span[^>]*>模型<\/span><b>gpt-b<\/b>/);
     assert.ok(!html.includes('gpt-a'), '未打开选择器不拉取或伪造模型池');
-    assert.ok(html.includes('<option value="standard" selected>每批'), html);
+    assert.match(html, /data-agent-autonomy-choice="standard" aria-pressed="true">每批/);
     const more = fn(ctx, 'agentHeadActionButtonsHtml')({ id: 'n1', branches: [{ id: 'b2', name: '支线' }], current_branch: 'b2' });
     assert.ok(more.includes('<option value="b2" selected>'), more);
     assert.ok(!html.includes('agent-tui-title'), '标题归外层 header');
 
     const plain = fromContext(body({ id: 'n2', type: 'agent' }));
-    assert.ok(!plain.includes('agent-tui-branch-select'), '无分支不该渲染分支下拉');
-    assert.ok(plain.includes('<option value="cautious" selected>'), '默认自治级别必须是谨慎');
+    assert.doesNotMatch(plain, /data-agent-more-branch/);
+    assert.doesNotMatch(fn(ctx, 'agentHeadActionButtonsHtml')({ id:'n2' }), /data-agent-more-branch/, '无分支时更多菜单也无分支下拉');
+    assert.match(plain, /data-agent-autonomy-choice="cautious" aria-pressed="true">每张/, '默认自治级别必须是谨慎');
     assert.ok(plain.includes('agent-tui-empty'), '空会话要有占位文案');
 });
 
@@ -1370,15 +1378,14 @@ test('showForkPicker: <dialog> 选轮次与分支名后分叉（entry_id + name�
     await nonPicking;
     assert.equal(none.fetchCalls.length, 1, '无选中轮次 → 不分叉');
 
-    // 越界序号：dialog 生成的 radio 只会是 0..N-1，此路只可能来自被篡改的 DOM；产品无越界
-    // 防护，messages[99].entryId 抛错被 catch 吞掉 → 仍然不发 fork（原「越界不分叉」守卫保留）。
+    // 越界序号只能来自不一致的 DOM；显式提示且不发 fork。
     const oob = loadAgentTuiModule({ nodes: [{ id: 'n1' }], fetchResponse: one });
     const oobPicking = fn(oob.ctx, 'showForkPicker')('n1', 'p1');
     await new Promise(r => setImmediate(r));
     fillForkDialog(oob.harness, oob.harness.dialogs[0], { index: 99, name: '' });
     await oobPicking;
     assert.equal(oob.fetchCalls.length, 1, '越界序号 → 不分叉');
-    assert.ok(oob.consoleErrors.some(m => m.startsWith('Failed to show fork picker:')), oob.consoleErrors.join('|'));
+    assert.match(oob.harness.toasts.at(-1).message, /所选分叉点无效/);
 
     // 分支名留空（trim 后空串）：#317 起仍分叉，交服务端自动命名（旧 prompt 的「空白不选」语义作废）。
     const blank = loadAgentTuiModule({ nodes: [{ id: 'n1' }], fetchResponse: one });
@@ -1489,29 +1496,35 @@ function buildAgentControlTree(harness) {
     const abort = harness.makeElement('button');
     const approve = harness.makeElement('button');
     const reject = harness.makeElement('button');
-    const modelSel = harness.makeElement('select');
-    const autonomySel = harness.makeElement('select');
+    const model = harness.makeElement('button');
+    const autonomy = harness.makeElement('button');
+    autonomy.setAttribute('data-agent-autonomy-choice', 'autonomous');
     const branchSel = harness.makeElement('select');
+    branchSel.setAttribute('data-agent-more-branch', '');
+    thinking.setAttribute('data-agent-thinking', 'n1');
+    const menu = harness.makeElement('details');
+    const summary = harness.makeElement('summary');
+    menu.querySelector = selector => selector === 'summary' ? summary : null;
+    thinking.closest = branchSel.closest = selector => selector === '.agent-tui-more' ? menu : null;
     const forkBtn = harness.makeElement('button');
     const bodyEl = harness.makeElement('div');
     const toolRow = harness.makeElement('div');
     toolRow.setAttribute('data-tool-call-id', 'c1');
-    el.querySelectorAll = (sel) => ({ '[data-tool-call-id]': [toolRow], '[data-agent-abort]': [abort] }[sel] || []);
+    el.querySelectorAll = (sel) => ({ '[data-tool-call-id]': [toolRow], '[data-agent-abort]': [abort],
+        '[data-agent-model-picker],[data-agent-effort-picker]': [model], '[data-agent-autonomy-choice]': [autonomy],
+        '.agent-tui-more': [menu], '[data-agent-more-fork],[data-agent-more-cli],[data-agent-more-view],[data-agent-more-branch],[data-agent-thinking]': [thinking, branchSel],
+    }[sel] || []);
     el.querySelector = (sel) => ({
         '[data-agent-tui-input]': input,
-        '[data-agent-thinking]': thinking,
         '[data-agent-steer]': steer,
         '[data-agent-followup]': followup,
         '[data-agent-abort]': abort,
         '[data-agent-confirm-approve]': approve,
         '[data-agent-confirm-reject]': reject,
-        '[data-agent-model]': modelSel,
-        '[data-agent-autonomy]': autonomySel,
-        '[data-agent-branch]': branchSel,
         '[data-agent-fork]': forkBtn,
         '[data-agent-tui-body]': bodyEl,
     }[sel] ?? null);
-    return { el, input, thinking, steer, followup, abort, approve, reject, modelSel, autonomySel, branchSel, forkBtn, toolRow };
+    return { el, input, menu, thinking, steer, followup, abort, approve, reject, model, autonomy, branchSel, forkBtn, toolRow };
 }
 
 test('bindAgentNodeControls: Enter 发送 prompt（trim/清空）；busy → follow_up；Shift+Enter/纯空白 no-op', () => {
@@ -1582,13 +1595,24 @@ test('bindAgentNodeControls: thinking 切换 / steer / follow-up / abort 按钮'
 test('bindAgentNodeControls: confirm 批准/取消、model/autonomy/branch change、fork、工具行展开', async () => {
     const { ctx, harness, fetchCalls } = loadAgentTuiModule({
         open: false,
-        nodes: [{ id: 'n1', type: 'agent', model: 'm0', autonomy: 'cautious' }],
-        chatProviders: [{ id: 'p1' }],
-        modelsByProvider: { p1: ['m1', 'm2'] },
-        fetchResponse: (url) => url.endsWith('/fork-messages')
-            ? { ok: true, json: async () => ({ messages: [{ text: '第一轮', entryId: 'e1' }] }) }
-            : { ok: true, json: async () => ({}) },
+        nodes: [{ id: 'n1', type: 'agent', model: 'm0', autonomy: 'cautious', current_branch: 'b1' }],
+        fetchResponse: (url) => {
+            if (url.endsWith('/fork-messages')) return { ok: true, json: async () => ({ messages: [{ text: '第一轮', entryId: 'e1' }] }) };
+            if (url.includes('/capabilities?')) return { ok: true, json: async () => ({ host:'pi', status:'available',
+                models:[{id:'m0', name:'m0'}, {id:'m2', name:'m2'}], defaults:{model:null, effort:null},
+                selection:{ model:new URL(url, 'http://example.test').searchParams.get('model'), efforts:[], source:'pi' } }) };
+            return { ok: true, json: async () => ({}) };
+        },
     });
+    const create = ctx.document.createElement;
+    ctx.document.createElement = tag => {
+        const element = create(tag), fields = new Map();
+        element.querySelector = selector => {
+            if (!fields.has(selector)) fields.set(selector, harness.makeElement('button'));
+            return fields.get(selector);
+        };
+        return element;
+    };
     const tree = buildAgentControlTree(harness);
     fn(ctx, 'bindAgentNodeControls')(tree.el, { id: 'n1', type: 'agent' });
     // open:false → 命令全走 HTTP，便于断言 URL/body。
@@ -1613,35 +1637,43 @@ test('bindAgentNodeControls: confirm 批准/取消、model/autonomy/branch chang
 
     // Settings are unlocked only after the confirmed operation actually ends.
     fn(ctx, 'handleAgentEvent')('n1', { type: 'agent_end' });
-    // model / autonomy：change 声明人工意图，确认前不触碰节点。
-    tree.modelSel.value = 'm2';
-    tree.modelSel.dispatchEvent(ev('change'));
-    assert.equal(fromContext(fetchCalls.at(-1).url), '/api/projects/canvas-id-1/agent-nodes/n1/model');
-    assert.deepEqual(JSON.parse(fromContext(fetchCalls.at(-1).opts.body)), { model: 'm2', user_edit: true });
+    // Native picker + segment declare human intent without optimistic persistence.
+    tree.model.dispatchEvent(ev('click'));
+    await d2Drain();
+    const picker = harness.dialogs[0];
+    picker.querySelector('[data-agent-picker-model]').dispatchEvent(ev('change', { target:{value:'m2'} }));
+    await d2Drain();
+    picker.querySelector('[data-agent-picker-apply]').dispatchEvent(ev('click'));
+    assert.equal(fromContext(fetchCalls.at(-1).url), '/api/projects/canvas-id-1/agent-nodes/n1/settings');
+    assert.deepEqual(JSON.parse(fromContext(fetchCalls.at(-1).opts.body)), { host:'pi', model:'m2', effort:null, user_edit:true });
     assert.equal(fromContext(evaluate(ctx, 'canvasState.nodes[0].model')), 'm0');
+    await d2Drain();
 
-    tree.autonomySel.value = 'autonomous';
-    tree.autonomySel.dispatchEvent(ev('change'));
+    tree.autonomy.dispatchEvent(ev('click'));
     assert.equal(fromContext(fetchCalls.at(-1).url), '/api/projects/canvas-id-1/agent-nodes/n1/autonomy');
     assert.deepEqual(JSON.parse(fromContext(fetchCalls.at(-1).opts.body)), { autonomy: 'autonomous', user_edit: true });
     assert.equal(fromContext(evaluate(ctx, 'canvasState.nodes[0].autonomy')), 'cautious');
 
     // branch：空值不发，非空 → switch-branch。
-    tree.branchSel.value = '';
-    tree.branchSel.dispatchEvent(ev('change'));
     const beforeBranch = fetchCalls.length;
+    for (const value of ['', 'b1']) {
+        tree.branchSel.value = value;
+        tree.branchSel.dispatchEvent(ev('change'));
+    }
+    assert.equal(fetchCalls.length, beforeBranch, '空分支或当前分支不发送');
     tree.branchSel.value = 'b2';
     tree.branchSel.dispatchEvent(ev('change'));
-    assert.equal(fetchCalls.length, beforeBranch + 1, '空分支不发送');
+    assert.equal(fetchCalls.length, beforeBranch + 1);
+    assert.equal(tree.branchSel.value, 'b1');
     assert.equal(fromContext(fetchCalls.at(-1).url), '/api/projects/canvas-id-1/agent-nodes/n1/switch-branch');
     assert.deepEqual(JSON.parse(fromContext(fetchCalls.at(-1).opts.body)), { branch_id: 'b2', user_edit: true });
 
     // fork 按钮 → showForkPicker（异步 fire-and-forget）：#317 起走画布自有 <dialog>。
     tree.forkBtn.dispatchEvent(ev('click'));
     await new Promise(r => setImmediate(r));
-    assert.equal(harness.dialogs.length, 1, 'fork 按钮打开 <dialog> 选择器');
-    assert.ok(harness.dialogs[0].innerHTML.includes('agent-fork-idx">1.</span><span>第一轮'), harness.dialogs[0].innerHTML);
-    fillForkDialog(harness, harness.dialogs[0], { index: 0, name: '线' });
+    assert.equal(harness.dialogs.length, 2, 'fork 按钮打开独立 <dialog> 选择器');
+    assert.ok(harness.dialogs[1].innerHTML.includes('agent-fork-idx">1.</span><span>第一轮'), harness.dialogs[1].innerHTML);
+    fillForkDialog(harness, harness.dialogs[1], { index: 0, name: '线' });
     await new Promise(r => setImmediate(r));
     const forkCall = fetchCalls.at(-1);
     assert.ok(forkCall.url.endsWith('/agent-nodes/n1/fork'), forkCall.url);
@@ -1832,7 +1864,7 @@ test('#323 E1 agentHeadActionButtonsHtml：会话框按钮注入 .node-actions�
     evaluate(ctx, "canvasState.nodes[0].chatFrameId = 'g1'");
     out = fromContext(html(liveNode()));
     assert.ok(out.includes('agent-chat-frame-btn agent-tui-btn-active'), out);
-    assert.ok(out.includes('>打开会话框</button>'), '绑定 → 文字钮「打开会话框」（监理钉B2）');
+    assert.match(out, /data-agent-chat-frame="a1">打开会话框 <span[^>]+is-bound/, '菜单中保留「打开会话框」文字操作和绑定状态（监理钉B2）');
 });
 
 test('#323 监理钉B1/B3：新建会话框带 chatFrame/chatFrameFor 机器标记；已有框点击=居中到框真中心；卡面状态段两态可见', () => {
@@ -2394,6 +2426,195 @@ const d2Drain = async () => { for (let i = 0; i < 15; i++) await Promise.resolve
 const d2Text = (text, thinking = false) => ({ type: 'message_update', assistantMessageEvent: { type: thinking ? 'thinking_delta' : 'text_delta', delta: text } });
 const d2Tool = id => ({ type: 'tool_execution_start', toolCallId: id, toolName: `tool-${id}`, args: {} });
 
+// r3: ts is on the real /events envelope; Pi assistant timestamps live on
+// message, in ms. All dates here are fixed mock inputs, not original host evidence.
+const r3List = [
+    '可以。保留自然的光感，把构图和材质拉开差异：', '',
+    '1. **晨光纸影**  ', '   米白底色、纸张肌理，让留白成为画面主角。',
+    '2. **新绿片刻**  ', '   用少量嫩绿呼应季节，产品保持克制。',
+    '3. **窗边静物**  ', '   柔和侧光和长投影，营造真实的生活感。', '',
+    '我建议先看第一种。你更想强调产品质感，还是春日的轻松氛围？',
+].join('\n');
+
+test('r3 history: replay envelope and Pi native time, calendar boundaries, safe ordered list, no added timeline entries', async () => {
+    const node = { ...d2Node(), title: '视觉探索 <草稿>' };
+    const first = new Date(2020, 4, 12, 10, 24);
+    const next = new Date(2020, 4, 13, 11, 25);
+    const rec = (seq, ts, event) => ({ seq, ts, event, generation: 0, host: 'pi' });
+    const records = [
+        rec(1, first.getTime() / 1000, { type: 'user_prompt',
+            text: '参考画布里的这张图，试试更轻盈的春日方向。先给我三个视觉方案，不要生成图片。', request_id: 'r3-1',
+            node_refs: [{ node_id: 'ref-1', type: 'smart-image', title: '参考图 · KV 方向' }] }),
+        rec(2, next.getTime() / 1000, { type: 'turn_end', message: { role: 'assistant',
+            timestamp: first.getTime(), content: [{ type: 'text', text: r3List }] } }),
+        rec(3, undefined, { type: 'user_prompt', text: '没有日志时间的旧消息' }),
+        rec(4, next.getTime() / 1000, { type: 'turn_end', message: { role: 'assistant', content: [{ type: 'text', text: '日志时间' }] } }),
+    ];
+    const { ctx } = loadAgentTuiModule({ nodes: [node], fetchResponse: { ok: true, json: async () => ({ events: records }) } });
+    const state = fn(ctx, 'getAgentTuiState')(node.id);
+    state.projectId = 'p1';
+    fn(ctx, 'replayAgentEvents')(node.id, state);
+    await d2Drain();
+    const html = fn(ctx, 'agentNodeBodyHtml')(node);
+    assert.match(html, /agent-tui-msg-byline"><span>你<\/span><time/);
+    assert.match(html, /agent-tui-msg-mark" aria-hidden="true">✳<\/span> 萤火<\/span><time/);
+    assert.equal(html.split(`<time datetime="${first.toISOString()}">10:24</time>`).length - 1, 2);
+    assert.ok(html.includes(`<time datetime="${next.toISOString()}">11:25</time>`));
+    assert.match(html, /<div class="agent-tui-msg-byline"><span>你<\/span><\/div><span class="agent-tui-msg-text">没有日志时间的旧消息/);
+    assert.match(html, /agent-tui-conversation-date">2020年5月12日 · 视觉探索 &lt;草稿&gt;/);
+    assert.match(html, /agent-tui-conversation-date">2020年5月13日 · 视觉探索 &lt;草稿&gt;/);
+    assert.equal((html.match(/agent-tui-conversation-date/g) || []).length, 2);
+    assert.match(html, /<\/p><ol class="agent-md-list"><li><strong>晨光纸影<\/strong><span>米白底色、纸张肌理，让留白成为画面主角。<\/span><\/li><li><strong>新绿片刻<\/strong>.*?<li><strong>窗边静物<\/strong>.*?<\/ol><p>我建议/);
+    assert.equal((html.match(/data-agent-entry-key=/g) || []).length, 4);
+    assert.equal((html.match(/agent-tui-msg-actions/g) || []).length, 2);
+    assert.ok(html.includes('参考图 · KV 方向'));
+    const markdown = fn(ctx, 'renderMarkdown');
+    assert.equal(markdown('3. A\n4. `<ok>`\n- B\n- C'), '<ol class="agent-md-list" start="3"><li>A</li><li><code class="agent-md-inline-code">&lt;ok&gt;</code></li></ol><ul class="agent-md-list"><li>B</li><li>C</li></ul>');
+    assert.match(markdown('```text\n1. not a list\n```'), /<code>1\. not a list<\/code>/);
+});
+
+test('r3 history: live receipt stays untimed; canonical replay enriches the same optimistic request and native stream retains one reply', async () => {
+    const node = d2Node();
+    const first = new Date(2020, 4, 12, 10, 24);
+    let events;
+    const { ctx } = loadAgentTuiModule({ nodes: [node], fetchResponse: { ok: true, json: async () => ({ events }) } });
+    const state = fn(ctx, 'getAgentTuiState')(node.id);
+    state.projectId = 'p1';
+    state.lastSeq = 1;
+    const optimistic = fn(ctx, 'agentNodeRefsPrepare')(node.id, 'prompt', '本地草稿');
+    const handle = fn(ctx, 'handleAgentEvent');
+    handle(node.id, { type: 'input_accepted', input_type: 'prompt', request_id: optimistic.id, node_refs: [] });
+    assert.equal(optimistic.row.timestamp, undefined);
+    assert.doesNotMatch(fn(ctx, 'agentNodeBodyHtml')(node), /<time|agent-tui-conversation-date/);
+    events = [{ seq: 2, ts: first.getTime() / 1000, event: { type: 'user_prompt', text: '本地草稿', request_id: optimistic.id,
+        node_refs: [{ node_id: 'ref-1', type: 'smart-image', title: '服务端引用名' }] } }];
+    fn(ctx, 'replayAgentEvents')(node.id, state);
+    await d2Drain();
+    assert.equal(state.messages.length, 1);
+    assert.equal(state.messages[0], optimistic.row);
+    assert.equal(optimistic.row.node_refs[0].title, '服务端引用名');
+    assert.equal(optimistic.row.timestamp, first.getTime());
+    const nativeTime = first.getTime() + 1000;
+    handle(node.id, { ...d2Text('部分'), message: { role: 'assistant', timestamp: nativeTime } });
+    handle(node.id, d2Text('回复'));
+    handle(node.id, { type: 'turn_end', message: { role: 'assistant', timestamp: nativeTime, content: [{ type: 'text', text: '部分回复' }] } });
+    assert.equal(state.messages.length, 2);
+    assert.equal(state.messages[1].text, '部分回复');
+    assert.equal(state.messages[1].timestamp, nativeTime);
+    assert.doesNotMatch(fn(ctx, 'agentNodeBodyHtml')(node), /2020年5月12日 · Agent/);
+});
+
+function r3ActionHarness(fetchResponse) {
+    const node = d2Node();
+    const m = loadAgentTuiModule({ nodes: [node], fetchResponse });
+    const { ctx, harness } = m;
+    const state = fn(ctx, 'getAgentTuiState')(node.id);
+    const append = fn(ctx, 'agentAppendMessage');
+    append(state, { role: 'user', text: '原始提示' });
+    const reply = append(state, { role: 'assistant', text: '**回复** <安全>' });
+    const nextUser = append(state, { role: 'user', text: '下一条 <提示>', delivery: 'accepted' });
+    const key = state.timelineMessages.get(reply).key;
+    const controls = ['copy', 'fork'].map(kind => {
+        const button = harness.makeElement('button');
+        button.setAttribute(`data-agent-msg-${kind}`, key);
+        return button;
+    });
+    const el = harness.makeElement('div');
+    el.querySelectorAll = selector => selector === '[data-agent-msg-copy], [data-agent-msg-fork]' ? controls : [];
+    fn(ctx, 'bindAgentNodeControls')(el, node);
+    state.status = 'idle'; // These button cases start after the mocked connection has settled.
+    return { ...m, state, node, reply, nextUser, copy: controls[0], fork: controls[1], toastText: () => harness.toasts.at(-1).message };
+}
+
+test('r3 message copy: raw text, permission rejection, unavailable API, streaming and stale guards', async () => {
+    const { ctx, node, state, reply, copy, toastText } = r3ActionHarness();
+    const writes = [];
+    ctx.navigator.clipboard = { writeText: async text => { writes.push(text); } };
+    const html = () => fn(ctx, 'agentNodeBodyHtml')(node);
+    assert.match(html(), /data-agent-msg-copy="entry:2" title="复制回复原文">复制/);
+    copy.dispatchEvent(ev('click'));
+    await d2Drain();
+    assert.deepEqual(writes, [reply.text]);
+    assert.equal(toastText(), '已复制回复');
+    reply.streaming = true;
+    assert.match(html(), /title="请等待这条回复完成后再复制" disabled/);
+    copy.dispatchEvent(ev('click'));
+    await d2Drain();
+    assert.equal(writes.length, 1);
+    reply.streaming = false;
+    ctx.navigator.clipboard.writeText = async () => { throw new Error('permission denied'); };
+    copy.dispatchEvent(ev('click'));
+    await d2Drain();
+    assert.match(toastText(), /复制失败：.*permission denied.*手动复制/);
+    delete ctx.navigator.clipboard;
+    assert.match(html(), /title="当前页面无法访问系统剪贴板，请选中文本手动复制" disabled/);
+    copy.dispatchEvent(ev('click'));
+    assert.match(toastText(), /无法访问系统剪贴板/);
+    state.viewEpoch++;
+    copy.dispatchEvent(ev('click'));
+    assert.match(toastText(), /不在当前会话/);
+});
+
+test('r3 message fork: Pi picker provides context but never guesses a native ID, rechecks before submission', async () => {
+    const nativeList = { ok: true, json: async () => ({ messages: [
+        { text: '下一条 <提示>', entryId: 'pi-choice-a' }, { text: '下一条 <提示>', entryId: 'pi-choice-b' },
+    ] }) };
+    const m = r3ActionHarness(url => url.endsWith('/fork-messages') ? nativeList : { ok: true, json: async () => ({ canvas: { revision: 2 } }) });
+    const { ctx, node, state, fork, harness, fetchCalls, toastText } = m;
+    const html = () => fn(ctx, 'agentNodeBodyHtml')(node);
+    assert.match(html(), /data-agent-msg-fork="entry:2" title="打开 Pi 选择器[^"]*">从此分叉/);
+    fork.dispatchEvent(ev('click'));
+    await d2Drain();
+    assert.equal(fetchCalls.length, 1);
+    const dialog = harness.dialogs[0];
+    assert.match(dialog.innerHTML, /在 Pi 中选择分叉点/);
+    assert.match(dialog.innerHTML, /萤火回复：\*\*回复\*\* &lt;安全&gt;<br>画布中的下一条用户消息：下一条 &lt;提示&gt;/);
+    assert.match(dialog.innerHTML, /在选中的用户消息之前分叉/);
+    assert.doesNotMatch(dialog.innerHTML, /\bchecked\b/);
+    state.status = 'busy';
+    fillForkDialog(harness, dialog, { index: 0, name: '' });
+    await d2Drain();
+    assert.equal(fetchCalls.length, 1);
+    assert.match(toastText(), /请等待当前操作结束/);
+    state.status = 'idle';
+    fork.dispatchEvent(ev('click'));
+    await d2Drain();
+    fillForkDialog(harness, harness.dialogs[1], { index: 1, name: '取第二条' });
+    await d2Drain();
+    assert.deepEqual(JSON.parse(fetchCalls[2].opts.body), { entry_id: 'pi-choice-b', name: '取第二条', user_edit: true });
+});
+
+test('r3 message fork: disabled reasons and lookup/submit failures are visible', async () => {
+    const lookupFailure = { ok: false, status: 400, json: async () => ({ detail: 'Agent is not running' }) };
+    const m = r3ActionHarness(lookupFailure);
+    const { ctx, node, state, nextUser, fork, fetchCalls, toastText } = m;
+    const html = () => fn(ctx, 'agentNodeBodyHtml')(node);
+    nextUser.delivery = 'unconfirmed';
+    assert.match(html(), /title="缺少可确认的前后用户消息，无法从这条回复分叉" disabled/);
+    fork.dispatchEvent(ev('click'));
+    assert.equal(fetchCalls.length, 0);
+    nextUser.delivery = 'accepted';
+    state.viewHost = 'codex';
+    assert.match(html(), /title="只读会话不能分叉" disabled/);
+    state.activeHost = node.agentCli = 'codex';
+    assert.match(html(), /title="仅 Pi 宿主支持分叉" disabled/);
+    fork.dispatchEvent(ev('click'));
+    assert.equal(fetchCalls.length, 0);
+    state.viewHost = state.activeHost = node.agentCli = 'pi';
+    fork.dispatchEvent(ev('click'));
+    await d2Drain();
+    assert.match(toastText(), /打开分叉选择器失败：.*Agent is not running/);
+    const rejected = r3ActionHarness(url => url.endsWith('/fork-messages')
+        ? { ok: true, json: async () => ({ messages: [{ entryId: 'native-id', text: 'next' }] }) }
+        : { ok: false, status: 409, json: async () => ({ detail: { message: 'Pi cancelled' } }) });
+    rejected.fork.dispatchEvent(ev('click'));
+    await d2Drain();
+    fillForkDialog(rejected.harness, rejected.harness.dialogs[0], { index: 0, name: '' });
+    await d2Drain();
+    assert.match(rejected.toastText(), /分叉失败：.*Pi cancelled/);
+    assert.equal(rejected.state.messages.length, 3);
+});
+
 for (const state of ['空闲', '澄清', '计划预览', '执行中', '批量确认', '失败自处理', '等待用户', '已停止', '完成']) {
     test(`#408 D2 agentRun 消费/JSON reload fixture: ${state}`, () => {
         const { ctx } = loadAgentTuiModule();
@@ -2474,6 +2695,7 @@ test('#408 D2 思考归档位置/手动展开跨流式刷新保留，全局 brai
     const tree = buildAgentControlTree(harness);
     const thought = harness.makeElement('details');
     thought.setAttribute('data-agent-thought', key);
+    thought.isConnected = true;
     const originalQuery = tree.el.querySelectorAll;
     tree.el.querySelectorAll = selector => selector === '[data-agent-thought]' ? [thought] : originalQuery(selector);
     fn(ctx, 'bindAgentNodeControls')(tree.el, d2Node());
@@ -2488,8 +2710,13 @@ test('#408 D2 思考归档位置/手动展开跨流式刷新保留，全局 brai
     assert.ok(html.includes('思考了') && !html.includes('思考中'));
     assert.match(html, /data-agent-thought="entry:1" open>/);
     assert.ok(html.indexOf('data-agent-thought') < html.indexOf('data-tool-group'));
+    tree.menu.open = true;
     tree.thinking.dispatchEvent(ev('click'));
+    assert.equal(tree.menu.open, false, 'more menu closes when the toggle is used');
     tree.thinking.dispatchEvent(ev('click'));
+    thought.open = false; thought.dispatchEvent(ev('toggle'));
+    thought.open = true; thought.dispatchEvent(ev('toggle'));
+    assert.deepEqual(fromContext(state.thoughtExpanded), {}, 'an old queued native toggle cannot restore the cleared override');
     html = fn(ctx, 'agentNodeBodyHtml')(d2Node());
     assert.doesNotMatch(html, /<details[^>]*agent-tui-thought[^>]*\sopen>/);
 });

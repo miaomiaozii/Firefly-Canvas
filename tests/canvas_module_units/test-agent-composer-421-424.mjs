@@ -59,7 +59,10 @@ test('r3 composer has no duplicate internal header; real parameters and more men
     const m = setup(), html = fn(m.ctx, 'agentNodeBodyHtml')(m.node);
     assert.doesNotMatch(html, /agent-tui-header|agent-tui-title|设计预览/);
     assert.match(html, /agent-tui-composer/); assert.match(html, /min-height:96px/);
-    for (const attr of ['host', 'model-picker', 'effort-picker', 'autonomy']) assert.match(html, new RegExp(`data-agent-${attr}=`));
+    for (const attr of ['host-picker', 'host-choice', 'model-picker', 'effort-picker', 'autonomy-choice']) assert.match(html, new RegExp(`data-agent-${attr}(?:[= ])`));
+    assert.doesNotMatch(html, /<select\b/);
+    assert.equal((html.match(/class="agent-tui-setting-dot"/g) || []).length, 2);
+    assert.match(html, /data-agent-autonomy-choice="standard" aria-pressed="true">每批/);
     for (const text of ['每张', '每批', '无需', '生效未确认']) assert.ok(html.includes(text));
     const head = fn(m.ctx, 'agentHeadActionButtonsHtml')(m.node);
     assert.match(head, /^<details class="agent-tui-more"><summary aria-label="更多会话操作">.*<\/summary><div data-agent-more-content>/);
@@ -234,7 +237,8 @@ test('new-host defaults are submitted as empty model/null effort, never director
     assert.deepEqual(JSON.parse(m.calls[0].opts.body), { host: 'codex', model: '', effort: null, user_edit: true });
     m.calls[0].resolve(reply({ canvas: changedCanvas(m, 'codex', '', null), effort_state: { requested: null, submitted: null, effective: null, source: 'codex:unconfirmed' } }));
     assert.equal(await switching, true);
-    assert.match(fn(m.ctx, 'agentNodeBodyHtml')(m.ctx.canvasState.nodes[0]), /模型 · 跟随宿主/);
+    const body = fn(m.ctx, 'agentNodeBodyHtml')(m.ctx.canvasState.nodes[0]);
+    assert.match(body, /data-agent-model-picker="a"[^>]*aria-label="模型 跟随宿主"/);
 });
 
 test('host confirmation cannot overwrite an externally switched host; capability requests cannot supersede a newer picker model', async () => {

@@ -1003,6 +1003,218 @@ def test_branch_commits_binding_and_branches_in_one_cas_and_rolls_back_deletion(
     assert not any(n["id"] == "agent" for n in env.store.canvas(env.project_id)["nodes"])
 
 
+def cas_competitors(env, monkeypatch, *writers):
+    """Commit each trusted winner and then let the real store reject the stale CAS."""
+    apply = env.store.apply_agent_host_mutations
+    pending = iter(writers)
+    conflicts = []
+
+    def interleave(project_id, mutations, *, base_revision):
+        writer = next(pending, None)
+        if writer is not None:
+            node = saved(env)
+            writer(node)
+            apply(project_id, [{"op": "upsert_node", "node": node}], base_revision=base_revision)
+        try:
+            return apply(project_id, mutations, base_revision=base_revision)
+        except RevisionConflict:
+            conflicts.append((base_revision, env.store.canvas(project_id)["revision"]))
+            raise
+
+    monkeypatch.setattr(env.store, "apply_agent_host_mutations", interleave)
+    return conflicts
+
+
+def seed_pi_branches(env):
+    node = {**saved(env), **build_host_settings_fields(saved(env), "codex", "provider/old", "low")}
+    node = {**node, **build_host_settings_fields(node, "pi", "provider/old", "medium")}
+    node["agentHostSessions"]["pi"] = {
+        "extSessionId": "pi-original", "current_branch": "original", "branches": [
+            {"id": "original", "session_id": "pi-original", "session_file": "original.jsonl"},
+            {"id": "other", "session_id": "pi-fork", "session_file": "forked.jsonl"},
+        ],
+    }
+    seed(env, {**node, **read_host_fields(node)})
+    session = run(env.manager.live(env.project_id))
+    session.model, session.reasoning_effort = "provider/old", "medium"
+    return session
+
+
+@pytest.mark.parametrize("endpoint,body,native", [
+    ("fork", {"entry_id": "entry"}, "fork"),
+    ("switch-branch", {"branch_id": "other"}, "switch_session"),
+])
+def test_branch_rebases_successive_appends_and_preserves_inactive_progress(env, monkeypatch, endpoint, body, native):
+    seed_pi_branches(env)
+    initial = env.store.canvas(env.project_id)["revision"]
+
+    def first(node):
+        node["agentHostSessions"]["pi"]["branches"].append({"id": "concurrent-a"})
+        node["agentHostSessions"]["codex"]["extSessionId"] = "new-codex-thread"
+        node.update(read_host_fields(node))
+
+    def second(node):
+        node["agentHostSessions"]["pi"]["branches"].append({"id": "concurrent-b"})
+        node["agentHostSessions"]["codex"]["branches"].append({"id": "codex-branch"})
+        node["agentHostSettings"]["codex"]["effort"] = "high"
+        node.update(read_host_fields(node))
+
+    conflicts = cas_competitors(env, monkeypatch, first, second)
+    response = env.client.post(env.url + "/" + endpoint, json=body)
+    assert conflicts == [(initial, initial + 1), (initial + 1, initial + 2)]
+    assert response.status_code == 200, response.text
+    data, node = response.json(), saved(env)
+    assert data["canvas"]["revision"] == initial + 3
+    assert data["branches"] == node["branches"]
+    assert [b["id"] for b in node["branches"][:4]] == ["original", "other", "concurrent-a", "concurrent-b"]
+    assert data["current_branch"] == node["current_branch"] == data["branch"]["id"]
+    if endpoint == "fork":
+        assert node["branches"][-1] == data["branch"]
+    assert node["agentHostSessions"]["codex"] == {**EMPTY_SESSION, "extSessionId": "new-codex-thread",
+                                                    "branches": [{"id": "codex-branch"}]}
+    assert node["agentHostSettings"]["codex"] == {"model": "provider/old", "effort": "high"}
+    assert [c["type"] for c in env.manager.commands if c["type"] in ("fork", "switch_session")] == [native]
+
+
+@pytest.mark.parametrize("race", ["rebind", "near-target", "edit", "duplicate", "not-monotonic"])
+def test_switch_rejects_non_append_or_nonmatching_binding_changes(env, monkeypatch, race):
+    session = seed_pi_branches(env)
+    initial = env.store.canvas(env.project_id)["revision"]
+    winner = []
+
+    def append(node):
+        node["agentHostSessions"]["pi"]["branches"].append({"id": "concurrent-a"})
+        node.update(read_host_fields(node))
+
+    def change(node):
+        binding = node["agentHostSessions"]["pi"]
+        if race == "rebind":
+            binding["extSessionId"] = "new-pi-binding"
+        elif race == "near-target":
+            binding.update(current_branch="other", extSessionId="wrong-native-id")
+        elif race == "edit":
+            binding["branches"][1]["session_file"] = "different.jsonl"
+        elif race == "duplicate":
+            binding["branches"].append({"id": "other", "session_file": "different.jsonl"})
+        else:
+            binding["branches"][-1] = {"id": "different-append"}
+        node.update(read_host_fields(node))
+        winner.append(deepcopy(node))
+
+    writers = (append, change) if race == "not-monotonic" else (change,)
+    conflicts = cas_competitors(env, monkeypatch, *writers)
+    response = env.client.post(env.url + "/switch-branch", json={"branch_id": "other", "user_edit": True})
+    assert conflicts == [(r, r + 1) for r in range(initial, initial + len(writers))]
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "agent_settings_conflict"
+    assert saved(env) == winner[0]
+    assert env.store.canvas(env.project_id)["revision"] == initial + len(writers)
+    assert session.session_file == "original.jsonl"
+    assert [c["sessionPath"] for c in env.manager.commands if c["type"] == "switch_session"] == ["forked.jsonl", "original.jsonl"]
+
+
+@pytest.mark.parametrize("race,status", [("exact", 200), ("different-effort", 409), ("expected", 409)])
+def test_settings_retry_does_not_rewrite_winner_or_bypass_expected(env, monkeypatch, race, status):
+    session = seed_pi_branches(env)
+    initial = env.store.canvas(env.project_id)["revision"]
+    winner = []
+
+    def change(node):
+        effort = "low" if race == "different-effort" else "high"
+        node.update(build_host_settings_fields(node, "pi", "provider/new", effort), userTouchedAt=555)
+        node["agentHostSessions"]["codex"]["extSessionId"] = "new-codex-thread"
+        winner.append(deepcopy(node))
+
+    conflicts = cas_competitors(env, monkeypatch, change)
+    body = {"model": "provider/new", "effort": "high", "user_edit": True}
+    if race == "expected":
+        body["expected"] = {"host": "pi", "model": "provider/old", "effort": "medium"}
+    response = env.client.post(env.url + "/settings", json=body)
+    assert conflicts == [(initial, initial + 1)]
+    assert response.status_code == status, response.text
+    assert saved(env) == winner[0]
+    assert env.store.canvas(env.project_id)["revision"] == initial + 1
+    expected_models = ["new"] if status == 200 else ["new", "old"]
+    assert [c["modelId"] for c in env.manager.commands if c["type"] == "set_model"] == expected_models
+    assert session.model == ("provider/new" if status == 200 else "provider/old")
+
+
+def test_branch_response_reads_selected_record_and_current_selection_from_one_snapshot(env, monkeypatch):
+    seed_pi_branches(env)
+    initial = env.store.canvas(env.project_id)["revision"]
+
+    async def later_writer(*args, **kwargs):
+        node = saved(env)
+        assert node["current_branch"] == "other"
+        binding = node["agentHostSessions"]["pi"]
+        binding["branches"][1]["name"] = "renamed after commit"
+        binding.update(current_branch="original", extSessionId="pi-original")
+        seed(env, {**node, **read_host_fields(node)})
+
+    monkeypatch.setattr(main.manager, "broadcast_canvas_updated", later_writer)
+    response = env.client.post(env.url + "/switch-branch", json={"branch_id": "other"})
+    assert response.status_code == 200, response.text
+    data, node = response.json(), saved(env)
+    assert data["canvas"] == env.store.canvas(env.project_id)
+    assert data["canvas"]["revision"] == initial + 2
+    assert data["branches"] == node["branches"]
+    assert data["current_branch"] == node["current_branch"] == "original"
+    assert data["branch"] == node["branches"][1]
+    assert data["branch"]["name"] == "renamed after commit"
+
+
+def test_branch_rollback_with_wrong_native_identity_is_unconfirmed(env, monkeypatch):
+    session = seed_pi_branches(env)
+    initial = env.store.canvas(env.project_id)["revision"]
+
+    def rebind(node):
+        node["agentHostSessions"]["pi"]["extSessionId"] = "new-pi-binding"
+        node.update(read_host_fields(node))
+
+    state = env.manager._runtime_state
+
+    async def wrong_original_id(session):
+        observed = await state(session)
+        if any(c.get("sessionPath") == "original.jsonl" for c in env.manager.commands):
+            return {**observed, "sessionId": "not-pi-original"}
+        return observed
+
+    conflicts = cas_competitors(env, monkeypatch, rebind)
+    monkeypatch.setattr(env.manager, "_runtime_state", wrong_original_id)
+    response = env.client.post(env.url + "/switch-branch", json={"branch_id": "other"})
+    assert conflicts == [(initial, initial + 1)]
+    assert response.status_code == 502, response.text
+    assert response.json()["detail"]["code"] == "agent_rollback_failed"
+    assert "original native session ID" in session.last_error
+    assert session.ext_session_id != "pi-original"
+    assert saved(env)["extSessionId"] == "new-pi-binding"
+    assert [c["sessionPath"] for c in env.manager.commands if c["type"] == "switch_session"] == ["forked.jsonl", "original.jsonl"]
+
+
+@pytest.mark.parametrize("endpoint", ["settings", "fork"])
+def test_post_commit_broadcast_cancellation_never_compensates(env, monkeypatch, endpoint):
+    session = seed_pi_branches(env)
+    initial = env.store.canvas(env.project_id)["revision"]
+
+    async def cancel(*args, **kwargs):
+        assert env.store.canvas(env.project_id)["revision"] == initial + 1
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(main.manager, "broadcast_canvas_updated", cancel)
+    with pytest.raises(asyncio.CancelledError):
+        if endpoint == "settings":
+            run(api.set_agent_settings(env.project_id, "agent", {"model": "provider/new"}))
+        else:
+            run(api.fork_session(env.project_id, "agent", "entry", ""))
+    assert env.store.canvas(env.project_id)["revision"] == initial + 1
+    if endpoint == "settings":
+        assert saved(env)["model"] == session.model == "provider/new"
+        assert [c["modelId"] for c in env.manager.commands if c["type"] == "set_model"] == ["new"]
+    else:
+        assert saved(env)["extSessionId"] == session.ext_session_id == "pi-fork"
+        assert not any(c["type"] == "switch_session" for c in env.manager.commands)
+
+
 def test_expected_undo_redo_persists_through_full_store_without_rewinding_bindings(env, monkeypatch):
     """Real HTTP route -> transaction -> CAS -> ProjectStore -> disk reload.
 

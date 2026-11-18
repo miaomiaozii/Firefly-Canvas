@@ -8,6 +8,7 @@ import json
 import sys
 import tempfile
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -283,6 +284,40 @@ class GenerationIdentity392Tests(_Transport392):
 
 
 class McpCarrierCas392Tests(_Transport392):
+    def seed_carrier(self, **fields):
+        # Bindings belong to the runtime; ordinary canvas writes cannot seed them.
+        node = {"id": "carrier", "type": NODE_TYPE_AGENT, "mcp_session": "old-session", **fields}
+        self.store.apply_agent_host_mutations(self.pid, [{"op": "upsert_node", "node": node}],
+                                              base_revision=self.canvas()["revision"])
+
+    @contextmanager
+    def interleave_carrier_cas(self, build_concurrent, *, trusted_writer=False):
+        from firefly_projects import RevisionConflict
+
+        # ensure_external_agent_node selects this trusted entry in the snapshot helper.
+        original = self.store.apply_agent_host_mutations
+        attempts, revisions, conflicts = [], [], []
+
+        def interleave(project_id, mutations, *, base_revision, **kwargs):
+            attempts.append(copy.deepcopy(mutations))
+            revisions.append(base_revision)
+            if len(attempts) == 1:
+                write = original if trusted_writer else self.store.apply_mutations
+                write(project_id, build_concurrent(self.canvas()), base_revision=base_revision)
+            try:
+                return original(project_id, mutations, base_revision=base_revision, **kwargs)
+            except RevisionConflict as conflict:
+                conflicts.append((base_revision, conflict.canvas["revision"]))
+                raise
+
+        with patch.object(self.store, "apply_agent_host_mutations", side_effect=interleave):
+            yield attempts
+        self.assertEqual(len(conflicts), 1, "the first carrier write must hit the real store CAS conflict")
+        stale, current = conflicts[0]
+        self.assertEqual(current, stale + 1)
+        self.assertEqual(revisions, [stale, current], "retry must use the concurrent writer's revision")
+        self.assertEqual(self.canvas()["revision"], current + 1)
+
     def test_new_carrier_is_self_owned_and_same_session_is_idempotent(self):
         node_id = run(self.mcp.ensure_external_agent_node(self.pid, "session-one"))
         before = copy.deepcopy(self.canvas())
@@ -296,14 +331,17 @@ class McpCarrierCas392Tests(_Transport392):
         self.assertEqual(self.canvas(), before)
 
     def test_rebind_keeps_existing_ownership_protection_and_legacy_missing_fields(self):
+        from app.services.agent_node_state import ownership_fields
+
         for metadata in ({}, {"createdBy": "user", "agentNodeId": None, "userTouchedAt": 111,
                               "promptEditedByUser": True},
                          {"createdBy": "agent", "agentNodeId": "original-owner", "userTouchedAt": 222,
                           "promptEditedByUser": True}):
             with self.subTest(metadata=metadata):
-                self.seed({"id": "carrier", "type": NODE_TYPE_AGENT, "mcp_session": "old-session",
-                           "title": "keep title", "agentGoal": "keep goal", **metadata})
+                self.seed_carrier(title="keep title", agentGoal="keep goal", **metadata)
                 before = copy.deepcopy(self.canvas()["nodes"][0])
+                self.assertEqual(before["mcp_session"], "old-session")
+                self.assertEqual({key: before[key] for key in ownership_fields() if key in before}, metadata)
                 self.assertEqual(run(self.mcp.ensure_external_agent_node(self.pid, "new-session")), "carrier")
                 after = copy.deepcopy(self.canvas()["nodes"][0])
                 self.assertEqual(after.pop("mcp_session"), "new-session")
@@ -313,23 +351,15 @@ class McpCarrierCas392Tests(_Transport392):
                 self.assertEqual(after, before)
 
     def test_rebind_conflict_rebuilds_from_latest_carrier_not_stale_upsert(self):
-        self.seed({"id": "carrier", "type": NODE_TYPE_AGENT, "mcp_session": "old-session",
-                   "createdBy": "agent", "agentNodeId": "original-owner", "userTouchedAt": None,
-                   "promptEditedByUser": False, "title": "before", "agentGoal": "before"})
-        original = self.store.apply_mutations
-        attempts = []
+        self.seed_carrier(createdBy="agent", agentNodeId="original-owner", userTouchedAt=None,
+                          promptEditedByUser=False, title="before", agentGoal="before")
 
-        def interleave(project_id, mutations, *, base_revision, **kwargs):
-            attempts.append(copy.deepcopy(mutations))
-            if len(attempts) == 1:
-                latest = self.canvas()
-                node = {**latest["nodes"][0], "title": "human title", "agentGoal": "human goal",
-                        "userTouchedAt": 9876, "promptEditedByUser": True, "latestField": ["retain"]}
-                original(project_id, [{"op": "upsert_node", "node": node}], base_revision=latest["revision"])
-            # First attempt now really conflicts in ProjectStore's CAS implementation.
-            return original(project_id, mutations, base_revision=base_revision, **kwargs)
+        def build_concurrent(latest):
+            node = {**latest["nodes"][0], "title": "human title", "agentGoal": "human goal",
+                    "userTouchedAt": 9876, "promptEditedByUser": True, "latestField": ["retain"]}
+            return [{"op": "upsert_node", "node": node}]
 
-        with patch.object(self.store, "apply_mutations", side_effect=interleave):
+        with self.interleave_carrier_cas(build_concurrent) as attempts:
             self.assertEqual(run(self.mcp.ensure_external_agent_node(self.pid, "new-session")), "carrier")
         self.assertEqual(len(attempts), 2)
         node = self.canvas()["nodes"][0]
@@ -346,18 +376,12 @@ class McpCarrierCas392Tests(_Transport392):
         self.broadcast.assert_awaited_once()
 
     def test_creation_conflict_reuses_minted_id_timestamp_and_ownership(self):
-        original = self.store.apply_mutations
-        attempts = []
+        def build_concurrent(_latest):
+            return [{"op": "upsert_node", "node": {
+                "id": "unrelated", "type": NODE_TYPE_PROMPT, "text": "concurrent addition",
+            }}]
 
-        def interleave(project_id, mutations, *, base_revision, **kwargs):
-            attempts.append(copy.deepcopy(mutations))
-            if len(attempts) == 1:
-                original(project_id, [{"op": "upsert_node", "node": {
-                    "id": "unrelated", "type": NODE_TYPE_PROMPT, "text": "concurrent addition",
-                }}], base_revision=base_revision)
-            return original(project_id, mutations, base_revision=base_revision, **kwargs)
-
-        with patch.object(self.store, "apply_mutations", side_effect=interleave):
+        with self.interleave_carrier_cas(build_concurrent) as attempts:
             node_id = run(self.mcp.ensure_external_agent_node(self.pid, "this-session"))
         self.assertEqual(len(attempts), 2)
         self.assertEqual(attempts[0], attempts[1], "CAS retries must not mint new identity/creation time")
@@ -369,23 +393,19 @@ class McpCarrierCas392Tests(_Transport392):
         self.broadcast.assert_awaited_once()
 
     def test_concurrent_carrier_creation_is_reused_on_retry_without_duplicate(self):
-        original = self.store.apply_mutations
-        attempts = []
+        def build_concurrent(_latest):
+            return [{"op": "upsert_node", "node": {
+                "id": "concurrent-carrier", "type": NODE_TYPE_AGENT, "mcp_session": "concurrent",
+                "createdBy": "user", "agentNodeId": None, "userTouchedAt": 123,
+                "promptEditedByUser": True,
+            }}]
 
-        def interleave(project_id, mutations, *, base_revision, **kwargs):
-            attempts.append(copy.deepcopy(mutations))
-            if len(attempts) == 1:
-                original(project_id, [{"op": "upsert_node", "node": {
-                    "id": "concurrent-carrier", "type": NODE_TYPE_AGENT, "mcp_session": "concurrent",
-                    "createdBy": "user", "agentNodeId": None, "userTouchedAt": 123,
-                    "promptEditedByUser": True,
-                }}], base_revision=base_revision)
-            return original(project_id, mutations, base_revision=base_revision, **kwargs)
-
-        with patch.object(self.store, "apply_mutations", side_effect=interleave):
+        with self.interleave_carrier_cas(build_concurrent, trusted_writer=True) as attempts:
             node_id = run(self.mcp.ensure_external_agent_node(self.pid, "this-session"))
         self.assertEqual(node_id, "concurrent-carrier")
         self.assertEqual(len(attempts), 2)
+        self.assertNotEqual(attempts[0][0]["node"]["id"], "concurrent-carrier")
+        self.assertEqual(attempts[1][0]["node"]["id"], "concurrent-carrier")
         nodes = self.canvas()["nodes"]
         self.assertEqual(len(nodes), 1)
         self.assertEqual(nodes[0]["mcp_session"], "this-session")

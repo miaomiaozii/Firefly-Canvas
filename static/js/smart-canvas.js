@@ -9747,11 +9747,10 @@ function render(){
             ? `<div class="node-upstream-deleted-marker" role="status"><svg class="ico" aria-hidden="true"><use href="#i-unlink"/></svg><span>${escapeHtml(tr('canvas.upstreamMediaDeleted'))}</span></div>`
             : '';
         const agentCardStatus = isAgent ? agentCardStatusHtml(node.id) : '';
-        // #323 监理钉B3：主 render() 路径同步注入会话框状态段（与 renderAgentNode 两路一致）。
-        const agentChatStatus = isAgent ? agentChatFrameStatusHtml(node) : '';
+        const titleKind = isAgent ? '<span class="agent-title-kind">Agent</span>' : '';
         const headActions = isAgent ? agentHeadActionButtonsHtml(node) : deleteBtn;
         const html = `<div class="image-node ${isEmpty ? 'empty-node' : ''} ${isGroup ? 'group-node' : ''} ${isHistory ? 'history-group-node' : ''} ${isPrompt ? 'prompt-smart-node' : ''} ${isLoop ? 'loop-smart-node' : ''} ${isConversation ? 'conversation-smart-node' : ''} ${isAgent ? 'agent-smart-node' : ''} ${isAgentTask ? 'agent-task-node' : ''} ${isLocalEdit ? 'local-edit-node' : ''} ${isSmartGroup ? 'smart-group-node' : ''} ${isCompactMember ? 'smart-group-member-node' : ''} ${isNodeSelected(node.id) ? 'selected' : ''} ${(dragState?.groupIds?.includes(node.id) || dragState?.id === node.id) ? 'dragging' : ''} ${node.running ? 'node-running' : ''} ${isPending ? 'node-pending' : ''}" data-id="${escapeHtml(node.id)}" data-source-node-id="${escapeHtml(sourceNodeId)}" data-source-message-id="${escapeHtml(sourceMessageId)}" style="left:${node.x || 0}px;top:${node.y || 0}px;width:${layout.width}px;height:${layout.height}px">
-            <div class="node-head"><div class="node-title">${escapeHtml(title)}</div><div class="node-head-meta">${agentCardStatus}${agentChatStatus}</div><div class="node-actions">${headActions}</div></div>
+            <div class="node-head"><div class="node-title">${titleKind}${escapeHtml(title)}</div><div class="node-head-meta">${agentCardStatus}</div><div class="node-actions">${headActions}</div></div>
             ${!isAgent && !isEmpty && !isGroup ? `<div class="floating-node-actions"><button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg></button></div>` : ''}
             ${smartNodeToolbarHtml(node)}${smartGroupToolbarHtml(node)}
             ${runTimePillHtml(node)}

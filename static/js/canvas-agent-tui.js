@@ -270,7 +270,7 @@ function agentNodeRefsTransport(nodeId, projectId, snapshot) {
         agentNodeRefsSettle(nodeId, state, snapshot, receipt);
     }).catch(error => agentNodeRefsSettle(nodeId, state, snapshot, null, String(error.message || error)));
 }
-function agentNodeRefsApplyEvent(nodeId, event) {
+function agentNodeRefsApplyEvent(nodeId, event, recordedAt) {
     const state = getAgentTuiState(nodeId), refs = agentNodeRefsInit(state);
     if (event.type === 'input_accepted' || event.type === 'input_rejected') {
         const pending = refs.pending.get(event.request_id);
@@ -287,10 +287,15 @@ function agentNodeRefsApplyEvent(nodeId, event) {
         const pending = refs.pending.get(event.request_id);
         const canonical = Array.isArray(event.node_refs) ? event.node_refs : [];
         if (pending) agentNodeRefsSettle(nodeId, state, pending, { node_refs: canonical });
-        if (existing) { existing.node_refs = canonical; existing.delivery = 'accepted'; }
-        else agentAppendMessage(state, { role: event.type === 'user_prompt' ? 'user' : 'system',
+        const timestamp = event.type === 'user_prompt' ? recordedAt : undefined;
+        if (existing) {
+            existing.node_refs = canonical;
+            existing.delivery = 'accepted';
+            if (timestamp !== undefined) existing.timestamp = timestamp;
+        } else agentAppendMessage(state, { role: event.type === 'user_prompt' ? 'user' : 'system',
             text: event.type === 'user_prompt' ? String(event.text || '') : `${event.input_type === 'steer' ? '↪ steer' : '⏳ follow_up queued'}: ${String(event.text || '')}`,
-            node_refs: canonical, request_id: event.request_id, delivery: 'accepted' });
+            node_refs: canonical, request_id: event.request_id, delivery: 'accepted',
+            ...(timestamp !== undefined ? { timestamp } : {}) });
         renderAgentNode(nodeId);
         return true;
     }
@@ -337,15 +342,18 @@ function agentNodeRefsMessageHtml(message) {
         + (status ? `<div class="agent-node-ref-delivery" role="status">${escapeHtml(status)}</div>` : '');
 }
 function agentNodeRefsContent(nodeId) {
-    const refs = agentNodeRefsInit(getAgentTuiState(nodeId));
-    const chips = agentNodeRefsIds(getAgentTuiState(nodeId)).map(id => {
+    const state = getAgentTuiState(nodeId), refs = agentNodeRefsInit(state);
+    const ids = agentNodeRefsIds(state);
+    const chips = ids.map(id => {
         const label = agentNodeRefsLabel(id, refs);
         const missing = !canvasState.nodes.some(node => node.id === id);
-        return `<span class="agent-node-ref-chip${missing ? ' agent-node-ref-missing' : ''}">${agentNodeRefsVisual(label)}<span class="agent-node-ref-title" title="${escapeAttr(label.title)}">${escapeHtml(label.title)}</span><button type="button" data-agent-ref-remove="${escapeAttr(id)}" aria-label="${escapeAttr(tr('smart.agentRefRemove').replace('{title}', label.title))}">${agentIco('x')}</button></span>`;
+        const locate = `<button type="button" class="agent-node-ref-chip${missing ? ' agent-node-ref-missing' : ''}" data-agent-ref-draft-jump="${escapeAttr(id)}" title="${escapeAttr(missing ? tr('smart.agentRefDeleted') : label.title)}"${missing ? ' disabled' : ''}><span class="agent-node-ref-title">${escapeHtml(label.title)}</span><span class="agent-node-ref-arrow" aria-hidden="true">↗</span></button>`;
+        const remove = `<button type="button" class="agent-node-ref-remove" data-agent-ref-remove="${escapeAttr(id)}" aria-label="${escapeAttr(tr('smart.agentRefRemove').replace('{title}', label.title))}">${agentIco('x')}</button>`;
+        return ids.length === 1 ? locate + remove : `<span class="agent-node-ref-pair">${locate}${remove}</span>`;
     }).join('');
     const menu = refs.menu;
     const options = menu ? menu.items.map((ref, index) => `<button type="button" role="option" tabindex="-1" id="agent-ref-option-${escapeAttr(nodeId)}-${index}" aria-selected="${index === menu.index}" data-agent-ref-choice="${escapeAttr(ref.node_id)}">${agentNodeRefsVisual(ref)}<span>${escapeHtml(ref.title)}</span><span class="agent-node-ref-kind">${escapeHtml(tr(agentNodeRefsType(ref.type)[1]))}</span></button>`).join('') : '';
-    return (chips ? `<div class="agent-node-ref-chips" aria-label="${escapeAttr(tr('smart.agentRefDraft'))}">${chips}</div>` : '')
+    return (chips ? `<div class="agent-node-ref-chips" aria-label="${escapeAttr(tr('smart.agentRefDraft'))}"><span class="agent-tui-ref-label">本轮引用</span>${chips}</div>` : '')
         + (menu ? `<div class="agent-node-refs-menu" id="agent-ref-menu-${escapeAttr(nodeId)}" role="listbox" aria-label="${escapeAttr(tr('smart.agentRefSearch'))}">${options || `<div class="agent-node-ref-empty" role="status">${escapeHtml(tr('smart.agentRefNoMatches'))}</div>`}</div>` : '')
         + (refs.error ? `<div class="agent-node-ref-error" role="alert">${escapeHtml(refs.error)}</div>` : '');
 }
@@ -408,6 +416,25 @@ function agentNodeRefsBindPanel(root, nodeId) {
         event.stopPropagation();
         agentNodeRefsChoose(nodeId, button.getAttribute('data-agent-ref-choice'));
     }));
+    root.querySelectorAll('[data-agent-ref-draft-jump]').forEach(button => button.addEventListener('click', event => {
+        event.stopPropagation();
+        agentNodeRefsJump(nodeId, button.getAttribute('data-agent-ref-draft-jump'));
+    }));
+}
+function agentNodeRefsJump(nodeId, id) {
+    if (!canvasState.nodes.some(target => target.id === id)) {
+        agentNodeRefsInit(getAgentTuiState(nodeId)).error = tr('smart.agentRefDeleted');
+        agentNodeRefsRefreshPanel(nodeId);
+        return;
+    }
+    canvasState.agentNodeRefsLocate(id);
+    const target = [...document.querySelectorAll('[data-id]')].find(card => card.getAttribute('data-id') === id);
+    if (target) {
+        target.classList.remove('agent-node-ref-flash');
+        void target.offsetWidth;
+        target.classList.add('agent-node-ref-flash');
+        target.addEventListener('animationend', () => target.classList.remove('agent-node-ref-flash'), { once: true });
+    }
 }
 function agentNodeRefsBind(el, node) {
     const nodeId = node.id, state = getAgentTuiState(nodeId), refs = agentNodeRefsInit(state);
@@ -455,21 +482,7 @@ function agentNodeRefsBind(el, node) {
         button.addEventListener('mousedown', event => event.stopPropagation());
         button.addEventListener('click', event => {
             event.stopPropagation();
-            const id = button.getAttribute('data-agent-ref-jump');
-            if (!canvasState.nodes.some(target => target.id === id)) {
-                refs.error = tr('smart.agentRefDeleted');
-                agentNodeRefsRefreshPanel(nodeId);
-                return;
-            }
-            const locate = canvasState.agentNodeRefsLocate;
-            if (typeof locate === 'function') locate(id);
-            const target = [...document.querySelectorAll('[data-id]')].find(card => card.getAttribute('data-id') === id);
-            if (target) {
-                target.classList.remove('agent-node-ref-flash');
-                void target.offsetWidth;
-                target.classList.add('agent-node-ref-flash');
-                target.addEventListener('animationend', () => target.classList.remove('agent-node-ref-flash'), { once: true });
-            }
+            agentNodeRefsJump(nodeId, button.getAttribute('data-agent-ref-jump'));
         });
     });
     agentNodeRefsRefreshPanel(nodeId);
@@ -788,9 +801,17 @@ function openAgentWebSocket(nodeId, projectId) {
 // 流式消息定型：streaming 标记只在追加增量时写入且之前没人清，下一轮的
 // text_delta / thinking_delta 就会续写到上一轮末尾（#222 的用户可见症状）。
 function finalizeAgentStreamingTurn(state){
+    const reply = state._turnTextMessage;
+    if (reply) delete reply.streaming;
     const lastMessage = state.messages[state.messages.length - 1];
     if (lastMessage && lastMessage.streaming) delete lastMessage.streaming;
     archiveAgentThinking(state);
+}
+
+// Pi message.timestamp is in milliseconds. The Firefly replay envelope (not the WS event)
+// has a server-recorded Unix time in seconds. Neither source exists on optimistic user rows.
+function agentMessageTimestamp(ms) {
+    return Number.isFinite(ms) && ms > 0 && ms <= 8.64e15 ? ms : undefined;
 }
 
 // #318 票 C：事件回放。WS session 确认事件后拉 GET events?since=lastSeq 重建：
@@ -836,7 +857,8 @@ function replayAgentEvents(nodeId, state) {
                     const s = Number(rec.seq || ev.seq || 0);
                     if (s && s > (state.lastSeq || 0)) {
                         state.lastSeq = s;
-                        applyAgentEventBody(nodeId, ev);
+                        const recordedAt = Number.isFinite(rec.ts) ? agentMessageTimestamp(rec.ts * 1000) : undefined;
+                        applyAgentEventBody(nodeId, ev, recordedAt);
                     }
                 }
             } finally { state._applyingReplay = false; }
@@ -875,15 +897,16 @@ function handleAgentEvent(nodeId, event) {
     applyAgentEventBody(nodeId, event);
 }
 
-function applyAgentEventBody(nodeId, event) {
+function applyAgentEventBody(nodeId, event, recordedAt) {
     const state = getAgentTuiState(nodeId);
-    if (agentNodeRefsApplyEvent(nodeId, event)) return;
+    if (agentNodeRefsApplyEvent(nodeId, event, recordedAt)) return;
     const eventType = event.type;
 
     switch (eventType) {
         case 'user_prompt':
             // #318 票 C：回放里的 user 侧（live 不广播此事件，无回声双气泡风险）。
-            agentAppendMessage(state, { role: 'user', text: String(event.text || '') });
+            agentAppendMessage(state, { role: 'user', text: String(event.text || ''),
+                ...(recordedAt !== undefined ? { timestamp: recordedAt } : {}) });
             break;
         case 'session':
             state.status = event.status === 'running' || event.status === 'stopped' || event.status === 'aborted' ? 'idle' : (event.status || 'idle');
@@ -946,13 +969,17 @@ function applyAgentEventBody(nodeId, event) {
             // 在这里把末条流式消息定型。
             const lastMessage = state._turnTextMessage || state.messages[state.messages.length - 1];
             const streamedThisTurn = Boolean(state._turnTextMessage || (lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming));
+            const nativeTime = agentMessageTimestamp(msg.timestamp);
+            const timestamp = nativeTime ?? recordedAt;
             finalizeAgentStreamingTurn(state);
-            if (text && streamedThisTurn && lastMessage && !lastMessage.text) {
-                // delta 全是空串时末条是空的，无条件跳过 turn_end 会让本轮一个字都不显示。
-                lastMessage.text = text;
-            } else if (text && !streamedThisTurn) {
+            if (streamedThisTurn) {
+                if (text && !lastMessage.text) lastMessage.text = text;
+                const knownTime = nativeTime ?? lastMessage.timestamp ?? recordedAt;
+                if (knownTime !== undefined) lastMessage.timestamp = knownTime;
+            } else if (text) {
                 // 流式增量已经把文本写进历史，turn_end 再推一遇就是重复回复。
-                agentAppendMessage(state, { role: 'assistant', text });
+                agentAppendMessage(state, { role: 'assistant', text,
+                    ...(timestamp !== undefined ? { timestamp } : {}) });
             }
             // #288：上游 4xx（百炼额度耗尽/模型 ID 不存在等）时 pi 回空 content+errorMessage，
             // 此前前端只渲染 text → 用户看到的是“永久无响应”。错误必须可见、可操作。
@@ -962,7 +989,7 @@ function applyAgentEventBody(nodeId, event) {
                 agentAppendMessage(state, { role: 'assistant', text:
                     '⚠️ **模型错误（本轮无回复）**：' + em +
                     '\n\n处置：模型下拉换一个再试；百炼报 quota → 控制台充值或关掉“仅用免费额度”；'
-                    + '报 model_not_found → 当前账号无此模型，改选其它项。' });
+                    + '报 model_not_found → 当前账号无此模型，改选其它项。', diagnostic: true });
             }
             break;
         }
@@ -973,10 +1000,15 @@ function applyAgentEventBody(nodeId, event) {
                 archiveAgentThinking(state);
                 // Append to last assistant message or create new
                 const last = state.messages[state.messages.length - 1];
+                const nativeTime = agentMessageTimestamp(event.message?.timestamp);
+                const timestamp = nativeTime ?? recordedAt;
                 if (last && last.role === 'assistant' && last.streaming) {
                     last.text += delta;
+                    const knownTime = nativeTime ?? last.timestamp ?? recordedAt;
+                    if (knownTime !== undefined) last.timestamp = knownTime;
                 } else {
-                    agentAppendMessage(state, { role: 'assistant', text: delta, streaming: true });
+                    agentAppendMessage(state, { role: 'assistant', text: delta, streaming: true,
+                        ...(timestamp !== undefined ? { timestamp } : {}) });
                 }
                 state._turnTextMessage = state.messages[state.messages.length - 1];
             } else if (ame.type === 'thinking_delta') {
@@ -1308,7 +1340,7 @@ function beginAgentSettingsRequest(nodeId, resetHistory = false) {
     if (state.settingsPending) state.settingsPending = false;
     state.settingsRequestSeq = (state.settingsRequestSeq || 0) + 1;
     return {
-        state, seq: state.settingsRequestSeq,
+        state, seq: state.settingsRequestSeq, viewEpoch: state.viewEpoch,
         hadNode: canvasState.nodes.some(n => n.id === nodeId),
         beforeNode: JSON.parse(JSON.stringify(canvasState.nodes.find(n => n.id === nodeId) || null)),
         history: resetHistory ? agentSettingsHistoryFingerprint(state) : null,
@@ -1318,7 +1350,7 @@ function beginAgentSettingsRequest(nodeId, resetHistory = false) {
 function resetAgentSettingsHistory(request) {
     const state = request.state;
     // 回包前有新消息、工具、D2 思考/轮次或缓冲事件时保留新活动。
-    if (request.history !== agentSettingsHistoryFingerprint(state)) return;
+    if (request.viewEpoch !== state.viewEpoch || request.history !== agentSettingsHistoryFingerprint(state)) return;
     state.messages = [];
     state.toolActivities.clear();
     // #408: a confirmed branch boundary also invalidates display and replay state.
@@ -1409,16 +1441,19 @@ async function forkAgentSession(nodeId, projectId, entryId, name) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ entry_id: entryId, name: name, user_edit: true }),
         });
-        if (!response.ok) throw new Error('Fork failed');
         const data = await response.json();
-        if (!receiveAgentSettingsResponse(nodeId, request, data, ['branches', 'current_branch'])) return;
+        if (!response.ok) throw new Error(agentNodeRefsError(data, `HTTP ${response.status}`));
+        if (!receiveAgentSettingsResponse(nodeId, request, data, ['branches', 'current_branch'])) {
+            if (isCurrentAgentSettingsRequest(nodeId, request)) throw new Error('未收到可应用的分叉结果');
+            return;
+        }
         resetAgentSettingsHistory(request);
         renderAgentNode(nodeId);
     } catch (e) {
         if (!isCurrentAgentSettingsRequest(nodeId, request)) return;
         console.error('Failed to fork agent session:', e);
         // #348: 用户触发的 fork 失败——选择器已关，不提示用户会以为成功。
-        window.ffToast?.error?.(`Fork 失败：${e && e.message ? e.message : String(e)}`);
+        window.ffToast.error(`分叉失败：${String(e)}`);
     }
 }
 
@@ -1430,16 +1465,20 @@ async function switchAgentBranch(nodeId, projectId, branchId) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ branch_id: branchId, user_edit: true }),
         });
-        if (!response.ok) throw new Error('Switch branch failed');
         const data = await response.json();
-        if (!receiveAgentSettingsResponse(nodeId, request, data, ['current_branch'])) return;
+        if (!response.ok) throw new Error(agentNodeRefsError(data, `HTTP ${response.status}`));
+        if (!receiveAgentSettingsResponse(nodeId, request, data, ['current_branch'])) {
+            if (isCurrentAgentSettingsRequest(nodeId, request)) throw new Error('未收到可应用的分支设置');
+            return;
+        }
+        if (request.beforeNode && branchId === request.beforeNode.current_branch) return;
         resetAgentSettingsHistory(request);
         renderAgentNode(nodeId);
     } catch (e) {
         if (!isCurrentAgentSettingsRequest(nodeId, request)) return;
         console.error('Failed to switch agent branch:', e);
         // #348: 用户触发的分支切换失败——不提示用户会以为已切换。
-        window.ffToast?.error?.(`切换分支失败：${e && e.message ? e.message : String(e)}`);
+        window.ffToast.error(`切换分支失败：${String(e)}`);
     }
 }
 
@@ -1482,6 +1521,7 @@ async function setAgentHostSettings(nodeId, projectId, setting) {
         if (result.error || !isCurrentAgentSettingsRequest(nodeId, request)) return false;
         const data = result.data;
         if (!receiveAgentSettingsResponse(nodeId, request, data, ['agentCli', 'agentHostSettings', 'model'])) {
+            if (!isCurrentAgentSettingsRequest(nodeId, request)) return false;
             state.settingsError = '权威画布未接受设置，请刷新后重试';
             window.ffToast.error(state.settingsError);
             return false;
@@ -1640,55 +1680,78 @@ function openAgentModelPicker(nodeId, projectId) {
 }
 
 // #317：fork 选择器从两次 prompt() 换为画布自有 <dialog>（与 project-list.js showModal 同一体系）
-function agentForkPickerDialog(messages) {
+function agentForkPickerDialog(messages, context) {
     return new Promise(resolve => {
         const dlg = document.createElement('dialog');
         dlg.className = 'agent-fork-dialog';
         const items = messages.map((m, i) => {
-            const text = String(m.text || '').replace(/\s+/g, ' ').slice(0, 120);
-            return `<label><input type="radio" name="forkidx" value="${i}" ${i === messages.length - 1 ? 'checked' : ''}><span class="agent-fork-idx">${i + 1}.</span><span>${escapeHtml(text)}</span></label>`;
+            const text = m.text.replace(/\s+/g, ' ');
+            const radio = context ? 'required' : (i === messages.length - 1 ? 'checked' : '');
+            const title = context ? ` title="${escapeAttr(text)}"` : '';
+            return `<label><input type="radio" name="forkidx" value="${i}" ${radio}><span class="agent-fork-idx">${i + 1}.</span><span${title}>${escapeHtml(text.slice(0, 120))}</span></label>`;
         }).join('');
-        const defaultName = escapeHtml(String(messages[messages.length - 1]?.text || '').replace(/\s+/g, ' ').slice(0, 30));
-        dlg.innerHTML = `<h3>从哪轮分叉？</h3>
-            <div class="agent-fork-list">${items}</div>
-            <input class="agent-fork-name" name="branchname" placeholder="分支名称（留空自动）" value="${defaultName}">
-            <form method="dialog" class="agent-fork-actions">
-                <button value="cancel" formnovalidate>取消</button>
-                <button value="ok" class="primary">分叉</button>
+        const defaultName = context ? '' : escapeAttr(messages[messages.length - 1].text.replace(/\s+/g, ' ').slice(0, 30));
+        const excerpt = text => escapeHtml(text.replace(/\s+/g, ' ').trim().slice(0, 120));
+        const contextHtml = context ? `<p>萤火回复：${excerpt(context.reply.text)}<br>画布中的下一条用户消息：${excerpt(context.nextUser.text)}</p>
+            <p>Pi 只能在选中的用户消息之前分叉，不能直接选择助手回复。要保留这条回复，请在 Pi 列表中确认并选择它之后的用户消息；无法确认时请取消。</p>` : '';
+        dlg.innerHTML = `<h3>${context ? '在 Pi 中选择分叉点' : '从哪轮分叉？'}</h3>
+            ${contextHtml}
+            <form method="dialog">
+                <div class="agent-fork-list">${items}</div>
+                <input class="agent-fork-name" name="branchname" placeholder="分支名称（留空自动）" value="${defaultName}">
+                <div class="agent-fork-actions">
+                    <button value="cancel" formnovalidate>取消</button>
+                    <button value="ok" class="primary">分叉</button>
+                </div>
             </form>`;
         dlg.addEventListener('close', () => {
-            const ok = dlg.returnValue === 'ok';
             const checked = dlg.querySelector('input[name="forkidx"]:checked');
-            const name = (dlg.querySelector('input[name="branchname"]')?.value || '').trim();
+            const pick = dlg.returnValue === 'ok' && checked ? {
+                index: Number(checked.value), name: dlg.querySelector('input[name="branchname"]').value.trim(),
+            } : null;
             dlg.remove();
-            resolve(ok && checked ? { index: Number(checked.value), name } : null);
+            resolve(pick);
         });
         document.body.appendChild(dlg);
-        dlg.showModal();
+        try { dlg.showModal(); }
+        catch (error) { dlg.remove(); throw error; }
     });
 }
 
-async function showForkPicker(nodeId, projectId) {
+async function showForkPicker(nodeId, projectId, context) {
+    const state = getAgentTuiState(nodeId);
+    const initiallyDisabled = agentSessionForkDisabled(state);
+    if (initiallyDisabled) { window.ffToast.error(`无法分叉：${initiallyDisabled}`); return; }
     const request = beginAgentSettingsRequest(nodeId);
+    const stillEligible = () => {
+        const state = request.state;
+        let reason = state.viewEpoch !== request.viewEpoch ? '会话已切换' : agentSessionForkDisabled(state);
+        if (!reason && context) reason = agentMessageForkDisabled(state, context.reply, agentMessageForkAnchors(state.messages).get(context.reply) === context.nextUser);
+        if (reason) window.ffToast.error(`无法分叉：${reason}`);
+        return !reason;
+    };
     try {
-        const response = await fetch(`/api/projects/${encodeURI(projectId)}/agent-nodes/${encodeURI(nodeId)}/fork-messages`);
-        if (!response.ok) throw new Error('Failed to get fork messages');
+        const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/fork-messages`);
         const data = await response.json();
-        if (!isCurrentAgentSettingsRequest(nodeId, request)) return;
-        const messages = data.messages || [];
-        if (messages.length === 0) {
-            // No forkable messages
+        if (!isCurrentAgentSettingsRequest(nodeId, request) || !stillEligible()) return;
+        if (!response.ok) throw new Error(agentNodeRefsError(data, `HTTP ${response.status}`));
+        const messages = data.messages;
+        if (!Array.isArray(messages) || messages.some(m => !m || typeof m.entryId !== 'string' || !m.entryId || typeof m.text !== 'string')) {
+            throw new Error('Pi 分叉点响应无效');
+        }
+        if (!messages.length) {
+            window.ffToast.error('Pi 没有可选的用户消息分叉点');
             return;
         }
-        const picked = await agentForkPickerDialog(messages);
-        if (!picked || !isCurrentAgentSettingsRequest(nodeId, request)) return;
+        const picked = await agentForkPickerDialog(messages, context);
+        if (!picked || !isCurrentAgentSettingsRequest(nodeId, request) || !stillEligible()) return;
         const message = messages[picked.index];
-        await forkAgentSession(nodeId, projectId, message.entryId, picked.name || '');
+        if (!message) throw new Error('所选分叉点无效');
+        await forkAgentSession(nodeId, projectId, message.entryId, picked.name);
     } catch (e) {
         if (!isCurrentAgentSettingsRequest(nodeId, request)) return;
         console.error('Failed to show fork picker:', e);
-        // #348: 用户点开 Fork 选择器但拉取消息失败——不提示用户会以为没有可 fork 的消息。
-        window.ffToast?.error?.(`打开 Fork 选择器失败：${e && e.message ? e.message : String(e)}`);
+        window.ffToast.error(`打开分叉选择器失败：${String(e)}`);
     }
 }
 
@@ -1929,6 +1992,57 @@ function agentReconnectBannerHtml(state) {
     return `<div class="agent-tui-error-banner" role="alert"><span class="agent-tui-error-banner-text">${text}</span><button type="button" class="agent-tui-btn agent-tui-btn-retry" data-agent-retry="1">重试连接</button></div>`;
 }
 
+function agentMessageForkAnchors(messages) {
+    // Local neighbors provide context only. Pi's fork-messages exposes no timestamps or
+    // assistant IDs; only an explicit selection from its native list can supply an ID.
+    const anchors = new Map();
+    let priorUser = false;
+    const replies = [];
+    for (const msg of messages) {
+        if (msg.role === 'user') {
+            const accepted = (msg.delivery === undefined || msg.delivery === 'accepted') && msg.text.trim();
+            if (accepted && priorUser) for (const reply of replies) anchors.set(reply, msg);
+            replies.length = 0;
+            priorUser = accepted;
+        } else if (msg.role === 'assistant' && priorUser) replies.push(msg);
+    }
+    return anchors;
+}
+
+function agentSessionForkDisabled(state) {
+    if (agentIsReadonly(state)) return '只读会话不能分叉';
+    if (state.viewHost !== 'pi') return '仅 Pi 宿主支持分叉';
+    if (agentParametersLocked(state)) return '请等待当前操作结束后再分叉';
+    return '';
+}
+
+function agentMessageForkDisabled(state, msg, hasAnchor) {
+    const reason = agentSessionForkDisabled(state);
+    if (reason) return reason;
+    if (msg.streaming) return '请等待这条回复完成后再分叉';
+    if (!msg.text.trim() || msg.diagnostic) return '这条消息没有可分叉的回复';
+    if (!hasAnchor) return '缺少可确认的前后用户消息，无法从这条回复分叉';
+    return '';
+}
+
+function agentMessageCopyDisabled(msg) {
+    if (msg.streaming) return '请等待这条回复完成后再复制';
+    if (!msg.text.trim()) return '没有可以复制的文本';
+    if (!navigator.clipboard?.writeText) return '当前页面无法访问系统剪贴板，请选中文本手动复制';
+    return '';
+}
+
+function agentMessageActionsHtml(state, entry, hasAnchor) {
+    const button = (label, attr, reason, hint) => `<button type="button" ${attr}="${escapeAttr(entry.key)}" title="${escapeAttr(reason || hint)}"${reason ? ' disabled' : ''}>${label}</button>`;
+    return `<div class="agent-tui-msg-actions">${button('复制', 'data-agent-msg-copy', agentMessageCopyDisabled(entry.message), '复制回复原文')}${button('从此分叉', 'data-agent-msg-fork', agentMessageForkDisabled(state, entry.message, hasAnchor), '打开 Pi 选择器，手动选择这条回复之后的用户消息')}</div>`;
+}
+
+function agentMessageBylineHtml(msg, date) {
+    const author = msg.role === 'user' ? '你' : '<span class="agent-tui-msg-mark" aria-hidden="true">✳</span> 萤火';
+    const time = date ? `<time datetime="${date.toISOString()}">${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}</time>` : '';
+    return `<div class="agent-tui-msg-byline"><span>${author}</span>${time}</div>`;
+}
+
 function agentNodeBodyHtml(node) {
     const nodeId = node.id;
     const state = getAgentTuiState(nodeId);
@@ -1938,19 +2052,34 @@ function agentNodeBodyHtml(node) {
     const timeline = agentTimelineSync(state);
     if (state.scrollBinding && state.scrollBinding.body.isConnected !== false) captureAgentScroll(state, state.scrollBinding.body);
     const rowHtml = new Map();
+    const dateHeaders = new Map();
+    const today = new Date().toDateString();
+    const title = typeof node.title === 'string' ? node.title.trim() : '';
+    // The topic is the last segment of a qualified title (e.g. project · topic).
+    const topic = title.split(' · ').at(-1);
+    const dateSuffix = topic && !/^agent$/i.test(topic) ? ` · ${escapeHtml(topic)}` : '';
+    const forkAnchors = agentMessageForkAnchors(state.messages);
+    let previousDay;
     for (const entry of timeline) {
         if (entry.kind === 'tools') continue;
         const msg = entry.message;
+        const timestamp = agentMessageTimestamp(msg.timestamp);
+        const date = (msg.role === 'user' || msg.role === 'assistant') && timestamp !== undefined ? new Date(timestamp) : null;
+        if (date && date.toDateString() !== previousDay) {
+            previousDay = date.toDateString();
+            const day = previousDay === today ? '今天' : `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日`;
+            dateHeaders.set(entry.key, `<div class="agent-tui-conversation-date">${day}${dateSuffix}</div>`);
+        }
         let messagesHtml = '';
         if (msg.role === 'user') {
             // #268：附件名列表（小字跟在消息下方）
             const attachNames = (msg.attachments || []).filter(Boolean);
             const attachHtml = attachNames.length
                 ? `<div class="agent-tui-msg-attach">${agentIco('paperclip')} ${attachNames.map(escapeHtml).join(' · ')}</div>` : '';
-            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-user"><span class="agent-tui-msg-role">&gt;</span> <span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span>${attachHtml}</div>`;
+            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-user">${agentMessageBylineHtml(msg, date)}<span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span>${attachHtml}</div>`;
         } else if (msg.role === 'assistant') {
             const streamingClass = msg.streaming ? ' agent-tui-msg-streaming' : '';
-            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-assistant${streamingClass}"><div class="agent-tui-msg-text">${renderAgentAssistantHtml(msg.text)}</div></div>`;
+            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-assistant${streamingClass}">${agentMessageBylineHtml(msg, date)}<div class="agent-tui-msg-text">${renderAgentAssistantHtml(msg.text)}</div>${agentMessageActionsHtml(state, entry, forkAnchors.has(msg))}</div>`;
         } else if (msg.role === 'thinking' || entry.kind === 'thinking') {
             const live = entry.kind === 'thinking';
             const open = state.thoughtExpanded && state.thoughtExpanded[entry.key] !== undefined
@@ -2028,7 +2157,8 @@ function agentNodeBodyHtml(node) {
             + `<div class="agent-tui-tool-group-items">${cardsHtml}</div></details>`);
     }
 
-    const timelineHtml = timeline.map(entry => `<div class="agent-tui-entry" data-agent-entry-key="${escapeAttr(entry.key)}">${rowHtml.get(entry.key) || ''}</div>`).join('');
+    // Separators are presentation only: no timeline key, reading anchor, tick, or unread content.
+    const timelineHtml = timeline.map(entry => `${dateHeaders.get(entry.key) ?? ''}<div class="agent-tui-entry" data-agent-entry-key="${escapeAttr(entry.key)}">${rowHtml.get(entry.key)}</div>`).join('');
     // Expansion, selection and the global brain toggle are UI changes, not new unread content.
     const timelineContent = JSON.stringify([timeline.map(entry => entry.kind === 'tools'
         ? [entry.key, entry.items.map(({ toolCallId, activity: a }) => [toolCallId, a.name, a.status, a.args, a.result, a.update, a.duration_ms])]
@@ -2053,18 +2183,26 @@ function agentNodeBodyHtml(node) {
     const currentModel = state.sessionModel !== undefined ? state.sessionModel : setting.model;
     const disabled = parameterDisabled ? ' disabled' : '';
     const currentAutonomy = node.autonomy || 'cautious';
+    const modelLabel = currentModel || '跟随宿主';
+    const shortModel = modelLabel.length > 24 ? `${modelLabel.slice(0, 11)}…${modelLabel.slice(-11)}` : modelLabel;
+    const effortLabel = setting.effort === null ? '跟随宿主' : setting.effort;
+    const hostLabel = state.viewHost === 'pi' ? 'Pi' : 'Codex';
+    const chevron = agentIco('chevron-down');
     const toolbarHtml = `<div class="agent-tui-setting-toolbar" aria-label="节点参数">
-        <select class="agent-tui-host-select" data-agent-host="${escapeAttr(nodeId)}" aria-label="选择宿主"${disabled}>
-            <option value="pi"${state.viewHost === 'pi' ? ' selected' : ''}>Pi</option><option value="codex"${state.viewHost === 'codex' ? ' selected' : ''}>Codex</option>
-        </select>
-        <button type="button" class="agent-tui-model-select" data-agent-model-picker="${escapeAttr(nodeId)}" aria-haspopup="dialog"${disabled}>模型 · ${escapeHtml(currentModel || '跟随宿主')}</button>
-        <button type="button" class="agent-tui-effort-select" data-agent-effort-picker="${escapeAttr(nodeId)}" aria-haspopup="dialog"${disabled}>思考 · ${escapeHtml(setting.effort === null ? '跟随宿主' : setting.effort)}</button>
-        <select class="agent-tui-autonomy-select" data-agent-autonomy="${escapeAttr(nodeId)}" title="自治确认档位" aria-label="自治确认档位"${disabled}>
-            <option value="cautious" ${currentAutonomy === 'cautious' ? 'selected' : ''}>每张</option>
-            <option value="standard" ${currentAutonomy === 'standard' ? 'selected' : ''}>每批</option>
-            <option value="autonomous" ${currentAutonomy === 'autonomous' ? 'selected' : ''}>无需</option>
-        </select>
+        <details class="agent-tui-host-picker">
+            <summary class="agent-tui-setting-trigger" data-agent-host-picker aria-label="宿主 ${hostLabel}" aria-disabled="${parameterDisabled}"><span class="agent-tui-setting-caption">宿主</span><b>${hostLabel}</b>${chevron}</summary>
+            <div class="agent-tui-host-options" role="group" aria-label="选择宿主">
+                <button type="button" data-agent-host-choice="pi" aria-pressed="${state.viewHost === 'pi'}"${disabled}>Pi</button><button type="button" data-agent-host-choice="codex" aria-pressed="${state.viewHost === 'codex'}"${disabled}>Codex</button>
+            </div>
+        </details>
+        <span class="agent-tui-setting-dot" aria-hidden="true">·</span><button type="button" class="agent-tui-setting-trigger" data-agent-model-picker="${escapeAttr(nodeId)}" aria-haspopup="dialog" title="${escapeAttr(modelLabel)}" aria-label="模型 ${escapeAttr(modelLabel)}"${disabled}><span class="agent-tui-setting-caption">模型</span><b>${escapeHtml(shortModel)}</b>${chevron}</button>
+        <span class="agent-tui-setting-dot" aria-hidden="true">·</span><button type="button" class="agent-tui-setting-trigger" data-agent-effort-picker="${escapeAttr(nodeId)}" aria-haspopup="dialog"${disabled}><span class="agent-tui-setting-caption">思考</span><b>${escapeHtml(effortLabel)}</b>${chevron}</button>
     </div>`;
+    const autonomyHtml = `<div class="agent-tui-autonomy" role="group" aria-label="自治确认档位">${[['cautious', '每张'], ['standard', '每批'], ['autonomous', '无需']].map(([value, label]) =>
+        `<button type="button" data-agent-autonomy-choice="${value}" aria-pressed="${value === currentAutonomy}"${disabled}>${label}</button>`).join('')}</div>`;
+    const canSteer = !readonly && !state.stopPending && ['busy', 'retrying'].includes(state.status);
+    const canStop = canSteer || (!readonly && !state.stopPending && state.status === 'waiting_confirm');
+    const forkDisabledReason = agentSessionForkDisabled(state);
     const readonlyBanner = readonly ? `<div class="agent-tui-readonly-banner" role="status">只读查看 ${escapeHtml(state.viewHost)} · 当前活跃宿主 ${escapeHtml(state.activeHost)}
         <button type="button" data-agent-view-current>返回当前会话</button><button type="button" data-agent-resume-host${agentParametersLocked(state) ? ' disabled' : ''}>切回此宿主继续</button></div>` : '';
 
@@ -2087,8 +2225,6 @@ function agentNodeBodyHtml(node) {
         pendingHtml = `<div class="agent-tui-attach-row">${chips}</div>`;
     }
 
-    pendingHtml += agentNodeRefsComposerHtml(nodeId);
-
     // #301：空会话给 body 加类，空状态垂直居中，缓解「中间大空白」的失衡感。
     const hasTuiContent = Boolean(timeline.length || state.confirm);
 
@@ -2098,6 +2234,7 @@ function agentNodeBodyHtml(node) {
         ${agentReconnectBannerHtml(state)}
         ${state.stopPending && !readonly ? `<div class="agent-tui-parameter-hint" role="status">等待宿主确认停止，参数仍锁定。<button type="button" data-agent-stop-status>重新核验停止状态</button></div>` : ''}
         ${agentProgressHtml(node)}
+        ${agentNodeRefsComposerHtml(nodeId)}
         <div class="agent-tui-body-wrap">
         <nav class="agent-message-navigation" aria-label="用户消息导航"></nav>
         <div class="agent-tui-body${hasTuiContent ? '' : ' agent-tui-body-empty'}" data-agent-tui-body="${escapeAttr(nodeId)}">
@@ -2112,23 +2249,26 @@ function agentNodeBodyHtml(node) {
         ${pendingHtml}
         <div class="agent-tui-input-row">
             <div class="agent-tui-input-line">
-                <span class="agent-tui-prompt" aria-hidden="true">&gt;</span>
-                <textarea class="agent-tui-input" data-agent-tui-input="${escapeAttr(nodeId)}" placeholder="输入指令，Enter 发送" title="Enter 发送 / Shift+Enter 换行；运行中 Enter 排队为后续指令" aria-label="Agent 指令输入框" rows="3" style="min-height:96px"${readonly ? ' disabled' : ''}>${escapeHtml(state.draft || '')}</textarea> <!-- #314：草稿随重建恢复 -->
+                <textarea class="agent-tui-input" data-agent-tui-input="${escapeAttr(nodeId)}" placeholder="继续描述你的想法…" title="Enter 发送 / Shift+Enter 换行；运行中 Enter 排队为后续指令" aria-label="Agent 指令输入框" rows="3" style="min-height:96px"${readonly ? ' disabled' : ''}>${escapeHtml(state.draft || '')}</textarea> <!-- #314：草稿随重建恢复 -->
             </div>
             ${toolbarHtml}
-            <div class="agent-tui-parameter-hint agent-tui-effort-hint" role="status">${escapeHtml(agentEffortHint(state, setting))}</div>
             <div class="agent-tui-action-row">
                 <div class="agent-tui-action-buttons">
                     <button type="button" class="agent-tui-btn agent-tui-btn-attach" data-agent-attach="${escapeAttr(nodeId)}" title="${tr('smart.agentAttachFile')}" aria-label="${tr('smart.agentAttachFile')}"${readonly ? ' disabled' : ''}>${agentIco('paperclip')}</button>
-                    <button type="button" class="agent-tui-btn agent-tui-btn-thinking ${state.thinkingVisible ? 'agent-tui-btn-active' : ''}" data-agent-thinking="${escapeAttr(nodeId)}" title="显示/隐藏思考过程" aria-label="显示或隐藏思考过程" aria-pressed="${state.thinkingVisible ? 'true' : 'false'}">${agentIco('brain')}</button> <!-- #316：激活态类名修复（原为裸属性，CSS 永远不命中）；#317：aria-pressed -->
-                    <button type="button" class="agent-tui-btn agent-tui-btn-steer" data-agent-steer="${escapeAttr(nodeId)}" title="重定向当前回合（运行中可用）" aria-label="重定向当前回合" ${readonly || state.stopPending || !['busy', 'retrying'].includes(state.status) ? 'disabled' : ''}>${agentIco('corner-up-right')}</button>
-                    <button type="button" class="agent-tui-btn agent-tui-btn-followup" data-agent-followup="${escapeAttr(nodeId)}" title="排队后续指令（运行中可用）" aria-label="排队后续指令" ${readonly || state.stopPending || !['busy', 'retrying'].includes(state.status) ? 'disabled' : ''}>${agentIco('loader-2')}</button>
-                    <button type="button" class="agent-tui-btn agent-tui-btn-abort" data-agent-abort="${escapeAttr(nodeId)}" title="中止当前回合（运行中可用）" aria-label="中止当前回合" ${readonly || state.stopPending || !['busy', 'retrying', 'waiting_confirm'].includes(state.status) ? 'disabled' : ''}>${agentIco('square')}</button>
+                    <button type="button" class="agent-tui-btn" data-agent-fork title="${forkDisabledReason || '从会话分叉'}" aria-label="从会话分叉"${forkDisabledReason ? ' disabled' : ''}>${agentIco('git-branch')}</button>
+                    <button type="button" class="agent-tui-btn" data-agent-cli title="由外部 CLI 接管" aria-label="由外部 CLI 接管">${agentIco('terminal')}</button>
+                    <span class="agent-tui-action-divider" aria-hidden="true"></span>${autonomyHtml}
                 </div>
-                <button type="button" class="agent-tui-btn agent-tui-btn-send" data-agent-send="${escapeAttr(nodeId)}" title="发送指令" aria-label="发送指令"${readonly || state.stopPending || state.settingsPending ? ' disabled' : ''}>发送</button>
+                <button type="button" class="agent-tui-btn agent-tui-btn-send" data-agent-send="${escapeAttr(nodeId)}" title="发送指令" aria-label="发送指令"${readonly || state.stopPending || state.settingsPending ? ' disabled' : ''}>${agentIco('arrow-up')}</button>
             </div>
+            ${canStop ? `<div class="agent-tui-action-row agent-tui-runtime-actions">
+                ${canSteer ? `<button type="button" class="agent-tui-btn agent-tui-btn-steer" data-agent-steer="${escapeAttr(nodeId)}" title="重定向当前回合" aria-label="重定向当前回合">${agentIco('corner-up-right')}</button>
+                <button type="button" class="agent-tui-btn agent-tui-btn-followup" data-agent-followup="${escapeAttr(nodeId)}" title="排队后续指令" aria-label="排队后续指令">${agentIco('loader-2')}</button>` : ''}
+                <button type="button" class="agent-tui-btn agent-tui-btn-abort" data-agent-abort="${escapeAttr(nodeId)}" title="中止当前回合" aria-label="中止当前回合">${agentIco('square')}</button>
+            </div>` : ''}
             <input type="file" class="agent-tui-file-input" data-agent-tui-file="${escapeAttr(nodeId)}" accept="image/*,video/*,audio/*" multiple style="display:none">
         </div>
+        <div class="agent-tui-composer-hint"><span>Enter 发送 · Shift+Enter 换行</span><span class="agent-tui-effort-hint" role="status">${escapeHtml(agentEffortHint(state, setting))}</span></div>
         </div>
     </div>`;
 }
@@ -2365,6 +2505,42 @@ function bindAgentScroll(el, state) {
     scheduleAgentScrollLayout(state);
 }
 
+function bindAgentMessageActions(el, nodeId, projectId) {
+    const state = getAgentTuiState(nodeId);
+    const epoch = state.viewEpoch;
+    const buttons = el.querySelectorAll('[data-agent-msg-copy], [data-agent-msg-fork]');
+    if (!buttons.length) return;
+    const replies = new Map(state.timeline.filter(entry => entry.kind === 'message' && entry.message.role === 'assistant').map(entry => [entry.key, entry.message]));
+    buttons.forEach(button => {
+        const copy = button.hasAttribute('data-agent-msg-copy');
+        const reply = replies.get(button.getAttribute(copy ? 'data-agent-msg-copy' : 'data-agent-msg-fork'));
+        button.addEventListener('mousedown', event => { if (event.button === 0) event.stopPropagation(); });
+        button.addEventListener('click', async event => {
+            event.stopPropagation();
+            if (agentTuiState.get(nodeId) !== state || state.closing || state.viewEpoch !== epoch || !state.messages.includes(reply)) {
+                window.ffToast.error('这条回复已不在当前会话视图中');
+                return;
+            }
+            if (copy) {
+                const reason = agentMessageCopyDisabled(reply);
+                if (reason) { window.ffToast.error(reason); return; }
+                try {
+                    await navigator.clipboard.writeText(reply.text);
+                } catch (error) {
+                    window.ffToast.error(`复制失败：${String(error)}。请选中文本手动复制。`);
+                    return;
+                }
+                window.ffToast.success('已复制回复');
+            } else {
+                const nextUser = agentMessageForkAnchors(state.messages).get(reply);
+                const reason = agentMessageForkDisabled(state, reply, Boolean(nextUser));
+                if (reason) { window.ffToast.error(`无法分叉：${reason}`); return; }
+                await showForkPicker(nodeId, projectId, { reply, nextUser });
+            }
+        });
+    });
+}
+
 function bindAgentNodeControls(el, node){
     agentSyncHostView(node, getAgentTuiState(node.id));
     agentNodeRefsBind(el, node);
@@ -2397,6 +2573,8 @@ function bindAgentNodeControls(el, node){
         });
     }
 
+    bindAgentMessageActions(el, nodeId, projectId);
+
     // Bind tool activity row toggle (collapsible)
     const toolRows = el.querySelectorAll('[data-tool-call-id]');
     toolRows.forEach(row => {
@@ -2423,12 +2601,17 @@ function bindAgentNodeControls(el, node){
         });
     });
 
+    const thoughtState = getAgentTuiState(nodeId), thoughtEpoch = thoughtState.viewEpoch;
     el.querySelectorAll('[data-agent-thought]').forEach(thought => {
+        let previousOpen = Boolean(thought.open);
+        const overrides = thoughtState.thoughtExpanded;
         thought.addEventListener('toggle', () => {
-            const state = getAgentTuiState(nodeId);
-            state.thoughtExpanded = state.thoughtExpanded || {};
-            state.thoughtExpanded[thought.getAttribute('data-agent-thought')] = thought.open;
-            scheduleAgentScrollLayout(state);
+            // Initial `open` and detached old rows can emit an asynchronous toggle.
+            if (!thought.isConnected || agentTuiState.get(nodeId) !== thoughtState || thoughtEpoch !== thoughtState.viewEpoch
+                || overrides !== thoughtState.thoughtExpanded || previousOpen === thought.open) return;
+            previousOpen = thought.open;
+            overrides[thought.getAttribute('data-agent-thought')] = thought.open;
+            scheduleAgentScrollLayout(thoughtState);
         });
     });
     el.querySelectorAll('[data-agent-step-jump]').forEach(button => {
@@ -2496,21 +2679,6 @@ function bindAgentNodeControls(el, node){
         sendBtn.addEventListener('click', event => {
             event.stopPropagation();
             agentTuiSendInput(inputEl, nodeId, projectId);
-        });
-    }
-
-    // Bind thinking toggle
-    const thinkingBtn = el.querySelector('[data-agent-thinking]');
-    if (thinkingBtn) {
-        thinkingBtn.addEventListener('mousedown', event => event.stopPropagation());
-        thinkingBtn.addEventListener('click', event => {
-            event.stopPropagation();
-            const tState = getAgentTuiState(nodeId);
-            if (tState) {
-                tState.thinkingVisible = !tState.thinkingVisible;
-                tState.thoughtExpanded = {};
-                renderAgentNode(nodeId);
-            }
         });
     }
 
@@ -2583,15 +2751,27 @@ function bindAgentNodeControls(el, node){
         button.addEventListener('mousedown', event => event.stopPropagation());
         button.addEventListener('click', event => { event.stopPropagation(); openAgentModelPicker(nodeId, projectId); });
     });
-    const hostSelect = el.querySelector('[data-agent-host]');
-    if (hostSelect) {
-        hostSelect.addEventListener('mousedown', event => event.stopPropagation());
-        hostSelect.addEventListener('change', event => {
+    const hostPicker = /** @type {HTMLDetailsElement|null} */ (el.querySelector('.agent-tui-host-picker'));
+    if (hostPicker) {
+        const summary = hostPicker.querySelector('[data-agent-host-picker]');
+        hostPicker.addEventListener('mousedown', event => event.stopPropagation());
+        summary.addEventListener('click', event => {
             event.stopPropagation();
-            const host = hostSelect.value;
-            hostSelect.value = getAgentTuiState(nodeId).activeHost;
-            agentSelectHost(nodeId, projectId, host);
+            if (summary.getAttribute('aria-disabled') === 'true') event.preventDefault();
         });
+        hostPicker.addEventListener('keydown', event => {
+            if (event.key !== 'Escape' || !hostPicker.open) return;
+            event.preventDefault();
+            event.stopPropagation();
+            hostPicker.open = false;
+            summary.focus({preventScroll: true});
+        });
+        hostPicker.querySelectorAll('[data-agent-host-choice]').forEach(option => option.addEventListener('click', event => {
+            event.stopPropagation();
+            hostPicker.open = false;
+            summary.focus({preventScroll: true});
+            agentSelectHost(nodeId, projectId, option.getAttribute('data-agent-host-choice'));
+        }));
     }
     const viewCurrent = el.querySelector('[data-agent-view-current]');
     if (viewCurrent) viewCurrent.addEventListener('click', event => { event.stopPropagation(); agentViewHost(nodeId, projectId, getAgentTuiState(nodeId).activeHost); });
@@ -2609,18 +2789,15 @@ function bindAgentNodeControls(el, node){
         });
     }
 
-    // Bind autonomy select
-    const autonomySelect = el.querySelector('[data-agent-autonomy]');
-    if (autonomySelect) {
-        autonomySelect.addEventListener('mousedown', event => event.stopPropagation());
-        autonomySelect.addEventListener('change', event => {
+    el.querySelectorAll('[data-agent-autonomy-choice]').forEach(option => {
+        option.addEventListener('mousedown', event => event.stopPropagation());
+        option.addEventListener('click', event => {
             event.stopPropagation();
             const s = getAgentTuiState(nodeId);
-            if (agentIsReadonly(s) || agentParametersLocked(s)) return;
-            const autonomy = autonomySelect.value;
-            setAgentAutonomy(nodeId, projectId, autonomy);
+            if (agentIsReadonly(s) || agentParametersLocked(s) || option.getAttribute('aria-pressed') === 'true') return;
+            setAgentAutonomy(nodeId, projectId, option.getAttribute('data-agent-autonomy-choice'));
         });
-    }
+    });
 
     bindAgentMoreControls(el, node);
 
@@ -2642,18 +2819,6 @@ function bindAgentNodeControls(el, node){
         cliBtn.addEventListener('click', event => {
             event.stopPropagation();
             showAgentCliTakeover(nodeId, projectId);
-        });
-    }
-
-    // Bind branch select
-    const branchSelect = el.querySelector('[data-agent-branch]');
-    if (branchSelect) {
-        branchSelect.addEventListener('mousedown', event => event.stopPropagation());
-        branchSelect.addEventListener('change', event => {
-            event.stopPropagation();
-            const branchId = branchSelect.value;
-            const state = getAgentTuiState(nodeId);
-            if (branchId && !agentIsReadonly(state) && !agentParametersLocked(state)) switchAgentBranch(nodeId, projectId, branchId);
         });
     }
 
@@ -2694,8 +2859,6 @@ function bindAgentNodeControls(el, node){
 }
 
 function renderAgentNode(nodeId) {
-    // #323 监理钉：会话框状态行由 agentChatFrameStatusHtml 提供（head-meta 区，主 render 与
-    // renderAgentNode 两路同步注入）。Refs #323。
     // #314：IME 组合进行中——推迟重建，compositionend 后补渲染（中文输入不被杀）
     const st314 = agentTuiState.get(nodeId);
     if (st314 && st314.composing) { st314.pendingRerender = true; return; }
@@ -2761,8 +2924,7 @@ function renderAgentNode(nodeId) {
     // Update node card status light + last line preview
     const headMeta = el.querySelector('.node-head-meta');
     if (headMeta) {
-        // #323 监理钉B3：状态段追加会话框绑定状态（卡面直接可见，Refs #323）。
-        headMeta.innerHTML = agentCardStatusHtml(nodeId) + agentChatFrameStatusHtml(node);
+        headMeta.innerHTML = agentCardStatusHtml(nodeId);
     }
 }
 
@@ -2871,7 +3033,7 @@ function agentDockNodeHtml(node){
     const layout = imageLayout(node.images || [], scale, node) || { width: 480, height: 360 };
     const title = node.title || 'Agent';
     return `<div class="image-node agent-smart-node agent-dock-node dock-${node.dock}${agentDockIsCollapsed(nodeId) ? ' dock-collapsed' : ''}${isNodeSelected(nodeId) ? ' selected' : ''}" data-id="${escapeHtml(nodeId)}" style="width:${agentDockNodeWidth(node)}px">
-        <div class="node-head"><div class="node-title">${escapeHtml(title)}</div><div class="node-head-meta">${agentCardStatusHtml(nodeId)}${agentChatFrameStatusHtml(node)}</div><div class="node-actions">${agentHeadActionButtonsHtml(node)}</div></div>
+        <div class="node-head"><div class="node-title"><span class="agent-title-kind">Agent</span>${escapeHtml(title)}</div><div class="node-head-meta">${agentCardStatusHtml(nodeId)}</div><div class="node-actions">${agentHeadActionButtonsHtml(node)}</div></div>
         <div class="node-body">${nodeBodyHtml(node, layout)}</div>
         <button type="button" class="dock-collapse-strip" data-agent-dock-expand="${escapeAttr(nodeId)}" title="展开停靠面板" aria-label="展开停靠面板"><svg class="ico" aria-hidden="true"><use href="#i-generate"/></svg><span class="dock-strip-title">${escapeHtml(title)}</span></button>
     </div>`;
@@ -3219,8 +3381,7 @@ function agentChatFrameAction(agentId, {actor=null}={}){
     return {action:'created', groupId:group.id};
 }
 
-// 监理钉B3：卡面会话框状态段（node-head-meta 区，状态灯同排）——绑定状态对用户直接可见，
-// 不靠隐藏字段。Refs #323。
+// #323 binding status lives next to the real frame action in the r3 overflow menu.
 function agentChatFrameStatusHtml(node){
     const frame = agentChatFrameGroup(node);
     if(frame){
@@ -3277,14 +3438,16 @@ function agentMoreActionsHtml(node) {
     const refTitle = frame
         ? `参考框：${frame.title || '智能分组'}（${agentRefFrameAssetCount(frame)} 个素材），点击切换下一个`
         : '绑定参考框（循环所有参考框）';
-    const chatBtn = `<button type="button" class="agent-tui-btn agent-chat-frame-btn${hasChatFrame ? ' agent-tui-btn-active' : ''}" data-agent-chat-frame="${id}" title="${escapeHtml(chatLabel)}" aria-label="${escapeHtml(chatLabel)}">${escapeHtml(chatLabel)}</button>`;
+    const chatBtn = `<button type="button" class="agent-tui-btn agent-chat-frame-btn${hasChatFrame ? ' agent-tui-btn-active' : ''}" data-agent-chat-frame="${id}">${escapeHtml(chatLabel)}${hasChatFrame ? ` ${agentChatFrameStatusHtml(node)}` : ''}</button>`;
     const refBtn = `<button type="button" class="agent-tui-btn agent-ref-frame-btn${frame ? ' agent-tui-btn-active' : ''}" data-agent-ref-frame="${id}" title="${escapeHtml(refTitle)}" aria-label="${escapeHtml(refTitle)}">${escapeHtml(agentRefFrameButtonLabel(node))}</button>`;
     const state = getAgentTuiState(node.id), locked = agentIsReadonly(state) || agentParametersLocked(state);
     const branches = node.branches || [];
     const other = state.activeHost === 'pi' ? 'codex' : 'pi';
     const binding = node.agentHostSessions && node.agentHostSessions[other];
+    const forkReason = agentSessionForkDisabled(state);
     return chatBtn + refBtn + agentDockButtonsHtml(node)
-        + `<button type="button" class="agent-tui-btn" data-agent-more-fork${locked || state.activeHost !== 'pi' ? ' disabled' : ''}>${agentIco('git-branch')} 从历史轮次分叉</button>
+        + `<button type="button" class="agent-tui-btn" data-agent-thinking="${id}" aria-pressed="${Boolean(state.thinkingVisible)}">${agentIco('brain')} ${state.thinkingVisible ? '隐藏思考过程' : '显示思考过程'}</button>
+        <button type="button" class="agent-tui-btn" data-agent-more-fork title="${escapeAttr(forkReason || '从历史轮次分叉')}"${forkReason ? ' disabled' : ''}>${agentIco('git-branch')} 从历史轮次分叉</button>
         ${branches.length && state.activeHost === 'pi' ? `<select class="agent-tui-branch-select" data-agent-more-branch aria-label="切换分支"${locked ? ' disabled' : ''}>${branches.map(branch => `<option value="${escapeAttr(branch.id)}" ${branch.id === node.current_branch ? 'selected' : ''}>${escapeHtml(branch.name)}</option>`).join('')}</select>` : ''}
         <button type="button" class="agent-tui-btn" data-agent-more-cli>${agentIco('terminal')} 由外部 CLI 接管</button>
         <button type="button" class="agent-tui-btn" data-agent-more-view="${other}"${binding ? '' : ' disabled'}>只读查看 ${other === 'pi' ? 'Pi' : 'Codex'} 会话</button>
@@ -3302,18 +3465,29 @@ function bindAgentMoreControls(el, node) {
             closeAgentMoreMenu(menu);
         });
     });
-    el.querySelectorAll('[data-agent-more-fork],[data-agent-more-cli],[data-agent-more-view],[data-agent-more-branch]').forEach(control => {
+    el.querySelectorAll('[data-agent-more-fork],[data-agent-more-cli],[data-agent-more-view],[data-agent-more-branch],[data-agent-thinking]').forEach(control => {
         control.addEventListener('mousedown', event => event.stopPropagation());
         control.addEventListener(control.hasAttribute('data-agent-more-branch') ? 'change' : 'click', event => {
             event.stopPropagation();
             if (control.disabled) return;
             closeAgentMoreMenu(control.closest('.agent-tui-more'));
-            if (control.hasAttribute('data-agent-more-view')) {
+            if (control.hasAttribute('data-agent-thinking')) {
+                state.thinkingVisible = !state.thinkingVisible;
+                state.thoughtExpanded = {};
+                renderAgentNode(node.id);
+            } else if (control.hasAttribute('data-agent-more-view')) {
                 agentViewHost(node.id, projectId, control.getAttribute('data-agent-more-view'));
             } else if (control.hasAttribute('data-agent-more-cli')) showAgentCliTakeover(node.id, projectId);
             else if (!agentIsReadonly(state) && !agentParametersLocked(state) && state.activeHost === 'pi') {
                 if (control.hasAttribute('data-agent-more-fork')) showForkPicker(node.id, projectId);
-                else switchAgentBranch(node.id, projectId, control.value);
+                else {
+                    const branchId = control.value;
+                    const live = canvasState.nodes.find(item => item.id === node.id);
+                    if (!live) return;
+                    // The select must not show a rejected/unfinished switch as the current branch.
+                    control.value = live.current_branch ?? '';
+                    if (branchId && branchId !== live.current_branch) switchAgentBranch(node.id, projectId, branchId);
+                }
             }
         });
     });
@@ -3389,9 +3563,39 @@ function renderMarkdown(text){
         const safeUrl = /^(https?:|mailto:|\/|#|\.\/|\.\.\/)/i.test(url) ? url : '#';
         return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${text}</a>`;
     });
-    // Unordered lists (- item)
-    html = html.replace(/(^|\n)- (.+)/g, '$1<li>$2</li>');
-    html = html.replace(/(<li>.*?<\/li>)(\s*(?:<li>.*?<\/li>))+/g, '<ul class="agent-md-list">$1</ul>');
+    // Flat lists; keep them outside paragraphs like fenced code. An explicitly
+    // hard-broken bold lead plus indented text renders as a heading and description.
+    const lines = html.split(/\r?\n/);
+    const listMarker = /^( {0,3}(\d{1,9}\.|-)[ \t]+)(\S.*)$/;
+    const parsed = [];
+    for (let i = 0; i < lines.length;) {
+        let item = listMarker.exec(lines[i]);
+        if (!item) { parsed.push(lines[i++]); continue; }
+        const ordered = item[2] !== '-';
+        const tag = ordered ? 'ol' : 'ul';
+        const first = ordered ? Number.parseInt(item[2], 10) : 1;
+        const start = first !== 1 ? ` start="${first}"` : '';
+        const items = [];
+        do {
+            const indent = ' '.repeat(item[1].length);
+            const lead = item[3];
+            const rest = [];
+            for (i++; i < lines.length && lines[i].startsWith(indent) && lines[i].trim() && !listMarker.test(lines[i]); i++) {
+                rest.push(lines[i].slice(indent).trim());
+            }
+            const hardBreak = / {2,}$/.test(lead);
+            const continuation = rest.join(' ');
+            const body = !continuation ? lead.trimEnd()
+                : ordered && hardBreak && /^<strong>.+<\/strong>$/.test(lead.trimEnd())
+                    ? `${lead.trimEnd()}<span>${continuation}</span>`
+                    : `${lead.trimEnd()}${hardBreak ? '<br>' : ' '}${continuation}`;
+            items.push(`<li>${body}</li>`);
+            item = i < lines.length ? listMarker.exec(lines[i]) : null;
+        } while (item && (item[2] !== '-') === ordered);
+        mdBlocks.push(`<${tag} class="agent-md-list"${start}>${items.join('')}</${tag}>`);
+        parsed.push(`\u0000MDB${mdBlocks.length - 1}\u0000`);
+    }
+    html = parsed.join('\n');
     // Paragraphs (double newline)
     html = html.replace(/\n\n/g, '</p><p>');
     html = html.replace(/\n/g, '<br>');

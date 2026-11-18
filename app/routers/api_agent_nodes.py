@@ -12,7 +12,7 @@ from app.services.agent_errors import agent_error, translate_detail
 from app.services.agent_message_refs import resolve_node_refs
 from app.services.agent_node_host_settings import AgentHostTransaction
 from app.routers.api_agent_tools import (
-    _find_node, _snapshot_node, _apply_mutations, _apply_mutations_from_snapshot,
+    _find_node, _snapshot_node, _apply_mutations, _broadcast_canvas_updated,
     _open_canvas, reset_generation_counts,
 )
 
@@ -47,8 +47,9 @@ AGENT_AUTONOMY_WHITELIST = ("cautious", "standard", "autonomous")
 
 
 def _host_transaction(project_id: str, node_id: str):
-    return AgentHostTransaction(agent_host_manager, project_id, node_id,
-                                find_node=_find_node, update_settings=_update_node_settings, now_ms=_app_main.now_ms)
+    return AgentHostTransaction(agent_host_manager, project_id, node_id, find_node=_find_node,
+                                update_settings=_update_node_settings, now_ms=_app_main.now_ms,
+                                broadcast_settings=_broadcast_canvas_updated)
 
 
 def _apply_node_host(project_id: str, node_id: str, session) -> None:
@@ -80,27 +81,43 @@ def _settings_user_edit(body: dict) -> bool:
 
 async def _update_node_settings(project_id: str, node_id: str, build_fields, *, user_edit: bool = False,
                                 trusted_agent_bindings: bool = False):
-    """Rebuild the settings patch from each CAS snapshot, preserving ownership."""
+    """Commit against the latest snapshot; notify separately, outside compensation.
+
+    The generic canvas mutation helper awaits broadcast after committing. A
+    cancellation there must not look like a failed CAS to the host transaction.
+    """
+    from firefly_projects import RevisionConflict
+
     _open_canvas(project_id)  # Preserve project-not-found behavior before the CAS loop.
-
-    def build(canvas):
-        node = _snapshot_node(canvas, node_id)
-        fields = build_fields(node)
-        if all(key in node and node[key] == value for key, value in fields.items()):
-            return []
-        updated = {**node, **fields, "updated_at": _app_main.now_ms()}
-        if user_edit:
-            updated["userTouchedAt"] = updated["updated_at"]
-        return [{"op": "upsert_node", "node": updated}]
-
-    if trusted_agent_bindings:
-        await _apply_mutations_from_snapshot(project_id, build, source="", trusted_agent_bindings=True)
-    else:
-        await _apply_mutations_from_snapshot(project_id, build, source="")
+    store = _app_main.FIREFLY_PROJECT_STORE
+    apply = store.apply_agent_host_mutations if trusted_agent_bindings else store.apply_mutations
+    for attempt in range(8):
+        try:
+            canvas = store.canvas(project_id)
+            revision = int(canvas.get("revision") or 0)
+            node = _snapshot_node(canvas, node_id)
+            fields = build_fields(node)
+            if all(key in node and node[key] == value for key, value in fields.items()):
+                return False
+            updated = {**node, **fields, "updated_at": _app_main.now_ms()}
+            if user_edit:
+                updated["userTouchedAt"] = updated["updated_at"]
+            apply(project_id, [{"op": "upsert_node", "node": updated}], base_revision=revision)
+            return True
+        except RevisionConflict:
+            if attempt == 7:
+                raise agent_error(409, "CANVAS_CONFLICT", "Canvas mutation failed after retries",
+                                  "画布并发冲突（已自动重试 8 次）；先调用 canvas.list_nodes 查看最新状态再重新提交。")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise agent_error(409, "CANVAS_CONFLICT", str(exc),
+                              "画布写入冲突；先调用 canvas.list_nodes 查看最新状态再重试。") from exc
 
 
 async def _update_node_field(project_id: str, node_id: str, field: str, value: Any, *, user_edit: bool = False):
-    await _update_node_settings(project_id, node_id, lambda _node: {field: value}, user_edit=user_edit)
+    if await _update_node_settings(project_id, node_id, lambda _node: {field: value}, user_edit=user_edit):
+        await _broadcast_canvas_updated(project_id)
 
 
 def _settings_canvas(project_id: str, *, allow_missing: bool = False):
@@ -632,6 +649,17 @@ async def get_agent_node_events(
         raise HTTPException(status_code=500, detail=f"events log read failed: {e}")
 
 
+def _branch_response(project_id: str, node_id: str, branch_id: str) -> dict:
+    # Broadcast may await a later writer. Every branch field must describe
+    # this same response snapshot, not the branch record from the CAS attempt.
+    canvas = _settings_canvas(project_id)
+    node = _snapshot_node(canvas, node_id)
+    branches = node.get("branches") or []
+    return {"success": True, "node_id": node_id, "canvas": canvas,
+            "branches": branches, "current_branch": node.get("current_branch") or "",
+            "branch": next((b for b in branches if isinstance(b, dict) and b.get("id") == branch_id), None)}
+
+
 @router.post("/{node_id}/fork")
 async def fork_session(
     project_id: str,
@@ -648,8 +676,8 @@ async def fork_session(
     user_edit = _settings_user_edit(await request.json() if request is not None else {})
     if not isinstance(entry_id, str) or not entry_id or not isinstance(name, str):
         raise agent_error(400, "INVALID_ARGUMENT", "entry_id must be non-empty and name must be a string")
-    result = await _host_transaction(project_id, node_id).branch(entry_id=entry_id, name=name, user_edit=user_edit)
-    return {**result, "canvas": _settings_canvas(project_id)}
+    branch_id = await _host_transaction(project_id, node_id).branch(entry_id=entry_id, name=name, user_edit=user_edit)
+    return _branch_response(project_id, node_id, branch_id)
 
 
 @router.post("/{node_id}/switch-branch")
@@ -667,8 +695,8 @@ async def switch_branch(
     if not isinstance(branch_id, str) or not branch_id:
         raise agent_error(400, "INVALID_ARGUMENT", "branch_id must be a non-empty string",
                           "Send the ID of an existing branch.")
-    result = await _host_transaction(project_id, node_id).branch(branch_id=branch_id, user_edit=user_edit)
-    return {**result, "canvas": _settings_canvas(project_id)}
+    await _host_transaction(project_id, node_id).branch(branch_id=branch_id, user_edit=user_edit)
+    return _branch_response(project_id, node_id, branch_id)
 
 
 @router.websocket("/{node_id}/stream")

@@ -149,9 +149,10 @@ class AgentHostTransaction:
     The lower-case error codes here are the settings API's stable wire contract.
     """
 
-    def __init__(self, manager, project_id, node_id, *, find_node, update_settings, now_ms):
+    def __init__(self, manager, project_id, node_id, *, find_node, update_settings, now_ms, broadcast_settings=None):
         self.manager, self.project_id, self.node_id = manager, project_id, node_id
         self.find_node, self.update_settings, self.now_ms = find_node, update_settings, now_ms
+        self.broadcast_settings = broadcast_settings
 
     @staticmethod
     def error(status, code, message):
@@ -215,13 +216,13 @@ class AgentHostTransaction:
     def current(self):
         return self.find_node(self.project_id, self.node_id)
 
-    def unchanged(self, node, before, *, binding=False):
-        now = self.fields(node)
-        if (now["agentCli"] != before["agentCli"]
-                or now["agentHostSettings"] != before["agentHostSettings"]
-                or (binding and now["agentHostSessions"] != before["agentHostSessions"])):
+    def check_unchanged_selection(self, now, before, target_host):
+        # Settings on a host neither selected nor targeted are independent.
+        if now["agentCli"] != before["agentCli"] or any(
+            now["agentHostSettings"].get(host) != before["agentHostSettings"].get(host)
+            for host in (before["agentCli"], target_host)
+        ):
             raise self.error(409, "agent_settings_conflict", "Agent settings changed concurrently; read the current node and retry.")
-        return now
 
     async def capabilities(self, host, model, effort):
         from app.services import agent_model_capabilities
@@ -348,21 +349,32 @@ class AgentHostTransaction:
                     raise self.error(502, "agent_settings_failed", str(exc)) from exc
 
             def build(current):
-                self.unchanged(current, before, binding=switching)
+                now = self.fields(current)
+                if expected is not None:
+                    self.check_expected(now, expected)
+                if (not switching and before["agentCli"] == now["agentCli"] == host
+                        and now["agentHostSettings"][host] == {"model": model, "effort": effort}):
+                    # Only an exact same-host choice is already satisfied. Do
+                    # not reapply projections, ownership or a touch to its winner.
+                    return {}
+                self.check_unchanged_selection(now, before, host)
+                if switching and now["agentHostSessions"] != before["agentHostSessions"]:
+                    raise self.error(409, "agent_settings_conflict", "Agent bindings changed concurrently.")
                 fields = build_host_settings_fields(current, host, model, effort)
-                if switching and old_ext:
+                if switching and old_ext and session.agent_cli == before["agentCli"]:
                     fields["agentHostSessions"][before["agentCli"]]["extSessionId"] = old_ext
                 return fields
 
+            committed = False
             if node is not None:
                 try:
-                    await self.update_settings(self.project_id, self.node_id, build,
-                                               user_edit=user_edit, trusted_agent_bindings=True)
+                    committed = await self.update_settings(self.project_id, self.node_id, build,
+                                                           user_edit=user_edit, trusted_agent_bindings=True)
                 except (Exception, asyncio.CancelledError) as failure:
                     if not switching:
                         try:
                             await self.restore_settings(session, prior)
-                        except (RuntimeError, TimeoutError, ValueError, OSError) as rollback:
+                        except Exception as rollback:
                             session.model, session.reasoning_effort = prior["model"], prior["effort"]
                             session.effort_submitted = session.effort_effective = None
                             session._effort_source = "pi:rollback-unconfirmed"
@@ -374,6 +386,8 @@ class AgentHostTransaction:
             if switching:
                 # Select the committed projection only; no thread/process start.
                 self.hydrate(session, self.current())
+            if committed and self.broadcast_settings is not None:
+                await self.broadcast_settings(self.project_id)
             return {"success": True, "node_id": self.node_id, "host": host, "agentCli": host,
                     "model": model, "effort": effort, "requested": {"model": model, "effort": effort},
                     "effort_state": session.effort_state, "capabilities": capabilities,
@@ -399,6 +413,8 @@ class AgentHostTransaction:
 
     async def branch(self, *, entry_id=None, name="", branch_id=None, user_edit=False):
         from fastapi import HTTPException
+        from app.services.agent_errors import agent_error
+
         async with self.manager.node_lock(self.project_id, self.node_id):
             node = self.current()
             before = self.fields(node)
@@ -412,41 +428,73 @@ class AgentHostTransaction:
                 raise self.error(409, "agent_settings_conflict", "Runtime host differs from the persisted host.")
             binding = before["agentHostSessions"]["pi"]
             original_file, original_id, original_ext = session.session_file, session.session_id, session.ext_session_id
-            branches = deepcopy(binding["branches"])
+            # The branch list must grow monotonically across the snapshots we
+            # actually observe. Keep the last accepted prefix, not a stale list
+            # to write back; inactive bindings always come from the latest CAS.
+            observed_branches = binding["branches"]
+            missing_target = None
             if entry_id is None:
-                selected = next((b for b in branches if b.get("id") == branch_id), None)
+                selected = next((b for b in observed_branches if isinstance(b, dict) and b.get("id") == branch_id), None)
                 if selected is None:
                     raise self.error(404, "agent_branch_not_found", f"Branch not found: {branch_id}")
                 path = selected.get("session_file")
                 if not isinstance(path, str) or not path:
                     raise self.error(400, "invalid_agent_branch", "Branch has no native session file.")
+                missing_target = agent_error(404, "NOT_FOUND", f"Branch not found: {branch_id}",
+                                             "Read the latest canvas and choose an existing branch.")
             try:
                 if entry_id is not None:
                     info = await self.native_branch(session, {"type": "fork", "entryId": entry_id})
-                    if not branches:
-                        branches.append({"id": "branch-original", "name": "原始", "session_file": original_file,
-                                         "session_id": original_id, "fork_from_entry_id": None,
-                                         "created_at": self.now_ms()})
                     branch_id = f"branch-{uuid.uuid4().hex[:8]}"
-                    selected = {"id": branch_id, "name": name or f"分支 {len(branches)}",
-                                "session_file": info["session_file"], "session_id": info["session_id"],
-                                "fork_from_entry_id": entry_id, "created_at": self.now_ms()}
-                    branches.append(selected)
+                    if not observed_branches:
+                        original = {"id": "branch-original", "name": "原始", "session_file": original_file,
+                                    "session_id": original_id, "fork_from_entry_id": None, "created_at": self.now_ms()}
+                    fork = {"id": branch_id, **info, "fork_from_entry_id": entry_id, "created_at": self.now_ms()}
                 else:
                     info = await self.native_branch(session, {"type": "switch_session", "sessionPath": path})
                 native_id = info["session_id"]
 
                 def build(current):
-                    now = self.unchanged(current, before)
-                    if now["agentHostSessions"] != before["agentHostSessions"]:
+                    nonlocal observed_branches
+                    now = self.fields(current)
+                    self.check_unchanged_selection(now, before, "pi")
+                    active = now["agentHostSessions"]["pi"]
+                    branches = active["branches"]
+                    ids = [b.get("id") if isinstance(b, dict) else None for b in branches]
+                    active_choice = (active["current_branch"], active["extSessionId"])
+                    same_binding = active_choice == (binding["current_branch"], binding["extSessionId"])
+                    if missing_target is not None and same_binding and branch_id not in ids:
+                        raise missing_target
+                    prefix_len = len(observed_branches)
+                    if (branches[:prefix_len] != observed_branches
+                            or any(not isinstance(value, str) or not value or value in ids[:i]
+                                   for i, value in enumerate(ids[prefix_len:], start=prefix_len))):
                         raise self.error(409, "agent_settings_conflict", "Agent branches changed concurrently.")
-                    now["agentHostSessions"]["pi"] = {"extSessionId": native_id, "branches": deepcopy(branches),
-                                                        "current_branch": branch_id}
+                    observed_branches = branches.copy()
+                    if entry_id is None:
+                        if ids.count(branch_id) != 1:
+                            raise self.error(409, "agent_settings_conflict", "Agent branch identity is ambiguous.")
+                        if active_choice == (branch_id, native_id):
+                            return {}  # Exact target (record unchanged by the prefix guard).
+                    if not same_binding:
+                        raise self.error(409, "agent_settings_conflict", "Agent branch binding changed concurrently.")
+                    if entry_id is not None:
+                        if branch_id in ids:
+                            raise self.error(409, "agent_settings_conflict", "Agent fork ID already exists.")
+                        if not branches:
+                            branches.append(original)
+                        branches.append({**fork, "name": name or f"分支 {len(branches)}"})
+                    active.update(extSessionId=native_id, current_branch=branch_id)
                     return _fields("pi", now["agentHostSettings"], now["agentHostSessions"])
 
-                await self.update_settings(self.project_id, self.node_id, build,
-                                           user_edit=user_edit, trusted_agent_bindings=True)
+                committed = await self.update_settings(self.project_id, self.node_id, build,
+                                                       user_edit=user_edit, trusted_agent_bindings=True)
             except (Exception, asyncio.CancelledError) as failure:
+                if failure is missing_target:
+                    # #332 distinguishes a removed branch row after a confirmed
+                    # switch from a lost node/failed CAS: report NOT_FOUND and
+                    # never persist the stale selection or switch a second time.
+                    raise
                 cancelled = (isinstance(failure, HTTPException) and isinstance(failure.detail, dict)
                              and failure.detail.get("code") == "agent_fork_cancelled")
                 # A missing ACK can still have changed native state. Restore
@@ -454,7 +502,9 @@ class AgentHostTransaction:
                 if not cancelled:
                     try:
                         if original_file:
-                            await self.native_branch(session, {"type": "switch_session", "sessionPath": original_file})
+                            restored = await self.native_branch(session, {"type": "switch_session", "sessionPath": original_file})
+                            if original_id and restored["session_id"] != original_id:
+                                raise RuntimeError("Pi rollback readback did not match the original native session ID")
                         else:
                             # Without an original file, stop the unconfirmed
                             # runtime. The original persisted ID can resume on
@@ -462,14 +512,15 @@ class AgentHostTransaction:
                             await self.manager.stop_session(session)
                         session.session_id, session.ext_session_id = original_id, original_ext
                         session.session_file = original_file
-                    except (RuntimeError, TimeoutError, OSError) as rollback:
+                    except Exception as rollback:
                         session.last_error = f"Branch was not saved; native rollback failed: {rollback}"
                         raise self.error(502, "agent_rollback_failed", session.last_error) from failure
                 if isinstance(failure, (HTTPException, asyncio.CancelledError)):
                     raise
                 raise self.error(502, "agent_branch_failed", str(failure)) from failure
-            return {"success": True, "node_id": self.node_id, "branch": selected,
-                    "branches": branches, "current_branch": branch_id}
+            if committed and self.broadcast_settings is not None:
+                await self.broadcast_settings(self.project_id)
+            return branch_id
 
 
 def build_host_settings_fields(node: dict, host: str, model: str, effort: str | None) -> dict:

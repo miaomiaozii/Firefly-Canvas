@@ -25,6 +25,7 @@ loop
 workflow
 dice-5
 send
+arrow-up
 brain
 paperclip
 git-branch
@@ -153,7 +154,7 @@ class IconSpriteContractTests(unittest.TestCase):
         ids = sprite_ids(PAGE.read_text(encoding="utf-8"))
         self.assertEqual(len(ids), len(set(ids)), "sprite 里有重复 symbol id")
         self.assertEqual(set(ids), set(SHEET_KEYS), "sprite 与总表不一致（不准增删图标）")
-        self.assertEqual(88, len(ids))
+        self.assertEqual(89, len(ids))
 
     def test_every_sprite_icon_is_referenced(self):
         used = set(referenced_ids())

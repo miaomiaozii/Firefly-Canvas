@@ -124,7 +124,8 @@ test('no canvas, missing receiver or receiver rejection grants no persistent aut
             assert.equal(m.state.messages.length, 1);
             assert.equal(m.state.toolActivities.size, 1);
             assert.deepEqual(m.received, mode === 'rejected-canvas' ? [canvas] : []);
-            assert.equal(m.renders.length, renderBefore + (name === 'setAgentModel' || name === 'setAgentAutonomy' ? 1 : 0), 'no post-response UI effects without authority');
+            assert.equal(m.renders.length, renderBefore + (name === 'setAgentModel' || name === 'setAgentAutonomy' ? 1 : 0), 'no history/body adoption without authority');
+            if (name === 'forkAgentSession' || name === 'switchAgentBranch') assert.match(m.harness.toasts[0].message, /未收到可应用/);
         }
     }
 });
@@ -168,27 +169,59 @@ test('real bound settings handlers declare human intent without optimistic persi
     m.state.socket = { readyState: 1 };
     m.state.chatModelsFetched = true;
     const el = m.harness.makeElement('div');
-    const controls = Object.fromEntries(['model', 'autonomy', 'branch', 'fork'].map(key => [key, m.harness.makeElement(key === 'fork' ? 'button' : 'select')]));
-    el.querySelector = selector => Object.entries(controls).find(([key]) => selector === `[data-agent-${key}]`)?.[1] || null;
+    const controls = Object.fromEntries(['model-picker', 'autonomy-choice', 'more-branch', 'fork'].map(key => {
+        const control = m.harness.makeElement(key === 'more-branch' ? 'select' : 'button');
+        control.setAttribute(`data-agent-${key}`, key === 'autonomy-choice' ? 'autonomous' : '');
+        control.closest = () => null;
+        return [key, control];
+    }));
+    const create = m.ctx.document.createElement;
+    m.ctx.document.createElement = tag => {
+        const element = create(tag), fields = new Map();
+        // The picker replaces its controls on every render, as the browser does.
+        let markup = '';
+        Object.defineProperty(element, 'innerHTML', {
+            get: () => markup,
+            set: value => { markup = value; fields.clear(); },
+        });
+        element.querySelector = selector => {
+            if (!fields.has(selector)) fields.set(selector, m.harness.makeElement('button'));
+            return fields.get(selector);
+        };
+        return element;
+    };
+    el.querySelectorAll = selector => Object.entries(controls).filter(([key]) => selector.split(',').includes(`[data-agent-${key}]`)).map(([,control]) => control);
+    el.querySelector = selector => selector === '[data-agent-fork]' ? controls.fork : null;
     fn(m.ctx, 'bindAgentNodeControls')(el, m.ctx.canvasState.nodes[0]);
-    const event = type => ({ type, stopPropagation() {} });
-    controls.model.value = 'runtime-model';
-    controls.model.dispatchEvent(event('change'));
-    controls.autonomy.value = 'autonomous';
-    controls.autonomy.dispatchEvent(event('change'));
-    controls.branch.value = 'b2';
-    controls.branch.dispatchEvent(event('change'));
-    controls.fork.dispatchEvent(event('click'));
-    assert.deepEqual(m.calls.slice(0, 3).map(call => JSON.parse(call.opts.body)), [
-        { model: 'runtime-model', user_edit: true },
-        { autonomy: 'autonomous', user_edit: true },
-        { branch_id: 'b2', user_edit: true },
-    ]);
-    assert.equal(m.calls[3].opts.body, undefined, 'picker GET does not claim a human persisted edit');
+    const event = (type, extra = {}) => ({ type, stopPropagation() {}, ...extra });
+    controls['model-picker'].dispatchEvent(event('click'));
+    const caps = model => ({ host:'pi', status:'available', models:[{id:'old-model', name:'Old'}, {id:'runtime-model', name:'New'}],
+        defaults:{model:null, effort:null}, selection:{model, efforts:['low'], source:'pi'} });
+    assert.match(m.calls[0].url, /capabilities\?host=pi&model=old-model$/);
+    m.calls[0].resolve(response(caps('old-model'))); await flush();
+    const picker = m.state.modelPicker.dialog;
+    picker.querySelector('[data-agent-picker-model]').dispatchEvent(event('change', { target:{value:'runtime-model'} }));
+    assert.match(m.calls[1].url, /capabilities\?host=pi&model=runtime-model$/);
+    m.calls[1].resolve(response(caps('runtime-model'))); await flush();
+    picker.querySelector('[data-agent-picker-apply]').dispatchEvent(event('click'));
+    assert.deepEqual(JSON.parse(m.calls[2].opts.body), { host:'pi', model:'runtime-model', effort:null, user_edit:true });
     assert.deepEqual(persisted(m.ctx), before);
-    m.calls[3].resolve(response({ messages: [{ text: 'Fork here', entryId: 'e1' }] }));
+    m.calls[2].resolve({ ok:false, status:409, json:async () => ({detail:'model rejected'}) }); await flush();
+    assert.match(m.harness.toasts.shift().message, /model rejected/);
+
+    controls['autonomy-choice'].dispatchEvent(event('click'));
+    controls['more-branch'].value = 'b2';
+    controls['more-branch'].dispatchEvent(event('change'));
+    assert.equal(controls['more-branch'].value, 'b1', 'native select stays on authoritative branch pending receipt');
+    controls.fork.dispatchEvent(event('click'));
+    assert.deepEqual(m.calls.slice(3, 5).map(call => JSON.parse(call.opts.body)), [
+        { autonomy: 'autonomous', user_edit: true }, { branch_id: 'b2', user_edit: true },
+    ]);
+    assert.equal(m.calls[5].opts.body, undefined, 'picker GET does not claim a human persisted edit');
+    assert.deepEqual(persisted(m.ctx), before);
+    m.calls[5].resolve(response({ messages: [{ text: 'Fork here', entryId: 'e1' }] }));
     await flush();
-    const dlg = m.harness.dialogs[0];
+    const dlg = m.harness.dialogs[1];
     const radio = m.harness.makeElement('input');
     radio.value = '0';
     const name = m.harness.makeElement('input');
@@ -196,14 +229,14 @@ test('real bound settings handlers declare human intent without optimistic persi
     dlg.querySelector = selector => selector === 'input[name="forkidx"]:checked' ? radio : selector === 'input[name="branchname"]' ? name : null;
     dlg.close('ok');
     await flush();
-    assert.deepEqual(JSON.parse(m.calls[4].opts.body), { entry_id: 'e1', name: 'Branch', user_edit: true });
-    for (const call of [...m.calls.slice(0, 3), m.calls[4]]) {
+    assert.deepEqual(JSON.parse(m.calls[6].opts.body), { entry_id: 'e1', name: 'Branch', user_edit: true });
+    for (const call of [...m.calls.slice(3, 5), m.calls[6]]) {
         call.resolve({ ok: false, status: 409, json: async () => ({ detail: 'rejected' }) });
     }
     await flush();
     assert.deepEqual(persisted(m.ctx), before, 'rejected native handlers leave autosave projection unchanged');
     assert.equal(m.harness.toasts.length, 1, 'only latest setting may show its error');
-    assert.match(m.harness.toasts[0].message, /Fork 失败/);
+    assert.match(m.harness.toasts[0].message, /分叉失败.*rejected/);
 });
 
 test('fork picker cannot reopen or send a fork after its node lifecycle was cleaned up', async () => {
@@ -223,7 +256,9 @@ test('fork picker cannot reopen or send a fork after its node lifecycle was clea
     const dlg = inDialog.harness.dialogs[0];
     const radio = inDialog.harness.makeElement('input');
     radio.value = '0';
-    dlg.querySelector = selector => selector === 'input[name="forkidx"]:checked' ? radio : null;
+    const branchName = inDialog.harness.makeElement('input');
+    branchName.value = 'Stale branch';
+    dlg.querySelector = selector => selector === 'input[name="forkidx"]:checked' ? radio : selector === 'input[name="branchname"]' ? branchName : null;
     fn(inDialog.ctx, 'cleanupAgentTuiState')('n1');
     dlg.close('ok');
     await flush();
@@ -242,7 +277,7 @@ test('session-only model success updates runtime display without inventing persi
     assert.deepEqual(persisted(m.ctx), []);
     assert.deepEqual(m.received, []);
     const body = fn(m.ctx, 'agentNodeBodyHtml')({ id: 'n1', type: 'smart-agent' });
-    assert.match(body, /data-agent-model-picker="n1"[^>]*>模型 · runtime-model<\/button>/);
+    assert.match(body, /data-agent-model-picker="n1"[^>]*aria-label="模型 runtime-model"[^>]*><span[^>]*>模型<\/span><b>runtime-model<\/b>/);
 
     const withCanvas = setup();
     const runtimeOnly = fn(withCanvas.ctx, 'setAgentModel')('n1', 'project', 'runtime-model');
@@ -269,7 +304,7 @@ test('session-only model success updates runtime display without inventing persi
     m.calls[3].resolve(response({ success: true, model: 'old-model', persisted: true, canvas }));
     await persistent;
     assert.deepEqual(m.received, [canvas]);
-    assert.match(fn(m.ctx, 'agentNodeBodyHtml')(m.ctx.canvasState.nodes[0]), /data-agent-model-picker="n1"[^>]*>模型 · old-model<\/button>/);
+    assert.match(fn(m.ctx, 'agentNodeBodyHtml')(m.ctx.canvasState.nodes[0]), /data-agent-model-picker="n1"[^>]*aria-label="模型 old-model"[^>]*><span[^>]*>模型<\/span><b>old-model<\/b>/);
 });
 
 test('fork/switch success cannot erase messages or tool updates that arrived while the request was pending', async () => {
@@ -411,7 +446,7 @@ test('fork accepts branches only through the canvas receiver and clears history 
     assert.equal(bad.state.messages.length, 1);
     assert.equal(bad.state.toolActivities.size, 1);
     assert.deepEqual(bad.received, []);
-    assert.match(bad.harness.toasts[0].message, /Fork 失败/);
+    assert.match(bad.harness.toasts[0].message, /分叉失败.*fork conflict/);
 });
 
 test('autonomy request keeps persisted values until the server canvas is received, with visible rejection', async () => {

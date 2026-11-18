@@ -2,6 +2,7 @@
 import sys
 import tempfile
 import unittest
+from copy import deepcopy
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,8 +13,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import main
-from firefly_projects import ProjectStore
+from firefly_projects import ProjectStore, RevisionConflict
 from app.routers import api_agent_nodes
+from app.services import agent_model_capabilities
+from tests.test_agent_host_settings_421_424 import capabilities
 from tests.test_agent_node_settings import SettingsHost
 
 
@@ -24,17 +27,41 @@ class InterleavingProjectStore(ProjectStore):
     the temporary project and raises its own RevisionConflict.
     """
 
-    before_apply = None
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.before_apply = None
+        self.revision_conflicts = []
 
-    def apply_mutations(self, project_id, mutations, *, base_revision, **kwargs):
+    def _interleave(self, apply, project_id, mutations, *, base_revision, **kwargs):
         hook, self.before_apply = self.before_apply, None
         if hook is not None:
             hook()
-        return super().apply_mutations(project_id, mutations, base_revision=base_revision, **kwargs)
+        try:
+            return apply(project_id, mutations, base_revision=base_revision, **kwargs)
+        except RevisionConflict as exc:
+            self.revision_conflicts.append((base_revision, exc.canvas["revision"]))
+            raise
 
-    def concurrent_write(self, project_id, mutations):
-        return super().apply_mutations(project_id, mutations,
-                                       base_revision=self.canvas(project_id)["revision"])
+    def apply_mutations(self, project_id, mutations, *, base_revision, **kwargs):
+        return self._interleave(super().apply_mutations, project_id, mutations,
+                                base_revision=base_revision, **kwargs)
+
+    def apply_agent_host_mutations(self, project_id, mutations, *, base_revision, **kwargs):
+        return self._interleave(super().apply_agent_host_mutations, project_id, mutations,
+                                base_revision=base_revision, **kwargs)
+
+    def concurrent_write(self, project_id, mutations, *, trusted=False):
+        # A real second writer, bypassing only the scheduling hook, not CAS.
+        apply = super().apply_agent_host_mutations if trusted else super().apply_mutations
+        return apply(project_id, mutations, base_revision=self.canvas(project_id)["revision"])
+
+
+def pi_node(node):
+    """Mirror the Pi fixture's projections into its authoritative host maps."""
+    return {**node, "agentCli": "pi",
+            "agentHostSettings": {"pi": {"model": node["model"], "effort": None}},
+            "agentHostSessions": {"pi": {key: deepcopy(node[key])
+                                         for key in ("extSessionId", "branches", "current_branch")}}}
 
 
 class TestAgentNodePersistence(unittest.TestCase):
@@ -154,50 +181,66 @@ class TestAgentNodePersistence(unittest.TestCase):
 class TestAgentSettingsCAS(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="firefly-settings-cas-392-")
+        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name) / "projects"
         self.store = InterleavingProjectStore(self.root, snapshot_delay=0)
-        self.previous_store = main.FIREFLY_PROJECT_STORE
+        self.addCleanup(self.store.close)
+        self.addCleanup(setattr, main, "FIREFLY_PROJECT_STORE", main.FIREFLY_PROJECT_STORE)
         main.FIREFLY_PROJECT_STORE = self.store
-        self.project_id = self.store.create_project("Settings CAS")['id']
-        self.node = {"id": "cas-agent", "type": "smart-agent", "x": 0, "y": 0,
-                     "model": "old-model", "autonomy": "cautious", "prompt": "old prompt",
-                     "createdBy": "agent", "agentNodeId": "creator", "userTouchedAt": None,
-                     "promptEditedByUser": False, "updated_at": 17,
-                     "branches": [{"id": "original", "session_file": "original.jsonl"},
-                                  {"id": "other", "session_file": "other.jsonl"}],
-                     "current_branch": "original"}
-        self.store.apply_mutations(self.project_id, [{"op": "upsert_node", "node": self.node},
-                                   {"op": "upsert_node", "node": {"id": "keep", "type": "smart-prompt"}}], base_revision=0)
+        self.project_id = self.store.create_project("Settings CAS")["id"]
+        self.node = pi_node({"id": "cas-agent", "type": "smart-agent", "x": 0, "y": 0,
+                             "model": "old-model", "autonomy": "cautious", "prompt": "old prompt",
+                             "createdBy": "agent", "agentNodeId": "creator", "userTouchedAt": None,
+                             "promptEditedByUser": False, "updated_at": 17,
+                             "branches": [{"id": "original", "session_file": "original.jsonl"},
+                                          {"id": "other", "session_file": "other.jsonl"}],
+                             "current_branch": "original", "extSessionId": "original"})
+        self.store.apply_agent_host_mutations(self.project_id, [
+            {"op": "upsert_node", "node": self.node},
+            {"op": "upsert_node", "node": {"id": "keep", "type": "smart-prompt"}},
+        ], base_revision=0)
+        self.assert_saved_agent(self.node)
         self.host = SettingsHost()
-        self.host_patch = patch.object(api_agent_nodes, "agent_host_manager", self.host)
-        self.host_patch.start()
+        self.model_commands = self.enterContext(patch.object(self.host, "set_model", wraps=self.host.set_model))
+        self.switch_commands = self.enterContext(patch.object(self.host, "switch_branch", wraps=self.host.switch_branch))
+        self.enterContext(patch.object(api_agent_nodes, "agent_host_manager", self.host))
+        # Same offline native capability directory as the host-settings tests.
+        # The HTTP transaction still validates selection, performs RPC and commits.
+        self.enterContext(patch.object(agent_model_capabilities, "get_capabilities", capabilities))
         self.client = TestClient(main.app, base_url="http://127.0.0.1:3115",
                                  headers={"origin": "http://127.0.0.1:3115"})
+        self.addCleanup(self.client.close)
 
-    def tearDown(self):
-        self.client.close()
-        self.host_patch.stop()
-        self.store.close()
-        main.FIREFLY_PROJECT_STORE = self.previous_store
-        self.temp.cleanup()
+    def assert_saved_agent(self, expected):
+        node = next(n for n in self.store.canvas(self.project_id)["nodes"] if n["id"] == "cas-agent")
+        self.assertEqual(node, expected, "The trusted write must persist the complete Agent fixture")
 
-    def post_setting(self, endpoint, body):
-        return self.client.post(f"/api/projects/{self.project_id}/agent-nodes/cas-agent/{endpoint}", json=body)
+    def write_agent(self, node):
+        self.store.concurrent_write(self.project_id, [{"op": "upsert_node", "node": node}], trusted=True)
+        self.assert_saved_agent(node)
+
+    def post_setting(self, endpoint, body, *, conflicts=0):
+        revision = self.store.canvas(self.project_id)["revision"]
+        start = len(self.store.revision_conflicts)
+        response = self.client.post(f"/api/projects/{self.project_id}/agent-nodes/cas-agent/{endpoint}", json=body)
+        self.assertEqual(self.store.revision_conflicts[start:],
+                         [(r, r + 1) for r in range(revision, revision + conflicts)], response.text)
+        return response
 
     def add_concurrent_content(self):
         node = next(n for n in self.store.canvas(self.project_id)["nodes"] if n["id"] == "cas-agent")
         node.update(prompt="concurrent prompt", createdBy="user", agentNodeId=None,
                     userTouchedAt=555, promptEditedByUser=True)
         node["branches"].append({"id": "concurrent", "session_file": "concurrent.jsonl"})
-        self.store.concurrent_write(self.project_id, [{"op": "upsert_node", "node": node}])
+        self.write_agent(pi_node(node))
 
     def test_switch_target_branch_deleted_during_retry_does_not_persist_stale_selection(self):
         def delete_branch():
             node = {**self.node, "branches": [self.node["branches"][0]]}
-            self.store.concurrent_write(self.project_id, [{"op": "upsert_node", "node": node}])
+            self.write_agent(pi_node(node))
 
         self.store.before_apply = delete_branch
-        response = self.post_setting("switch-branch", {"branch_id": "other", "user_edit": True})
+        response = self.post_setting("switch-branch", {"branch_id": "other", "user_edit": True}, conflicts=1)
         self.assertEqual(response.status_code, 404, response.text)
         self.assertEqual(response.json()["detail"]["code"], "NOT_FOUND")
         node = next(n for n in self.store.canvas(self.project_id)["nodes"] if n["id"] == "cas-agent")
@@ -210,17 +253,19 @@ class TestAgentSettingsCAS(unittest.TestCase):
     def test_retry_that_is_already_satisfied_does_not_add_a_touch_or_another_revision(self):
         for endpoint, value in (("model", "new-model"), ("autonomy", "standard"), ("switch-branch", "other")):
             with self.subTest(endpoint=endpoint):
-                self.store.concurrent_write(self.project_id, [{"op": "upsert_node", "node": self.node}])
+                self.write_agent(self.node)
                 before = self.store.canvas(self.project_id)
                 field = "current_branch" if endpoint == "switch-branch" else endpoint
 
                 def satisfy():
                     node = {**self.node, field: value, "userTouchedAt": 555, "promptEditedByUser": True}
-                    self.store.concurrent_write(self.project_id, [{"op": "upsert_node", "node": node}])
+                    if endpoint == "switch-branch":
+                        node["extSessionId"] = "other"
+                    self.write_agent(pi_node(node))
 
                 self.store.before_apply = satisfy
                 key = "branch_id" if endpoint == "switch-branch" else endpoint
-                response = self.post_setting(endpoint, {key: value, "user_edit": True})
+                response = self.post_setting(endpoint, {key: value, "user_edit": True}, conflicts=1)
                 self.assertEqual(response.status_code, 200, response.text)
                 canvas = self.store.canvas(self.project_id)
                 self.assertEqual(canvas["revision"], before["revision"] + 1)
@@ -230,18 +275,24 @@ class TestAgentSettingsCAS(unittest.TestCase):
                 self.assertTrue(node["promptEditedByUser"])
 
     def test_success_canvas_is_fresh_after_a_later_writer_not_paired_with_commit_revision(self):
+        broadcast_revisions = []
+
         async def broadcast(project_id, updated_at, source=""):
+            revision = self.store.canvas(project_id)["revision"]
             self.add_concurrent_content()
+            broadcast_revisions.append(revision)
 
         requests = [("model", {"model": "new-model"}), ("autonomy", {"autonomy": "standard"}),
                     ("fork", {"entry_id": "entry-1", "name": "manual"}),
                     ("switch-branch", {"branch_id": "other"})]
         for endpoint, body in requests:
             with self.subTest(endpoint=endpoint):
-                self.store.concurrent_write(self.project_id, [{"op": "upsert_node", "node": self.node}])
+                self.write_agent(self.node)
                 before = self.store.canvas(self.project_id)
+                broadcast_revisions.clear()
                 with patch.object(main.manager, "broadcast_canvas_updated", broadcast):
                     response = self.post_setting(endpoint, {**body, "user_edit": True})
+                self.assertEqual(broadcast_revisions, [before["revision"] + 1])
                 self.assertEqual(response.status_code, 200, response.text)
                 canvas = self.store.canvas(self.project_id)
                 self.assertEqual(canvas["revision"], before["revision"] + 2)
@@ -271,7 +322,7 @@ class TestAgentSettingsCAS(unittest.TestCase):
         for endpoint, body, effects, host_values in requests:
             with self.subTest(endpoint=endpoint):
                 self.project_id = self.store.create_project("Deleted after settings commit")["id"]
-                self.store.apply_mutations(self.project_id, [{"op": "upsert_node", "node": self.node}], base_revision=0)
+                self.write_agent(self.node)
                 before = self.store.canvas(self.project_id)
                 self.host.effects.clear()
                 committed.clear()
@@ -305,10 +356,10 @@ class TestAgentSettingsCAS(unittest.TestCase):
         for endpoint, value in (("model", "new-model"), ("autonomy", "standard")):
             for user_edit in (False, True):
                 with self.subTest(endpoint=endpoint, user_edit=user_edit):
-                    self.store.concurrent_write(self.project_id, [{"op": "upsert_node", "node": self.node}])
+                    self.write_agent(self.node)
                     self.store.before_apply = self.add_concurrent_content
                     with patch.object(main, "now_ms", return_value=777):
-                        response = self.post_setting(endpoint, {endpoint: value, "user_edit": user_edit})
+                        response = self.post_setting(endpoint, {endpoint: value, "user_edit": user_edit}, conflicts=1)
                     self.assertEqual(response.status_code, 200, response.text)
                     canvas = self.store.canvas(self.project_id)
                     node = next(n for n in canvas["nodes"] if n["id"] == "cas-agent")
@@ -325,9 +376,11 @@ class TestAgentSettingsCAS(unittest.TestCase):
                     ("switch-branch", {"branch_id": "other"})]
         for endpoint, body in requests:
             with self.subTest(endpoint=endpoint):
-                self.store.concurrent_write(self.project_id, [{"op": "upsert_node", "node": self.node}])
+                self.write_agent(self.node)
                 before = self.store.canvas(self.project_id)
                 self.host.effects.clear()
+                self.model_commands.reset_mock()
+                self.switch_commands.reset_mock()
 
                 def conflict():
                     self.store.concurrent_write(self.project_id, [{"op": "upsert_node", "node": {
@@ -336,7 +389,7 @@ class TestAgentSettingsCAS(unittest.TestCase):
 
                 self.store.before_apply = conflict
                 try:
-                    response = self.post_setting(endpoint, {**body, "user_edit": True})
+                    response = self.post_setting(endpoint, {**body, "user_edit": True}, conflicts=8)
                 finally:
                     self.store.before_apply = None
                 self.assertEqual(response.status_code, 409, response.text)
@@ -345,8 +398,15 @@ class TestAgentSettingsCAS(unittest.TestCase):
                 canvas = self.store.canvas(self.project_id)
                 self.assertEqual(canvas["revision"], before["revision"] + 8)
                 self.assertEqual(next(n for n in canvas["nodes"] if n["id"] == "cas-agent"), self.node)
-                if endpoint in ("fork", "switch-branch"):
+                if endpoint == "model":
+                    self.assertEqual(self.host.session.model, self.node["model"])
+                    self.assertEqual([args[1] for args, _ in self.model_commands.await_args_list],
+                                     [body["model"], self.node["model"]])
+                if endpoint == "fork":
                     self.assertEqual(self.host.effects.count("fork" if endpoint == "fork" else "switch"), 1)
+                if endpoint == "switch-branch":
+                    self.assertEqual([args[1] for args, _ in self.switch_commands.await_args_list],
+                                     ["other.jsonl", "original.jsonl"])
 
     def test_target_deleted_during_retry_is_not_resurrected_or_reported_as_session_only(self):
         requests = [("model", {"model": "new-model"}), ("autonomy", {"autonomy": "standard"}),
@@ -354,24 +414,55 @@ class TestAgentSettingsCAS(unittest.TestCase):
                     ("switch-branch", {"branch_id": "other"})]
         for endpoint, body in requests:
             with self.subTest(endpoint=endpoint):
-                self.store.concurrent_write(self.project_id, [{"op": "upsert_node", "node": self.node}])
+                self.write_agent(self.node)
                 self.host.effects.clear()
+                self.model_commands.reset_mock()
+                self.switch_commands.reset_mock()
                 self.store.before_apply = lambda: self.store.concurrent_write(
                     self.project_id, [{"op": "remove_node", "node_id": "cas-agent"}])
-                response = self.post_setting(endpoint, {**body, "user_edit": True})
+                response = self.post_setting(endpoint, {**body, "user_edit": True}, conflicts=1)
                 self.assertEqual(response.status_code, 404, response.text)
                 self.assertEqual(response.json()["detail"]["code"], "NODE_NOT_FOUND")
                 canvas = self.store.canvas(self.project_id)
                 self.assertEqual([n["id"] for n in canvas["nodes"]], ["keep"])
                 if endpoint == "model":
-                    self.assertEqual(self.host.session.model, "new-model")  # Host side effect is not rolled back.
-                if endpoint in ("fork", "switch-branch"):
+                    # ADR 0024: even the legacy /model route compensates a failed CAS.
+                    self.assertEqual(self.host.session.model, self.node["model"])
+                    self.assertEqual([args[1] for args, _ in self.model_commands.await_args_list],
+                                     [body["model"], self.node["model"]])
+                if endpoint == "fork":
                     self.assertEqual(self.host.effects.count("fork" if endpoint == "fork" else "switch"), 1)
+                if endpoint == "switch-branch":
+                    self.assertEqual([args[1] for args, _ in self.switch_commands.await_args_list],
+                                     ["other.jsonl", "original.jsonl"])
+
+    def test_model_rollback_failure_is_explicit_after_node_deletion(self):
+        with self.subTest(endpoint="model", rollback="unconfirmed"):
+            before = self.store.canvas(self.project_id)
+            self.store.before_apply = lambda: self.store.concurrent_write(
+                self.project_id, [{"op": "remove_node", "node_id": "cas-agent"}])
+
+            async def set_model(session, model):
+                if model == self.node["model"]:
+                    raise RuntimeError("native rollback unavailable")
+                session.model = model
+
+            self.model_commands.side_effect = set_model
+            response = self.post_setting("model", {"model": "new-model", "user_edit": True}, conflicts=1)
+            self.assertEqual(response.status_code, 502, response.text)
+            self.assertEqual(response.json()["detail"]["code"], "agent_rollback_failed")
+            self.assertIn("native rollback unavailable", response.json()["detail"]["message"])
+            self.assertEqual([args[1] for args, _ in self.model_commands.await_args_list],
+                             ["new-model", self.node["model"]])
+            canvas = self.store.canvas(self.project_id)
+            self.assertEqual(canvas["revision"], before["revision"] + 1)
+            self.assertEqual([n["id"] for n in canvas["nodes"]], ["keep"])
+            self.assertEqual(self.host.session.effort_state["source"], "pi:rollback-unconfirmed")
 
     def test_switch_preserves_concurrent_content_and_noop_does_not_advance_revision(self):
         self.store.before_apply = self.add_concurrent_content
         with patch.object(main, "now_ms", return_value=888):
-            response = self.post_setting("switch-branch", {"branch_id": "other", "user_edit": True})
+            response = self.post_setting("switch-branch", {"branch_id": "other", "user_edit": True}, conflicts=1)
         self.assertEqual(response.status_code, 200, response.text)
         canvas = self.store.canvas(self.project_id)
         node = next(n for n in canvas["nodes"] if n["id"] == "cas-agent")
@@ -396,7 +487,8 @@ class TestAgentSettingsCAS(unittest.TestCase):
     def test_fork_rebuilds_from_latest_canvas_without_repeating_host_rpc(self):
         self.store.before_apply = self.add_concurrent_content
         with patch.object(main, "now_ms", return_value=999):
-            response = self.post_setting("fork", {"entry_id": "entry-1", "name": "manual fork", "user_edit": True})
+            response = self.post_setting("fork", {"entry_id": "entry-1", "name": "manual fork", "user_edit": True},
+                                         conflicts=1)
         self.assertEqual(response.status_code, 200, response.text)
         canvas = self.store.canvas(self.project_id)
         node = next(n for n in canvas["nodes"] if n["id"] == "cas-agent")
