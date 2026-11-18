@@ -2916,6 +2916,28 @@ test('#422 用户滚轮意图在 ResizeObserver 通知后仍能脱离底部', ()
     assert.equal(state.scrollState.atBottom, false, '布局通知不能吞掉正在发生的用户滚动');
 });
 
+for (const zoom of [1, 0.75]) {
+    test(`#426 小数视口高度下缩放 ${zoom} 的重复恢复不漂移`, () => {
+        const { ctx, harness } = loadAgentTuiModule();
+        const state = fn(ctx, 'getAgentTuiState')('n1');
+        const tree = d2ScrollDom(harness, { top: 10000, height: 20000, client: 726,
+            rows: [['entry:63', 9958.84375, 100]] });
+        let top = 10000;
+        Object.defineProperty(tree.body, 'scrollTop', { get: () => top, set: value => { top = Math.round(value); } });
+        tree.body.getBoundingClientRect = () => ({ top: 0, bottom: 726.421875 * zoom, height: 726.421875 * zoom });
+        tree.rows[0].getBoundingClientRect = () => ({ top: (tree.rows[0].y - top) * zoom, bottom: (tree.rows[0].y + 100 - top) * zoom });
+        ctx.getComputedStyle = () => ({ height: '726.421875px', boxSizing: 'border-box' });
+        fn(ctx, 'captureAgentScroll')(state, tree.body, true);
+        const initial = tree.rows[0].getBoundingClientRect().top;
+        for (let i = 0; i < 4; i++) {
+            tree.body.scrollTop = 0; // a newly rendered scrolling element
+            fn(ctx, 'restoreAgentScroll')(state, tree.body);
+            assert.equal(tree.rows[0].getBoundingClientRect().top, initial, `第 ${i + 1} 次恢复偏移`);
+            fn(ctx, 'captureAgentScroll')(state, tree.body);
+        }
+    });
+}
+
 for (const distance of [47, 48, 49]) {
     test(`#408 D2 OLD layout ${distance}px 边界；追加增高不能反推 follow`, () => {
         const { ctx, harness } = loadAgentTuiModule();

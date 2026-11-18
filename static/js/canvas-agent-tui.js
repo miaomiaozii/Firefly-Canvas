@@ -2355,6 +2355,24 @@ function agentTuiSendInput(inputEl, nodeId, projectId) {
     }
 }
 
+// clientHeight is integer-rounded, whereas DOMRect preserves fractional pixels.
+// Mixing the two turns a large scrollTop into accumulated anchor drift. Use the
+// computed untransformed border-box height so canvas zoom is still accounted for.
+function agentScrollGeometryScale(body, rect) {
+    if (!(rect.height > 0)) return 1;
+    if (typeof getComputedStyle === 'function') {
+        const style = getComputedStyle(body);
+        let height = parseFloat(style.height);
+        if (height > 0 && style.boxSizing !== 'border-box') {
+            for (const part of ['paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth']) {
+                height += parseFloat(style[part]) || 0;
+            }
+        }
+        if (height > 0) return height / rect.height;
+    }
+    return body.clientHeight / rect.height;
+}
+
 // Capture against the OLD layout, never against newly appended/taller content.
 function captureAgentScroll(state, body, user = false) {
     if (!body || !(body.clientHeight > 0)) return state.scrollState;
@@ -2364,7 +2382,7 @@ function captureAgentScroll(state, body, user = false) {
     const distance = Math.max(0, body.scrollHeight - body.clientHeight - top);
     const atBottom = !user && binding && previous ? previous.atBottom : distance <= 48;
     const rect = body.getBoundingClientRect();
-    const scale = rect.height > 0 ? body.clientHeight / rect.height : 1;
+    const scale = agentScrollGeometryScale(body, rect);
     let anchor = null;
     for (const row of body.querySelectorAll('[data-agent-entry-key]')) {
         const r = row.getBoundingClientRect();
@@ -2391,7 +2409,7 @@ function restoreAgentScroll(state, body) {
         const row = Array.from(body.querySelectorAll('[data-agent-entry-key]')).find(row => row.getAttribute('data-agent-entry-key') === ss.anchor.key);
         if (row) {
             const rect = body.getBoundingClientRect();
-            const scale = rect.height > 0 ? body.clientHeight / rect.height : 1;
+            const scale = agentScrollGeometryScale(body, rect);
             top = body.scrollTop + (row.getBoundingClientRect().top - rect.top) * scale - ss.anchor.offset;
         }
     }
@@ -2512,7 +2530,7 @@ function bindAgentScroll(el, state) {
         },
         onJump: entry => {
             const rect = body.getBoundingClientRect(), target = entry.element.getBoundingClientRect();
-            const scale = rect.height > 0 ? body.clientHeight / rect.height : 1;
+            const scale = agentScrollGeometryScale(body, rect);
             body.scrollTop += (target.top - rect.top) * scale;
             captureAgentScroll(state, body, true);
             binding.programTop = body.scrollTop;
