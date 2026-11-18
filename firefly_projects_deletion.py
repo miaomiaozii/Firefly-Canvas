@@ -1458,26 +1458,48 @@ class ProjectDeletionMixin:
             if item is None:
                 raise _store.ProjectNotFound("回收区条目不存在或已清理")
             project_dir = self._project_directory(project_id)
-            candidates = []
+            previews = []
+            originals = []
             preview_names = item.get("preview_filenames")
             if not isinstance(preview_names, list):
                 preview_names = []
             preview_name = next((name for name in preview_names if isinstance(name, str) and name.strip()), None)
             if preview_name:
-                candidates.append((
+                previews.append((
                     (Path("trash") / "previews" / preview_name).as_posix(),
                     _store.mimetypes.guess_type(preview_name)[0] or "image/webp",
                     False,
                 ))
             media_filename = str(item.get("media_filename") or "").strip()
             if media_filename:
-                candidates.append((
+                originals.append((
                     (Path("trash") / "media" / media_filename).as_posix(),
                     str(item.get("mime_type") or "") or "application/octet-stream",
                     True,
                 ))
-            if str(view or "preview").strip() == "original":
-                candidates.reverse()
+            if item.get("media_retained"):
+                # A stale live index must not hide a later owner in the trash.
+                live = self._load_media_index(project_id).get("items", {}).get(asset_id)
+                if isinstance(live, dict):
+                    filename = str(live.get("filename") or "").strip()
+                    if filename:
+                        originals.append(((Path("media") / filename).as_posix(),
+                                          str(live.get("mime_type") or "") or "application/octet-stream", True))
+                for owner in index.get("items", []):
+                    if (not isinstance(owner, dict) or str(owner.get("asset_id") or "") != asset_id
+                            or owner.get("media_retained")):
+                        continue
+                    names = owner.get("preview_filenames")
+                    if isinstance(names, list):
+                        for name in names:
+                            if isinstance(name, str) and name.strip():
+                                previews.append(((Path("trash") / "previews" / name).as_posix(),
+                                                 _store.mimetypes.guess_type(name)[0] or "image/webp", False))
+                    filename = str(owner.get("media_filename") or "").strip()
+                    if filename:
+                        originals.append(((Path("trash") / "media" / filename).as_posix(),
+                                          str(owner.get("mime_type") or "") or "application/octet-stream", True))
+            candidates = originals + previews if str(view or "preview").strip() == "original" else previews + originals
             for relative, media_type, is_original in candidates:
                 path = self._safe_project_path(project_dir, relative)
                 if path.is_file():

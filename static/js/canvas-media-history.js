@@ -511,12 +511,12 @@ function renderSmartTrashItems(items){
         btn.onclick = () => void smartTrashPurgeItem(btn.closest('[data-trash-asset]')?.dataset?.trashAsset || '');
     });
     // #86：缩略图加载失败回退到图标；点缩略图打开大图预览（滚轮缩放 + 拖拽 + 恢复）。
-    const byAsset = new Map(items.map(item => [String(item?.asset_id || ''), item]));
     smartTrashList.querySelectorAll('.smart-trash-thumb').forEach(img => {
         img.addEventListener('error', () => img.closest('.smart-trash-thumb-wrap')?.classList.add('no-thumb'), {once:true});
     });
-    smartTrashList.querySelectorAll('[data-trash-preview]').forEach(el => {
-        el.onclick = () => openTrashMediaPreview(byAsset.get(el.dataset.trashPreview) || {});
+    smartTrashList.querySelectorAll('[data-trash-preview]').forEach((el, index) => {
+        // Rows represent deletion occurrences, not unique assets.
+        el.onclick = () => openTrashMediaPreview(items[index] || {});
     });
 }
 // #207/#87：回收区预览收口到「生成详情」统一面板（与画布缩略图/生图历史抽屉同一组件，
