@@ -206,7 +206,11 @@ class TestAgentForkAPI(unittest.TestCase):
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory(prefix="firefly-agent-fork-tests-")
+        # #384: cleanups also run when setUp raises; LIFO restores the caller's
+        # store, closes our writer, then removes only our temporary directory.
+        self.addCleanup(self.temp_dir.cleanup)
         self.store = ProjectStore(Path(self.temp_dir.name) / "projects", snapshot_delay=0)
+        self.addCleanup(self.store.close)
         self.project = self.store.create_project("e2e-tabbit-fork-test")
         self.project_id = self.project["id"]
 
@@ -228,8 +232,10 @@ class TestAgentForkAPI(unittest.TestCase):
         )
         self.node_id = "fork-agent-1"
 
-        # Set up the app with our store
-        main.FIREFLY_PROJECT_STORE = self.store
+        # Set up the app with our store without leaking it into later modules.
+        store_patch = patch.object(main, "FIREFLY_PROJECT_STORE", self.store)
+        store_patch.start()
+        self.addCleanup(store_patch.stop)
 
         # Reset the global agent host manager
         run_async(agent_host_manager.cleanup_all())
@@ -259,7 +265,6 @@ class TestAgentForkAPI(unittest.TestCase):
 
     def tearDown(self):
         run_async(agent_host_manager.cleanup_all())
-        self.temp_dir.cleanup()
 
     @staticmethod
     def _same_origin_request():
@@ -458,6 +463,33 @@ class TestAgentForkAPI(unittest.TestCase):
         canvas = self.store.canvas(self.project_id)
         node = next(n for n in canvas["nodes"] if n["id"] == self.node_id)
         self.assertEqual(node["current_branch"], "branch-original")
+
+
+class TestAgentForkIsolation(unittest.TestCase):
+    """#384: exercise the real fixture lifecycle, not only passing fork calls."""
+
+    def test_api_case_restores_callers_store_after_success(self):
+        parent_store = object()
+        with patch.object(main, "FIREFLY_PROJECT_STORE", parent_store):
+            case = TestAgentForkAPI("test_fork_messages_endpoint")
+            result = unittest.TestResult()
+            case.run(result)
+            self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
+            self.assertIs(main.FIREFLY_PROJECT_STORE, parent_store)
+            self.assertFalse(Path(case.temp_dir.name).exists())
+
+    def test_api_case_restores_callers_store_after_setup_failure(self):
+        parent_store = object()
+        with patch.object(main, "FIREFLY_PROJECT_STORE", parent_store), patch.object(
+            agent_host_manager, "cleanup_all", side_effect=RuntimeError("fixture setup probe")
+        ):
+            case = TestAgentForkAPI("test_fork_messages_endpoint")
+            result = unittest.TestResult()
+            case.run(result)
+            self.assertEqual(len(result.errors), 1)
+            self.assertIn("fixture setup probe", result.errors[0][1])
+            self.assertIs(main.FIREFLY_PROJECT_STORE, parent_store)
+            self.assertFalse(Path(case.temp_dir.name).exists())
 
 
 if __name__ == "__main__":
