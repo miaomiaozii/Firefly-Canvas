@@ -120,14 +120,24 @@ function textResult(payload: any, normalize = false) {
     return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }], details: {} };
 }
 
-// #357：确认门移到服务端（统一执行入口 _server_confirm_gate）——本扩展不再预确认，
-// 只在写操作 URL 上带 ?agent_node_id=（服务端据此把确认事件投影到本节点会话）。
-// 被拒/超时 → 服务端 409，callApi 抛错，pi 侧看到拒绝/超时文本。
+// #357：扩展不做预确认；服务端确认门用查询串的 agent_node_id 将确认投影到对应会话，
+// 拒绝或超时返回 409。#393 操作日志也用此身份；不混入受服务端白名单约束的更新字段。
 function gateQuery() {
     return NODE_ID ? `?agent_node_id=${encodeURIComponent(NODE_ID)}` : "";
 }
 
 const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any>> = {
+    "ops.list": async (_toolCallId, params) => {
+        const query = new URLSearchParams();
+        if (params.turn_id !== undefined) query.append("turn_id", params.turn_id);
+        if (params.limit !== undefined) query.append("limit", String(params.limit));
+        const suffix = query.toString();
+        return textResult(await callApi(`/api/projects/${PROJECT_ID}/ops${suffix ? `?${suffix}` : ""}`, "GET"));
+    },
+
+    "ops.undo": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/ops/undo`, "POST", params)),
+
     "canvas.list_nodes": async (_toolCallId, params) => {
         const query = new URLSearchParams();
         if (params.group_id !== undefined) query.append("group_id", params.group_id);
@@ -169,7 +179,7 @@ const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any
         if (params.title !== undefined) updates.title = params.title;
         if (params.text !== undefined) updates.text = params.text;
         if (params.prompt !== undefined) updates.prompt = params.prompt;
-        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes/${params.node_id}`, "PATCH", updates));
+        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes/${params.node_id}${gateQuery()}`, "PATCH", updates));
     },
 
     "canvas.delete_node": async (_toolCallId, params) => {
@@ -179,10 +189,10 @@ const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any
     },
 
     "canvas.connect": async (_toolCallId, params) => {
-        // #356 D12/D11：edge id 服务端铸造；kind 缺省归服务端 core（flow）。
+        // #356 D12/D11：edge id 由服务端铸造，缺省 kind=flow 归两路共用的 core。
         const edge: any = { from: params.from_node, to: params.to_node };
         if (params.kind !== undefined) edge.kind = params.kind;
-        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edges`, "POST", { edge }));
+        return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edges${gateQuery()}`, "POST", { edge }));
     },
 
     "canvas.disconnect": async (_toolCallId, params) =>

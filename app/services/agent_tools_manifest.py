@@ -51,6 +51,8 @@ UPDATABLE_NODE_FIELDS = frozenset({
 })
 
 TOOLS = [
+    {"name": "ops.list", "description": "列出当前项目的 Agent 操作日志，可按 turn_id 筛选；外部 MCP 的 turn_id 不得复用，未提供轮次时只可逐条撤销。", "inputSchema": {"type": "object", "properties": {"turn_id": {"type": "string", "minLength": 1}, "limit": {"type": "integer", "minimum": 1, "maximum": 1000}}, "required": [], "additionalProperties": False}},
+    {"name": "ops.undo", "description": "按 op_id 或 turn_id 撤销（恰好提供一个）；外部 MCP 的 turn_id 不得复用，未提供轮次时不支持按轮撤销。", "inputSchema": {"type": "object", "properties": {"op_id": {"type": "string", "minLength": 1}, "turn_id": {"type": "string", "minLength": 1}}, "required": [], "additionalProperties": False}},
     {"name": "canvas.list_nodes", "description": "列出画布节点与组索引（含连边、创建来源和人工保护摘要）；可按 group_id 直接成员或 created_by 原创建来源筛选。fields 省略时返回 summary/prompt/refs/run 全部四块，[] 只返回 summary；summary 始终返回。", "inputSchema": {"type": "object", "properties": {
         "group_id": {"type": "string", "description": "组框 ID，仅列出该组的直接成员（不递归）"},
         "created_by": {"type": "string", "enum": ["agent", "user"], "description": "按原创建来源筛选，不按当前接管者筛选"},
@@ -117,3 +119,12 @@ WRITE_TOOLS = frozenset({
     "canvas.edit_outpaint", "canvas.edit_rotate", "canvas.update_node",
     "generate.trigger", "media.delete", "media.upload",
 })
+
+# #393：共享描述须明确限定在外部 MCP；turn_id 不进写工具的 JSON schema，Pi 由服务端归属轮次。
+_EXTERNAL_MCP_TURN_NOTE = (
+    "仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；"
+    "同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。"
+)
+for _tool in TOOLS:
+    if _tool["name"] in WRITE_TOOLS:
+        _tool["description"] = f"{_tool['description'].rstrip('。')}。{_EXTERNAL_MCP_TURN_NOTE}"

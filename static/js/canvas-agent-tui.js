@@ -284,9 +284,24 @@ function agentNodeRefsApplyEvent(nodeId, event, recordedAt) {
         }
         return true;
     }
+    if (event.type === 'session') state.queueStopped = ['stopped', 'crashed', 'aborted'].includes(event.status);
+    else if (event.type === 'agent_start') state.queueStopped = false;
+    if (event.type === 'input_delivery_terminal') {
+        state.queuedInputs.delete(event.request_id);
+        const row = state.messages.find(msg => msg.request_id === event.request_id);
+        if (row) {
+            row.delivery = event.delivery;
+            row.text = `${event.delivery === 'uncertain' ? '状态不确定' : '未发送'}: ${row.text.replace(/^⏳ follow_up queued: /, '')}`;
+            if (row.attachments_missing_on_restart) row.text += `（${row.attachments_missing_on_restart} 个附件不可恢复，请重新添加）`;
+        }
+        renderAgentNode(nodeId);
+        return true;
+    }
     if (event.type === 'queued_input' || (event.type === 'user_prompt' && (event.request_id || (Array.isArray(event.node_refs) && event.node_refs.length)))) {
         // Reconnect may replay the already-optimistic row; reconcile by per-input identity.
-        if (event.type === 'queued_input') state.queuedInputs.add(event.request_id || `queued:${event.seq}`);
+        if (event.type === 'queued_input' && event.replay_delivery === 'delivered') return true;
+        if (event.type === 'queued_input' && !event.replay_delivery) state.queuedInputs.add(event.request_id || `queued:${event.seq}`);
+        else if (event.request_id) state.queuedInputs.delete(event.request_id);
         const existing = event.request_id && state.messages.find(msg => msg.request_id === event.request_id);
         const pending = refs.pending.get(event.request_id);
         const canonical = Array.isArray(event.node_refs) ? event.node_refs : [];
@@ -294,12 +309,24 @@ function agentNodeRefsApplyEvent(nodeId, event, recordedAt) {
         const timestamp = event.type === 'user_prompt' ? recordedAt : undefined;
         if (existing) {
             existing.node_refs = canonical;
+            existing.attachments_missing_on_restart = event.attachments_missing_on_restart || 0;
             existing.delivery = 'accepted';
+            if (event.type === 'user_prompt') {
+                existing.role = 'user';
+                existing.text = String(event.text || '');
+            } else existing.input_type = event.input_type;
             if (timestamp !== undefined) existing.timestamp = timestamp;
         } else agentAppendMessage(state, { role: event.type === 'user_prompt' ? 'user' : 'system',
             text: event.type === 'user_prompt' ? String(event.text || '') : `${event.input_type === 'steer' ? '↪ steer' : '⏳ follow_up queued'}: ${String(event.text || '')}`,
-            node_refs: canonical, request_id: event.request_id, delivery: 'accepted',
+            node_refs: canonical, request_id: event.request_id, queue_id: event.type === 'queued_input' ? (event.request_id || `queued:${event.seq}`) : undefined, input_type: event.input_type, delivery: 'accepted',
+            attachments_missing_on_restart: event.attachments_missing_on_restart || 0,
             ...(timestamp !== undefined ? { timestamp } : {}) });
+        if (event.type === 'queued_input' && event.replay_delivery) {
+            const row = existing || state.messages[state.messages.length - 1];
+            row.delivery = event.replay_delivery;
+            row.text = `${event.replay_delivery === 'unsent' ? '未发送' : '状态不确定'}: ${String(event.text || '')}`;
+            if (row.attachments_missing_on_restart) row.text += `（${row.attachments_missing_on_restart} 个附件不可恢复，请重新添加）`;
+        }
         renderAgentNode(nodeId);
         return true;
     }
@@ -1124,7 +1151,10 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
             if (event.willRetry !== true) {
                 state.stopStatusError = '';
                 state.stopPending = false;
-                state.queuedInputs.clear();
+                // Steering belongs to the completed turn; follow-ups may await later turns.
+                for (const id of state.queuedInputs) {
+                    if (state.messages.some(message => (message.queue_id || message.request_id) === id && message.input_type === 'steer')) state.queuedInputs.delete(id);
+                }
             }
             finalizeAgentStreamingTurn(state);
             if (event.willRetry !== true && !state._applyingReplay && !state._turnFailed && !state._aborted && !['crashed', 'failed', 'error'].includes(state.status)) agentMarkBackgroundCompletion();
@@ -2522,7 +2552,7 @@ function agentTuiSendInput(inputEl, nodeId, projectId) {
     inputEl.value = '';
     inputState.draft = '';
     agentTuiResetGrow(inputEl);
-    if (['busy', 'retrying'].includes(inputState.status) || inputState.queuedInputs.size) {
+    if (['busy', 'retrying'].includes(inputState.status) || (inputState.status === 'idle' && !inputState.queueStopped && inputState.queuedInputs.size)) {
         sendAgentFollowUp(nodeId, projectId, message);
     } else {
         const pending = (inputState && inputState.pendingImages) ? inputState.pendingImages.slice() : [];

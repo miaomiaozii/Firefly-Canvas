@@ -6,12 +6,9 @@
    pi 扩展（app/agent_extensions/canvas-tools.ts）的工具注册段是
    tools/gen_canvas_tools.py 从清单 codegen 的 canvas-tools.generated.ts——
    freshness（重跑 diff 必须为空）、名字集合三方一致、schema 不变量。
-2) 行为层：对全部 25 个工具，同一输入分别走 MCP tools/call 与 REST 孪生
-   （app/routers/api_agent_tools.py，pi 扩展实际打的通路），比对归一化后的
-   返回值与画布终态。确认门工具（#242）经 gate 批准后比对 core 结果；
-   canvas.edit_erase 消耗外部模型，只钉门与 schema，不执行 core。
-   MCP 只读工具也 upsert agent 节点的行为留给 #350（拍板 c）——终态比对
-   剔除 smart-agent 节点。
+2) 行为层：对全部 27 个工具，比对 MCP 与 REST 的返回值及完整画布终态。
+   确认门工具（#242）经 gate 批准后比对 core 结果；canvas.edit_erase 消耗外部模型，
+   只钉门与 schema。媒体写操作的 Agent 路径因记账尚不可用而 fail closed，用户路径仍可用。
 """
 import asyncio
 import copy
@@ -35,11 +32,13 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import main
+from firefly_opsdb import OpsDb
 from firefly_projects import ProjectStore
 from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK
 from app.project_sessions import register_project_session, unregister_project_session
 from app.routers import api_mcp
-from app.services import agent_tools_manifest
+from app.services import agent_ops_delta, agent_tools_manifest
+from app.services.agent_ops_journal import AgentOpsJournal, record_sides
 from app.services.agent_errors import translate_detail
 from app.services.agent_host import agent_host_manager
 from tests.fake_agent_host import FakeAgentProcess, install_stub_pi_cli, restore_stub_pi_cli
@@ -73,6 +72,22 @@ class SourceSameOriginTests(unittest.TestCase):
         self.assertIs(api_mcp.TOOLS, agent_tools_manifest.TOOLS)
         self.assertEqual(api_mcp.TOOL_NAMES, agent_tools_manifest.TOOL_NAMES)
         self.assertEqual(set(api_mcp.TOOL_IMPLS.keys()), agent_tools_manifest.TOOL_NAMES)
+
+    def test_mcp_write_descriptions_document_external_turn_ids(self):
+        client = TestClient(main.app, base_url="http://127.0.0.1:8124")
+        self.addCleanup(client.close)
+        response = client.post("/api/mcp", json={
+            "jsonrpc": "2.0", "id": 1, "method": "tools/list",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        tools = {tool["name"]: tool for tool in response.json()["result"]["tools"]}
+        for name in sorted(agent_tools_manifest.WRITE_TOOLS):
+            with self.subTest(tool=name):
+                tool = tools[name]
+                self.assertIn("仅外部 MCP", tool["description"])
+                self.assertIn("URL 查询参数", tool["description"])
+                self.assertIn("turn_id 不得复用到其他轮次", tool["description"])
+                self.assertNotIn("turn_id", tool["inputSchema"]["properties"])
 
     def test_codegen_fresh(self):
         """重跑 codegen diff 必须为空（拍板 a：进 fast 门/pytest）。"""
@@ -108,7 +123,7 @@ class SourceSameOriginTests(unittest.TestCase):
 
 
 class DualPathEquivalenceTests(unittest.TestCase):
-    """行为层：25 工具逐个「同一输入 → MCP 与 REST 孪生同结果」。"""
+    """行为层：27 工具逐个「同一输入 → MCP 与 REST 孪生同结果」。"""
 
     SEED = [
         {"op": "upsert_node", "node": {"id": "prompt-1", "type": "smart-prompt", "title": "Test Prompt", "text": "A glowing firefly", "x": 100, "y": 100}},
@@ -201,8 +216,8 @@ class DualPathEquivalenceTests(unittest.TestCase):
             payload["image_len"] = sum(len(c.get("data", "")) for c in images)
         return payload
 
-    def _rest(self, client, method, url, json_body=None):
-        resp = client.request(method, url, json=json_body)
+    def _rest(self, client, method, url, json_body=None, headers=None):
+        resp = client.request(method, url, json=json_body, headers=headers)
         if resp.status_code >= 400:
             detail = resp.json().get("detail") if "json" in resp.headers.get("content-type", "") else resp.text
             return {"ok": False, "error": translate_detail(resp.status_code, detail)}
@@ -325,7 +340,16 @@ class DualPathEquivalenceTests(unittest.TestCase):
                 client, store, pid_a, pid_b = self._fixture()
                 a = self._mcp_call(client, pid_a, name, args)
                 rest_body = {**body, "agent_node_id": "agent-consistency"} if name == "canvas.create_node" else body
-                b = self._rest(client, method, f"/api/projects/{pid_b}{url_path}", rest_body)
+                is_agent_write = name in {"canvas.create_node", "canvas.update_node", "canvas.connect"}
+                path = f"{url_path}?agent_node_id=agent-consistency" if is_agent_write else url_path
+                headers = {"X-Agent-Project": pid_b} if is_agent_write else None
+                b = self._rest(client, method, f"/api/projects/{pid_b}{path}", rest_body, headers)
+                if is_agent_write:
+                    for pid, result in ((pid_a, a), (pid_b, b)):
+                        op_id = json.loads(result["text"])["op_id"]
+                        self.assertRegex(op_id, r"^[0-9a-f]{32}$")
+                        records = self._rest(client, "GET", f"/api/projects/{pid}/ops")
+                        self.assertEqual(json.loads(records["text"])["operations"][0]["op_id"], op_id)
                 self._assert_pair(a, b, name)
                 self.assertEqual(self._canvas_state(store, pid_a), self._canvas_state(store, pid_b),
                                  f"{name}: 两路画布终态不一致")
@@ -348,7 +372,7 @@ class DualPathEquivalenceTests(unittest.TestCase):
 
         def tmp_upload_run():
             client, store, pid_a, pid_b = self._fixture()
-            # #355（01:08 收口）：只允许当前项目目录/用户选定目录——两路各用本项目内的同名图。
+            # #355：上传路径须属于各自的项目目录。
             img_a = store.root / pid_a / "356t.png"
             img_b = store.root / pid_b / "356t.png"
             for p in (img_a, img_b):
@@ -356,35 +380,35 @@ class DualPathEquivalenceTests(unittest.TestCase):
                 p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
             try:
                 a = self._mcp_call(client, pid_a, "media.upload", {"file_path": str(img_a)})
-                b = self._rest(client, "POST", f"/api/projects/{pid_b}/media/upload", {"file_path": str(img_b)})
+                b = self._rest(client, "POST", f"/api/projects/{pid_b}/media/upload?agent_node_id=agent-consistency",
+                               {"file_path": str(img_b)}, {"X-Agent-Project": pid_b})
                 self._assert_pair(a, b, "media.upload")
-                la = self._mcp_call(client, pid_a, "media.list", {})
-                lb = self._rest(client, "GET", f"/api/projects/{pid_b}/media/list")
-                self._assert_pair(la, lb, "media.upload→list 交叉验证")
+                self.assertTrue(a["ok"], a)
+                asset = json.loads(a["text"])["asset_id"]
+                for pid in (pid_a, pid_b):
+                    self.assertIsNotNone(store.media_record(pid, asset))
+                self._assert_pair(self._mcp_call(client, pid_a, "media.list", {}),
+                                  self._rest(client, "GET", f"/api/projects/{pid_b}/media/list"), "media.list")
             finally:
                 for p in (img_a, img_b):
                     p.unlink(missing_ok=True)
 
         def media_delete_run():
             client, store, pid_a, pid_b = self._fixture()
-            # #355（01:08 收口）：只读当前项目目录/用户选定目录——测试图落各自项目目录。
-            img_a = store.root / pid_a / f"356d_a_{uuid.uuid4().hex[:6]}.png"
-            img_b = store.root / pid_b / f"356d_b_{uuid.uuid4().hex[:6]}.png"
-            for p in (img_a, img_b):
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
-            try:
-                ua = self._mcp_call(client, pid_a, "media.upload", {"file_path": str(img_a)})
-                ub = self._rest(client, "POST", f"/api/projects/{pid_b}/media/upload", {"file_path": str(img_b)})
-                asset_a = json.loads(ua["text"])["asset_id"]
-                asset_b = json.loads(ub["text"])["asset_id"]
-                agent_id = self._materialize_agent(client, store, pid_a)
-                a = self._gated_impl(store, pid_a, agent_id, api_mcp._impl_media_delete, {"asset_id": asset_a})
-                b = self._rest(client, "DELETE", f"/api/projects/{pid_b}/media/{asset_b}")
-                self._assert_pair(a, b, "media.delete")
-            finally:
-                for p in (img_a, img_b):
-                    p.unlink(missing_ok=True)
+            data = b"\x89PNG\r\n\x1a\n" + b"0" * 32
+            asset_a = store.import_media(pid_a, data, "test.png", "image/png")["asset_id"]
+            asset_b = store.import_media(pid_b, data, "test.png", "image/png")["asset_id"]
+            self.assertEqual(asset_a, asset_b)
+            with patch.object(api_mcp, "_confirm_gate", new=AsyncMock()), \
+                 patch("app.routers.api_agent_tools._server_confirm_gate", new=AsyncMock()):
+                a = self._mcp_call(client, pid_a, "media.delete", {"asset_id": asset_a})
+                b = self._rest(client, "DELETE", f"/api/projects/{pid_b}/media/{asset_b}?agent_node_id=agent-consistency",
+                               headers={"X-Agent-Project": pid_b})
+            self._assert_pair(a, b, "media.delete")
+            self.assertTrue(a["ok"], a)
+            for pid in (pid_a, pid_b):
+                self.assertEqual(store.list_media(pid), [])
+            self.assertEqual(self._canvas_state(store, pid_a), self._canvas_state(store, pid_b))
 
         def search_run():
             client, store, pid_a, pid_b = self._fixture()
@@ -399,6 +423,57 @@ class DualPathEquivalenceTests(unittest.TestCase):
             self.assertLessEqual(total(pb), 3, f"REST 路径 limit 未生效: {pb}")
             self.assertEqual(pa.get("query"), pb.get("query"))
 
+        def seed_operation(store, pid):
+            journal = AgentOpsJournal(store, OpsDb(store.root))
+            try:
+                with journal.mutation(pid) as operation:
+                    before = store.canvas(pid)
+                    store.apply_mutations(pid, [{"op": "upsert_node", "node": {
+                        "id": "ops-node", "type": "smart-prompt", "text": "operation"}}],
+                        base_revision=before["revision"])
+                    delta = agent_ops_delta.build_delta(before, store.canvas(pid))
+                    old, new = record_sides(delta)
+                    operation.register({"op_id": "op-test", "turn_id": "turn-test",
+                                        "agent_node_id": "agent-consistency", "tool": "test",
+                                        "args": {}, "before": old, "after": new,
+                                        "touched_node_ids": ["ops-node"], "created_at": "2026-01-01",
+                                        "irreversible_effects": [], "undone": False}, delta)
+                store.flush(pid)
+                self.assertEqual(operation.result()["status"], "settled")
+            finally:
+                journal.close()
+
+        def ops_list_run():
+            client, store, pid_a, pid_b = self._fixture()
+            for pid in (pid_a, pid_b):
+                seed_operation(store, pid)
+            for args, query, expected in (({}, "", ["op-test"]),
+                                          ({"turn_id": "turn-test", "limit": 1}, "?turn_id=turn-test&limit=1", ["op-test"]),
+                                          ({"turn_id": "other"}, "?turn_id=other", [])):
+                a = self._mcp_call(client, pid_a, "ops.list", args)
+                b = self._rest(client, "GET", f"/api/projects/{pid_b}/ops{query}")
+                self._assert_pair(a, b, "ops.list")
+                self.assertEqual([op["op_id"] for op in json.loads(a["text"])["operations"]], expected)
+            self.assertEqual(self._canvas_state(store, pid_a), self._canvas_state(store, pid_b))
+
+        def ops_undo_run():
+            client, store, pid_a, pid_b = self._fixture()
+            for pid in (pid_a, pid_b):
+                seed_operation(store, pid)
+            for status in ("reverted", "already_reverted"):
+                args = {"op_id": "op-test"}
+                a = self._mcp_call(client, pid_a, "ops.undo", args)
+                b = self._rest(client, "POST", f"/api/projects/{pid_b}/ops/undo", args)
+                self._assert_pair(a, b, "ops.undo")
+                result = json.loads(a["text"])
+                self.assertEqual(result["status"], status)
+                self.assertEqual(result[status], ["op-test"])
+                self.assertEqual(self._canvas_state(store, pid_a), self._canvas_state(store, pid_b))
+                self.assertNotIn("ops-node", [node["id"] for node in store.canvas(pid_a)["nodes"]])
+            for pid in (pid_a, pid_b):
+                records = self._rest(client, "GET", f"/api/projects/{pid}/ops")
+                self.assertTrue(json.loads(records["text"])["operations"][0]["undone"])
+
         def edit_erase_pin_only():
             # edit_erase 消耗外部模型（qwen-image-edit），不执行 core；
             # 钉：清单存在 + MCP 侧走确认门 + REST 孪生路由存在。
@@ -410,6 +485,8 @@ class DualPathEquivalenceTests(unittest.TestCase):
             self.assertNotEqual(resp.status_code, 404, "REST 孪生路由必须存在")
 
         cases = {
+            "ops.list": ops_list_run,
+            "ops.undo": ops_undo_run,
             "canvas.list_nodes": pair("canvas.list_nodes", {}, "GET", "/canvas/nodes"),
             "canvas.get_node": pair("canvas.get_node", {"node_id": "prompt-1"}, "GET", "/canvas/nodes/prompt-1"),
             "canvas.create_node": pair("canvas.create_node", {"type": "smart-prompt", "title": "New"}, "POST", "/canvas/nodes", {"node": {"type": "smart-prompt", "title": "New"}}),

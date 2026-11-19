@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
 import signal
 import subprocess
 import threading
@@ -390,6 +391,14 @@ class AgentSession:
     _generation: int = 0
     _response_finishing: bool = False
     _retrying: bool = False
+    _current_turn_id: Optional[str] = None
+    _current_request_id: Optional[str] = None
+    _codex_cleanup: bool = False
+    _input_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    _follow_ups: deque = field(default_factory=deque, repr=False)
+    _follow_up_ids: set = field(default_factory=set, repr=False)
+    _recovered_input_ids: set = field(default_factory=set, repr=False)
+    _follow_up_delivery_failed: bool = False
     _native_state: dict = field(default_factory=dict, repr=False)
     autonomy: str = "cautious"  # cautious | standard | autonomous
     status: str = "stopped"  # stopped, starting, running, busy, waiting_confirm, crashed, aborted
@@ -445,6 +454,7 @@ class AgentSession:
         return bool(
             self.status in ("starting", "busy", "waiting_confirm")
             or self._turn_open or self._stopping or self._response_finishing or self._retrying
+            or self._current_turn_id is not None or bool(self._follow_ups)
             or (self.agent_cli == "codex" and (self.is_running or (
                 self._reader_task is not None and not self._reader_task.done())))
             or native.get("isStreaming") or native.get("isCompacting")
@@ -481,6 +491,13 @@ class AgentHostManager:
     def _session_key(self, project_id: str, node_id: str) -> str:
         return f"{project_id}:{node_id}"
 
+    def get_current_turn_id(self, project_id: str, agent_node_id: str) -> Optional[str]:
+        """Return the active logical turn for the exact project/node session, if any."""
+        if not project_id or not agent_node_id:
+            return None
+        session = self.sessions.get(self._session_key(project_id, agent_node_id))
+        return session._current_turn_id if session else None
+
     def node_lock(self, project_id: str, node_id: str) -> asyncio.Lock:
         """Serialize settings, host/branch switches and prompt admission per node."""
         key = self._session_key(project_id, node_id)
@@ -500,8 +517,36 @@ class AgentHostManager:
 
             # Create new session
             session = AgentSession(project_id=project_id, node_id=node_id, model=model, autonomy=autonomy)
+            self._recover_pending_history(session)
             self.sessions[key] = session
             return session
+
+    def _recover_pending_history(self, session: AgentSession) -> None:
+        """Close retained queue records without reconstructing the in-memory queue."""
+        try:
+            records = self.load_events(session.project_id, session.node_id)["events"]
+        except (OSError, RuntimeError, AttributeError, InvalidEventsCursor):
+            logger.exception("Could not inspect queued input history for %s", session.node_id)
+            return
+        pending = {}
+        for rec in records:
+            event = rec.get("event") or {}
+            key = (rec.get("host", "pi"), event.get("request_id"))
+            if not key[1]:
+                continue
+            if event.get("type") in ("queued_input", "input_delivery_attempt", "user_prompt", "input_delivery_terminal"):
+                session._follow_up_ids.add(key[1])
+                session._recovered_input_ids.add(key[1])
+            if event.get("type") == "queued_input" and event.get("input_type") == "follow_up":
+                pending[key] = False
+            elif event.get("type") == "input_delivery_attempt" and key in pending:
+                pending[key] = True
+            elif event.get("type") in ("user_prompt", "input_delivery_terminal"):
+                pending.pop(key, None)
+        for (host, request_id), attempted in pending.items():
+            event = {"type": "input_delivery_terminal", "request_id": request_id,
+                     "delivery": "uncertain" if attempted else "unsent"}
+            self._persist_event(session, event, host=host, recovery=True)
 
     @staticmethod
     def _runtime_matches(session: AgentSession, host: str, generation: int) -> bool:
@@ -551,6 +596,9 @@ class AgentHostManager:
             raise RuntimeError("Agent runtime is stopping")
         if session.is_running:
             return True
+        async with session._input_lock:
+            if session.status in ("stopped", "crashed") and session._follow_ups:
+                await self._classify_follow_ups(session)
         # Snapshot before any await/adapter callback; requests may change later.
         spawn_model, spawn_effort = model or session.model, session.reasoning_effort
 
@@ -763,6 +811,9 @@ class AgentHostManager:
             session._turn_open = False
             session._native_state = {}
             session._retrying = False
+            session._current_turn_id = None
+            if session._follow_ups:
+                await self._classify_follow_ups(session)
             if session._stopping:
                 # stop_session 是终态写入方（aborted/stopped），此处不覆盖 result
                 session.status = "stopped"
@@ -830,8 +881,7 @@ class AgentHostManager:
         elif event_type == "agent_end":
             session._turn_open = False
             session.status = "running"
-            if event.get("willRetry") is True:
-                session._retrying = True
+            session._retrying = event.get("willRetry") is True
             # Queue/streaming bits from an earlier get_state are now stale.
             # Settings refresh them from the native host before accepting idle.
             session._native_state = {}
@@ -852,18 +902,28 @@ class AgentHostManager:
             if finishing:
                 session._respawn_count = 0
                 await self._record_turn_usage(session, event)
-            for handler in list(session.event_handlers):
-                if not self._runtime_matches(session, host, generation):
-                    return
-                try:
-                    out = handler(session, event)
-                    if inspect.isawaitable(out):
-                        await out
-                except Exception as e:
-                    logger.error(f"Error in event handler for agent {session.node_id}: {e}")
+            await self._broadcast_event(session, event, host=host, generation=generation)
         finally:
             if finishing and self._runtime_matches(session, host, generation):
-                session._response_finishing = False
+                async with session._input_lock:
+                    session._response_finishing = False
+                    if (not session._retrying and not session._stopping
+                            and not (host == "codex" and session._reader_task is asyncio.current_task())):
+                        session._current_turn_id = None
+                        session._current_request_id = None
+                        await self._deliver_follow_up(session)
+
+    async def _broadcast_event(self, session: AgentSession, event: dict, *, host: str, generation: int) -> None:
+        for handler in list(session.event_handlers):
+            if not self._runtime_matches(session, host, generation):
+                return
+            try:
+                out = handler(session, event)
+                if inspect.isawaitable(out):
+                    await out
+            except Exception as e:
+                # A failed subscriber must not prevent the others from receiving the event.
+                logger.error(f"Error in event handler for agent {session.node_id}: {e}")
 
     async def _record_turn_usage(self, session: AgentSession, event: dict) -> None:
         """#258：agent_end 后把 turn 用量写入 ops.db（pi sidecar 采集点）。
@@ -978,13 +1038,54 @@ class AgentHostManager:
 
     async def send_prompt(self, session: AgentSession, message: str, images: list = None, *,
                           node_refs=None, node_ref_context: str = "", request_id=None) -> None:
+        """Admit an input atomically with end-of-turn queue delivery."""
+        async with session._input_lock:
+            if request_id is not None and request_id in session._recovered_input_ids:
+                raise ValueError("Request ID exists in recovered history; use a new ID to confirm")
+            if request_id is not None and request_id in session._follow_up_ids:
+                return
+            if session._follow_up_delivery_failed and session._follow_ups:
+                await self._classify_follow_ups(session)
+            if session.is_busy:
+                await self._enqueue_follow_up(session, message, images=images, node_refs=node_refs,
+                                              node_ref_context=node_ref_context, request_id=request_id)
+            else:
+                try:
+                    await self._start_logical_turn(session, message, images=images, node_refs=node_refs,
+                                                   node_ref_context=node_ref_context, request_id=request_id)
+                    if request_id is not None:
+                        session._follow_up_ids.add(request_id)
+                except BaseException:
+                    await self._classify_follow_ups(session)
+                    raise
+
+    async def _start_logical_turn(self, session: AgentSession, message: str, **kwargs) -> dict:
+        session._current_turn_id = str(uuid.uuid4())
+        session._current_request_id = kwargs.get("request_id")
+        store = _app_main.FIREFLY_PROJECT_STORE
+        if store is not None:
+            from firefly_opsdb import OpsDb
+            from .agent_ops_store import begin_turn, mark_turn_lookup_failed
+            db = OpsDb(store.root)
+            try:
+                begin_turn(db, session.project_id, session._current_turn_id, session.node_id, external=False)
+            except (OSError, sqlite3.Error, KeyError):
+                logger.warning('Hosted turn %s could not be registered; undo disabled for this turn',
+                               session._current_turn_id, exc_info=True)
+                mark_turn_lookup_failed(db, session.project_id, session._current_turn_id)
+        try:
+            return await self._send_prompt_now(session, message, **kwargs)
+        except BaseException:
+            session._current_turn_id = None
+            session._current_request_id = None
+            if session._follow_ups:
+                session._follow_up_delivery_failed = True
+            raise
+
+    async def _send_prompt_now(self, session: AgentSession, message: str, images: list = None, *,
+                               node_refs=None, node_ref_context: str = "", request_id=None) -> dict:
         """Send original text plus the already-resolved per-input snapshot."""
-        # Refs #323 票 E（reference frame）：每轮发送前解析 agent.refFrameId 素材，
-        # 注入当前 CLI（pi=RPC images，codex=`exec -i` 实测语法）。护栏（监理 token 钉）：
-        # ≤REF_MAX_IMAGES 张、单图 >REF_MAX_IMAGE_BYTES 跳过、路径解析失败跳过不炸整轮
-        #（监理钉③）；视频本轮不注入（codex -i 只吃图）。注入不进落盘正文（防 jsonl
-        # 爆炸），但监理钉①：user_prompt 事件带轻量 refs 元数据 {node_id,name}+跳过清单，
-        # 回放 UI 可区分带素材/不带素材轮次，决策可审计。
+        # Keep image bytes out of the replay log; store only reference metadata.
         ref_images, ref_skipped = self._collect_reference_images(session)
         user_payload = self._input_event("prompt", message, node_refs=node_refs,
                                          node_ref_context=node_ref_context, request_id=request_id)
@@ -996,12 +1097,11 @@ class AgentHostManager:
         if ref_images or ref_skipped:
             names = [r["name"] for r in ref_images] + [s["name"] for s in ref_skipped]
             inject_text += f"\n\n【参考框素材清单】{'、'.join(names)}（图片已随本消息注入；视频/超限项见跳过原因）"
-        # #318 票 B：codex 宿主不经 pi RPC——每轮一个 `codex exec --json` 进程。
         if session.agent_cli == "codex":
             await self._codex_turn(session, inject_text,
                                    ref_paths=[r["path"] for r in ref_images])
             self._persist_event(session, user_payload)
-            return
+            return user_payload
         command = {"type": "prompt", "message": inject_text}
         rpc_images = list(images or [])
         for r in ref_images:
@@ -1016,6 +1116,7 @@ class AgentHostManager:
         # cannot overtake this user_prompt round boundary on the event loop.
         self._persist_event(session, user_payload)
         session.status = "busy"
+        return user_payload
 
     def _collect_reference_images(self, session: AgentSession) -> tuple[list, list]:
         """agent.refFrameId → smart-group 成员 → 可注入图片清单（纯读，失败全降级）。
@@ -1099,11 +1200,87 @@ class AgentHostManager:
         await self._send_queued_input(session, "steer", message, node_refs=node_refs,
                                       node_ref_context=node_ref_context, request_id=request_id)
 
-    async def send_follow_up(self, session: AgentSession, message: str, *,
+    async def _enqueue_follow_up(self, session: AgentSession, message: str, *, images=None,
+                                 node_refs=None, node_ref_context: str = "", request_id=None) -> None:
+        if request_id is not None and request_id in session._recovered_input_ids:
+            raise ValueError("Request ID exists in recovered history; use a new ID to confirm")
+        if request_id is not None and request_id in session._follow_up_ids:
+            return
+        request_id = request_id or f"queue-{uuid.uuid4().hex}"
+        item = dict(message=message, images=deepcopy(images), node_refs=deepcopy(node_refs),
+                    node_ref_context=node_ref_context, request_id=request_id)
+        event = self._input_event("follow_up", message, node_refs=node_refs,
+                                  node_ref_context=node_ref_context, request_id=request_id)
+        if images:
+            event["attachments_missing_on_restart"] = len(images)
+        if self._persist_event(session, event) is False:
+            raise RuntimeError("Unable to persist queued input")
+        session._follow_ups.append(item)
+        session._follow_up_ids.add(request_id)
+        await self._broadcast_event(session, event, host=session.agent_cli, generation=session.generation)
+
+    async def _classify_follow_ups(self, session: AgentSession, *, uncertain_first: bool = False) -> None:
+        while session._follow_ups:
+            item = session._follow_ups.popleft()
+            await self._dispatch_event(session, {"type": "input_delivery_terminal",
+                "request_id": item["request_id"],
+                "delivery": "uncertain" if uncertain_first else "unsent"})
+            uncertain_first = False
+        session._follow_up_delivery_failed = False
+
+    async def _deliver_follow_up(self, session: AgentSession) -> None:
+        if not session._follow_ups:
+            return
+        item = session._follow_ups[0]
+        # Record the attempt before touching the host: a crash during write is ambiguous.
+        try:
+            attempt = {"type": "input_delivery_attempt", "request_id": item["request_id"]}
+            if self._persist_event(session, attempt) is False:
+                await self._classify_follow_ups(session)
+                return
+            await self._broadcast_event(session, attempt, host=session.agent_cli, generation=session.generation)
+            event = await self._start_logical_turn(session, **item)
+        except asyncio.CancelledError:
+            await self._classify_follow_ups(session, uncertain_first=True)
+            raise
+        except Exception:
+            # A host error does not prove non-delivery; never resend automatically.
+            logger.exception("Failed to deliver queued input for agent %s", session.node_id)
+            await self._classify_follow_ups(session, uncertain_first=True)
+            return
+        # Remove before awaiting handlers: cancellation must not resend an accepted prompt.
+        session._follow_ups.popleft()
+        session._follow_up_delivery_failed = False
+        await self._broadcast_event(session, event, host=event.get("host", session.agent_cli),
+                                    generation=event.get("generation", session.generation))
+
+    async def send_follow_up(self, session: AgentSession, message: str, *, images=None,
                              node_refs=None, node_ref_context: str = "", request_id=None) -> None:
-        """Queue after the current turn; Codex queue support remains unchanged."""
-        await self._send_queued_input(session, "follow_up", message, node_refs=node_refs,
-                                      node_ref_context=node_ref_context, request_id=request_id)
+        """Queue locally while busy, otherwise start a new logical turn."""
+        # Normal in-flight starts reserve their turn before awaiting delivery.
+        if session._input_lock.locked() and session._current_turn_id is not None and not session._codex_cleanup:
+            await self._enqueue_follow_up(session, message, images=images, node_refs=node_refs,
+                                          node_ref_context=node_ref_context, request_id=request_id)
+            return
+        async with session._input_lock:
+            if request_id is not None and request_id in session._recovered_input_ids:
+                raise ValueError("Request ID exists in recovered history; use a new ID to confirm")
+            if request_id is not None and request_id in session._follow_up_ids:
+                return
+            if session._follow_up_delivery_failed and session._follow_ups:
+                await self._classify_follow_ups(session)
+            if session.is_busy:
+                await self._enqueue_follow_up(session, message, images=images, node_refs=node_refs,
+                                              node_ref_context=node_ref_context, request_id=request_id)
+            else:
+                try:
+                    await self._start_logical_turn(session, message, images=images, node_refs=node_refs,
+                                                   node_ref_context=node_ref_context, request_id=request_id)
+                except BaseException:
+                    await self._classify_follow_ups(session)
+                    raise
+                if request_id is not None:
+                    session._follow_up_ids.add(request_id)
 
     # ------------------------------------------------------------------
     # #318 票 B：codex 宿主——per-turn 进程模型（ADR 0024）。
@@ -1147,10 +1324,8 @@ class AgentHostManager:
     ) -> None:
         """一轮 = 一个 `codex exec --json` 进程（ADR 0024 状态机）。
 
-        首轮无 resume；有 ext_session_id 则 `resume <thread_id>`（实测 options 必在
-        子命令前，已由 build_resume_argv 保证）。prompt 走 stdin（实测坑：参数位不可靠）。
-        resume 失败降级：error 事件 UI 可见 + 新会话重发一次（重放上下文属票 C，票 B
-        只保证「不静默死」）。
+        Resume options must precede the subcommand; the prompt goes via stdin.
+        #393: failed resume cannot prove non-execution; never auto-resend.
         """
         if session._stopping:
             raise RuntimeError("Agent runtime is stopping")
@@ -1178,9 +1353,9 @@ class AgentHostManager:
         os.makedirs(session_dir, exist_ok=True)
         mcp_url = (
             f"{resolve_agent_api_base(os.environ)}/api/mcp?project={session.project_id}"
-            f"&node={session.node_id}"
+            f"&node={session.node_id}&caller=hosted"
         )
-        # #318 隔离尾单：隔离 CODEX_HOME + 写入 firefly MCP 条目（件③ mcp list 可见）
+        # Keep the isolated home's discoverable MCP entry aligned with per-turn argv.
         spawn_env = codex_spawn_env()
         write_home_mcp_config(spawn_env["CODEX_HOME"], mcp_url)
         params = SpawnParams(
@@ -1203,13 +1378,9 @@ class AgentHostManager:
             cmd = adapter.build_argv(params)
         if cmd is None:
             raise RuntimeError("未找到 codex 可执行文件：PATH 中没有 'codex'")
-        # Refs #323 票 E：参考框素材注入——codex 0.162 实测 `exec -i <FILE>...`（多图重复
-        # -i），插在 stdin 占位 `-` 之前；路径解析失败已在收集层降级，这里不再炸。
         from .agent_adapters.codex_adapter import insert_ref_images
         cmd = insert_ref_images(cmd, ref_paths or [])
-        # #343：per-turn 统一收口——resolved_cli 若是 npm .cmd 包装器，解成
-        # node.exe + 脚本直接启动（不再经 CreateProcess 的隐式 cmd.exe）；
-        # 解不出拒绝启动（抛 ValueError，上层按轮失败处理，不发进程）。
+        # #343: reject unresolved npm wrappers instead of invoking an implicit shell.
         cmd = finalize_spawn_argv(cmd)
 
         session.last_error = ""
@@ -1225,14 +1396,13 @@ class AgentHostManager:
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                # #292 同源教训：显式 UTF-8，杜绝 GBK 环境编码误杀。
+                # #292: CLI output must not depend on the Windows code page.
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
-                # 沙盒即边界（审批实测）：cwd = per-node 临时目录，-s read-only 下
-                # 写画布一律经 MCP 端点确认闸。
+                # Canvas writes must go through the MCP confirmation gate.
                 cwd=session_dir,
-                # #318 隔离尾单：CODEX_HOME=RUNTIME根/codex-home（sessions 不再写用户全局 ~/.codex）
+                # Keep Codex sessions out of the user's global home.
                 env=spawn_env,
             )
         except OSError as e:
@@ -1258,13 +1428,18 @@ class AgentHostManager:
         session._stderr_thread.start()
 
         def _feed_stdin() -> None:
-            try:
-                process.stdin.write(message)
-                process.stdin.close()
-            except (BrokenPipeError, OSError):
-                pass
+            process.stdin.write(message)
+            process.stdin.close()
 
-        await asyncio.to_thread(_feed_stdin)
+        try:
+            await asyncio.to_thread(_feed_stdin)
+        except OSError as exc:
+            await self._kill_process_tree(session, reason="codex stdin failure", process=process)
+            if self._runtime_matches(session, host, generation):
+                session._turn_open = False
+                if session.process is process:
+                    session.process = None
+            raise RuntimeError(f"codex stdin failed: {exc}") from exc
         session._reader_task = asyncio.create_task(
             self._read_codex_turn(session, process, resumed, message, degrade_budget,
                                   settings_snapshot=settings_snapshot, ref_paths=tuple(ref_paths or ()),
@@ -1287,7 +1462,6 @@ class AgentHostManager:
         host = session.agent_cli if host is None else host
         generation = session.generation if generation is None else generation
         settings_snapshot = settings_snapshot or (session.model, session.reasoning_effort)
-        saw_thread_id = False
         saw_turn_completed = False
         cancelled = False
         try:
@@ -1306,7 +1480,6 @@ class AgentHostManager:
                     logger.warning(f"codex {session.node_id}: non-JSONL line: {line[:120]!r}")
                     continue
                 if raw.get("type") == "thread.started":
-                    saw_thread_id = True
                     thread_id = str(raw.get("thread_id") or "")
                     if thread_id and thread_id != session.ext_session_id:
                         session.ext_session_id = thread_id
@@ -1346,45 +1519,34 @@ class AgentHostManager:
                 session.process = None
             exit_code = process.returncode
             session._last_activity = time.time()
-            # 评审修正：同一布尔判定只写一次（is_degrade_retry），预热与非降级分支共用。
-            is_degrade_retry = resumed and not saw_thread_id and exit_code not in (0, None) and degrade_budget
-            # #326：降级重试行不预热（紧接新 spawn，缓存本就热）；正常轮结束后按节点预热。
-            if not is_degrade_retry:
-                maybe_warm_codex(session.node_id)
-            if is_degrade_retry:
-                # ADR 0024 §2 降级：resume 认不出旧会话 → UI 可见 + 新会话重发一次。
-                # 票 C：重放上下文 = 回放日志最近 EVENTS_REPLAY_TURNS 轮（含 user 侧，
-                # 不足按实际全量）前置注入。
-                session.ext_session_id = None
-                context_block, turns_used = self._build_replay_context(session)
+            # Absence of thread.started cannot prove that resume had no side effects.
+            maybe_warm_codex(session.node_id)
+            # Keep the turn reserved through the error broadcast. Inputs admitted
+            # during cleanup are drained only after the old process has exited.
+            session._codex_cleanup = True
+            uncertain = cancelled or not saw_turn_completed or exit_code not in (0,)
+            if uncertain:
+                async with session._input_lock:
+                    await self._classify_follow_ups(session)
+                if session._current_request_id is not None:
+                    await self._dispatch_event(session, {
+                        "type": "input_delivery_terminal", "request_id": session._current_request_id,
+                        "delivery": "uncertain"}, host=host, generation=generation)
+                session.last_error = f"codex 执行结果不确定（exit={exit_code}），不会自动重发"
                 await self._dispatch_event(session, {
-                    "type": "error",
-                    "message": (f"会话续接失败，已降级重建（已重放最近 {turns_used} 轮上下文）"
-                                if turns_used else "会话续接失败，已降级重建（无可重放历史）"),
-                }, host=host, generation=generation)
+                    "type": "error", "message": session.last_error, "delivery": "uncertain"},
+                    host=host, generation=generation)
+            async with session._input_lock:
+                session._codex_cleanup = False
                 if not self._runtime_matches(session, host, generation) or session._stopping:
                     return
-                retry_message = (
-                    f"{context_block}\n\n（以上是画布历史重放，请接着继续）\n{message}"
-                    if context_block else message)
-                try:
-                    await self._codex_turn(session, retry_message, allow_resume=False, degrade_budget=False,
-                                           settings_snapshot=settings_snapshot, ref_paths=list(ref_paths))
-                except Exception as e:
-                    logger.error(f"codex degrade retry failed for {session.node_id}: {e}")
-                return
-            if exit_code not in (0, None) and not saw_turn_completed:
-                # 实测坑：codex 出错也可能 exit=0——真非零且无 turn.completed 才是硬崩。
-                session.last_error = f"codex 进程异常退出（exit={exit_code}）"
-                await self._dispatch_event(session, {
-                    "type": "error", "message": session.last_error}, host=host, generation=generation)
-            if not self._runtime_matches(session, host, generation) or session._stopping:
-                return
-            # idle_stored：会话仍可用（下轮 resume），不标 crashed（除非上面已 crashed）。
-            if session.status != "crashed":
-                session.status = "running"
-            if session._reader_task is asyncio.current_task():
-                session._reader_task = None
+                if session.status != "crashed":
+                    session.status = "running"
+                if session._reader_task is asyncio.current_task():
+                    session._reader_task = None
+                session._current_turn_id = None
+                session._current_request_id = None
+                await self._deliver_follow_up(session)
 
     def _persist_ext_session_id(self, session: AgentSession, *, host: Optional[str] = None) -> None:
         """CAS-update the owning host binding and active legacy projection atomically.
@@ -1831,6 +1993,10 @@ class AgentHostManager:
         session.process = None
         session._reader_task = None
         session._turn_open = session._response_finishing = session._retrying = False
+        session._current_turn_id = None
+        session._codex_cleanup = False
+        async with session._input_lock:
+            await self._classify_follow_ups(session)
         session._native_state = {}
         session._generation += 1  # invalidate any executor reads still unwinding
         session.status = "stopped"
@@ -1881,19 +2047,20 @@ class AgentHostManager:
         session._events_log_count = count
 
     def _persist_event(self, session: AgentSession, event: dict, *,
-                       host: Optional[str] = None, generation: Optional[int] = None) -> None:
+                       host: Optional[str] = None, generation: Optional[int] = None,
+                       recovery: bool = False) -> bool:
         """Append a current-generation event; stamp live metadata even without disk."""
         host = session.agent_cli if host is None else host
         generation = session.generation if generation is None else generation
-        if not self._runtime_matches(session, host, generation):
-            return
+        if not recovery and not self._runtime_matches(session, host, generation):
+            return False
         event["host"], event["generation"] = host, generation
         try:
             # #387：项目已移入回收区/删除（live 目录无 project.json）时不得把
             # agent-events/ 写回原位——否则宿主退出尾巴/竞态窗口会在原目录重建残留。
             project_dir = self._get_project_dir(session.project_id)
             if not os.path.isfile(os.path.join(project_dir, "project.json")):
-                return
+                return False
             path = os.path.join(
                 project_dir, "agent-events", f"{session.node_id}.jsonl")
             self._init_event_seq(session, path)
@@ -1910,12 +2077,24 @@ class AgentHostManager:
                 "event": event,
             }
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            data = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
+            with open(path, "a+b") as f:
+                f.seek(0, os.SEEK_END)
+                original_size = f.tell()
+                try:
+                    if f.write(data) != len(data):
+                        raise OSError("short events log write")
+                    f.flush()
+                except OSError:
+                    f.seek(original_size)
+                    f.truncate()
+                    raise
             if session._events_log_count > EVENTS_LOG_MAX_LINES:
                 self._truncate_events_log(session, path)
+            return True
         except Exception as e:
             logger.warning(f"events log persist failed {session.node_id}: {e}")
+            return False
 
     def _truncate_events_log(self, session: AgentSession, path: str) -> None:
         """截头保尾 N 行；seq 单调跨截断（不改写幸存行）。temp+replace 原子。"""
@@ -2097,6 +2276,39 @@ class AgentHostManager:
                     oldest_start = start
             if next_pos is None:
                 selected.extend(prefix)
+            # Older pages are replayed in a separate view; carry terminal outcomes
+            # from the same immutable snapshot to their original queue records.
+            queued = {r['event'].get('request_id') for r in selected
+                      if r['event'].get('type') == 'queued_input'
+                      and r['event'].get('input_type') == 'follow_up'}
+            outcomes = {}
+            if queued:
+                page_end = max(r['seq'] for r in selected)
+                for _, line in reverse_lines(f, size):
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line.decode('utf-8'))
+                        if not isinstance(rec, dict) or type(rec.get('seq')) is not int or not isinstance(rec.get('event'), dict):
+                            raise ValueError()
+                    except (ValueError, UnicodeError):
+                        raise CorruptEventsLog('invalid events record') from None
+                    if rec['seq'] <= page_end:
+                        break
+                    event = rec['event']
+                    request_id = event.get('request_id')
+                    if (rec.get('host', 'pi') == host and request_id in queued
+                            and request_id not in outcomes and event.get('type') in
+                            ('input_delivery_terminal', 'user_prompt')):
+                        outcomes[request_id] = (event.get('delivery', 'uncertain')
+                                                if event['type'] == 'input_delivery_terminal' else 'delivered')
+                for rec in selected:
+                    event = rec['event']
+                    if event.get('type') == 'queued_input' and event.get('input_type') == 'follow_up':
+                        request_id = event.get('request_id')
+                        outcome = outcomes.get(request_id) if request_id else 'uncertain'
+                        if outcome:
+                            event['replay_delivery'] = outcome
             try:
                 final = os.stat(path)
                 opened = os.fstat(f.fileno())

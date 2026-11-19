@@ -25,7 +25,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -134,11 +134,14 @@ def write_json_atomic(
     keep_backup: bool = False,
     backup_count: int = 1,
     indent: int = 2,
+    on_replaced: Optional[Callable[[], None]] = None,
 ) -> None:
     """原子写一个 JSON 文件：临时文件 → fsync → ``os.replace``。
 
     任何一步抛错时，目标文件保持原样（要么旧内容，要么新内容，绝不会是截断的半份）。
     ``keep_backup=True`` 时先把旧文件轮转到 ``.bak``/``.bak-2``…（项目库存元数据用）。
+    ``on_replaced`` 在最终替换成功后、清理前调用一次；异常会传播且仍执行清理。
+    清理异常照常传播；若回调和清理都失败，清理异常保留回调异常作为上下文。
     """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -152,6 +155,8 @@ def write_json_atomic(
         if keep_backup and target.exists():
             _rotate_backups(target, backup_count)
         _replace_staged(temporary, target)
+        if on_replaced is not None:
+            on_replaced()
     finally:
         try:
             temporary.unlink()

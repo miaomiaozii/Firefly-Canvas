@@ -165,19 +165,42 @@ class TestAgentHostManager(unittest.TestCase):
         self.assertEqual(cmd["message"], "换个方向")
 
     def test_send_follow_up(self):
-        """Test sending follow_up command."""
+        """A busy session queues the input until the current turn ends."""
         project = self.store.create_project("Agent TUI Test")
         session = run_async(self.manager.get_or_create_session(project["id"], "node-1"))
-
         fake = FakeAgentProcess(script=[])
         session.process = fake
         session.status = "running"
+        events = []
+        session.event_handlers.append(lambda _session, event: events.append(dict(event)))
 
-        run_async(self.manager.send_follow_up(session, "然后再做这个"))
+        async def exercise():
+            await self.manager.send_prompt(session, "先做这个")
+            first_turn = session._current_turn_id
+            self.assertIsNotNone(first_turn)
+            await self.manager.send_follow_up(session, "然后再做这个", request_id="follow-1")
+            self.assertEqual([(c["type"], c["message"]) for c in fake.commands],
+                             [("prompt", "先做这个")])
+            self.assertEqual(session._current_turn_id, first_turn)
+            self.assertEqual([(e["type"], e.get("request_id")) for e in events],
+                             [("queued_input", "follow-1")])
+            self.assertEqual(events[0]["text"], "然后再做这个")
+            self.assertEqual(events[0]["input_type"], "follow_up")
 
-        cmd = fake.get_command("follow_up")
-        self.assertIsNotNone(cmd, "follow_up command should have been sent")
-        self.assertEqual(cmd["message"], "然后再做这个")
+            await self.manager._dispatch_event(session, {"type": "agent_end"})
+            self.assertEqual([(c["type"], c["message"]) for c in fake.commands],
+                             [("prompt", "先做这个"), ("prompt", "然后再做这个")])
+            self.assertIsNotNone(session._current_turn_id)
+            self.assertNotEqual(session._current_turn_id, first_turn)
+            self.assertEqual([(e["type"], e.get("request_id")) for e in events],
+                             [("queued_input", "follow-1"), ("agent_end", None),
+                              ("input_delivery_attempt", "follow-1"), ("user_prompt", "follow-1")])
+            self.assertFalse(session._follow_ups)
+            await self.manager._dispatch_event(session, {"type": "agent_end"})
+            self.assertIsNone(session._current_turn_id)
+            self.assertEqual(len(fake.commands), 2)
+
+        run_async(exercise())
 
     def test_send_abort(self):
         """Test sending abort command."""
@@ -260,14 +283,22 @@ class TestAgentCommandSending(unittest.TestCase):
         self.assertEqual(self.process.commands[0]["message"], "go left")
 
     def test_send_follow_up(self):
-        """Test that send_follow_up sends the correct command."""
+        """An idle follow-up starts a new logical turn as a prompt."""
         self.process.reset_script([{"type": "session", "sessionId": "s1"}])
-        asyncio.get_event_loop().run_until_complete(
-            self.manager.send_follow_up(self.session, "then do X")
+        self.loop.run_until_complete(
+            self.manager.send_follow_up(self.session, "then do X", request_id="follow-idle")
         )
+        self.assertEqual([(c["type"], c["message"]) for c in self.process.commands],
+                         [("prompt", "then do X")])
+        self.assertIsNotNone(self.session._current_turn_id)
+        self.assertEqual(self.session.status, "busy")
+        self.assertFalse(self.session._follow_ups)
+        self.loop.run_until_complete(
+            self.manager._dispatch_event(self.session, {"type": "agent_end"})
+        )
+        self.assertIsNone(self.session._current_turn_id)
+        self.assertEqual(self.session.status, "running")
         self.assertEqual(len(self.process.commands), 1)
-        self.assertEqual(self.process.commands[0]["type"], "follow_up")
-        self.assertEqual(self.process.commands[0]["message"], "then do X")
 
     def test_send_abort(self):
         """Test that send_abort sends the correct command."""

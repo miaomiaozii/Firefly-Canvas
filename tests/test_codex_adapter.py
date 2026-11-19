@@ -6,8 +6,8 @@
 - 事件映射（0.162 实测词汇）：thread.started/turn.started/item{agent_message,
   reasoning,command_execution,error}/turn.completed/token_count/未知 type→raw。
 - host per-turn：假 CLI 真实进程 → session_started/message/usage 事件流；
-  ext_session_id 捕获；resume 失败降级（error 事件 + 新会话重发一次）；
-  busy 拒收并发 prompt。
+  ext_session_id 捕获；resume 失败标记结果不确定且不自动重发；
+  busy 时排队并在当前轮结束后交付并发 prompt。
 假 CLI：tests/stubs/fake_codex(.cmd)（#258 已有）+ fake_codex_resume_fail(.cmd)（本票）。
 """
 import asyncio
@@ -29,6 +29,7 @@ from app.services import agent_host as ah
 from app.services.agent_host import AgentHostManager
 from app.services.agent_adapters import CodexAdapter, SpawnParams, map_codex_event
 from app.services.agent_adapters.codex_adapter import _toml_value
+from firefly_projects import ProjectStore
 
 FAKE_CODEX = str(Path(__file__).resolve().parent / "stubs" / "fake_codex.cmd")
 FAKE_CODEX_RESUME_FAIL = str(Path(__file__).resolve().parent / "stubs" / "fake_codex_resume_fail.cmd")
@@ -193,23 +194,30 @@ class _FakeWhichMixin:
 class HostPerTurnTests(_FakeWhichMixin, unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.store = ProjectStore(Path(self.tmp.name) / "projects", snapshot_delay=0)
+        self.addCleanup(self.store.close)
+        self.project_id = self.store.create_project("Codex adapter test")["id"]
+        self.store_patch = mock.patch.object(ah._app_main, "FIREFLY_PROJECT_STORE", self.store)
+        self.store_patch.start()
+        self.addCleanup(self.store_patch.stop)
         self.mgr = AgentHostManager()
-        self.mgr._get_project_dir = lambda pid: self.tmp.name
         self.events = []
 
         async def collect(session, event):
             self.events.append(event)
 
-        self.session = await self.mgr.get_or_create_session("proj-test", "node-x")
+        self.session = await self.mgr.get_or_create_session(self.project_id, "node-x")
         self.session.agent_cli = "codex"
         self.mgr.on_event(self.session, collect)
 
+    async def asyncTearDown(self):
+        await self.mgr.cleanup_all()
+
     def tearDown(self):
         self.uninstall_which()
-        self.tmp.cleanup()
 
     async def _wait_turn_done(self, timeout=20.0):
-        # 轮末特征：agent_end 或 error（降级路径先 error 后再起一轮）
         loop = asyncio.get_event_loop()
         deadline = loop.time() + timeout
         while loop.time() < deadline:
@@ -234,46 +242,92 @@ class HostPerTurnTests(_FakeWhichMixin, unittest.IsolatedAsyncioTestCase):
         assert texts[0]["assistantMessageEvent"]["delta"] == "FAKE LAST"
         assert self.session.ext_session_id == "fake-1"
 
-    async def test_resume_failure_degrades_once_with_visible_error(self):
+    async def test_resume_failure_is_uncertain_without_resend(self):
         self.install_which(FAKE_CODEX_RESUME_FAIL)
-        # 第一轮（无 resume）成功 → ext_session_id=fake-first
         assert await self.mgr.spawn_session(self.session)
-        await self.mgr.send_prompt(self.session, "第一")
-        assert await self._wait_turn_done()
+        terminal_turns = []
+        self.mgr.on_event(self.session, lambda session, event: terminal_turns.append(
+            (event["type"], session._current_turn_id))
+            if event["type"] in ("input_delivery_terminal", "error") else None)
+        with mock.patch.object(self.mgr, "_codex_turn", wraps=self.mgr._codex_turn) as turns:
+            await self.mgr.send_prompt(self.session, "第一", request_id="first")
+            first_turn = self.session._current_turn_id
+            assert first_turn
+            assert await self._wait_turn_done()
+            assert self.session.ext_session_id == "fake-first"
+            self.events.clear()
+            refs = [{"node_id": "ref-1", "name": "reference"}]
+            await self.mgr.send_prompt(self.session, "第二", request_id="second",
+                                       node_refs=refs, node_ref_context="saved context")
+            second_turn = self.session._current_turn_id
+            assert second_turn and second_turn != first_turn
+            reader = self.session._reader_task
+            await asyncio.wait_for(reader, 10)
+            assert terminal_turns == [("input_delivery_terminal", second_turn), ("error", second_turn)]
+            assert turns.await_count == 2
+            assert [call.args[1] for call in turns.await_args_list] == ["第一", "第二\n\nsaved context"]
+        errors = [e for e in self.events if e["type"] == "error"]
+        assert len(errors) == 1 and errors[0]["delivery"] == "uncertain"
+        assert "不会自动重发" in errors[0]["message"]
+        terminals = [e for e in self.events if e["type"] == "input_delivery_terminal"]
+        assert len(terminals) == 1 and terminals[0]["request_id"] == "second"
+        assert terminals[0]["delivery"] == "uncertain"
+        assert not any(e["type"] in ("message_update", "agent_end", "session_started") for e in self.events)
         assert self.session.ext_session_id == "fake-first"
-        n_msg = sum(1 for e in self.events if e["type"] == "message_update")
-        # 第二轮 resume 必失败 → error 事件可见 + 自动新会话重发（第二次 message）
-        self.events.clear()
-        await self.mgr.send_prompt(self.session, "第二")
-        loop = asyncio.get_event_loop()
-        deadline = loop.time() + 25
-        while loop.time() < deadline:
-            if any(e["type"] == "error" for e in self.events) and \
-               sum(1 for e in self.events if e["type"] == "message_update") >= 1 and \
-               self.session.process is None:
-                break
-            await asyncio.sleep(0.05)
-        types = [e["type"] for e in self.events]
-        assert "error" in types, types
-        err = next(e for e in self.events if e["type"] == "error")
-        assert "降级" in err["message"]
-        assert any(e["type"] == "message_update" for e in self.events), types
-        assert self.session.ext_session_id == "fake-first"  # 降级后新 id 重新捕获
+        assert self.session.process is None and self.session._current_turn_id is None
+        history = [r["event"] for r in self.mgr.load_events(self.project_id, "node-x")["events"]]
+        prompts = [e for e in history if e["type"] == "user_prompt"]
+        assert [e["request_id"] for e in prompts] == ["first", "second"]
+        assert prompts[1]["node_refs"] == refs and prompts[1]["node_ref_context"] == "saved context"
+        assert all(e["host"] == "codex" for e in self.events)
 
-    async def test_busy_rejects_concurrent_prompt(self):
+    async def test_busy_queues_concurrent_prompt_until_turn_completes(self):
         self.install_which(FAKE_CODEX_RESUME_FAIL)
         assert await self.mgr.spawn_session(self.session)
-        await self.mgr.send_prompt(self.session, "PROMPT_SLEEP")
-        assert self.session.process is not None  # 进程在跑
-        with self.assertRaises(RuntimeError):
-            await self.mgr.send_prompt(self.session, "并发第二")
-        # 收尾：abort（terminate 单轮）→ 等 reader 清场
-        await self.mgr.send_abort(self.session)
-        loop = asyncio.get_event_loop()
-        deadline = loop.time() + 15
-        while loop.time() < deadline and self.session.process is not None:
-            await asyncio.sleep(0.05)
-        assert self.session.process is None
+        captured_turns = []
+        real_turn = self.mgr._codex_turn
+
+        async def capture_turn(session, message, **kwargs):
+            captured_turns.append((session._current_turn_id, message))
+            await real_turn(session, message, **kwargs)
+
+        with mock.patch.object(self.mgr, "_codex_turn", side_effect=capture_turn) as turns:
+            await self.mgr.send_prompt(self.session, "PROMPT_SLEEP", request_id="first")
+            first_process = self.session.process
+            first_turn = self.session._current_turn_id
+            assert first_process is not None and first_turn
+            refs = [{"node_id": "ref-2", "name": "queued reference"}]
+            await self.mgr.send_prompt(self.session, "ECHO_MODE 并发第二", request_id="second",
+                                       node_refs=refs, node_ref_context="queued context")
+            assert self.session.process is first_process and self.session._current_turn_id == first_turn
+            assert [item["message"] for item in self.session._follow_ups] == ["ECHO_MODE 并发第二"]
+            assert not any(e["type"] == "user_prompt" and e.get("request_id") == "second" for e in self.events)
+            deadline = asyncio.get_running_loop().time() + 10
+            while asyncio.get_running_loop().time() < deadline:
+                if (any(e["type"] == "error" for e in self.events)
+                        and self.session._reader_task is None):
+                    break
+                await asyncio.sleep(0.05)
+            assert turns.await_count == 2
+            assert captured_turns[0] == (first_turn, "PROMPT_SLEEP")
+            assert captured_turns[1][0] and captured_turns[1][0] != first_turn
+            assert captured_turns[1][1] == "ECHO_MODE 并发第二\n\nqueued context"
+        events = self.events
+        ends = [i for i, e in enumerate(events) if e["type"] == "agent_end"]
+        delivered = [i for i, e in enumerate(events)
+                     if e["type"] == "user_prompt" and e.get("request_id") == "second"]
+        errors = [i for i, e in enumerate(events) if e["type"] == "error"]
+        assert len(ends) == len(delivered) == len(errors) == 1, events
+        assert ends[0] < delivered[0] < errors[0] and events[errors[0]]["delivery"] == "uncertain"
+        messages = [e["assistantMessageEvent"]["delta"] for e in events if e["type"] == "message_update"]
+        assert messages == ["FAKE SECOND"]
+        assert self.session.process is None and not self.session._follow_ups
+        assert self.session._current_turn_id is None and self.session.ext_session_id == "fake-first"
+        history = [record["event"] for record in self.mgr.load_events(self.project_id, "node-x")["events"]]
+        second = [e for e in history if e.get("request_id") == "second"]
+        assert [e["type"] for e in second] == ["queued_input", "input_delivery_attempt", "user_prompt", "input_delivery_terminal"]
+        assert second[-1]["delivery"] == "uncertain"
+        assert all(e["node_refs"] == refs and e["node_ref_context"] == "queued context" for e in (second[0], second[2]))
 
 
 if __name__ == "__main__":

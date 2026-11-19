@@ -24,7 +24,7 @@ import zipfile
 import zlib
 import urllib.parse
 from pathlib import Path
-from typing import Any, BinaryIO, Dict, Iterable, List
+from typing import Any, BinaryIO, Callable, Dict, Iterable, List
 
 from firefly_diagnostics import emit as _diag_emit
 import firefly_json_io
@@ -133,8 +133,16 @@ def _atomic_copy(src: Path, dst: Path) -> None:
     firefly_json_io._atomic_copy(src, dst)
 
 
-def _write_json_atomic(path: Path, value: Dict[str, Any], *, keep_backup: bool, backup_count: int = 1) -> None:
-    firefly_json_io.write_json_atomic(path, value, keep_backup=keep_backup, backup_count=backup_count)
+def _write_json_atomic(
+    path: Path, value: Dict[str, Any], *, keep_backup: bool, backup_count: int = 1,
+    on_replaced: Callable[[], None] | None = None,
+) -> None:
+    if on_replaced is None:
+        firefly_json_io.write_json_atomic(path, value, keep_backup=keep_backup, backup_count=backup_count)
+    else:
+        firefly_json_io.write_json_atomic(
+            path, value, keep_backup=keep_backup, backup_count=backup_count, on_replaced=on_replaced
+        )
 
 
 def _file_sha256(path: Path) -> str:
@@ -199,6 +207,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
         self.root = _validated_projects_root(root) if root is not None else default_projects_root()
         self.snapshot_delay = max(0.0, float(snapshot_delay))
         self._lock = threading.RLock()
+        self._persisted_canvas_listeners: List[Callable[[str, Dict[str, Any]], None]] = []
         self._canvases: Dict[str, Dict[str, Any]] = {}
         self._recovery_marks: Dict[str, Dict[str, Any]] = {}
         self._histories: Dict[str, List[Dict[str, Any]]] = {}
@@ -206,6 +215,9 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
         self._saved_revisions: Dict[str, int] = {}
         self._project_operations: Dict[str, threading.RLock] = {}
         self._generation_written_assets: Dict[str, set] = {}
+        self._agent_generation_tasks: dict[tuple[str, str], set[str]] = {}
+        self._agent_generation_unregistered: set[tuple[str, str]] = set()
+        self._agent_ops_journals = []
         self._fly_import_lock = threading.Lock()
         self._recover_original_media_transactions()
         self._cleanup_orphan_media_imports()
@@ -3081,7 +3093,29 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                 "updated_at": canvas["updated_at"],
             }
 
+    def add_persisted_canvas_listener(self, listener: Callable[[str, Dict[str, Any]], None]) -> None:
+        """Subscribe once to future flush replacements, until explicitly removed.
+
+        Listeners run synchronously under the store lock, in registration order, with
+        independent copies. They must not mutate the store or block on its lock.
+        All listeners run even if one fails; failures propagate after notification
+        and cannot undo the replacement. Multiple failures are grouped.
+        """
+        with self._lock:
+            if listener not in self._persisted_canvas_listeners:
+                self._persisted_canvas_listeners.append(listener)
+
+    def remove_persisted_canvas_listener(self, listener: Callable[[str, Dict[str, Any]], None]) -> None:
+        """Remove a subscription; raise ValueError if it is not registered."""
+        with self._lock:
+            self._persisted_canvas_listeners.remove(listener)
+
     def flush(self, project_id: str) -> Dict[str, Any]:
+        """Persist the canvas and related documents; retain the existing result contract.
+
+        Subscribers observe the canvas replacement under the store lock before
+        cleanup and history/metadata writes. Any subsequent failure still propagates.
+        """
         project_id = _clean_project_id(project_id)
         with self._lock:
             timer = self._timers.pop(project_id, None)
@@ -3091,7 +3125,27 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             if canvas is None:
                 canvas = self.open_project(project_id)["canvas"]
             persisted_canvas = self._project_canvas_for_persistence(canvas)
-            _write_json_atomic(self.root / project_id / "canvas.json", persisted_canvas, keep_backup=True, backup_count=3)
+            if self._persisted_canvas_listeners:
+                listeners = tuple(self._persisted_canvas_listeners)
+
+                def notify_replaced() -> None:
+                    errors: List[BaseException] = []
+                    for listener in listeners:
+                        try:
+                            listener(project_id, copy.deepcopy(persisted_canvas))
+                        except BaseException as error:
+                            errors.append(error)
+                    if len(errors) == 1:
+                        raise errors[0]
+                    if errors:
+                        raise BaseExceptionGroup("persisted canvas listener failures", errors)
+
+                _write_json_atomic(
+                    self.root / project_id / "canvas.json", persisted_canvas,
+                    keep_backup=True, backup_count=3, on_replaced=notify_replaced,
+                )
+            else:
+                _write_json_atomic(self.root / project_id / "canvas.json", persisted_canvas, keep_backup=True, backup_count=3)
             if self._recovery_marks.get(project_id, {}).get("file") == "canvas.json":
                 self._recovery_marks.pop(project_id, None)
             history = self._histories.get(project_id)

@@ -1,4 +1,4 @@
-"""#318 票 C：events.jsonl 回放日志（seq/截断/GET since/降级重放上下文）。"""
+"""#318 票 C：events.jsonl 回放日志（seq/截断/GET since/不确定结果保留上下文）。"""
 import asyncio
 import json
 import os
@@ -7,6 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -240,30 +241,41 @@ class ReplayContextTests(_Base):
             assert excluded not in block
         assert path.read_text(encoding="utf-8") == saved  # filtering is read-only
 
-    async def test_degrade_retry_carries_context(self):
+    async def test_resume_failure_retains_context_without_replay(self):
         self.install_which(FAKE_CODEX_RESUME_FAIL)
         s = await self.mgr.get_or_create_session("proj-ev", "node-dg")
         s.agent_cli = "codex"
         events = []
         self.mgr.on_event(s, lambda sess, ev: events.append(ev))
         assert await self.mgr.spawn_session(s)
-        await self.mgr.send_prompt(s, "第一暗号PURPLE")
-        assert await self._wait_turn_done(s)
-        events.clear()
-        await self.mgr.send_prompt(s, "ECHO_MODE 第二问")  # resume 必败 → 降级
-        loop = asyncio.get_event_loop()
-        deadline = loop.time() + 25
-        while loop.time() < deadline:
-            if any(e["type"] == "message_update" for e in events) and s.process is None:
-                break
-            await asyncio.sleep(0.05)
+        with mock.patch.object(self.mgr, "_codex_turn", wraps=self.mgr._codex_turn) as turns:
+            await self.mgr.send_prompt(s, "第一暗号PURPLE", request_id="first")
+            assert await self._wait_turn_done(s)
+            events.clear()
+            refs = [{"node_id": "ref", "name": "saved"}]
+            await self.mgr.send_prompt(s, "ECHO_MODE 第二问", request_id="second",
+                                       node_refs=refs, node_ref_context="snapshot")
+            await asyncio.wait_for(s._reader_task, 10)
+            assert turns.await_count == 2
+            assert [call.args[1] for call in turns.await_args_list] == [
+                "第一暗号PURPLE", "ECHO_MODE 第二问\n\nsnapshot"]
         errs = [e for e in events if e["type"] == "error"]
-        assert errs and "重放" in errs[0]["message"]
-        msgs = [e for e in events if e["type"] == "message_update"]
-        text = "".join(
-            (m.get("assistantMessageEvent") or {}).get("delta", "") for m in msgs)
-        assert "canvas-history-replay" in text  # 重放块前置注入进重试 prompt
-        assert "第一暗号PURPLE" in text          # user 侧在重放内
+        assert len(errs) == 1 and errs[0]["delivery"] == "uncertain"
+        assert "不会自动重发" in errs[0]["message"]
+        assert not any(e["type"] in ("message_update", "agent_end", "session_started") for e in events)
+        terminals = [e for e in events if e["type"] == "input_delivery_terminal"]
+        assert len(terminals) == 1 and terminals[0]["request_id"] == "second"
+        assert terminals[0]["delivery"] == "uncertain"
+        assert s.ext_session_id == "fake-first" and s._current_turn_id is None
+        records = self.read_log("node-dg")
+        prompts = [r for r in records if r["event"]["type"] == "user_prompt"]
+        assert [r["event"]["request_id"] for r in prompts] == ["first", "second"]
+        assert all(r["host"] == "codex" for r in records)
+        assert prompts[1]["event"]["node_refs"] == refs
+        assert prompts[1]["event"]["node_ref_context"] == "snapshot"
+        block, used = self.mgr._build_replay_context(s)
+        assert used == 2 and "第一暗号PURPLE" in block and "ECHO_MODE 第二问" in block
+        assert "snapshot" in block
 
 
 if __name__ == "__main__":

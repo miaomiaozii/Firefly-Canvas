@@ -4,13 +4,18 @@ These endpoints are called by the Pi agent's canvas-tools extension via localhos
 They execute canvas mutations through the existing project store.
 """
 import asyncio
+import contextvars
 import mimetypes
 import os
 import time
+import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 import json
+import sqlite3
 import uuid
+import weakref
 from typing import Callable
 
 from app.services.agent_node_state import ownership_fields, project_nodes
@@ -24,6 +29,7 @@ from app.services.agent_tools_manifest import UPDATABLE_NODE_FIELDS as _UPDATABL
 from app.core import OnlineImageRequest, AIReference
 from app.services.misc import build_online_image_result
 from firefly_generation import ImageGenerationRequest, ModelRoutingError
+from firefly_projects import ProjectStoreError
 
 # #240：agent-tools 系列端点接入同源/Host 守卫（与现有 API 一致；
 # 无 Origin 的本机回环 sidecar 调用按票面模型放行）。
@@ -41,6 +47,328 @@ confirm_router = APIRouter(prefix="/api/projects/{project_id}/agent", tags=["age
 VIEWPORT_STATE = {}
 
 
+class _JournalUnsettled(RuntimeError):
+    """A guarded operation has not yet proven its canvas write."""
+
+
+# One listener per store is required to preserve operation order across requests.
+_JOURNALS = {}
+_JOURNALS_LOCK = threading.Lock()
+_BATCH_GENERATION = contextvars.ContextVar("batch_generation", default=None)
+_MEDIA_LIFECYCLE = contextvars.ContextVar("media_lifecycle", default=None)
+_LIFETIME_TASKS = set()
+_LIFETIME_STOPPING = weakref.WeakSet()
+_LIFETIME_LOCK = threading.RLock()
+_JOURNALED_TOOLS = frozenset({"canvas.create_node", "canvas.update_node", "canvas.delete_node",
+                              "canvas.connect", "canvas.disconnect"})
+
+
+def _track_lifetime_task(task):
+    def discard(done):
+        with _LIFETIME_LOCK:
+            _LIFETIME_TASKS.discard(done)
+    with _LIFETIME_LOCK:
+        _LIFETIME_TASKS.add(task)
+        task.add_done_callback(discard)
+        if task.get_loop() in _LIFETIME_STOPPING:
+            task.cancel()
+    return task
+
+
+def start_agent_ops_lifetime():
+    with _LIFETIME_LOCK:
+        _LIFETIME_STOPPING.discard(asyncio.get_running_loop())
+
+
+async def shutdown_agent_ops_lifetime():
+    loop = asyncio.get_running_loop()
+    with _LIFETIME_LOCK:
+        _LIFETIME_STOPPING.add(loop)
+    from app.core import logger
+    failures = []
+    while True:
+        with _LIFETIME_LOCK:
+            tasks = [task for task in _LIFETIME_TASKS if task.get_loop() is loop]
+        if not tasks:
+            break
+        for task in tasks:
+            task.cancel()
+        outcomes = await asyncio.gather(*tasks, return_exceptions=True)
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException) and not isinstance(outcome, asyncio.CancelledError):
+                failures.append(outcome)
+                logger.error('Agent operation shutdown task failed: %s', outcome)
+        await asyncio.sleep(0)
+    if failures:
+        raise BaseExceptionGroup('Agent operation shutdown failed', failures)
+    logger.warning('Agent operation shutdown: unresolved cleanup remains guarded and may require recovery')
+
+
+def set_agent_generation_running(store, project_id: str, op_id: str, task_id: str, running: bool) -> None:
+    """Associate a task with an operation under the same lock used by undo.
+
+    Register before releasing the lock that publishes the operation; remove only
+    after the final child write has settled. Multiple tasks may share an operation.
+    """
+    if not all(isinstance(value, str) and value.strip() for value in (project_id, op_id, task_id)):
+        raise ValueError("project_id, op_id and task_id must be nonempty strings")
+    if type(running) is not bool:
+        raise ValueError("running must be a bool")
+    from app.services.agent_ops_store import set_active_operation
+    with store._lock:
+        set_active_operation(store, project_id, op_id, task_id, running)
+        tasks = store._agent_generation_tasks
+        key = (project_id, op_id)
+        if running:
+            tasks.setdefault(key, set()).add(task_id)
+        else:
+            active = tasks.get(key)
+            if active is not None:
+                active.discard(task_id)
+                if not active:
+                    tasks.pop(key, None)
+
+
+def agent_generation_is_running(store, project_id: str, op_id: str) -> bool:
+    """Check pending or active generation for undo; safe under store._lock."""
+    with store._lock:
+        return bool(store._agent_generation_tasks.get((project_id, op_id)))
+
+
+def _journal_for(store):
+    from app.services.agent_ops_journal import AgentOpsJournal
+    from firefly_opsdb import OpsDb
+    # Callers may already hold the store lock while preparing an effect.
+    with store._lock, _JOURNALS_LOCK:
+        journal = _JOURNALS.get(store)
+        if journal is None:
+            journal = AgentOpsJournal(store, OpsDb(store.root))
+            _JOURNALS[store] = journal
+        return journal
+
+
+def _apply_journaled(store, project_id, mutations, revision, trusted_agent_bindings, context, deletion=None, persisted=None):
+    from app.services.agent_ops_delta import build_delta, touched_node_ids
+    from app.services.agent_ops_journal import _conflicts, record_sides
+
+    journal = _journal_for(store)
+    store.open_project(project_id)
+    with journal.mutation(project_id) as operation:
+        before = store.canvas(project_id)
+        apply = store.apply_agent_host_mutations if trusted_agent_bindings else store.apply_mutations
+        result = apply(project_id, mutations, base_revision=revision)
+        delta = build_delta(before, store.canvas(project_id))
+        if not delta:
+            return result
+        old, new = record_sides(delta)
+        operation.register({"op_id": context.op_id, "turn_id": context.turn_id,
+                            "agent_node_id": context.agent_node_id, "tool": context.tool,
+                            "args": context.args, "before": old, "after": new,
+                            "touched_node_ids": touched_node_ids(delta),
+                            "created_at": datetime.now(timezone.utc).isoformat(),
+                            "irreversible_effects": [], "undone": False}, delta)
+        deleted_node = deletion is not None and any(
+            change["entity"] == "node" and change["id"] == deletion["node_id"]
+            and not change["path"] and change["before"]["present"] and not change["after"]["present"]
+            for change in delta
+        )
+        # Only the replacement callback proves that the changed canvas reached disk;
+        # an in-memory snapshot cannot distinguish pre- and post-replace failures.
+        def listener(pid, canvas):
+            if pid != project_id:
+                return
+            if deleted_node and not any(str(node.get("id") or "") == deletion["node_id"] for node in canvas.get("nodes", [])):
+                deletion["committed"] = True
+            if persisted is not None and not _conflicts(canvas, delta):
+                persisted.update(updated_at=canvas.get("updated_at"), touched_node_ids=touched_node_ids(delta))
+        store.add_persisted_canvas_listener(listener)
+    try:
+        try:
+            store.flush(project_id)
+        except Exception as exc:
+            # Flush includes persistence listeners; retain the receipt even on post-replace failure.
+            status = operation.result()
+            raise agent_error(500, "INTERNAL_ERROR", f"Operation {context.op_id} flush failed (journal {status['status']}): {exc}",
+                              "画布可能已更改；先检查画布和操作日志，勿盲目重试。") from exc
+    finally:
+        if listener is not None:
+            store.remove_persisted_canvas_listener(listener)
+    status = operation.result()
+    if status["status"] not in ("settled", "append_failed"):
+        raise agent_error(500, "INTERNAL_ERROR", f"Operation {context.op_id} journal {status['status']}: {status['error'] or status['conflicts']}",
+                          "画布可能已更改；先检查画布和操作日志，勿盲目重试。")
+    return result
+
+
+def _op_result(result):
+    from app.services.agent_ops_context import current_agent_ops_context
+    context = current_agent_ops_context()
+    if context and context.tool in _JOURNALED_TOOLS and context.agent_node_id:
+        store = _app_main.FIREFLY_PROJECT_STORE
+        receipts = _operation_receipts(store, context.project_id, {context.op_id})
+        if context.op_id in receipts:
+            return {**result, "op_id": context.op_id,
+                    "touched_node_ids": receipts[context.op_id]}
+    return result
+
+
+def _operation_receipts(store, project_id, op_ids):
+    """A canvas replacement is independent of its sidecar receipt."""
+    journal = _journal_for(store)
+    with journal._lock:
+        return {op_id: list(entry['record']['touched_node_ids'])
+                for op_id in op_ids
+                if (entry := journal._entries.get((project_id, op_id))) is not None
+                and entry['status'] in ('settled', 'append_failed')}
+
+
+def _operation_touched(store, project_id, op_ids):
+    receipts = _operation_receipts(store, project_id, op_ids)
+    return sorted({node_id for ids in receipts.values() for node_id in ids})
+
+
+async def _rest_agent_call(request, project_id, tool, args, callback, agent_node_id=""):
+    from app.services.agent_ops_context import agent_ops_scope
+    if not request.headers.get("X-Agent-Project", ""):
+        return await callback()
+    agent_node_id = agent_node_id or request.query_params.get("agent_node_id", "")
+    if not agent_node_id:
+        raise agent_error(400, "INVALID_ARGUMENT", "Agent node identity is required for operation journaling",
+                          "请在查询串传入发起操作的 agent_node_id，再重试。")
+    from app.services.agent_host import agent_host_manager
+    turn = agent_host_manager.get_current_turn_id(project_id, agent_node_id)
+    with agent_ops_scope(project_id=project_id, agent_node_id=agent_node_id,
+                         turn_id=turn, tool=tool, args=args):
+        return await callback()
+
+
+def _media_context(project_id):
+    from app.services.agent_ops_context import current_agent_ops_context
+    context = current_agent_ops_context()
+    if context:
+        if context.project_id != project_id or not context.agent_node_id:
+            raise agent_error(400, "INVALID_ARGUMENT", "Matching project and agent identity are required for media journaling")
+        return context
+    return None
+
+
+def _indexed_media_exists(store, project_id, record):
+    if not isinstance(record, dict):
+        return False
+    root = (store.root / project_id / "media").resolve()
+    path = (root / str(record.get("filename") or "")).resolve()
+    return path.is_relative_to(root) and path.is_file()
+
+
+def _append_effect_preflight(store, project_id, record):
+    """Require a settled uncertainty record before starting an irreversible effect."""
+    from app.services import agent_ops_store
+    from firefly_opsdb import OpsDb
+
+    journal = _journal_for(store)
+    db = OpsDb(store.root)
+    agent_ops_store.append_operation(db, project_id, record)
+    with journal._lock:
+        entry = journal._entries.get((project_id, record['op_id']))
+        if entry is not None and entry['status'] != 'settled':
+            raise RuntimeError(f"effect journal {entry['status']}: {entry['error'] or entry['conflicts']}")
+    actual = agent_ops_store.get_operation(db, project_id, record['op_id'])
+    expected = dict(record)
+    if expected.get('parent_op_id') is None:
+        expected.pop('parent_op_id', None)
+    if actual != expected:
+        raise RuntimeError('effect journal did not settle the expected record')
+
+
+def _media_root(store, project_id, context, effect, guarded):
+    record = {"op_id": context.op_id, "turn_id": context.turn_id,
+              "agent_node_id": context.agent_node_id, "tool": context.tool, "args": context.args,
+              "before": [], "after": [], "touched_node_ids": [],
+              "created_at": datetime.now(timezone.utc).isoformat(),
+              "irreversible_effects": [effect], "undone": False}
+    with store._lock:
+        _append_effect_preflight(store, project_id, record)
+        set_agent_generation_running(store, project_id, context.op_id, context.op_id, True)
+        guarded.add(context.op_id)
+
+
+async def _media_start(project_id, context, intended):
+    lifecycle = {'op_id': context.op_id, 'intended': intended, 'touched': set(), 'updated_at': None,
+                 'unregistered': {}, 'guarded': set(), 'listeners': []}
+    token = _MEDIA_LIFECYCLE.set(lifecycle)
+    try:
+        await _generation_archive_to_completion(_broadcast_canvas_updated(
+            project_id, source='agent', op_id=context.op_id, touched_node_ids=intended, phase='start'))
+    except BaseException:
+        await _media_end(project_id, lifecycle, token)
+        raise
+    return lifecycle, token
+
+
+async def _media_end(project_id, lifecycle, token):
+    store = _app_main.FIREFLY_PROJECT_STORE
+    guarded = lifecycle['guarded']
+    needs_recovery = bool(lifecycle['unregistered']) or not _generation_release(
+        store, project_id, lifecycle['op_id'], guarded, release=False)
+    _MEDIA_LIFECYCLE.reset(token)
+    async def send_end():
+        await _generation_archive_to_completion(_broadcast_canvas_updated(
+            project_id, source='agent', updated_at=lifecycle['updated_at'], op_id=lifecycle['op_id'],
+            touched_node_ids=sorted(lifecycle['touched']), phase='end'))
+    if not needs_recovery:
+        await send_end()
+        return
+    from app.services.agent_ops_context import create_agent_ops_task
+    from app.services.agent_ops_async import run_blocking_to_completion
+    from app.core import logger as _logger
+    recovery_token = f"media-recovery:{lifecycle['op_id']}"
+    is_batch = _BATCH_GENERATION.get() is not None
+    set_agent_generation_running(store, project_id, lifecycle['op_id'], recovery_token, True)
+    async def recover():
+        journal = _journal_for(store)
+        def settle():
+            with store._lock:
+                for op_id, (record, delta) in list(lifecycle['unregistered'].items()):
+                    try:
+                        _batch_register_reserved(journal, project_id, record, delta)
+                    except Exception as exc:
+                        # A prior canvas write may already be durable. Keep the undo guard
+                        # and retry registration rather than sending an unproven end event.
+                        raise _JournalUnsettled(str(exc)) from exc
+                    lifecycle['unregistered'].pop(op_id)
+                    store._agent_generation_unregistered.discard((project_id, op_id))
+                store.flush(project_id)
+        while True:
+            try:
+                await run_blocking_to_completion(settle)
+                if not _generation_release(store, project_id, lifecycle['op_id'], guarded, release=False):
+                    raise _JournalUnsettled('media journal not settled')
+                await send_end()
+                for listener in lifecycle['listeners']:
+                    store.remove_persisted_canvas_listener(listener)
+                if not is_batch:
+                    _generation_release(store, project_id, lifecycle['op_id'], guarded)
+                set_agent_generation_running(store, project_id, lifecycle['op_id'], recovery_token, False)
+                return
+            except (OSError, sqlite3.Error, _JournalUnsettled) as exc:
+                _logger.warning('media journal retry op=%s: %s', lifecycle['op_id'], exc)
+                await asyncio.sleep(1)
+    _track_lifetime_task(create_agent_ops_task(recover()))
+
+
+def _media_partial(context, exc):
+    return agent_error(500, "INTERNAL_ERROR", f"Media operation {context.op_id} has a partial-unknown outcome: {exc}",
+                       "检查操作日志、媒体和画布后再决定是否重试。", retryable=False,
+                       details={"op_id": context.op_id, "status": "partial-unknown"})
+
+
+def _require_media_journal_support(request=None):
+    from app.services.agent_ops_context import current_agent_ops_context
+    if current_agent_ops_context() or (request is not None and request.headers.get("X-Agent-Project", "")):
+        raise agent_error(503, "SERVER_NOT_READY", "Agent media mutation journaling is unavailable",
+                          "媒体操作尚不支持安全记账；请用户在界面中操作。")
+
+
 def _validate_project(project_id: str):
     """Validate that the project exists and return the store."""
     store = _app_main.FIREFLY_PROJECT_STORE
@@ -56,29 +384,59 @@ def _validate_project(project_id: str):
                           "项目不存在；确认 X-Agent-Project 头的 ID，或先让用户打开项目。")
 
 
-async def _apply_mutations(project_id: str, mutations: list, *, trusted_agent_bindings: bool = False):
+async def _apply_mutations(project_id: str, mutations: list, *, trusted_agent_bindings: bool = False, deletion=None):
     """Apply fixed mutations (new identities/removals, not stale node updates)."""
     return await _apply_mutations_from_snapshot(
-        project_id, lambda _canvas: mutations, trusted_agent_bindings=trusted_agent_bindings,
+        project_id, lambda _canvas: mutations, trusted_agent_bindings=trusted_agent_bindings, deletion=deletion,
     )
 
 
 async def _apply_mutations_from_snapshot(
     project_id: str, build_mutations: Callable[[dict], list], *, source: str = "agent",
-    trusted_agent_bindings: bool = False,
+    trusted_agent_bindings: bool = False, deletion=None,
 ):
-    """Rebuild read-modify-write patches from the same snapshot used for CAS.
-
-    #243: after a successful commit, broadcast ``canvas_updated`` so every
-    other open tab re-syncs in real time (ADR 0022 known gap: agent-tools
-    mutations used to be invisible to other tabs until manual reload).
-    """
+    """Build against one snapshot; announce before applying its CAS mutation."""
     from firefly_projects import RevisionConflict
 
     store = _app_main.FIREFLY_PROJECT_STORE
     for attempt in range(8):
         try:
-            # Get the current revision directly from the canvas
+            from app.services.agent_ops_context import current_agent_ops_context
+            context = current_agent_ops_context()
+            if context and context.project_id == project_id and context.agent_node_id and context.tool in _JOURNALED_TOOLS:
+                from copy import deepcopy
+                from app.services.agent_ops_delta import build_delta, touched_node_ids
+                # Preview through the store's own validation and normalization, without
+                # mutating the live canvas. CAS rejects a stale preview after the await.
+                store.open_project(project_id)
+                with store._lock:
+                    canvas = store.canvas(project_id)
+                    mutations = build_mutations(canvas)
+                    if not mutations:
+                        return None
+                    preview = deepcopy(canvas)
+                    for mutation in mutations:
+                        store._apply_mutation(preview, deepcopy(mutation),
+                                              trusted_agent_bindings=trusted_agent_bindings)
+                    intended = touched_node_ids(build_delta(canvas, preview))
+                    if not intended:
+                        return None
+                    revision = int(canvas.get('revision') or 0)
+                    updated_at = canvas.get('updated_at') or _app_main.now_ms()
+                persisted = {}
+                try:
+                    await _broadcast_canvas_updated(project_id, source=source, updated_at=updated_at,
+                                                    op_id=context.op_id, touched_node_ids=intended, phase='start')
+                    try:
+                        return _apply_journaled(store, project_id, mutations, revision, trusted_agent_bindings,
+                                                context, deletion, persisted)
+                    except RevisionConflict as exc:
+                        raise agent_error(409, "CANVAS_CONFLICT", "Canvas changed after the operation was announced",
+                                          "画布已被其他操作修改；检查最新状态后重试。") from exc
+                finally:
+                    await _broadcast_canvas_updated(project_id, source=source,
+                        updated_at=persisted.get('updated_at') or updated_at, op_id=context.op_id,
+                        touched_node_ids=persisted.get('touched_node_ids', []), phase='end')
             canvas = store.canvas(project_id)
             revision = int(canvas.get("revision") or 0)
             mutations = build_mutations(canvas)
@@ -105,7 +463,7 @@ async def _apply_mutations_from_snapshot(
                               "画布写入冲突；先调用 canvas.list_nodes 查看最新状态再重试。") from e
 
 
-async def _broadcast_canvas_updated(project_id: str, source: str = "") -> None:
+async def _broadcast_canvas_updated(project_id: str, source: str = "", *, updated_at=None, **operation) -> None:
     """Best-effort ``canvas_updated`` broadcast after an agent-tools mutation.
 
     #375: forwards a `source` tag ("agent") into the broadcast payload so the
@@ -117,8 +475,10 @@ async def _broadcast_canvas_updated(project_id: str, source: str = "") -> None:
     if manager is None:
         return
     try:
-        canvas = _app_main.FIREFLY_PROJECT_STORE.canvas(project_id)
-        await manager.broadcast_canvas_updated(project_id, int(canvas.get("updated_at") or _app_main.now_ms()), source=source)
+        if updated_at is None:
+            canvas = _app_main.FIREFLY_PROJECT_STORE.canvas(project_id)
+            updated_at = canvas.get("updated_at")
+        await manager.broadcast_canvas_updated(project_id, int(updated_at or _app_main.now_ms()), source=source, **operation)
     except Exception:
         pass  # broadcast is best-effort; never fail the mutation because of it
 
@@ -210,15 +570,17 @@ async def create_node(project_id: str, request: Request, x_agent_project: str = 
     """Create a new node on the canvas. 可选 `agent_node_id`（#356 D11）：传了则
     未显式给 x/y 的新节点按该 agent 的会话 frame 网格自动落位（与 MCP 路径同行为）。"""
     body = await request.json()
-    return await create_node_core(project_id, body.get("node", {}),
-                                  agent_node_id=_creation_context(request, body.get("agent_node_id", "")))
+    agent = _creation_context(request, body.get("agent_node_id", ""))
+    return await _rest_agent_call(request, project_id, "canvas.create_node", body,
+                                  lambda: create_node_core(project_id, body.get("node", {}), agent_node_id=agent), agent)
 
 
 @router.patch("/nodes/{node_id}")
 async def update_node(project_id: str, node_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Update an existing node's properties."""
     body = await request.json()
-    return await update_node_core(project_id, node_id, body)
+    return await _rest_agent_call(request, project_id, "canvas.update_node", {"node_id": node_id, "updates": body},
+                                  lambda: update_node_core(project_id, node_id, body))
 
 
 @router.delete("/nodes/{node_id}")
@@ -230,28 +592,167 @@ async def delete_node(project_id: str, node_id: str, request: Request, agent_nod
     _validate_project(project_id)
     await _server_confirm_gate(request, project_id, "canvas.delete_node",
                                {"node_id": node_id}, f"删除画布节点 {node_id}")
-    return await delete_node_core(project_id, node_id)
+    return await _rest_agent_call(request, project_id, "canvas.delete_node", {"node_id": node_id},
+                                  lambda: delete_node_core(project_id, node_id), agent_node_id)
 
 
 async def delete_node_core(project_id: str, node_id: str) -> dict:
-    """#357：删除节点执行核（无门；REST/MCP 各自门过后调）。"""
-    await _apply_mutations(project_id, [{"op": "remove_node", "node_id": node_id}])
+    """Delete the canvas first; session cleanup is separately irreversible."""
+    from app.services.agent_ops_context import current_agent_ops_context
+    context = current_agent_ops_context()
+    agent = (context and context.project_id == project_id and context.agent_node_id
+             and context.tool == "canvas.delete_node")
+    store = _app_main.FIREFLY_PROJECT_STORE
+    deletion = {"node_id": node_id, "committed": False}
+    if agent:
+        set_agent_generation_running(store, project_id, context.op_id, context.op_id, True)
+    try:
+        mutation_error = None
+        try:
+            await _apply_mutations(project_id, [{"op": "remove_node", "node_id": node_id}], deletion=deletion)
+        except HTTPException as exc:
+            # Do not touch session artifacts unless a failed flush still proved deletion.
+            if not deletion["committed"]:
+                raise
+            mutation_error = exc
+        try:
+            if agent:
+                await _cleanup_agent_deleted_node(store, project_id, node_id, context)
+            else:
+                await _cleanup_deleted_node(project_id, node_id)
+        except Exception as exc:
+            # Session cleanup can be partial; preserve a prior canvas error or forbid blind retry.
+            if mutation_error is not None:
+                from app.core import logger as _logger
+                _logger.warning("delete cleanup failed for %s: %s", node_id, exc)
+            elif agent:
+                raise agent_error(500, "INTERNAL_ERROR",
+                                  f"Operation {context.op_id} session cleanup outcome is unknown: {exc}",
+                                  "先检查画布、操作日志和会话，再决定是否重试。", retryable=False,
+                                  details={"op_id": context.op_id, "status": "partial-unknown"}) from exc
+            else:
+                raise
+        if mutation_error is not None:
+            raise mutation_error
+        return _op_result({"success": True, "node_id": node_id})
+    finally:
+        if agent:
+            set_agent_generation_running(store, project_id, context.op_id, context.op_id, False)
+
+
+def _delete_session_effect(store, project_id, context, effect, *, create):
+    """Persist the uncertainty before cleanup, under the same lock as undo."""
+    from app.services import agent_ops_store
+    from firefly_opsdb import OpsDb
+    db = OpsDb(store.root)
+    with store._lock:
+        # An append can commit and then raise; do not modify a row while the
+        # journal may still compare it with its original pending record.
+        journal = _JOURNALS.get(store)
+        entry = None
+        if journal is not None:
+            with journal._lock:
+                entry = journal._entries.get((project_id, context.op_id))
+                if entry is not None and entry["status"] != "settled":
+                    raise RuntimeError("canvas operation has not settled; session cleanup skipped")
+        record = agent_ops_store.get_operation(db, project_id, context.op_id)
+        if record is None:
+            if entry is not None:
+                raise RuntimeError("settled canvas operation is missing; session cleanup skipped")
+            if not create:
+                raise RuntimeError("session cleanup operation is missing")
+            _append_effect_preflight(store, project_id, {
+                "op_id": context.op_id, "turn_id": context.turn_id,
+                "agent_node_id": context.agent_node_id, "tool": context.tool, "args": context.args,
+                "before": [], "after": [], "touched_node_ids": [],
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "irreversible_effects": [effect], "undone": False,
+            })
+            return
+        effects = list(record["irreversible_effects"])
+        if create:
+            effects.append(effect)
+        else:
+            effects[-1] = effect
+        with db.project_lock(project_id), db.connect(project_id, create_project_dir=False) as conn, conn:
+            cursor = conn.execute(
+                "UPDATE agent_ops_operations SET irreversible_effects_json = ? "
+                "WHERE project_id = ? AND op_id = ? AND undone = 0",
+                (json.dumps(effects, ensure_ascii=False), project_id, context.op_id),
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("session cleanup operation was undone or removed")
+
+
+async def _cleanup_agent_deleted_node(store, project_id, node_id, context):
+    from app.services.agent_host import agent_host_manager as manager
+    key = f"{project_id}:{node_id}"
+    # drop_node_session only removes files when a registered session exists.
+    # Do not call it after observing no session: one could appear before its pop.
+    async with manager._lock:
+        session = manager.sessions.get(key)
+        if session is None:
+            reset_generation_counts(project_id, node_id)
+            return
+        effect = {"type": "agent_session_cleanup", "node_id": node_id,
+                  "outcome": "unknown; cleanup may not have started or may be partial",
+                  "impact": "session registration and process state may be lost; session directory and files may be deleted; canvas undo cannot restore them"}
+        _delete_session_effect(store, project_id, context, effect, create=True)
+    directory = Path(manager._get_project_dir(project_id)) / "agent_nodes" / str(node_id)
+    process = session.process
+    session_status_before = session.status
+    try:
+        process_before = "no process" if process is None else ("running" if process.poll() is None else "exited")
+    except OSError:
+        process_before = "unknown"
+    try:
+        before_dir = directory.exists()
+    except OSError:
+        before_dir = None
+    try:
+        dropped = await manager.drop_node_session(project_id, node_id)
+        outcome = "cleanup returned" if dropped else "no session was dropped (concurrent change possible)"
+    except (OSError, RuntimeError) as exc:
+        outcome = f"cleanup failed; partial outcome possible: {type(exc).__name__}: {exc}"
+    finally:
+        reset_generation_counts(project_id, node_id)
+    try:
+        after_dir = directory.exists()
+        directory_state = ("absent after cleanup" if not after_dir else "still exists; contents may have been partially removed")
+        if before_dir is False:
+            directory_state = "absent before cleanup; " + directory_state
+    except OSError:
+        directory_state = "unknown"
+    try:
+        process_state = "no process before cleanup" if process is None else ("running" if process.poll() is None else "exited")
+    except OSError:
+        process_state = "unknown"
+    async with manager._lock:
+        registration = "original session registered" if manager.sessions.get(key) is session else "original session no longer registered"
+    effect.update(outcome=outcome, directory_state=directory_state,
+                  process_state_before=process_before, process_state=process_state,
+                  session_status_before=session_status_before, session_status_after=session.status,
+                  registration_state=registration,
+                  observation="process and registration refer to the session observed before cleanup; concurrent replacement is possible")
+    _delete_session_effect(store, project_id, context, effect, create=False)
+
+
+async def _cleanup_deleted_node(project_id: str, node_id: str) -> None:
     try:
         from app.services.agent_host import agent_host_manager
         await agent_host_manager.drop_node_session(project_id, node_id)
     except Exception as exc:
         from app.core import logger as _logger
         _logger.warning("#353 drop_node_session failed for %s: %s", node_id, exc)
-    # #351：节点销毁 → 清该节点的会话生成额度计数。
     reset_generation_counts(project_id, node_id)
-    return {"success": True, "node_id": node_id}
 
 
 @router.post("/edges")
 async def create_edge(project_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Create a connection between two nodes."""
     body = await request.json()
-    return await create_edge_core(project_id, body.get("edge", {}))
+    return await _rest_agent_call(request, project_id, "canvas.connect", body,
+                                  lambda: create_edge_core(project_id, body.get("edge", {})))
 
 
 @router.delete("/edges/{from_node}/{to_node}")
@@ -261,7 +762,8 @@ async def delete_edge(project_id: str, from_node: str, to_node: str, request: Re
     await _server_confirm_gate(request, project_id, "canvas.delete_edge",
                                {"from": from_node, "to": to_node},
                                f"删除连线 {from_node} → {to_node}")
-    return await delete_edge_core(project_id, from_node, to_node)
+    return await _rest_agent_call(request, project_id, "canvas.disconnect", {"from_node": from_node, "to_node": to_node},
+                                  lambda: delete_edge_core(project_id, from_node, to_node), agent_node_id)
 
 
 async def delete_edge_core(project_id: str, from_node: str, to_node: str) -> dict:
@@ -281,7 +783,7 @@ async def delete_edge_core(project_id: str, from_node: str, to_node: str) -> dic
                           "这条连线不存在；先调用 canvas.list_nodes 查看现有连线。")
 
     await _apply_mutations(project_id, [{"op": "remove_edge", "edge_id": target_edge.get("id", "")}])
-    return {"success": True, "from": from_node, "to": to_node}
+    return _op_result({"success": True, "from": from_node, "to": to_node})
 
 
 @router.post("/view")
@@ -305,7 +807,8 @@ async def canvas_edit_crop(project_id: str, request: Request, agent_node_id: str
     body = await request.json()
     await _server_confirm_gate(request, project_id, "canvas.edit_crop", body,
                                f"裁剪节点 {body.get('node_id')} 的图像并覆写节点图（原资源保留在资源库）")
-    return await crop_node_image_core(project_id, body.get("node_id"), body.get("rect"))
+    return await _rest_agent_call(request, project_id, "canvas.edit_crop", body,
+                                  lambda: crop_node_image_core(project_id, body.get("node_id"), body.get("rect")), agent_node_id)
 
 
 @router.post("/batch_edit")
@@ -319,8 +822,10 @@ async def canvas_batch_edit(project_id: str, request: Request, x_agent_project: 
     if request.headers.get("X-Agent-Project", ""):
         enforce_generation_limit(project_id, request.query_params.get("agent_node_id", ""),
                                  count=max(1, len(node_ids)))
-    return await batch_edit_core(project_id, body.get("node_ids"), body.get("prompt"),
-                                 agent_node_id=_creation_context(request, request.query_params.get("agent_node_id", "")))
+    agent = _creation_context(request, request.query_params.get("agent_node_id", ""))
+    return await _rest_agent_call(request, project_id, "canvas.batch_edit", body,
+                                  lambda: batch_edit_core(project_id, body.get("node_ids"), body.get("prompt"),
+                                                          agent_node_id=agent), agent)
 
 
 @router.post("/edit_rotate")
@@ -330,7 +835,8 @@ async def canvas_edit_rotate(project_id: str, request: Request, agent_node_id: s
     body = await request.json()
     await _server_confirm_gate(request, project_id, "canvas.edit_rotate", body,
                                f"旋转节点 {body.get('node_id')} 的图像并覆写节点图（原资源保留在资源库）")
-    return await rotate_node_image_core(project_id, body.get("node_id"), body.get("angle"))
+    return await _rest_agent_call(request, project_id, "canvas.edit_rotate", body,
+                                  lambda: rotate_node_image_core(project_id, body.get("node_id"), body.get("angle")), agent_node_id)
 
 
 @router.post("/edit_flip")
@@ -340,7 +846,8 @@ async def canvas_edit_flip(project_id: str, request: Request, agent_node_id: str
     body = await request.json()
     await _server_confirm_gate(request, project_id, "canvas.edit_flip", body,
                                f"镜像节点 {body.get('node_id')} 的图像并覆写节点图（原资源保留在资源库）")
-    return await flip_node_image_core(project_id, body.get("node_id"), body.get("direction"))
+    return await _rest_agent_call(request, project_id, "canvas.edit_flip", body,
+                                  lambda: flip_node_image_core(project_id, body.get("node_id"), body.get("direction")), agent_node_id)
 
 
 @router.post("/edit_outpaint")
@@ -350,7 +857,8 @@ async def canvas_edit_outpaint(project_id: str, request: Request, agent_node_id:
     body = await request.json()
     await _server_confirm_gate(request, project_id, "canvas.edit_outpaint", body,
                                f"红底扩图节点 {body.get('node_id')}：扩大画布（#ff0044 填充外区）并覆写节点图（原资源保留在资源库）")
-    return await outpaint_node_image_core(project_id, body.get("node_id"), body.get("outpaint_size"), body.get("offset"))
+    return await _rest_agent_call(request, project_id, "canvas.edit_outpaint", body,
+                                  lambda: outpaint_node_image_core(project_id, body.get("node_id"), body.get("outpaint_size"), body.get("offset")), agent_node_id)
 
 
 # =============================================================================
@@ -416,7 +924,7 @@ async def create_node_core(project_id: str, node: dict, agent_node_id: str = "")
         return mutations
 
     await _apply_mutations_from_snapshot(project_id, build)
-    return {"success": True, "node_id": node["id"]}
+    return _op_result({"success": True, "node_id": node["id"]})
 
 
 def _find_chat_frame(project_id: str, agent_node_id: str, *, canvas: dict | None = None) -> dict | None:
@@ -462,11 +970,19 @@ async def update_node_core(project_id: str, node_id: str, updates: dict) -> dict
             raise agent_error(400, "INVALID_ARGUMENT",
                               "会话框 items 由服务端落位链维护，canvas.update_node 不可覆写",
                               "会话框成员由服务端维护；不要改 items，用 canvas.create_node 在会话框内建节点。")
+        from app.services.agent_ops_context import current_agent_ops_context
+        from app.services.agent_ops_delta import _equal
+        context = current_agent_ops_context()
+        if (context and context.project_id == project_id and context.agent_node_id
+                and context.tool in _JOURNALED_TOOLS
+                and all(key in target_node and _equal(target_node[key], value)
+                        for key, value in updates.items())):
+            return []
         patched = {**target_node, **updates, "updated_at": updated_at}
         return [{"op": "upsert_node", "node": patched}]
 
     await _apply_mutations_from_snapshot(project_id, build)
-    return {"success": True, "node_id": node_id}
+    return _op_result({"success": True, "node_id": node_id})
 
 
 async def create_edge_core(project_id: str, edge: dict) -> dict:
@@ -485,7 +1001,7 @@ async def create_edge_core(project_id: str, edge: dict) -> dict:
                           "连线需要两个端点 node id；先调用 canvas.list_nodes 获取。")
 
     await _apply_mutations(project_id, [{"op": "upsert_edge", "edge": edge}])
-    return {"success": True, "edge_id": edge["id"]}
+    return _op_result({"success": True, "edge_id": edge["id"]})
 
 
 # =============================================================================
@@ -533,8 +1049,211 @@ async def trigger_generation(project_id: str, request: Request, x_agent_project:
     if request.headers.get("X-Agent-Project", ""):
         enforce_generation_limit(project_id, request.query_params.get("agent_node_id", ""),
                                  count=max(1, int(body.get("n") or 1)))
-    return await trigger_generation_core(project_id, body.get("node_id"),
-                                         agent_node_id=_creation_context(request, request.query_params.get("agent_node_id", "")))
+    agent = _creation_context(request, request.query_params.get("agent_node_id", ""))
+    return await _rest_agent_call(request, project_id, "generate.trigger", body,
+                                  lambda: trigger_generation_core(project_id, body.get("node_id"), agent_node_id=agent), agent)
+
+
+def _batch_register_reserved(journal, project_id, record, delta):
+    from app.services import agent_ops_store
+    from copy import deepcopy
+
+    agent_ops_store._validate_record(record)
+    agent_ops_store._json_value(delta)
+    key = (project_id, record['op_id'])
+    with journal._lock:
+        existing = journal._entries.get(key)
+        if existing is not None:
+            if existing['record'] != record or existing['delta'] != delta:
+                raise ValueError('operation already registered')
+            return key
+        journal._entries[key] = {
+            'project_id': project_id, 'op_id': record['op_id'],
+            'status': 'pending', 'conflicts': [], 'error': None,
+            'record': deepcopy(record), 'delta': deepcopy(delta), 'attempted': False,
+        }
+    return key
+
+
+def _generation_mutation(store, project_id, context, task_id, guarded, action, *, parent_id=None, effects=()):
+    """Capture the persistence projection while undo and timer flushes are excluded."""
+    from app.services.agent_ops_delta import build_delta, touched_node_ids
+    from app.services.agent_ops_journal import record_sides
+    from app.services import agent_ops_store
+
+    journal = _journal_for(store)
+    batch = _BATCH_GENERATION.get()
+    lifecycle = _MEDIA_LIFECYCLE.get()
+    reserved = batch is not None or lifecycle is not None
+    with journal.mutation(project_id) as operation:
+        # Reserve before the write so a failing reservation cannot orphan a delta.
+        if reserved:
+            reservation = {"op_id": context.op_id, "turn_id": context.turn_id}
+            if parent_id is not None:
+                reservation["parent_op_id"] = parent_id
+            try:
+                agent_ops_store._reserve(journal, journal._opsdb, project_id, reservation)
+            except BaseException:
+                agent_ops_store._release(journal, journal._opsdb, project_id, context.op_id)
+                raise
+        before = store._project_canvas_for_persistence(store._canvases[project_id])
+        action_error = None
+        try:
+            result = action()
+        except BaseException as exc:
+            action_error = exc
+            result = None
+        after = store._project_canvas_for_persistence(store._canvases[project_id])
+        delta = build_delta(before, after)
+        if not delta and not effects:
+            if reserved:
+                agent_ops_store._release(journal, journal._opsdb, project_id, context.op_id)
+            if action_error is not None:
+                raise action_error
+            return result
+        old, new = record_sides(delta)
+        record = {"op_id": context.op_id, "turn_id": context.turn_id,
+                  "agent_node_id": context.agent_node_id, "tool": context.tool,
+                  "args": context.args, "before": old, "after": new,
+                  "touched_node_ids": touched_node_ids(delta),
+                  "created_at": datetime.now(timezone.utc).isoformat(),
+                  "irreversible_effects": list(effects), "undone": False}
+        if parent_id is not None:
+            record["parent_op_id"] = parent_id
+        if batch is not None:
+            # Every visible family member stays guarded until every batch task ends.
+            batch["ids"].add(context.op_id)
+            if context.op_id == batch["root"]:
+                batch["root_exists"] = True
+            for token in batch["tokens"]:
+                set_agent_generation_running(store, project_id, context.op_id, token, True)
+        else:
+            set_agent_generation_running(store, project_id, context.op_id, task_id, True)
+        guarded.add(context.op_id)
+        listener = None
+        if lifecycle is not None:
+            lifecycle['guarded'].update(guarded if batch is None else {context.op_id})
+            if delta:
+                from app.services.agent_ops_journal import _conflicts
+                def listener(pid, canvas):
+                    if pid == project_id and not _conflicts(canvas, delta):
+                        lifecycle['touched'].update(touched_node_ids(delta))
+                        lifecycle['updated_at'] = canvas.get('updated_at')
+                store.add_persisted_canvas_listener(listener)
+                lifecycle['listeners'].append(listener)
+        try:
+            if not reserved:
+                operation.register(record, delta)
+            else:
+                pending = batch['unregistered'] if batch is not None else lifecycle['unregistered']
+                pending[context.op_id] = (record, delta)
+                operation._key = _batch_register_reserved(journal, project_id, record, delta)
+                pending.pop(context.op_id)
+        except BaseException:
+            # Without a registered delta no later flush can prove settlement.
+            store._agent_generation_unregistered.add((project_id, context.op_id))
+            raise
+    try:
+        try:
+            store.flush(project_id)
+            status = operation.result()
+            if status["status"] not in ("settled", "append_failed"):
+                raise RuntimeError(f"Generation operation {context.op_id} journal {status['status']}: {status['error'] or status['conflicts']}")
+        except BaseException as exc:
+            if action_error is not None:
+                action_error.add_note(f"Generation operation {context.op_id} settlement failed: {exc}")
+                raise action_error from exc
+            raise
+    finally:
+        if listener is not None and operation.result()['status'] in ('settled', 'append_failed'):
+            store.remove_persisted_canvas_listener(listener)
+            lifecycle['listeners'].remove(listener)
+    if action_error is not None:
+        raise action_error
+    return result
+
+
+def _generation_child(store, project_id, parent, task_id, guarded, action, *, effects=(), lifecycle=None):
+    from app.services.agent_ops_context import agent_ops_scope
+    with agent_ops_scope(project_id=project_id, agent_node_id=parent.agent_node_id,
+                         turn_id=parent.turn_id, tool=parent.tool, args=parent.args) as child:
+        if lifecycle is not None:
+            lifecycle['op_id'] = child.op_id
+        return _generation_mutation(store, project_id, child, task_id, guarded, action,
+                                    parent_id=parent.op_id, effects=effects)
+
+
+def _generation_release(store, project_id, task_id, guarded, *, release=True):
+    with store._lock:
+        batch = _BATCH_GENERATION.get()
+        if any((project_id, op_id) in store._agent_generation_unregistered for op_id in guarded):
+            return False
+        canvas = store._canvases.get(project_id, {})
+        if any(item.get('taskId') == task_id for node in canvas.get('nodes', [])
+               for item in node.get('pendingTasks', []) if isinstance(item, dict)):
+            return False
+        for journal in store._agent_ops_journals:
+            with journal._lock:
+                if any(entry['status'] not in ('settled', 'append_failed')
+                       for (pid, op_id), entry in journal._entries.items()
+                       if pid == project_id and op_id in guarded):
+                    return False
+        if not release:
+            return True
+        for op_id in batch["ids"] if batch is not None else guarded:
+            set_agent_generation_running(store, project_id, op_id, task_id, False)
+        if batch is not None:
+            batch["tokens"].discard(task_id)
+        return True
+
+
+async def _generation_archive_to_completion(coro):
+    from app.services.agent_ops_async import await_to_completion
+    # The archive coroutine itself starts store threads and owns temporary files.
+    return await await_to_completion(coro)
+
+
+async def _generation_event(project_id, lifecycle, phase):
+    if lifecycle['persisted']:
+        if phase == 'end' and not lifecycle.get('start_sent'):
+            await _generation_event(project_id, lifecycle, 'start')
+        if phase == 'start' and lifecycle.get('start_sent'):
+            return
+        await _broadcast_canvas_updated(project_id, source='agent', updated_at=lifecycle['updated_at'],
+                                        op_id=lifecycle['op_id'], touched_node_ids=[lifecycle['node_id']],
+                                        phase=phase)
+        if phase == 'start':
+            lifecycle['start_sent'] = True
+
+
+async def _generation_finish(store, project_id, task_id, guarded, lifecycle):
+    if lifecycle.get('pending') or not _generation_release(store, project_id, task_id, guarded, release=False):
+        return False
+    try:
+        await _generation_archive_to_completion(_generation_event(project_id, lifecycle, 'end'))
+    finally:
+        store.remove_persisted_canvas_listener(lifecycle['listener'])
+        _generation_release(store, project_id, task_id, guarded)
+    return True
+
+
+def _schedule_generation_worker(create_task, *args, pre_cancel=False):
+    lifecycle = args[-1]
+    task = create_task(_run_agent_generation(*args, pre_cancel=pre_cancel))
+    def recover_unstarted(done):
+        if done.cancelled() and not lifecycle.get('worker_entered'):
+            with _LIFETIME_LOCK:
+                stopping = done.get_loop() in _LIFETIME_STOPPING
+            if stopping:
+                task_id = args[0]
+                with CANVAS_TASK_LOCK:
+                    if task_id in CANVAS_TASKS:
+                        CANVAS_TASKS[task_id].update(status='cleanup_pending',
+                            error='Generation cleanup interrupted by shutdown; outcome uncertain', updated_at=time.time())
+            else:
+                _schedule_generation_worker(create_task, *args, pre_cancel=True)
+    task.add_done_callback(recover_unstarted)
+    return _track_lifetime_task(task)
 
 
 async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: str = "") -> dict:
@@ -607,10 +1326,7 @@ async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: 
         "reference_images": reference_images,
     }
 
-    # Create the task using the existing API
     task_id = f"agent_img_{uuid.uuid4().hex}"
-    # #351（ADR 0012）：结果挂节点 + 项目历史——在源节点右侧新建 smart-image 结果节点，
-    # 走浏览器生成同款 begin/complete/fail 通道（pendingTasks、history、广播全复用）。
     result_node_id = f"node-{uuid.uuid4().hex[:12]}"
     src_x = float(target_node.get("x") or 0.0)
     src_y = float(target_node.get("y") or 0.0)
@@ -624,7 +1340,121 @@ async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: 
         "y": src_y,
         "created_at": _app_main.now_ms(),
     }
-    await _apply_mutations(project_id, [{"op": "upsert_node", "node": result_node}])
+    from app.services.agent_ops_context import current_agent_ops_context, create_agent_ops_task
+    from app.services.agent_ops_async import run_blocking_to_completion
+    context = current_agent_ops_context()
+    batch = _BATCH_GENERATION.get()
+    if not (context and context.project_id == project_id and context.agent_node_id
+            and (context.tool == "generate.trigger" or
+                 (context.tool == "canvas.batch_edit" and batch is not None))):
+        context = None
+    store = _app_main.FIREFLY_PROJECT_STORE
+    guarded = set()
+    started = False
+    recovery_required = False
+    start_cancel = None
+    if context:
+        lifecycle = {'op_id': context.op_id, 'node_id': result_node_id, 'persisted': False, 'pending': False, 'updated_at': None}
+        def persisted_listener(pid, canvas):
+            if pid != project_id:
+                return
+            if lifecycle['persisted'] or any(n.get('id') == result_node_id for n in canvas.get('nodes', [])):
+                pending = any(item.get('taskId') == task_id for node in canvas.get('nodes', [])
+                              for item in node.get('pendingTasks', []) if isinstance(item, dict))
+                lifecycle.update(persisted=True, pending=pending, updated_at=canvas.get('updated_at'))
+        lifecycle['listener'] = persisted_listener
+        store.add_persisted_canvas_listener(persisted_listener)
+        if batch is not None:
+            with store._lock:
+                batch["tokens"].add(task_id)
+                for op_id in batch["ids"]:
+                    set_agent_generation_running(store, project_id, op_id, task_id, True)
+
+        def cleanup_start_error(exc):
+            store.flush(project_id)
+            node = store.find_canvas_node(project_id, result_node_id) or {}
+            if any(item.get('taskId') == task_id for item in node.get('pendingTasks', [])):
+                failure = {"id": f"generation-{uuid.uuid4().hex}", "task_id": task_id,
+                           "type": "online-image", "status": "failed", "prompt": prompt,
+                           "created_at": _app_main.now_ms(), "completed_at": _app_main.now_ms(),
+                           "outputs": [], "result_node_id": result_node_id,
+                           "source_node_id": node_id, "error": str(exc)}
+                _generation_child(store, project_id, context, task_id, guarded,
+                    lambda: store.fail_image_generation(project_id, result_node_id, task_id,
+                                                        failure, require_pending=True))
+            if not _generation_release(store, project_id, task_id, guarded, release=False):
+                raise _JournalUnsettled("generation cleanup has unsettled journal entries")
+
+        async def recover_start_error(exc):
+            from app.core import logger as _logger
+            while True:
+                try:
+                    await run_blocking_to_completion(cleanup_start_error, exc)
+                    if await _generation_finish(store, project_id, task_id, guarded, lifecycle):
+                        with CANVAS_TASK_LOCK:
+                            CANVAS_TASKS[task_id].update(status="failed", error=str(exc), updated_at=time.time())
+                        return
+                    raise _JournalUnsettled('generation cleanup not persisted')
+                except (OSError, sqlite3.Error, _JournalUnsettled) as retry_error:
+                    _logger.warning("generation cleanup retry task=%s op=%s: %s", task_id, context.op_id, retry_error)
+                    await asyncio.sleep(1)
+
+        def start():
+            nonlocal started, recovery_required
+            try:
+                def create_result():
+                    return store.apply_mutations(project_id, [{"op": "upsert_node", "node": result_node}],
+                                                 base_revision=store.canvas(project_id)["revision"])
+                if batch is not None and batch["root_exists"]:
+                    _generation_child(store, project_id, context, task_id, guarded, create_result, lifecycle=lifecycle)
+                else:
+                    _generation_mutation(store, project_id, context, task_id, guarded, create_result)
+                _generation_child(store, project_id, context, task_id, guarded,
+                    lambda: store.begin_image_generation(project_id, result_node_id,
+                        {"taskId": task_id, "count": 1, "providerId": route.provider_id,
+                         "model": route.model, "prompt": prompt},
+                        base_revision=store.canvas(project_id)["revision"]))
+                started = True
+            except BaseException as exc:
+                exc.add_note(f"Generation operation {context.op_id} task {task_id}")
+                try:
+                    cleanup_start_error(exc)
+                except BaseException as cleanup_error:
+                    recovery_required = True
+                    exc.add_note(f"Generation operation {context.op_id} task {task_id} cleanup failed; guard retained: {cleanup_error}")
+                raise
+        try:
+            await run_blocking_to_completion(start)
+        except BaseException as exc:
+            try:
+                await _generation_archive_to_completion(_generation_event(project_id, lifecycle, 'start'))
+            except asyncio.CancelledError:
+                pass
+            if recovery_required:
+                with CANVAS_TASK_LOCK:
+                    CANVAS_TASKS[task_id] = {"id": task_id, "type": "agent-image", "status": "cleanup_pending",
+                        "project_id": project_id, "node_id": node_id, "result_node_id": result_node_id,
+                        "op_id": context.op_id, "created_at": time.time(), "updated_at": time.time(),
+                        "result": None, "error": str(exc)}
+                _track_lifetime_task(create_agent_ops_task(recover_start_error(exc)))
+                if not getattr(exc, '__notes__', None):
+                    exc.add_note(f"Generation operation {context.op_id} task {task_id} cleanup pending")
+            elif isinstance(exc, asyncio.CancelledError) and started:
+                with CANVAS_TASK_LOCK:
+                    CANVAS_TASKS[task_id] = {"id": task_id, "type": "agent-image", "status": "queued",
+                        "project_id": project_id, "node_id": node_id, "result_node_id": result_node_id,
+                        "created_at": time.time(), "updated_at": time.time(), "result": None, "error": ""}
+                _schedule_generation_worker(create_agent_ops_task, task_id, project_id, node_id, result_node_id,
+                                            payload, context, guarded, lifecycle)
+            else:
+                await _generation_finish(store, project_id, task_id, guarded, lifecycle)
+            raise
+        try:
+            await _generation_archive_to_completion(_generation_event(project_id, lifecycle, 'start'))
+        except (Exception, asyncio.CancelledError) as exc:
+            start_cancel = exc
+    else:
+        await _apply_mutations(project_id, [{"op": "upsert_node", "node": result_node}])
     with CANVAS_TASK_LOCK:
         CANVAS_TASKS[task_id] = {
             "id": task_id,
@@ -634,30 +1464,42 @@ async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: 
             "node_id": node_id,
             "node_type": node_type,
             "result_node_id": result_node_id,
+            "op_id": context.op_id if context else None,
             "created_at": time.time(),
             "updated_at": time.time(),
             "result": None,
             "error": "",
         }
-    # pendingTasks 登记（best-effort：失败不阻断生成，complete 时会自建节点）。
-    try:
-        store = _app_main.FIREFLY_PROJECT_STORE
-        rev = int(store.canvas(project_id).get("revision") or 0)
-        await asyncio.to_thread(
-            store.begin_image_generation, project_id, result_node_id,
-            {"taskId": task_id, "count": 1, "providerId": route.provider_id,
-             "model": route.model, "prompt": prompt},
-            base_revision=rev)
-        await asyncio.to_thread(store.flush, project_id)
-    except Exception as exc:  # noqa: BLE001
-        from app.core import logger as _logger
-        _logger.warning("#351 begin_image_generation pending failed task=%s: %s", task_id, exc)
+    if not context:
+        try:
+            rev = int(store.canvas(project_id).get("revision") or 0)
+            await run_blocking_to_completion(
+                store.begin_image_generation, project_id, result_node_id,
+                {"taskId": task_id, "count": 1, "providerId": route.provider_id,
+                 "model": route.model, "prompt": prompt}, base_revision=rev)
+            await run_blocking_to_completion(store.flush, project_id)
+        except (OSError, ProjectStoreError) as exc:
+            from app.core import logger as _logger
+            _logger.warning("begin_image_generation pending failed task=%s: %s", task_id, exc)
 
-    # Run the generation in the background
-    asyncio.create_task(_run_agent_generation(task_id, project_id, node_id, result_node_id, payload))
-
-    return {"task_id": task_id, "type": "image", "node_id": node_id,
-            "result_node_id": result_node_id}
+    if context:
+        _schedule_generation_worker(create_agent_ops_task, task_id, project_id, node_id, result_node_id,
+                                    payload, context, guarded, lifecycle)
+    else:
+        _track_lifetime_task(create_agent_ops_task(_run_agent_generation(task_id, project_id, node_id, result_node_id, payload)))
+    if batch is not None:
+        batch["tasks"].append({"node_id": node_id, "task_id": task_id})
+    if context:
+        await _broadcast_canvas_updated(project_id, source="agent")
+    if start_cancel is not None:
+        start_cancel.add_note(f"Generation operation {context.op_id} task {task_id}")
+        raise start_cancel
+    response = {"task_id": task_id, "type": "image", "node_id": node_id,
+                "result_node_id": result_node_id}
+    if context:
+        response["op_id"] = context.op_id
+        response["touched_node_ids"] = _operation_touched(store, project_id, guarded | {context.op_id})
+    return response
 
 
 async def wait_for_task_core(project_id: str, task_id: str, timeout: int = 120) -> dict:
@@ -694,32 +1536,50 @@ async def wait_for_task_core(project_id: str, task_id: str, timeout: int = 120) 
 
 
 async def _run_agent_generation(task_id: str, project_id: str, node_id: str,
-                                result_node_id: str, payload: dict):
+                                result_node_id: str, payload: dict, context=None, guarded=None, lifecycle=None,
+                                *, pre_cancel=False):
     """Run generation in the background and update task status.
 
     #351：成功后把图归档进项目媒体并挂到结果节点（complete_image_generation），
     写项目生成历史；失败走 fail_image_generation 清理 pendingTasks + 失败历史记录。
     """
+    from app.services.agent_ops_async import run_blocking_to_completion
     started_at = _app_main.now_ms()
+    store = _app_main.FIREFLY_PROJECT_STORE
+    completed = False
+    with CANVAS_TASK_LOCK:
+        task_state = CANVAS_TASKS.get(task_id, {'id': task_id, 'status': 'cleanup_pending'})
+    if context:
+        lifecycle['worker_entered'] = True
     try:
-        # Use the existing image generation function
+        if pre_cancel:
+            raise asyncio.CancelledError()
+        if context:
+            await run_blocking_to_completion(_generation_child, store, project_id, context, task_id, guarded,
+                                             lambda: None, effects=("external image generation attempted",))
         result = await build_online_image_result(OnlineImageRequest(**payload))
         from app.services import archive_project_generated_image as archive
         items = []
         for idx, raw_item in enumerate(result.get("image_items") or []):
             try:
-                items.append(await archive(
+                if context:
+                    await run_blocking_to_completion(_generation_child, store, project_id, context, task_id, guarded,
+                                                     lambda: None, effects=("generated media archive attempted",))
+                items.append(await _generation_archive_to_completion(archive(
                     project_id,
                     {"type": "url",
                      "value": str(raw_item.get("url") or ""),
                      "mime_type": str(raw_item.get("mime_type") or "image/png")},
-                    idx))
+                    idx)))
             except Exception as exc:  # noqa: BLE001
                 from app.core import logger as _logger
                 _logger.warning("#351 归档失败 task=%s idx=%s: %s", task_id, idx, exc)
+        if context and not items:
+            raise RuntimeError("Generation produced no archivable images")
         timestamp = _app_main.now_ms()
         history_record = {
             "id": f"generation-{uuid.uuid4().hex}",
+            "task_id": task_id,
             "type": "online-image",
             "status": "succeeded",
             "prompt": payload.get("prompt", ""),
@@ -742,35 +1602,63 @@ async def _run_agent_generation(task_id: str, project_id: str, node_id: str,
         # 丢弃结果」收场（cancelled + 明确 error），不把生成本身判死。
         if items and store.find_canvas_node(project_id, result_node_id) is None:
             with CANVAS_TASK_LOCK:
-                CANVAS_TASKS[task_id].update({
-                    "status": "cancelled",
+                task_state.update({
+                    "status": "cleanup_pending" if context else "cancelled",
+                    "_terminal_status": "cancelled",
                     "error": "目标结果卡已被移除，生成结果未写回",
                     "updated_at": time.time(),
                 })
             return
         if items:
-            canvas = await asyncio.to_thread(
-                store.complete_image_generation, project_id, result_node_id, items,
-                history_record, task_id=task_id, require_pending=True)
-            await asyncio.to_thread(store.flush, project_id)
+            def complete():
+                nonlocal completed
+                def apply():
+                    nonlocal completed
+                    canvas = store.complete_image_generation(project_id, result_node_id, items,
+                        history_record, task_id=task_id, require_pending=True)
+                    completed = True
+                    return canvas
+                if context:
+                    return _generation_child(store, project_id, context, task_id, guarded, apply)
+                canvas = apply()
+                store.flush(project_id)
+                return canvas
+            canvas = await run_blocking_to_completion(complete)
             await _app_main.manager.broadcast_canvas_updated(
                 project_id, int(canvas.get("updated_at") or timestamp), source="agent")
             result["result_node_id"] = result_node_id
             result["project_asset_ids"] = [it["asset_id"] for it in items]
             result["history_recorded"] = True
         with CANVAS_TASK_LOCK:
-            CANVAS_TASKS[task_id].update({
-                "status": "succeeded",
+            task_state.update({
+                "status": "cleanup_pending" if context else "succeeded",
+                "_terminal_status": "succeeded",
                 "result": result,
                 "error": "",
                 "updated_at": time.time(),
             })
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError) as exc:
+        cancelled = isinstance(exc, asyncio.CancelledError)
+        if cancelled and not context:
+            raise
+        if context and not completed:
+            with store._lock:
+                completed = any(h.get('task_id') == task_id and h.get('status') == 'succeeded'
+                                for h in store._histories.get(project_id, []))
+        if completed:
+            result.update(result_node_id=result_node_id,
+                          project_asset_ids=[it['asset_id'] for it in items], history_recorded=True)
+            with CANVAS_TASK_LOCK:
+                task_state.update(status="cleanup_pending", _terminal_status="succeeded",
+                                             result=result, error="", updated_at=time.time())
+            if cancelled:
+                raise
+            return
         failure_time = _app_main.now_ms()
         try:
-            store = _app_main.FIREFLY_PROJECT_STORE
             failure_record = {
                 "id": f"generation-{uuid.uuid4().hex}",
+                "task_id": task_id,
                 "type": "online-image",
                 "status": "failed",
                 "prompt": payload.get("prompt", ""),
@@ -783,21 +1671,91 @@ async def _run_agent_generation(task_id: str, project_id: str, node_id: str,
                 "source_node_id": node_id,
                 "error": str(exc),
             }
-            failed_canvas = await asyncio.to_thread(
-                store.fail_image_generation, project_id, result_node_id, task_id,
-                failure_record)
-            await asyncio.to_thread(store.flush, project_id)
-            await _app_main.manager.broadcast_canvas_updated(
-                project_id, int(failed_canvas.get("updated_at") or failure_time), source="agent")
+            def fail():
+                def apply():
+                    return store.fail_image_generation(project_id, result_node_id, task_id, failure_record,
+                                                       require_pending=bool(context))
+                if context:
+                    return _generation_child(store, project_id, context, task_id, guarded, apply)
+                canvas = apply()
+                store.flush(project_id)
+                return canvas
+            if not completed:
+                failed_canvas = await run_blocking_to_completion(fail)
+                await _app_main.manager.broadcast_canvas_updated(
+                    project_id, int(failed_canvas.get("updated_at") or failure_time), source="agent")
+        except asyncio.CancelledError as inner:
+            if not context:
+                raise
+            cancelled = True
+            exc = inner
         except Exception as inner:  # noqa: BLE001
             from app.core import logger as _logger
             _logger.warning("#351 fail_image_generation cleanup failed task=%s: %s", task_id, inner)
         with CANVAS_TASK_LOCK:
-            CANVAS_TASKS[task_id].update({
-                "status": "failed",
+            task_state.update({
+                "status": "cleanup_pending" if context else ("cancelled" if cancelled else "failed"),
+                "_terminal_status": "cancelled" if cancelled else "failed",
                 "error": str(exc),
                 "updated_at": time.time(),
             })
+        if cancelled:
+            raise exc
+    finally:
+        if context:
+            async def settle():
+                def cleanup():
+                    store.flush(project_id)
+                    with store._lock:
+                        node = store.find_canvas_node(project_id, result_node_id) or {}
+                        pending = any(item.get('taskId') == task_id for item in node.get('pendingTasks', [])
+                                      if isinstance(item, dict))
+                        if pending:
+                            failure = {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id,
+                                       'type': 'online-image', 'status': 'failed', 'prompt': payload.get('prompt', ''),
+                                       'created_at': started_at, 'completed_at': _app_main.now_ms(), 'outputs': [],
+                                       'result_node_id': result_node_id, 'source_node_id': node_id,
+                                       'error': 'Generation cleanup required'}
+                            _generation_child(store, project_id, context, task_id, guarded,
+                                lambda: store.fail_image_generation(project_id, result_node_id, task_id,
+                                                                    failure, require_pending=True))
+                await run_blocking_to_completion(cleanup)
+                return await _generation_finish(store, project_id, task_id, guarded, lifecycle)
+
+            async def recover():
+                from app.core import logger as _logger
+                while True:
+                    try:
+                        if await settle():
+                            with CANVAS_TASK_LOCK:
+                                task_state.update(status=task_state.pop('_terminal_status', 'failed'), updated_at=time.time())
+                            return
+                        raise _JournalUnsettled('generation cleanup has unsettled journal entries')
+                    except (OSError, sqlite3.Error, _JournalUnsettled) as error:
+                        _logger.warning('generation cleanup retry task=%s op=%s: %s', task_id, context.op_id, error)
+                        with CANVAS_TASK_LOCK:
+                            task_state.update(error=f'Generation operation {context.op_id} cleanup pending: {error}',
+                                                         updated_at=time.time())
+                        await asyncio.sleep(1)
+            async def finalize():
+                try:
+                    settled = await _generation_finish(store, project_id, task_id, guarded, lifecycle)
+                    if not settled:
+                        settled = await settle()
+                except Exception:
+                    # Keep undo guarded and hand off cleanup even if finalization raised after replacement.
+                    settled = False
+                if settled:
+                    with CANVAS_TASK_LOCK:
+                        task_state.update(status=task_state.pop('_terminal_status', 'failed'), updated_at=time.time())
+                else:
+                    from app.services.agent_ops_context import create_agent_ops_task
+                    with CANVAS_TASK_LOCK:
+                        task_state.setdefault('_terminal_status', task_state['status'])
+                        task_state.update(status='cleanup_pending', error=f'Generation operation {context.op_id} cleanup pending',
+                                    updated_at=time.time())
+                    _track_lifetime_task(create_agent_ops_task(recover()))
+            await _generation_archive_to_completion(finalize())
 
 
 @generate_router.get("/tasks/{task_id}")
@@ -818,6 +1776,7 @@ async def get_task_status(project_id: str, task_id: str, x_agent_project: str = 
             "type": task.get("type", ""),
             "error": task.get("error", ""),
             "result": result,
+            "op_id": task.get("op_id"),
             "updated_at": task.get("updated_at"),
         }
 
@@ -840,13 +1799,14 @@ async def wait_for_task(project_id: str, task_id: str, timeout: int = Query(defa
 async def upload_media(project_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Upload a media file to the project library."""
     body = await request.json()
-    return await upload_media_core(project_id, body.get("file_path"))
+    return await _rest_agent_call(request, project_id, "media.upload", body,
+                                  lambda: upload_media_core(project_id, body.get("file_path")))
 
 
 async def upload_media_core(project_id: str, file_path: str) -> dict:
     """Import a local media file into the project library (Request-free core).
 
-    #355 W3（review 01:08 收口）：只允许读**当前项目目录**（store.root/<project_id>）
+    #355：只允许读**当前项目目录**（store.root/<project_id>）
     与用户选定目录（存储设置三目录）下的图片；其他项目的目录也在禁区——
     跨项目偷读会被拒。越界与不存在返回同一句错误（不泄漏存在性）。
     """
@@ -890,19 +1850,94 @@ async def upload_media_core(project_id: str, file_path: str) -> dict:
                           "only image files can be uploaded via media.upload",
                           "只能导入图片；其它文件类型请让用户在界面里操作。")
 
+    context = _media_context(project_id)
+    if context and not 0 < source.stat().st_size <= 1024 * 1024 * 1024:
+        raise agent_error(400, "INVALID_ARGUMENT", "Media file is empty or exceeds 1GB")
+    source_info = {"locator": str(source), "name": source.name, "type": "local_output"}
+    guarded = set()
+    lifecycle = None
     try:
-        record = store.import_media_file(
-            project_id,
-            str(source),
-            source.name,
-            "",
-            source_info={"locator": str(source), "name": source.name, "type": "local_output"}
-        )
+        if context:
+            import hashlib
+            import copy
+            digest = hashlib.sha256()
+            path_initial = source.stat()
+            with source.open("rb") as handle:
+                initial = os.fstat(handle.fileno())
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                with store._lock:
+                    # Windows can report different ctime values for a handle and a path.
+                    signature = lambda stat: (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+                    compatible = lambda stat: (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+                    same_file = os.path.samefile(handle.fileno(), source)
+                    resolved = source.resolve()
+                    if resolved != source:
+                        raise agent_error(404, "ASSET_NOT_FOUND", not_available,
+                                          "文件不存在或路径不可读；确认路径在允许目录内后重试。")
+                    current = source.stat()
+                    final = os.fstat(handle.fileno())
+                    index = store._load_media_index(project_id)
+                    existing = index["items"].get(digest.hexdigest())
+                    stable_initial = (same_file and signature(initial) == signature(final)
+                                      and signature(path_initial) == signature(current)
+                                      and compatible(final) == compatible(current))
+                    if not stable_initial or not _indexed_media_exists(store, project_id, existing):
+                        existing = None
+                    if existing and not store._merge_media_source(copy.deepcopy(existing), source_info):
+                        return {"success": True, "asset_id": existing["asset_id"], "media": existing}
+                handle.close()
+            lifecycle = await _media_start(project_id, context, [])
+            from app.services.agent_ops_async import run_blocking_to_completion
+            def import_checked():
+                with store._lock:
+                    if source.resolve() != source:
+                        raise agent_error(404, "ASSET_NOT_FOUND", not_available,
+                                          "文件不存在或路径不可读；确认路径在允许目录内后重试。")
+                    # Recheck under the import lock: another importer can win while start is awaited.
+                    current_digest = hashlib.sha256()
+                    with source.open('rb') as current_handle:
+                        initial_stat = os.fstat(current_handle.fileno())
+                        for chunk in iter(lambda: current_handle.read(1024 * 1024), b''):
+                            current_digest.update(chunk)
+                        final_stat = os.fstat(current_handle.fileno())
+                        path_stat = source.stat()
+                        stable = (signature(initial_stat) == signature(final_stat)
+                                  and compatible(final_stat) == compatible(path_stat)
+                                  and os.path.samefile(current_handle.fileno(), source)
+                                  and source.resolve() == source)
+                    if source.resolve() != source:
+                        raise agent_error(404, "ASSET_NOT_FOUND", not_available,
+                                          "文件不存在或路径不可读；确认路径在允许目录内后重试。")
+                    existing = store._load_media_index(project_id)['items'].get(current_digest.hexdigest())
+                    if (stable_initial and stable and _indexed_media_exists(store, project_id, existing)
+                            and not store._merge_media_source(copy.deepcopy(existing), source_info)):
+                        return existing
+                    _media_root(store, project_id, context,
+                                "media import attempted; file or source metadata may have changed and cannot be undone", guarded)
+                return store.import_media_file(project_id, str(source), source.name, "", source_info=source_info)
+            record = await run_blocking_to_completion(import_checked)
+        else:
+            record = store.import_media_file(project_id, str(source), source.name, "", source_info=source_info)
     except Exception as e:
+        if guarded:
+            raise _media_partial(context, e) from e
+        if isinstance(e, HTTPException):
+            raise
         raise agent_error(500, "INTERNAL_ERROR", str(e),
                           "导入失败；检查文件后重试，反复失败请报告用户。") from e
+    finally:
+        try:
+            if lifecycle:
+                await _media_end(project_id, *lifecycle)
+        finally:
+            if guarded:
+                _generation_release(store, project_id, context.op_id, guarded)
 
-    return {"success": True, "asset_id": record["asset_id"], "media": record}
+    result = {"success": True, "asset_id": record["asset_id"], "media": record}
+    if context and guarded:
+        result.update(op_id=context.op_id, touched_node_ids=[])
+    return result
 
 
 @media_router.get("/list")
@@ -923,18 +1958,51 @@ async def delete_media(project_id: str, asset_id: str, request: Request, agent_n
     _validate_project(project_id)
     await _server_confirm_gate(request, project_id, "media.delete",
                                {"asset_id": asset_id}, f"删除媒体资源 {asset_id}")
-    return await delete_media_core(project_id, asset_id)
+    return await _rest_agent_call(request, project_id, "media.delete", {"asset_id": asset_id},
+                                  lambda: delete_media_core(project_id, asset_id), agent_node_id)
 
 
 async def delete_media_core(project_id: str, asset_id: str) -> dict:
     """#357：删媒体执行核（无门；REST/MCP 各自门过后调）。"""
+    _validate_project(project_id)
     store = _app_main.FIREFLY_PROJECT_STORE
+    context = _media_context(project_id)
+    guarded = set()
+    lifecycle = None
     try:
-        store.delete_media(project_id, asset_id)
+        if context:
+            import re
+            if not isinstance(asset_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", asset_id):
+                raise agent_error(400, "INVALID_ARGUMENT", "Invalid asset ID")
+            with store._lock:
+                index = store._load_media_index(project_id)
+                if asset_id not in index["items"]:
+                    return {"success": True, "asset_id": asset_id}
+                _media_root(store, project_id, context,
+                            f"media deletion attempted for {asset_id}; file and index may be irreversibly removed", guarded)
+            lifecycle = await _media_start(project_id, context, [])
+            from app.services.agent_ops_async import run_blocking_to_completion
+            await run_blocking_to_completion(store.delete_media, project_id, asset_id)
+        else:
+            store.delete_media(project_id, asset_id)
     except Exception as e:
+        if guarded:
+            raise _media_partial(context, e) from e
+        if isinstance(e, HTTPException):
+            raise
         raise agent_error(500, "INTERNAL_ERROR", str(e),
                           "删除失败；先调用 media.list 确认资产还在，再重试一次。") from e
-    return {"success": True, "asset_id": asset_id}
+    finally:
+        try:
+            if lifecycle:
+                await _media_end(project_id, *lifecycle)
+        finally:
+            if guarded:
+                _generation_release(store, project_id, context.op_id, guarded)
+    result = {"success": True, "asset_id": asset_id}
+    if context:
+        result.update(op_id=context.op_id, touched_node_ids=[])
+    return result
 
 
 # =============================================================================
@@ -1349,22 +2417,76 @@ async def _load_node_image(project_id: str, node_id: str, picked: dict):
 
 
 async def _replace_node_image(project_id: str, node: dict, node_id: str, picked: dict, edited, filename: str, extra_node_fields: dict | None = None) -> dict:
+    context = _media_context(project_id)
+    if not context or _MEDIA_LIFECYCLE.get() is not None:
+        return await _replace_node_image_impl(project_id, node, node_id, picked, edited, filename, extra_node_fields)
+    store = _app_main.FIREFLY_PROJECT_STORE
+    token = f'media-lifecycle:{context.op_id}'
+    set_agent_generation_running(store, project_id, context.op_id, token, True)
+    lifecycle = None
+    try:
+        lifecycle = await _media_start(project_id, context, [node_id])
+        return await _replace_node_image_impl(project_id, node, node_id, picked, edited, filename, extra_node_fields)
+    finally:
+        try:
+            if lifecycle:
+                await _media_end(project_id, *lifecycle)
+        finally:
+            set_agent_generation_running(store, project_id, context.op_id, token, False)
+
+
+async def _replace_node_image_impl(project_id: str, node: dict, node_id: str, picked: dict, edited, filename: str, extra_node_fields: dict | None = None) -> dict:
     """#266 edit_* 共享写回：新资源入资源库（原资源保留可恢复）+ 覆写节点图，返回结果摘要。
 
     extra_node_fields：可选的附加节点字段（如 #289 的 node.outpaintSize），与 images 覆写同一次 upsert 落盘。
     """
     from local_edit import encode_png
 
+    context = _media_context(project_id)
+    transforms = {"canvas.edit_crop", "canvas.edit_rotate", "canvas.edit_flip", "canvas.edit_outpaint"}
+    if context and context.tool not in transforms | {"canvas.edit_erase"}:
+        _require_media_journal_support()
+    transform = bool(context and context.tool in transforms)
     store = _app_main.FIREFLY_PROJECT_STORE
-    asset = await asyncio.to_thread(store.import_media, project_id, encode_png(edited), filename, "image/png")
-    new_asset_id = str(asset["asset_id"])
-    updated_at = _app_main.now_ms()
-
+    guarded = set()
+    from app.services.agent_ops_async import run_blocking_to_completion
+    try:
+        if context:
+            content = encode_png(edited)
+            def archive():
+                import hashlib
+                digest = hashlib.sha256(content).hexdigest()
+                with store._lock:
+                    existing = store._load_media_index(project_id)["items"].get(digest)
+                    exists = _indexed_media_exists(store, project_id, existing)
+                    if exists:
+                        return existing
+                    if transform:
+                        _media_root(store, project_id, context,
+                                    "edited media import attempted; archive may have changed and cannot be undone", guarded)
+                    if not transform:
+                        _generation_child(store, project_id, context, context.op_id, guarded, lambda: None,
+                                          effects=("edited media import attempted; archive may have changed and cannot be undone",))
+                    return store.import_media(project_id, content, filename, "image/png")
+            asset = await run_blocking_to_completion(archive)
+        else:
+            asset = await asyncio.to_thread(store.import_media, project_id, encode_png(edited), filename, "image/png")
+        new_asset_id = str(asset["asset_id"])
+        updated_at = _app_main.now_ms()
+    except BaseException as exc:
+        if context:
+            _generation_release(store, project_id, context.op_id, guarded)
+        if transform and guarded:
+            raise _media_partial(context, exc) from exc
+        raise
     def build(canvas):
         # Re-read even on the first attempt: encoding/import may have yielded to
         # a human edit or generation completion since the image was selected.
         current = _snapshot_node(canvas, node_id)
         images = [dict(it) for it in (current.get("images") or []) if isinstance(it, dict)]
+        if context and _node_image_for_edit(current, node_id) != picked:
+            raise agent_error(409, "CONFLICT", "Node image changed during edit",
+                              "检查画布和操作日志后再决定是否重试。")
         replaced = False
         for it in images:
             if str(it.get("asset_id") or "") == str(picked["asset_id"]):
@@ -1378,8 +2500,24 @@ async def _replace_node_image(project_id: str, node: dict, node_id: str, picked:
             patched["output_asset_id"] = new_asset_id
         return [{"op": "upsert_node", "node": patched}]
 
-    await _apply_mutations_from_snapshot(project_id, build)
-    return {
+    try:
+        if context:
+            def update():
+                canvas = store.canvas(project_id)
+                return store.apply_mutations(project_id, build(canvas), base_revision=canvas["revision"])
+            mutation = _generation_mutation if transform and not guarded else _generation_child
+            await run_blocking_to_completion(mutation, store, project_id, context, context.op_id, guarded, update)
+            await _broadcast_canvas_updated(project_id, source="agent")
+        else:
+            await _apply_mutations_from_snapshot(project_id, build)
+    except BaseException as exc:
+        if transform and guarded:
+            raise _media_partial(context, exc) from exc
+        raise
+    finally:
+        if context:
+            _generation_release(store, project_id, context.op_id, guarded)
+    result = {
         "success": True,
         "node_id": node_id,
         "asset_id": new_asset_id,
@@ -1387,15 +2525,15 @@ async def _replace_node_image(project_id: str, node: dict, node_id: str, picked:
         "width": edited.width,
         "height": edited.height,
     }
+    if context:
+        result["touched_node_ids"] = _operation_touched(store, project_id, guarded | {context.op_id})
+        if transform and guarded:
+            result["op_id"] = context.op_id
+    return result
 
 
 async def batch_edit_core(project_id: str, node_ids, prompt, agent_node_id: str = "") -> dict:
-    """#266 canvas.batch_edit（§59.3）：选中 N 节点 + 一句 prompt = N 次生成，结果放各自旁边。
-
-    非本地处理：逐节点把 batch prompt 写入节点（upsert），再走既有 trigger_generation_core
-    通路（独立 CANVAS_TASKS 任务 + 后台运行，Spike 已验证连续 N 次调用安全），消耗 N 个生成任务。
-    错误文案带下一步建议（票面规范）。
-    """
+    """Write the prompt and start one generation per node."""
     _validate_project(project_id)
     if not isinstance(node_ids, list) or not node_ids or not all(isinstance(n, str) and n for n in node_ids):
         raise agent_error(400, "INVALID_ARGUMENT", "node_ids 必须是非空节点 ID 数组",
@@ -1408,19 +2546,101 @@ async def batch_edit_core(project_id: str, node_ids, prompt, agent_node_id: str 
     if not prompt:
         raise agent_error(400, "INVALID_ARGUMENT", "prompt 必须是非空字符串",
                           "请填写批量 prompt 后重试。")
+    from app.services.agent_ops_context import current_agent_ops_context
+    from app.services.agent_ops_async import run_blocking_to_completion
+    context = current_agent_ops_context()
+    if context and (context.project_id != project_id or not context.agent_node_id or
+                    context.tool != "canvas.batch_edit" or context.agent_node_id != agent_node_id):
+        raise agent_error(400, "INVALID_ARGUMENT", "Matching batch caller identity is required")
     tasks = []
-    ownership_fields(agent_node_id)  # Validate before any writes/side effects.
-    for node_id in node_ids:
-        updated_at = _app_main.now_ms()
+    ownership_fields(agent_node_id)
+    store = _app_main.FIREFLY_PROJECT_STORE
+    # The scheduling token closes the gap between child tasks; each worker adds
+    # its own token before the scheduling token can be released.
+    batch = {"root": context.op_id, "root_exists": False, "ids": set(),
+             "tokens": {context.op_id}, "tasks": tasks, "unregistered": {}} if context else None
+    token = _BATCH_GENERATION.set(batch)
+    guarded = set()
+    try:
+        for node_id in node_ids:
+            updated_at = _app_main.now_ms()
 
-        def build(canvas):
-            node = _snapshot_node(canvas, node_id)
-            return [{"op": "upsert_node", "node": {**node, "prompt": prompt, "updated_at": updated_at}}]
+            def build(canvas):
+                node = _snapshot_node(canvas, node_id)
+                if context and node.get("prompt") == prompt:
+                    return []
+                return [{"op": "upsert_node", "node": {**node, "prompt": prompt, "updated_at": updated_at}}]
 
-        await _apply_mutations_from_snapshot(project_id, build)
-        triggered = await trigger_generation_core(project_id, node_id, agent_node_id=agent_node_id)
-        tasks.append({"node_id": node_id, "task_id": str(triggered.get("task_id") or "")})
-    return {"success": True, "count": len(tasks), "prompt": prompt, "tasks": tasks}
+            if context:
+                from contextlib import nullcontext
+                from app.services.agent_ops_context import agent_ops_scope
+                child = batch['root_exists']
+                scope = (agent_ops_scope(project_id=project_id, agent_node_id=context.agent_node_id,
+                                         turn_id=context.turn_id, tool=context.tool, args=context.args)
+                         if child else nullcontext(context))
+                with scope as source_context:
+                    lifecycle = await _media_start(project_id, source_context, [node_id])
+                    try:
+                        def update():
+                            def apply():
+                                canvas = store.canvas(project_id)
+                                mutations = build(canvas)
+                                if mutations:
+                                    return store.apply_mutations(project_id, mutations, base_revision=canvas["revision"])
+                            return _generation_mutation(store, project_id, source_context, context.op_id,
+                                                        guarded, apply,
+                                                        parent_id=context.op_id if child else None)
+                        await run_blocking_to_completion(update)
+                    finally:
+                        await _media_end(project_id, *lifecycle)
+            else:
+                await _apply_mutations_from_snapshot(project_id, build)
+            triggered = await trigger_generation_core(project_id, node_id, agent_node_id=agent_node_id)
+            if not context:
+                tasks.append({"node_id": node_id, "task_id": str(triggered.get("task_id") or "")})
+        result = {"success": True, "count": len(tasks), "prompt": prompt, "tasks": tasks}
+        if context and batch["root_exists"]:
+            result["op_id"] = context.op_id
+            result["touched_node_ids"] = _operation_touched(store, project_id, batch['ids'])
+        return result
+    except Exception as exc:
+        if context and batch["root_exists"]:
+            # The batch may already have started paid tasks; never suggest a blind retry.
+            from app.services.agent_errors import translate_detail
+            status = exc.status_code if isinstance(exc, HTTPException) else 500
+            detail = translate_detail(status, exc.detail if isinstance(exc, HTTPException) else str(exc))
+            detail["details"] = {**detail.get("details", {}), "op_id": context.op_id,
+                                 "tasks": tasks, "status": "partial-unknown"}
+            detail["retryable"] = False
+            raise HTTPException(status_code=status, detail=detail) from exc
+        raise
+    finally:
+        if context and not _generation_release(store, project_id, context.op_id, guarded):
+            from app.services.agent_ops_context import create_agent_ops_task
+            from app.core import logger as _logger
+
+            journal = _journal_for(store)
+
+            def retry_registration():
+                with store._lock:
+                    for op_id, (record, delta) in list(batch['unregistered'].items()):
+                        _batch_register_reserved(journal, project_id, record, delta)
+                        batch['unregistered'].pop(op_id)
+                        store._agent_generation_unregistered.discard((project_id, op_id))
+                    store.flush(project_id)
+
+            async def recover_batch_journal():
+                while True:
+                    try:
+                        await run_blocking_to_completion(retry_registration)
+                        if _generation_release(store, project_id, context.op_id, guarded):
+                            return
+                    except (OSError, sqlite3.Error) as exc:
+                        _logger.warning("batch journal retry op=%s: %s", context.op_id, exc)
+                    await asyncio.sleep(1)
+
+            _track_lifetime_task(create_agent_ops_task(recover_batch_journal()))
+        _BATCH_GENERATION.reset(token)
 
 
 def _node_image_for_edit(node: dict, node_id: str) -> dict:
@@ -1646,27 +2866,53 @@ async def erase_node_image_core(project_id: str, node_id, rect, prompt) -> dict:
         'resolution': None,
         'source_size': [source.width, source.height],
     }
+    store = _app_main.FIREFLY_PROJECT_STORE
+    context = _media_context(project_id)
+    guarded = set()
+    lifecycle = None
     try:
-        if inspect.iscoroutinefunction(adapter):
-            adapter_result = await adapter(request_data)
-        else:
-            adapter_result = await asyncio.to_thread(adapter, request_data)
-            if inspect.isawaitable(adapter_result):
-                adapter_result = await adapter_result
-    except HTTPException:
+        if context:
+            _media_root(store, project_id, context,
+                        "external erase provider call attempted; charges or other irreversible effects may occur", guarded)
+            lifecycle = await _media_start(project_id, context, [node_id])
+        try:
+            if inspect.iscoroutinefunction(adapter):
+                adapter_result = await adapter(request_data)
+            else:
+                from app.services.agent_ops_async import run_blocking_to_completion
+                adapter_result = await run_blocking_to_completion(adapter, request_data)
+                if inspect.isawaitable(adapter_result):
+                    adapter_result = await adapter_result
+        except (OSError, RuntimeError, ModelRoutingError) as exc:
+            raise agent_error(502, "UPSTREAM_MODEL_ERROR", f"局部编辑模型调用失败：{exc}",
+                              "请检查 bailian 凭据/网络后重试（原图未改动）。") from exc
+        model_image = await asyncio.to_thread(as_rgba, adapter_result)
+        result_image = await asyncio.to_thread(composite_rect, source, model_image, crop_box, 0)
+        filename = f"edit-erase-{int(time.time() * 1000)}.png"
+        result = await _replace_node_image(project_id, node, node_id, picked, result_image, filename)
+        result["rect"] = [x, y, w, h]
+        result["selection"] = list(crop_box)
+        result["next_step"] = ("选区已按 prompt 重绘并贴回节点图（原资源保留在资源库，可恢复）；"
+                               "调用 canvas.view 查看擦除结果，不满意可调整 prompt 或重新选区再调用 canvas.edit_erase。")
+        if context:
+            result["op_id"] = context.op_id
+        return result
+    except (Exception, asyncio.CancelledError) as exc:
+        if guarded:
+            if isinstance(exc, HTTPException) and exc.status_code == 409:
+                raise agent_error(409, "CONFLICT", "Node image changed during erase; the external provider call cannot be undone",
+                                  "画布未被本次擦除覆写；检查操作日志及媒体资源后再决定是否重试。",
+                                  retryable=False, details={"op_id": context.op_id, "status": "conflict",
+                                  "irreversible_effects": ["external erase provider call attempted; charges or other irreversible effects may occur"]}) from exc
+            raise _media_partial(context, exc) from exc
         raise
-    except Exception as exc:
-        raise agent_error(502, "UPSTREAM_MODEL_ERROR", f"局部编辑模型调用失败：{exc}",
-                          "请检查 bailian 凭据/网络后重试（原图未改动）。") from exc
-    model_image = await asyncio.to_thread(as_rgba, adapter_result)
-    result_image = await asyncio.to_thread(composite_rect, source, model_image, crop_box, 0)
-    filename = f"edit-erase-{int(time.time() * 1000)}.png"
-    result = await _replace_node_image(project_id, node, node_id, picked, result_image, filename)
-    result["rect"] = [x, y, w, h]
-    result["selection"] = list(crop_box)
-    result["next_step"] = ("选区已按 prompt 重绘并贴回节点图（原资源保留在资源库，可恢复）；"
-                           "调用 canvas.view 查看擦除结果，不满意可调整 prompt 或重新选区再调用 canvas.edit_erase。")
-    return result
+    finally:
+        try:
+            if lifecycle:
+                await _media_end(project_id, *lifecycle)
+        finally:
+            if guarded:
+                _generation_release(store, project_id, context.op_id, guarded)
 
 
 @router.post("/edit_erase")
@@ -1676,7 +2922,8 @@ async def canvas_edit_erase(project_id: str, request: Request, agent_node_id: st
     body = await request.json()
     await _server_confirm_gate(request, project_id, "canvas.edit_erase", body,
                                f"擦除节点 {body.get('node_id')} 选区图像并覆写节点图（原资源保留在资源库）")
-    return await erase_node_image_core(project_id, body.get("node_id"), body.get("rect"), body.get("prompt"))
+    return await _rest_agent_call(request, project_id, "canvas.edit_erase", body,
+                                  lambda: erase_node_image_core(project_id, body.get("node_id"), body.get("rect"), body.get("prompt")), agent_node_id)
 
 
 # ── #357：服务端确认门（ADR 0022 实化门从客户端/网关移到统一执行入口）──────────

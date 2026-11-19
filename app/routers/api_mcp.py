@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 import time
 import uuid
 from typing import Any, Callable, Optional
@@ -77,6 +78,7 @@ from app.routers.api_agent_tools import (
     wait_for_task_core,
 )
 from app.services.agent_node_state import ownership_fields
+from app.services.agent_ops_context import agent_ops_scope
 from app.services.canvas_view import VIEW_SLOW_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
@@ -541,7 +543,24 @@ async def _impl_edit_erase(project_id, agent_node_id, args):
         raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
 
 
+async def _impl_ops_list(project_id, agent_node_id, args):
+    from app.routers.api_agent_ops import list_ops_core
+    return await list_ops_core(project_id, args)
+
+
+async def _impl_ops_undo(project_id, agent_node_id, args):
+    from app.routers.api_agent_ops import undo_ops_core
+    if "turn_id" in args and args["turn_id"] is None:
+        raise HTTPException(status_code=400, detail={
+            "code": "INVALID_ARGUMENT", "message": "未提供轮次时不支持按轮撤销。",
+            "hint": "调用 ops.list 并按 op_id 逐条撤销。", "retryable": False,
+        })
+    return await undo_ops_core(project_id, args)
+
+
 TOOL_IMPLS = {
+    "ops.list": _impl_ops_list,
+    "ops.undo": _impl_ops_undo,
     "canvas.list_nodes": _impl_list_nodes,
     "canvas.get_node": _impl_get_node,
     "canvas.create_node": _impl_create_node,
@@ -618,17 +637,14 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
     if not isinstance(params, dict):
         params = {}
     name = str(params.get("name") or "")
-    # MCP 标准字段是 params.arguments；旧实现只读 params.args → 带参工具对
-    # 标准客户端（claude/codex/SDK）一直静默收空 args（e2e 实抓：get_node
-    # 永远「Node not found: 」空名）。兼容读两者，标准优先。
+    # Prefer the standard arguments field while retaining legacy args compatibility.
     args = params.get("arguments")
     if not isinstance(args, dict):
         args = params.get("args")
     if not isinstance(args, dict):
         args = {}
     if name not in TOOL_IMPLS:
-        # MCP TS SDK convention: unknown tool → tool result with isError,
-        # so the calling agent can recover (not a JSON-RPC error).
+        # MCP clients can recover from a tool result with isError.
         mcp_event_recorder.record({"session": sid, "tool": name, "ok": False, "error": f"Unknown tool: {name}"})
         return _rpc_response(
             200, msg_id, sid,
@@ -636,23 +652,59 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
         )
     started = time.time()
     slow_timeout = SLOW_TOOL_TIMEOUTS.get(name)
+    turn_lease = None
     try:
         project_id = resolve_project(str(request.query_params.get("project") or ""))
-        # #350（ADR 0024 §3）：&node= 精确绑定归属节点——确认卡片/工具调用都落在
-        # 发起节点上（票面：卡片曾落到看不见的外部节点）。只读工具绝不 upsert 画布
-        # 节点；仅写类工具无 node= 时回退共享外部节点（无 node= 才用共享节点）。
+        caller = request.query_params.get("caller")
+        if caller not in (None, "external", "hosted"):
+            raise ValueError("caller must be hosted or external when supplied")
+        # MCP session and JSON-RPC identifiers are not logical user turns.
+        turn_id = request.query_params.get("turn_id")
+        if turn_id is not None and not turn_id.strip():
+            raise ValueError("turn_id must be a nonempty string when supplied")
         node_param = str(request.query_params.get("node") or "")
+        if caller == "hosted":
+            if not node_param.strip():
+                raise ValueError("node is required for hosted caller")
+            if turn_id is not None:
+                raise ValueError("turn_id cannot be supplied for hosted caller")
+            if name in WRITE_TOOLS:
+                from app.services.agent_host import agent_host_manager
+                # #393: caller is a spoofable attribution label, not authentication.
+                turn_id = agent_host_manager.get_current_turn_id(project_id, node_param)
+                if not turn_id:
+                    raise ValueError("hosted write requires an active turn")
+        # #350: explicit node binds attribution; reads must not materialize external nodes.
         if node_param:
             node_id = node_param
         elif name in WRITE_TOOLS:
             node_id = await ensure_external_agent_node(project_id, sid)
         else:
             node_id = ""
-        if slow_timeout is not None:
-            # #266 慢操作独立超时契约（90s，区别于 generate.wait 的 600s）
-            result = await asyncio.wait_for(TOOL_IMPLS[name](project_id, node_id, args), slow_timeout)
-        else:
-            result = await TOOL_IMPLS[name](project_id, node_id, args)
+        if caller != 'hosted' and name in WRITE_TOOLS and turn_id is not None:
+            from app.services.agent_ops_store import begin_turn, mark_turn_lookup_failed
+            from firefly_opsdb import OpsDb
+            db = OpsDb(_app_main.FIREFLY_PROJECT_STORE.root)
+            try:
+                if begin_turn(db, project_id, turn_id, sid, external=True, reserve=True):
+                    logger.warning('External turn ID %s was pruned; recording an individual operation', turn_id)
+                    turn_id = None
+                else:
+                    turn_lease = (db, project_id, turn_id)
+            except (OSError, sqlite3.Error, KeyError):
+                logger.warning('External turn %s lookup failed; undo disabled for this turn', turn_id, exc_info=True)
+                mark_turn_lookup_failed(db, project_id, turn_id)
+        try:
+            with agent_ops_scope(project_id=project_id, agent_node_id=node_id or None,
+                                 turn_id=turn_id, tool=name, args=args):
+                if slow_timeout is not None:
+                    result = await asyncio.wait_for(TOOL_IMPLS[name](project_id, node_id, args), slow_timeout)
+                else:
+                    result = await TOOL_IMPLS[name](project_id, node_id, args)
+        finally:
+            if turn_lease:
+                from app.services.agent_ops_store import release_turn
+                release_turn(*turn_lease)
     except asyncio.TimeoutError:
         mcp_event_recorder.record({"session": sid, "tool": name, "ok": False, "error": f"timeout after {slow_timeout}s"})
         return _rpc_response(
@@ -663,7 +715,7 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
                 "先调用 canvas.list_nodes 查看画布状态，再调低 max_px 或改用 selection 作用域缩小批量后重试。",
                 retryable=True).detail),
         )
-    except HTTPException as exc:  # #391：核心函数抛出的带形状错误（agent_error）在此落地
+    except HTTPException as exc:
         mcp_event_recorder.record({"session": sid, "tool": name, "ok": False, "error": str(exc.detail)})
         return _rpc_response(200, msg_id, sid,
                              result=_mcp_error_result(name, agent_error_response_payload(exc)))

@@ -34,6 +34,17 @@ from app.services.agent_message_refs import resolve_node_refs
 from firefly_projects import ProjectStore
 
 
+@pytest.fixture(autouse=True)
+def isolated_event_loop_policy():
+    # asyncio.run clears the current loop; preserve the caller's policy and loop.
+    previous = asyncio.get_event_loop_policy()
+    asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+    try:
+        yield
+    finally:
+        asyncio.set_event_loop_policy(previous)
+
+
 class StdinWorker:
     """A real child process echoes the exact JSONL it received, without a model."""
 
@@ -140,6 +151,12 @@ def backend(monkeypatch, request):
                 assert ws.receive_json()["type"] == "session"
                 ws.send_json({"type": input_type, **body})
                 reply = ws.receive_json()
+                if reply["type"] == "queued_input":
+                    assert reply["input_type"] == "follow_up"
+                    assert reply["text"] == body["message"]
+                    if "request_id" in body:
+                        assert reply["request_id"] == body["request_id"]
+                    reply = ws.receive_json()
                 return (200 if reply["type"] == "input_accepted" else None), reply
 
         value = SimpleNamespace(store=store, pid=pid, manager=manager, session=session, spawns=spawns,
@@ -172,18 +189,19 @@ def test_actual_worker_receives_snapshot_and_correlated_acceptance(backend, tran
                 "request_id": "req-" + input_type, "node_refs": resolved["node_refs"]}
     assert reply == ({"type": "input_accepted", **expected} if transport == "ws" else expected)
     command = b.workers[-1].command()
-    assert command == {"type": input_type, "message": "Original user input\n\n" + resolved["context"],
+    assert command == {"type": "prompt" if input_type == "follow_up" else input_type,
+                       "message": "Original user input\n\n" + resolved["context"],
                        **({"images": ["legacy-image"]} if input_type == "prompt" else {})}
     context = json.loads(command["message"].split("\n", 3)[3])
     assert [node["node_id"] for node in context["summaries"]] == ["group", "p", "nested"]
     assert "FORGED" not in command["message"] and "Not recursively expanded" not in command["message"]
     event = b.events()[-1]
-    assert event["type"] == ("user_prompt" if input_type == "prompt" else "queued_input")
+    assert event["type"] == ("queued_input" if input_type == "steer" else "user_prompt")
     assert event["text"] == "Original user input"
     assert event["node_refs"] == reply["node_refs"]
     assert event["node_ref_context"] == resolved["context"]
     assert event["request_id"] == "req-" + input_type
-    if input_type != "prompt":
+    if input_type == "steer":
         assert event["input_type"] == input_type
         assert not any(e["type"] == "user_prompt" for e in b.events())
 
@@ -201,10 +219,82 @@ def test_missing_and_empty_refs_never_inherit(backend, transport, input_type):
             assert "Canvas node references" in command["message"]
         else:
             assert reply["node_refs"] == []
-            assert command == {"type": input_type, "message": "next"}
+            assert command == {"type": "prompt" if input_type == "follow_up" else input_type, "message": "next"}
             assert "node_refs" not in b.events()[-1]
             assert "node_ref_context" not in b.events()[-1]
             assert "request_id" not in b.events()[-1]
+        if input_type != "steer":
+            asyncio.run(b.manager._dispatch_event(b.session, {"type": "agent_end"}))
+
+
+@pytest.mark.parametrize("transport", ["rest", "ws"])
+def test_delayed_prompt_preserves_per_message_refs_images_and_retries_failed_delivery(backend, transport):
+    import base64
+    b = backend
+    live = []
+    b.manager.on_event(b.session, lambda session, event: live.append(dict(event)))
+    content = b"queued reference image bytes"
+    asset = b.store.import_media(b.pid, content, "reference.png", "image/png")
+    b.upsert({"id": "agent", "type": NODE_TYPE_AGENT, "refFrameId": "frame"},
+             {"id": "frame", "type": NODE_TYPE_GROUP, "items": ["material"]},
+             {"id": "material", "type": NODE_TYPE_IMAGE, "title": "Material",
+              "images": [{"asset_id": asset["asset_id"], "kind": "image"}]})
+    status, reply = b.send(transport, "prompt", {"message": "first", "refs": [{"node_id": "image"}], "request_id": "first"})
+    assert status == 200, reply
+    worker = b.workers[-1]
+    worker.command()
+    snapshot = resolve_node_refs(b.store.canvas(b.pid), [{"node_id": "p"}])
+    status, reply = b.send(transport, "prompt", {"message": "queued", "refs": [{"node_id": "p"}],
+                                                  "images": ["old-image"], "request_id": "queued-id"})
+    assert status == 200 and reply["node_refs"] == snapshot["node_refs"]
+    queued = b.events()[-1]
+    assert queued["type"] == "queued_input" and queued["request_id"] == "queued-id"
+    assert queued["node_refs"] == snapshot["node_refs"] and queued["node_ref_context"] == snapshot["context"]
+    status, reply = b.send(transport, "follow_up", {"message": "without refs", "request_id": "plain-id"})
+    assert status == 200 and reply["node_refs"] == []
+    b.upsert({"id": "p", "type": NODE_TYPE_PROMPT, "title": "Changed after queue"})
+    with pytest.raises(queue.Empty):
+        worker.received.get(timeout=0.2)
+    status, reply = b.send(transport, "steer", {"message": "steer", "request_id": "steer-id"})
+    assert status == 200, reply
+    assert worker.command() == {"type": "steer", "message": "steer"}
+    original_stdin = worker.process.stdin
+
+    attempted = []
+    class BrokenStdin:
+        def write(self, line):
+            attempted.append(json.loads(line))
+            raise BrokenPipeError("delivery refused")
+
+    worker.process.stdin = BrokenStdin()
+    try:
+        asyncio.run(b.manager._dispatch_event(b.session, {"type": "agent_end", "willRetry": True}))
+        assert b.session._follow_ups and not any(e.get("request_id") == "queued-id" and e["type"] == "user_prompt" for e in b.events())
+        asyncio.run(b.manager._dispatch_event(b.session, {"type": "auto_retry_end", "success": True}))
+        asyncio.run(b.manager._dispatch_event(b.session, {"type": "agent_end"}))
+    finally:
+        worker.process.stdin = original_stdin
+    assert not b.session._follow_ups
+    terminals = {e['request_id']: e['delivery'] for e in b.events() if e['type'] == 'input_delivery_terminal'}
+    assert terminals == {'queued-id': 'uncertain', 'plain-id': 'unsent'}
+    assert not any(e.get("request_id") == "queued-id" and e["type"] == "user_prompt" for e in b.events())
+    asyncio.run(b.manager.send_follow_up(b.session, "ignored duplicate", request_id="queued-id"))
+    assert len(attempted) == 1
+    command = attempted[0]
+    assert command == {"type": "prompt", "message": "queued\n\n" + snapshot["context"] +
+                       "\n\n【参考框素材清单】Material（图片已随本消息注入；视频/超限项见跳过原因）",
+                       "images": ["old-image", {"type": "image", "data": base64.b64encode(content).decode("ascii"), "mimeType": "image/png"}]}
+    assert queued["text"] == "queued" and queued["node_refs"] == snapshot["node_refs"]
+    assert queued["node_ref_context"] == snapshot["context"]
+    assert not any(e.get("type") == "user_prompt" and e.get("request_id") == "queued-id" for e in live)
+    status, reply = b.send(transport, "prompt", {"message": "without refs", "request_id": "fresh-id"})
+    assert status == 200, reply
+    plain = worker.command()
+    assert plain["type"] == "prompt" and plain["message"].startswith("without refs\n\n【参考框素材清单】")
+    plain_event = b.events()[-1]
+    assert plain_event["type"] == "user_prompt" and plain_event["request_id"] == "fresh-id"
+    assert "node_refs" not in plain_event and "node_ref_context" not in plain_event
+    assert snapshot["context"] not in plain["message"] and not b.session._follow_ups
 
 
 INVALID_INPUTS = [
@@ -386,13 +476,23 @@ def _save_and_check_snapshot_chronology(b, monkeypatch, transport):
     b.send(transport, "steer", {"message": "STEER", "refs": [{"node_id": "p"}], "request_id": "s1"})
     worker.command()
     b.manager._persist_event(b.session, {"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "delta": "AFTER_STEER"}})
-    b.manager._persist_event(b.session, {"type": "agent_end"})
-    b.send(transport, "follow_up", {"message": "FOLLOW", "refs": [{"node_id": "image"}], "request_id": "f1"})
-    worker.command()
-    b.send(transport, "prompt", {"message": "ROUND TWO", "refs": [], "request_id": "p2"})
-    worker.command()
+    status, reply = b.send(transport, "follow_up", {"message": "FOLLOW", "refs": [{"node_id": "image"}], "request_id": "f1"})
+    assert status == 200, reply
+    assert worker.received.empty()
+    asyncio.run(b.manager._dispatch_event(b.session, {"type": "agent_end"}))
+    follow = worker.command()
+    assert follow["type"] == "prompt" and follow["message"].startswith("FOLLOW\n\n")
+    status, reply = b.send(transport, "prompt", {"message": "ROUND TWO", "refs": [], "request_id": "p2"})
+    assert status == 200, reply
+    assert worker.received.empty()
+    asyncio.run(b.manager._dispatch_event(b.session, {"type": "agent_end"}))
+    assert worker.command() == {"type": "prompt", "message": "ROUND TWO"}
     accepted = [e for e in b.events() if e["type"] in ("user_prompt", "queued_input")]
-    assert [e["type"] for e in accepted] == ["user_prompt", "queued_input", "queued_input", "user_prompt"]
+    assert [e["type"] for e in accepted] == ["user_prompt", "queued_input", "queued_input", "user_prompt", "queued_input", "user_prompt"]
+    assert accepted[2]["request_id"] == accepted[3]["request_id"] == "f1"
+    assert accepted[2]["node_ref_context"] == accepted[3]["node_ref_context"]
+    assert accepted[4]["request_id"] == accepted[5]["request_id"] == "p2"
+    asyncio.run(b.manager._dispatch_event(b.session, {"type": "agent_end"}))
     assert "Stored title" in accepted[0]["node_ref_context"]
     assert "Changed between inputs" in accepted[1]["node_ref_context"]
     records = b.manager.load_events(b.pid, "agent")["events"]
@@ -406,13 +506,15 @@ def _save_and_check_snapshot_chronology(b, monkeypatch, transport):
     monkeypatch.setattr(routes, "resolve_node_refs", no_resolution)
     monkeypatch.setattr(b.store, "canvas", no_resolution)
     block, turns = b.manager._build_replay_context(b.session)
-    assert turns == 2
+    assert turns == 3
     assert block == ("<canvas-history-replay host-session-lost rebuilt-by-firefly>\n"
                      "user: ROUND ONE\n\n" + accepted[0]["node_ref_context"] + "\n"
                      "assistant: BEFORE_STEER\n"
                      "queued_input (steer): STEER\n\n" + accepted[1]["node_ref_context"] + "\n"
                      "assistant: AFTER_STEER\n"
                      "queued_input (follow_up): FOLLOW\n\n" + accepted[2]["node_ref_context"] + "\n"
+                     "user: FOLLOW\n\n" + accepted[3]["node_ref_context"] + "\n"
+                     "queued_input (follow_up): ROUND TWO\nassistant: \n"
                      "user: ROUND TWO\nassistant: \n</canvas-history-replay>")
     other_host = "codex" if selected_host == "pi" else "pi"
     other_session = AgentSession(b.pid, "agent", agent_cli=other_host)
@@ -428,24 +530,32 @@ def test_replay_has_exact_saved_snapshots_and_only_user_prompt_round_boundaries(
 
 @pytest.mark.parametrize("transport", ["rest", "ws"])
 @pytest.mark.parametrize("backend", ["codex"], indirect=True)
-def test_codex_lost_resume_replays_exact_saved_snapshots_in_order(backend, monkeypatch, transport):
+def test_codex_lost_resume_preserves_saved_snapshots_without_automatic_resend(backend, monkeypatch, transport):
     b = backend
     # The fixture creates both node and runtime as Codex from the start. Only
     # its per-turn process boundary is faked; real send/persistence stays in use.
     assert b.session.agent_cli == "codex"
     assert next(node for node in b.store.canvas(b.pid)["nodes"] if node["id"] == "agent")["agentCli"] == "codex"
 
+    async def codex_spawn(session, *args, **kwargs):
+        session.status = "running"
+        return True
+
     async def codex_input(session, message, **kwargs):
         assert session is b.session and session.agent_cli == "codex"
         assert kwargs == {"ref_paths": []}
+        if session.process is None:
+            b.start()
+        session._turn_open = True
         await b.manager.send_command(session, {"type": "prompt", "message": message})
 
     with monkeypatch.context() as turn_patch:
+        turn_patch.setattr(b.manager, "spawn_session", codex_spawn)
         turn_patch.setattr(b.manager, "_codex_turn", codex_input)
         block, accepted = _save_and_check_snapshot_chronology(b, monkeypatch, transport)
 
-    # Public send_prompt -> real fake Codex CLI -> resumed-model input boundary.
-    # Its echo must contain the same ordered block, without re-reading canvas.
+    # Exercise the real process boundary with a fake CLI. The failed resume
+    # must not spawn a fresh execution or resend the recorded prompt.
     which = agent_host.shutil.which
     stub = str(ROOT / "tests" / "stubs" / "fake_codex_resume_fail.cmd")
     monkeypatch.setattr(agent_host.shutil, "which", lambda name, *a, **kw: stub if name == "codex" else which(name, *a, **kw))
@@ -453,6 +563,7 @@ def test_codex_lost_resume_replays_exact_saved_snapshots_in_order(backend, monke
     monkeypatch.setenv("FIREFLY_AGENT_API_BASE", "http://127.0.0.1:3299")
     assert b.session.agent_cli == "codex"
     b.session.ext_session_id = "11111111-1111-1111-1111-111111111111"
+    b.session.process = None
     emitted = []
     b.manager.on_event(b.session, lambda session, event: emitted.append(event))
 
@@ -464,16 +575,13 @@ def test_codex_lost_resume_replays_exact_saved_snapshots_in_order(backend, monke
             await asyncio.sleep(0.02)
 
     asyncio.run(resumed_input())
-    assert any(event.get("type") == "error" and "重放" in event.get("message", "") for event in emitted)
+    assert any(event.get("type") == "error" and event.get("delivery") == "uncertain" for event in emitted)
     echoed = "".join((event.get("assistantMessageEvent") or {}).get("delta", "") for event in emitted)
-    assert "canvas-history-replay" in echoed
-    # The newly accepted verification prompt opens one additional round before
-    # resume fails; the two saved rounds must remain byte-for-byte unchanged.
-    expected_replay = block.removesuffix("</canvas-history-replay>") + (
-        "user: ECHO_MODE verify saved chronology\nassistant: \n</canvas-history-replay>")
-    assert expected_replay in echoed
-    assert echoed.index("BEFORE_STEER") < echoed.index("queued_input (steer)") < echoed.index("AFTER_STEER") < echoed.index("queued_input (follow_up)")
-    assert accepted[0]["node_ref_context"] in echoed and accepted[1]["node_ref_context"] in echoed
+    assert "ECHO_MODE verify saved chronology" not in echoed
+    assert "canvas-history-replay" not in echoed
+    saved, _ = b.manager._build_replay_context(b.session)
+    assert saved.startswith(block.removesuffix("</canvas-history-replay>"))
+    assert accepted[0]["node_ref_context"] in saved and accepted[1]["node_ref_context"] in saved
 
 
 @pytest.mark.parametrize("transport", ["rest", "ws"])
@@ -524,7 +632,7 @@ def test_legacy_rest_json_string_body_still_supported(backend, input_type):
     worker = b.start()
     status, reply = b.send("rest", input_type, "legacy string")
     assert status == 200, reply
-    assert worker.command() == {"type": input_type, "message": "legacy string"}
+    assert worker.command() == {"type": "prompt" if input_type == "follow_up" else input_type, "message": "legacy string"}
 
 
 @pytest.mark.parametrize("images", [None, "not-an-array", [12]])
@@ -567,7 +675,7 @@ def test_request_id_without_refs_is_saved_without_context(backend, transport, in
     worker = b.start()
     status, reply = b.send(transport, input_type, {"message": "plain", "request_id": "plain-id"})
     assert status == 200 and reply["request_id"] == "plain-id" and reply["node_refs"] == []
-    assert worker.command() == {"type": input_type, "message": "plain"}
+    assert worker.command() == {"type": "prompt" if input_type == "follow_up" else input_type, "message": "plain"}
     event = b.events()[-1]
     assert event["request_id"] == "plain-id" and "node_refs" not in event and "node_ref_context" not in event
 
@@ -637,7 +745,7 @@ def test_connected_ws_reloads_refs_and_recovers_from_actual_send_failure(backend
             assert ws.receive_json()["type"] == "input_accepted"
     finally:
         worker.process.stdin = original_stdin
-    assert worker.command() == {"type": input_type, "message": "repaired"}
+    assert worker.command() == {"type": "prompt" if input_type == "follow_up" else input_type, "message": "repaired"}
     assert len(b.events()) == 1 and b.events()[0]["request_id"] == "repaired"
 
 

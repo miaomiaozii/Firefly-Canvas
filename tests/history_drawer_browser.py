@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import http.server
 import json
+import os
+import socket
 import sys
 import tempfile
 import threading
@@ -29,6 +31,17 @@ from tests.native_browser import NativeBrowser
 
 CLIENT_SCRIPT = ROOT / "tests" / "history_drawer_browser_client.js"
 VIEWPORTS = [(1424, 805), (1008, 673)]
+PORT = 3193
+
+
+class ExclusiveHistoryHTTPServer(http.server.ThreadingHTTPServer):
+    # SO_REUSEADDR on Windows can share a live listener; never route tests to one.
+    allow_reuse_address = not hasattr(socket, "SO_EXCLUSIVEADDRUSE")
+
+    def server_bind(self):
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
 
 
 def find_browser() -> Path:
@@ -451,7 +464,10 @@ class HistoryBrowserServer:
                 except ProjectStoreError as exc:
                     self.api_error(str(exc), 400)
 
-        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        try:
+            self.httpd = ExclusiveHistoryHTTPServer(("127.0.0.1", PORT), Handler)
+        except OSError as exc:
+            raise RuntimeError(f"Cannot bind isolated history browser server to 127.0.0.1:{PORT}") from exc
         self.thread = threading.Thread(target=self.httpd.serve_forever, name="issue-12-history-browser", daemon=True)
 
     @property
@@ -512,18 +528,42 @@ def main():
         except Exception:
             pass
     browser = find_browser()
-    with tempfile.TemporaryDirectory(prefix="firefly-issue12-project-library-") as root:
-        results = []
-        for index, viewport in enumerate(VIEWPORTS):
-            store = ProjectStore(Path(root) / f"projects-{index}", snapshot_delay=0)
-            fixture = seed_store(store)
-            server = HistoryBrowserServer(store)
-            server.start()
+    with tempfile.TemporaryDirectory(prefix="firefly-issue12-history-") as root:
+        runtime_root = (Path(root) / "runtime").resolve()
+        projects_root = (Path(root) / "projects").resolve()
+        runtime_root.mkdir()
+        projects_root.mkdir()
+        roots = {
+            "FIREFLY_RUNTIME_ROOT": str(runtime_root),
+            "FIREFLY_PROJECTS_ROOT": str(projects_root),
+        }
+        previous_roots = {name: os.environ.get(name) for name in roots}
+        os.environ.update(roots)
+        try:
+            print(json.dumps({"port": PORT, **roots}, ensure_ascii=False), file=sys.stderr, flush=True)
+            store = ProjectStore(projects_root, snapshot_delay=0)
             try:
-                results.append(launch(browser, server, viewport, fixture))
+                server = HistoryBrowserServer(store)
+                try:
+                    server.start()
+                except BaseException:
+                    server.httpd.server_close()
+                    raise
+                try:
+                    results = []
+                    for viewport in VIEWPORTS:
+                        fixture = seed_store(store)
+                        results.append(launch(browser, server, viewport, fixture))
+                finally:
+                    server.close()
             finally:
-                server.close()
                 store.close()
+        finally:
+            for name, value in previous_roots.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
     summary = {
         "issue": 12,
         "browser": str(browser),

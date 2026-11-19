@@ -276,8 +276,11 @@ class ConnectionManager:
                 logger.warning(f"Broadcast image error: {e}")
                 self.active_connections.remove(connection)
 
-    async def broadcast_canvas_updated(self, canvas_id: str, updated_at: int, client_id: str = "", source: str = ""):
-        data = json.dumps({
+    async def broadcast_canvas_updated(self, canvas_id: str, updated_at: int, client_id: str = "", source: str = "", *,
+                                       op_id: str = None, touched_node_ids: list[str] = None, phase: str = None):
+        if phase is not None and phase not in ("start", "end", "undo"):
+            raise ValueError("phase must be start, end, or undo")
+        payload = {
             "type": "canvas_updated",
             "canvas_id": canvas_id,
             "updated_at": updated_at,
@@ -286,7 +289,14 @@ class ConnectionManager:
             # 默认路径（用户级联/他人标签页）行为零变化；前端据此只对
             # agent 写入做“合并前入撤回栈”。
             "source": source or "",
-        })
+        }
+        if op_id is not None:
+            payload["op_id"] = op_id
+        if touched_node_ids is not None:
+            payload["touched_node_ids"] = touched_node_ids
+        if phase is not None:
+            payload["phase"] = phase
+        data = json.dumps(payload)
         for connection in self.active_connections[:]:
             try:
                 await connection.send_text(data)
@@ -332,6 +342,7 @@ async def startup_event():
     global GLOBAL_LOOP, PROJECT_MEDIA_IMPORT_ACCEPTING, PROJECT_MEDIA_IMPORT_SHUTTING_DOWN, PROJECT_CONVERSATION_RUNNER
     GLOBAL_LOOP = asyncio.get_running_loop()
     _core_runtime.GLOBAL_LOOP = GLOBAL_LOOP
+    _r_api_agent_tools.start_agent_ops_lifetime()
     if PROJECT_CONVERSATION_RUNNER is not None:
         await PROJECT_CONVERSATION_RUNNER.stop()
     PROJECT_CONVERSATION_RUNNER = ProjectConversationTaskRunner()
@@ -407,6 +418,8 @@ async def shutdown_event():
         if PROJECT_MEDIA_IMPORT_EXECUTOR is None:
             PROJECT_MEDIA_IMPORT_SHUTTING_DOWN = False
             PROJECT_MEDIA_IMPORT_ACCEPTING = True
+    # Agent cleanup can still use the store; drain it before any store closes.
+    await _r_api_agent_tools.shutdown_agent_ops_lifetime()
     # Persist an explicit terminal while the store is still open, then stop
     # the actual shared runtime before allowing ProjectStore to close.
     await _r_api_project_library.shutdown_project_generation_tasks()
@@ -1368,6 +1381,8 @@ app.include_router(_r_api_agent_tools.generate_router)
 app.include_router(_r_api_agent_tools.media_router)
 app.include_router(_r_api_agent_tools.viewport_router)
 app.include_router(_r_api_agent_tools.confirm_router)
+from app.routers import api_agent_ops as _r_api_agent_ops
+app.include_router(_r_api_agent_ops.router)
 from app.routers import api_mcp as _r_api_mcp
 app.include_router(_r_api_mcp.router)
 from app.routers import api_agent_nodes as _r_api_agent_nodes

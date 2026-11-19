@@ -108,6 +108,49 @@ OPS_MIGRATIONS: List[Tuple[str, List[str]]] = [
             "CREATE INDEX IF NOT EXISTS idx_anno_annotations_project_node ON anno_annotations (project_id, node_id)",
         ],
     ),
+    (
+        "agent_ops_001",
+        [
+            """
+            CREATE TABLE IF NOT EXISTS agent_ops_operations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_id TEXT NOT NULL,
+                op_id TEXT NOT NULL,
+                turn_id TEXT,
+                parent_op_id TEXT,
+                agent_node_id TEXT NOT NULL,
+                tool TEXT NOT NULL,
+                args_json TEXT NOT NULL,
+                before_json TEXT NOT NULL,
+                after_json TEXT NOT NULL,
+                touched_node_ids_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                irreversible_effects_json TEXT NOT NULL,
+                undone INTEGER NOT NULL CHECK (undone IN (0, 1)),
+                UNIQUE (project_id, op_id),
+                FOREIGN KEY (project_id, parent_op_id)
+                    REFERENCES agent_ops_operations (project_id, op_id) ON DELETE CASCADE
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS agent_ops_project_turn ON agent_ops_operations (project_id, turn_id, id)",
+            "CREATE INDEX IF NOT EXISTS agent_ops_project_parent ON agent_ops_operations (project_id, parent_op_id, id)",
+            """
+            CREATE TABLE IF NOT EXISTS agent_ops_pruned_turns (
+                project_id TEXT NOT NULL,
+                turn_id TEXT NOT NULL,
+                PRIMARY KEY (project_id, turn_id)
+            )
+            """,
+        ],
+    ),
+    (
+        "agent_ops_002",
+        ["""CREATE TABLE IF NOT EXISTS agent_ops_turns (
+            project_id TEXT NOT NULL, turn_id TEXT NOT NULL, owner TEXT NOT NULL,
+            kind TEXT NOT NULL, last_write REAL NOT NULL, ended INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (project_id, turn_id)
+        )"""],
+    ),
 ]
 
 
@@ -141,15 +184,20 @@ class OpsDb:
             return lock
 
     @contextmanager
-    def connect(self, project_id: str) -> Iterator[sqlite3.Connection]:
+    def connect(
+        self, project_id: str, *, create_project_dir: bool = True, create_db: bool = True
+    ) -> Iterator[sqlite3.Connection]:
         """一条短连接：WAL + 外键 PRAGMA → 幂等迁移 → yield → close（释放文件句柄）。
 
         迁移失败抛出 sqlite3.Error（可见报错），连接即关闭、迁移 key 不记录。
         调用方必须已在 ``project_lock(project_id)`` 作用域内（或上层业务锁内）。
+        可禁止创建目录或数据库，以免项目/数据库在检查后消失时被意外重建。
         """
         path = self.db_path(project_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(path), check_same_thread=False)
+        if create_project_dir:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        target = str(path) if create_db else path.absolute().as_uri() + "?mode=rw"
+        conn = sqlite3.connect(target, check_same_thread=False, uri=not create_db)
         conn.row_factory = sqlite3.Row
         try:
             conn.execute("PRAGMA journal_mode=WAL")

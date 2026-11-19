@@ -32,6 +32,7 @@ from fastapi import HTTPException
 
 from app.routers import api_mcp
 from app.services.agent_host import agent_host_manager
+from app.services.agent_tools_manifest import TOOL_NAMES
 from tests.fake_agent_host import FakeAgentProcess
 from tests.test_mcp_endpoint import McpTestBase, run_async
 
@@ -225,12 +226,15 @@ class WireLocalEditAdapterTests(unittest.TestCase):
 
 
 class EditEraseSurfaceTests(McpTestBase):
-    """声明表机制：edit_erase 已注册（25 项，票F 后）、严格 schema、确认门 + impl 接线（同 289 先例）。"""
+    """声明表机制：edit_erase 已注册、严格 schema、确认门 + impl 接线。"""
 
     def test_tool_registered_gated_and_wired(self):
         resp = self.mcp({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-        tools = {t["name"]: t for t in resp.json()["result"]["tools"]}
-        self.assertEqual(len(tools), 25)
+        listed = resp.json()["result"]["tools"]
+        tools = {t["name"]: t for t in listed}
+        self.assertEqual(len(listed), 27)
+        self.assertEqual(len(tools), len(listed))
+        self.assertEqual(set(tools), TOOL_NAMES)
         self.assertIn("canvas.edit_erase", tools)
         schema = tools["canvas.edit_erase"]["inputSchema"]
         self.assertEqual(schema["type"], "object")

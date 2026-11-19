@@ -20,6 +20,9 @@ import firefly_opsdb
 from firefly_opsdb import OpsDb
 
 
+EXPECTED_MIGRATIONS = ["versions_001", "usage_001", "undo_001", "anno_001", "agent_ops_001", "agent_ops_002"]
+
+
 class OpsDbTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -42,19 +45,30 @@ class OpsDbTests(unittest.TestCase):
             self.assertIn("ops_migrations", tables)
             self.assertIn("versions_snapshots", tables)
             self.assertIn("usage_turns", tables)
-            self.assertIn("undo_snapshots", tables)   # #251 undo 栈租户
-            self.assertIn("anno_annotations", tables)  # #272 画布批注租户
+            self.assertIn("undo_snapshots", tables)
+            self.assertIn("anno_annotations", tables)
+            self.assertIn("agent_ops_operations", tables)
+            self.assertIn("agent_ops_pruned_turns", tables)
+            self.assertIn("agent_ops_turns", tables)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_ops_operations)")}
+            self.assertIn("parent_op_id", columns)
+            foreign_keys = list(conn.execute("PRAGMA foreign_key_list(agent_ops_operations)"))
+            self.assertEqual({(row[2], row[3], row[4], row[6]) for row in foreign_keys}, {
+                ("agent_ops_operations", "project_id", "project_id", "CASCADE"),
+                ("agent_ops_operations", "parent_op_id", "op_id", "CASCADE"),
+            })
             applied = [row[0] for row in conn.execute("SELECT key FROM ops_migrations ORDER BY rowid")]
-            self.assertEqual(applied, ["versions_001", "usage_001", "undo_001", "anno_001"])
-        # 幂等：第二次短连接迁移不重跑（done-row 标记）
+            self.assertEqual(applied, EXPECTED_MIGRATIONS)
         with ops.connect("p1") as conn:
-            self.assertEqual(len(list(conn.execute("SELECT key FROM ops_migrations"))), 4)
+            applied = [row[0] for row in conn.execute("SELECT key FROM ops_migrations ORDER BY rowid")]
+            self.assertEqual(applied, EXPECTED_MIGRATIONS)
 
     def test_migration_runs_once_across_instances(self):
         with self.make_ops().connect("p1"):
             pass
         with self.make_ops().connect("p1") as conn:
-            self.assertEqual(len(list(conn.execute("SELECT key FROM ops_migrations"))), 4)
+            applied = [row[0] for row in conn.execute("SELECT key FROM ops_migrations ORDER BY rowid")]
+            self.assertEqual(applied, EXPECTED_MIGRATIONS)
 
     def test_wal_and_fk_pragmas(self):
         with self.make_ops().connect("p1") as conn:

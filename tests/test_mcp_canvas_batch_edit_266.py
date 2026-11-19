@@ -12,7 +12,6 @@ load_api_providers + api_agent_tools._run_agent_generation（后台运行体）�
 """
 import json
 import sys
-import time
 import types
 import unittest
 from pathlib import Path
@@ -70,14 +69,13 @@ class BatchEditBehaviorTests(McpTestBase):
                 {"op": "upsert_node", "node": {"id": "img-b", "type": "smart-image", "title": "B", "x": 0, "y": 20, "prompt": "old-b"}},
             ],
             base_revision=int(canvas.get("revision") or 0))
-        # Mock 边界：无网络 / 无 provider —— 假路由 + 假后台运行体
         self.previous_route = main.route_image_generation
         self.previous_providers = main.load_api_providers
-        self.previous_runner = api_agent_tools._run_agent_generation
+        self.previous_provider_call = api_agent_tools.build_online_image_result
         main.route_image_generation = lambda *a, **k: types.SimpleNamespace(
             provider_id="fake", model="fake")
         main.load_api_providers = lambda: []
-        api_agent_tools._run_agent_generation = self._fake_runner
+        api_agent_tools.build_online_image_result = self._fake_provider
         # #350：batch_edit 在 MCP 层过确认门与会话限额——本组测试只钉 266 行为，
         # 门/限额语义在 test_agent_generation_gate_limit_351 另有钉，这里直接放行。
         self._prev_conf = api_mcp.request_confirmation_core
@@ -88,18 +86,13 @@ class BatchEditBehaviorTests(McpTestBase):
             return {"approved": True}
         api_mcp.request_confirmation_core = _approve
 
-    async def _fake_runner(self, task_id, project_id, node_id, result_node_id, payload):
-        # 后台运行体替身：直接把任务标记成功（trigger_generation_core 用 asyncio.create_task 调度，必须是协程）
-        # #351 后签名多了 result_node_id。
-        with CANVAS_TASK_LOCK:
-            task = CANVAS_TASKS.get(task_id)
-            if task is not None:
-                task.update(status="succeeded", error="", updated_at=time.time())
+    async def _fake_provider(self, _request):
+        raise RuntimeError("test provider unavailable")
 
     def tearDown(self):
         main.route_image_generation = self.previous_route
         main.load_api_providers = self.previous_providers
-        api_agent_tools._run_agent_generation = self.previous_runner
+        api_agent_tools.build_online_image_result = self.previous_provider_call
         api_mcp.request_confirmation_core = self._prev_conf
         api_agent_tools.GENERATION_SESSION_LIMIT = self._prev_limit
         with CANVAS_TASK_LOCK:
