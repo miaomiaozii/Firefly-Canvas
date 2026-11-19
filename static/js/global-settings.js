@@ -430,9 +430,9 @@
     setStatus(localText('正在保存偏好…', 'Saving preferences…'));
     try {
       // #365：只存主题。payload 里的 language 不发了（模型默认就是 'zh'）。
-      await requestJson('/api/global-settings/preferences', {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({theme})});
+      const saved = await requestJson('/api/global-settings/preferences', {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({theme})});
       window.StudioTheme?.set(theme);
-      state.preferences = {theme, language:'zh'};
+      state.preferences = saved.preferences;
       render(state);
       notifyCanvas('preferences-changed', {preferences:state.preferences});
       setStatus(localText('外观已保存', 'Appearance saved'), 'success');

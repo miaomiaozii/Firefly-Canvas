@@ -65,9 +65,25 @@
       <div id="cliGrid" class="status-grid" aria-live="polite"></div>
     </section>
 
+    <section class="settings-section" aria-labelledby="agentFileAccessTitle">
+      <div class="section-heading">
+        <div><p class="section-index">04</p><h2 id="agentFileAccessTitle" data-i18n="globalSettings.agentFileAccess">Agent 文件访问</h2></div>
+      </div>
+      <div class="preference-grid">
+        <div class="status-card">
+          <h3>Codex</h3>
+          <p class="status-detail" data-i18n="globalSettings.codexFileAccess">当前：只读，Agent 不能修改文件（包括自己的工作目录）。写入工作目录：未验证，暂不开放。</p>
+        </div>
+        <div class="status-card">
+          <h3>Pi</h3>
+          <p class="status-detail" data-i18n="globalSettings.piFileAccess">不支持</p>
+        </div>
+      </div>
+    </section>
+
     <section class="settings-section" aria-labelledby="libraryTitle">
       <div class="section-heading">
-        <div><p class="section-index">04</p><h2 id="libraryTitle" data-i18n="globalSettings.library">项目库</h2></div>
+        <div><p class="section-index">05</p><h2 id="libraryTitle" data-i18n="globalSettings.library">项目库</h2></div>
       </div>
       <p id="librarySummary" class="section-note"></p>
       <form id="libraryForm" class="library-form">
@@ -80,14 +96,14 @@
 
     <section class="settings-section" aria-labelledby="psTitle">
       <div class="section-heading">
-        <div><p class="section-index">05</p><h2 id="psTitle" data-i18n="globalSettings.photoshop">Photoshop 连接状态</h2></div>
+        <div><p class="section-index">06</p><h2 id="psTitle" data-i18n="globalSettings.photoshop">Photoshop 连接状态</h2></div>
       </div>
       <div id="photoshopStatus" class="connection-card"></div>
     </section>
 
     <section class="settings-section" aria-labelledby="tasksTitle">
       <div class="section-heading">
-        <div><p class="section-index">06</p><h2 id="tasksTitle" data-i18n="globalSettings.tasksConsole">全局任务总控台</h2></div>
+        <div><p class="section-index">07</p><h2 id="tasksTitle" data-i18n="globalSettings.tasksConsole">全局任务总控台</h2></div>
         <div class="heading-actions">
           <label class="console-autorefresh"><input id="consoleAutoRefresh" type="checkbox" checked> <span data-i18n="globalSettings.tasksAutoRefresh">自动刷新（2s）</span></label>
           <button id="consoleRefresh" class="quiet-button" type="button" data-i18n="globalSettings.tasksRefresh">刷新任务</button>
@@ -102,6 +118,6 @@
       <div id="taskConsoleList" class="task-console-list" role="list"></div>
     </section>
   </main>
-  <script src="/static/js/global-settings.js?v=20261119.001800"></script>
+  <script src="/static/js/global-settings.js?v=20261119.001800&amp;agent=423"></script>
 </body>
 </html>

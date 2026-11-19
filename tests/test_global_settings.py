@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+import zipfile
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -345,13 +346,128 @@ class GlobalSettingsApiTests(unittest.TestCase):
         saved = self.client.patch("/api/global-settings/preferences", json={"theme": "light", "language": "zh"})
 
         self.assertEqual(saved.status_code, 200)
-        self.assertEqual(saved.json()["preferences"], {"theme": "light", "language": "zh"})
+        self.assertEqual(saved.json()["preferences"], {"theme": "light", "language": "zh", "agent_file_access": "read-only"})
         with (
             patch.object(main, "codex_status_core", AsyncMock(return_value={})),
             patch.object(main, "gemini_cli_status_core", AsyncMock(return_value={})),
         ):
             loaded = self.client.get("/api/global-settings")
-        self.assertEqual(loaded.json()["preferences"], {"theme": "light", "language": "zh"})
+        self.assertEqual(loaded.json()["preferences"], {"theme": "light", "language": "zh", "agent_file_access": "read-only"})
+
+    def test_new_install_defaults_are_persisted_only_on_save(self):
+        path = Path(main.GLOBAL_SETTINGS_FILE)
+        expected = {"theme": "dark", "language": "zh", "agent_file_access": "read-only"}
+        self.assertEqual(self.client.get("/api/global-settings/preferences").json()["preferences"], expected)
+        self.assertFalse(path.exists())
+        self.assertEqual(main.save_global_preferences("dark", "zh"), expected)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), expected)
+
+    def test_corrupt_settings_are_not_overwritten_when_quarantine_fails(self):
+        import firefly_json_io
+
+        path = Path(main.GLOBAL_SETTINGS_FILE)
+        path.write_text('{"theme":', encoding="utf-8")
+        with patch.object(firefly_json_io, "quarantine_corrupt_json", return_value=None):
+            with self.assertRaises(firefly_json_io.CorruptJSONFile):
+                main.save_global_preferences("light", "zh")
+        self.assertEqual(path.read_text(encoding="utf-8"), '{"theme":')
+
+    def test_agent_access_migration_normalizes_on_read_and_persists_on_save(self):
+        path = Path(main.GLOBAL_SETTINGS_FILE)
+        for value in ("missing", None, "read-only", "workspace-write", "off", "", False, [], {}):
+            with self.subTest(value=value):
+                raw = {"theme": "light", "language": "en", "other": {"keep": [1, 2]}}
+                if value != "missing":
+                    raw["agent_file_access"] = value
+                path.write_text(json.dumps(raw), encoding="utf-8")
+                self.assertEqual(main.load_global_preferences(), {
+                    "theme": "light", "language": "zh", "agent_file_access": "read-only",
+                })
+                self.assertEqual(json.loads(path.read_text(encoding="utf-8")), raw)
+                main.save_global_preferences("light", "en")
+                self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {
+                    "theme": "light", "language": "zh", "agent_file_access": "read-only",
+                    "other": {"keep": [1, 2]},
+                })
+
+    def test_old_client_theme_save_preserves_other_settings_and_cannot_change_access(self):
+        path = Path(main.GLOBAL_SETTINGS_FILE)
+        path.write_text(json.dumps({
+            "theme": "dark", "language": "zh", "agent_file_access": "read-only",
+            "autosave_interval_minutes": 23, "future_setting": {"nested": [1, 2]},
+        }), encoding="utf-8")
+        saved = self.client.patch("/api/global-settings/preferences", json={
+            "theme": "light", "language": "zh", "agent_file_access": "workspace-write",
+            "autosave_interval_minutes": 45,
+        })
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json()["preferences"]["agent_file_access"], "read-only")
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {
+            "theme": "light", "language": "zh", "agent_file_access": "read-only",
+            "autosave_interval_minutes": 23, "future_setting": {"nested": [1, 2]},
+        })
+
+    def test_preference_entry_points_share_the_read_modify_write_lock(self):
+        import firefly_json_io
+        from app.services import providers
+
+        path = Path(main.GLOBAL_SETTINGS_FILE)
+        path.write_text(json.dumps({"theme": "dark", "future_setting": "keep"}), encoding="utf-8")
+        entered = threading.Event()
+        release = threading.Event()
+        second_done = threading.Event()
+        original_write = firefly_json_io.write_json_atomic
+        errors = []
+
+        def delayed_write(*args, **kwargs):
+            if not entered.is_set():
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("first preference save was not released")
+            return original_write(*args, **kwargs)
+
+        def save(func, theme, done=None):
+            try:
+                func(theme, "zh")
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                if done:
+                    done.set()
+
+        with patch.object(firefly_json_io, "write_json_atomic", side_effect=delayed_write):
+            first = threading.Thread(target=save, args=(main.save_global_preferences, "light"))
+            second = threading.Thread(target=save, args=(providers.save_global_preferences, "dark", second_done))
+            first.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                second.start()
+                self.assertFalse(second_done.wait(0.2))
+            finally:
+                release.set()
+                first.join(5)
+                if second.ident is not None:
+                    second.join(5)
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {
+            "theme": "dark", "language": "zh", "agent_file_access": "read-only", "future_setting": "keep",
+        })
+
+    def test_global_agent_access_is_not_in_project_copies_or_exports(self):
+        main.save_global_preferences("light", "zh")
+        source = self.store.create_project("全局偏好隔离")
+        duplicate = self.store.duplicate_project(source["id"])
+        archive = self.base / "project.fly"
+        self.store.export_fly_to(source["id"], archive)
+        for project_id in (source["id"], duplicate["id"]):
+            for path in (self.store.root / project_id).rglob("*.json"):
+                self.assertNotIn('"agent_file_access"', path.read_text(encoding="utf-8-sig"), str(path))
+        with zipfile.ZipFile(archive) as packaged:
+            for name in packaged.namelist():
+                if name.endswith('.json'):
+                    self.assertNotIn(b'"agent_file_access"', packaged.read(name), name)
 
     def test_legacy_english_preference_is_migrated_to_chinese(self):
         """#365：旧配置里存的 en 要自动迁成 zh，不能报错也不能让页面停在英文。"""
@@ -373,7 +489,7 @@ class GlobalSettingsApiTests(unittest.TestCase):
         Path(main.GLOBAL_SETTINGS_FILE).write_text(
             json.dumps({"theme": "dark", "language": "en"}), encoding="utf-8"
         )
-        self.assertEqual(main.load_global_preferences(), {"theme": "dark", "language": "zh"})
+        self.assertEqual(main.load_global_preferences(), {"theme": "dark", "language": "zh", "agent_file_access": "read-only"})
 
     def test_unknown_language_is_still_rejected(self):
         """#365：en 是为了兼容老客户端才继续接的；其它乱值仍要 400。"""
@@ -431,8 +547,9 @@ class GlobalSettingsApiTests(unittest.TestCase):
         })
 
         self.assertEqual(saved.status_code, 200)
-        self.assertEqual(saved.json()["preferences"], {"theme": "dark", "language": "zh"})
-        self.assertEqual(self.client.get("/api/global-settings/preferences").json()["preferences"], {"theme": "dark", "language": "zh"})
+        expected = {"theme": "dark", "language": "zh", "agent_file_access": "read-only"}
+        self.assertEqual(saved.json()["preferences"], expected)
+        self.assertEqual(self.client.get("/api/global-settings/preferences").json()["preferences"], expected)
 
     def test_photoshop_connector_websocket_is_reported_as_connected(self):
         marker = object()

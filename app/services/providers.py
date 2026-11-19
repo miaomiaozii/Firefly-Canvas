@@ -587,19 +587,33 @@ def update_env_values(updates):
     with API_ENV_LOCK:
         return _update_env_values_unlocked(updates)
 
-def load_global_preferences():
-    defaults = {'theme': 'dark', 'language': 'zh'}
-    # #345：读坏了也留痕迹（同一个文件会被保存回写，静默回默认值会掉用户主题/语言）。
-    raw = firefly_json_io.read_json(_svc._main('GLOBAL_SETTINGS_FILE'), default=None, encoding='utf-8-sig')
+# 所有入口共用锁，避免并发读改写丢失其他偏好。
+_GLOBAL_PREFERENCES_LOCK = Lock()
+
+
+def _public_global_preferences(raw):
     theme = raw.get('theme') if isinstance(raw, dict) else None
-    language = raw.get('language') if isinstance(raw, dict) else None
-    return {'theme': theme if theme in {'light', 'dark'} else defaults['theme'], 'language': language if language in {'zh', 'en'} else defaults['language']}
+    # #365、#423：旧语言和未验证的文件访问模式只以安全值生效。
+    return {'theme': theme if theme in ('light', 'dark') else 'dark',
+            'language': 'zh', 'agent_file_access': 'read-only'}
+
+
+def load_global_preferences():
+    with _GLOBAL_PREFERENCES_LOCK:
+        raw = firefly_json_io.read_json(_svc._main('GLOBAL_SETTINGS_FILE'), default=None, encoding='utf-8-sig')
+        return _public_global_preferences(raw)
+
 
 def save_global_preferences(theme: str, language: str, autosave_interval_minutes: Optional[int]=None):
-    preferences = {'theme': theme if theme in {'light', 'dark'} else 'dark', 'language': language if language in {'zh', 'en'} else 'zh'}
-    # #345：这一处本来就是 tmp+fsync+replace，只是自己写了一份；收进公共实现，免以后又分叉。
-    firefly_json_io.write_json_atomic(_svc._main('GLOBAL_SETTINGS_FILE'), preferences)
-    return preferences
+    # #365：保留旧客户端的 language 参数，但始终写入中文。
+    with _GLOBAL_PREFERENCES_LOCK:
+        path = _svc._main('GLOBAL_SETTINGS_FILE')
+        raw = firefly_json_io.read_json(path, default=None, encoding='utf-8-sig', raise_on_corrupt=True)
+        preferences = dict(raw) if isinstance(raw, dict) else {}
+        preferences.update({'theme': theme if theme in ('light', 'dark') else 'dark',
+                            'language': 'zh', 'agent_file_access': 'read-only'})
+        firefly_json_io.write_json_atomic(path, preferences)
+        return _public_global_preferences(preferences)
 
 def api_headers(json_body=True, provider=None, model=''):
     if provider:
