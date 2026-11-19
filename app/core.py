@@ -1145,6 +1145,8 @@ class ProjectImageGenerationRequest(BaseModel):
     aspect_ratio: str = '1:1'
     resolution: str = '1k'
     quality: str = 'auto'
+    # 只有声明了 output_format 参数的模型（MiniMax H3）会读；空串 = 适配器缺省。
+    output_format: str = Field(default='', max_length=16)
     n: int = 1
     reference_asset_ids: List[str] = Field(default_factory=list)
     media_type: str = 'image'

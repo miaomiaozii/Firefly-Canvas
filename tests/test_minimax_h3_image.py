@@ -147,7 +147,7 @@ class MinimaxBase(unittest.TestCase):
             p.stop()
         self.temp_dir.cleanup()
 
-    def write_local_reference(self, filename='ref.png', color='red', size=(64, 64)):
+    def write_local_reference(self, filename='ref.png', color='red', size=(256, 256)):
         path = os.path.join(self.temp_dir.name, 'output', filename)
         Image.new('RGB', size, color).save(path, 'PNG')
         return {'url': f'/output/{filename}'}
@@ -326,8 +326,22 @@ class MinimaxRequestShapeTests(MinimaxBase):
         decoded = base64.b64decode(payload)
         self.assertTrue(decoded, 'data URI 的 base64 载荷不能为空')
         with Image.open(io.BytesIO(decoded)) as probe:
-            self.assertEqual(probe.size, (64, 64))
+            self.assertEqual(probe.size, (256, 256))
         self.assertIn(mime, {'data:image/png;base64', 'data:image/jpeg;base64'})
+
+    def test_output_format_from_node_reaches_request(self):
+        (_image_data, _raw), captured = self.generate(
+            lambda request: httpx.Response(200, json=ok_response()),
+            parameters={**CONTRACT_PARAMETERS, 'output_format': 'webp'})
+        self.assertEqual(json.loads(captured[0].content.decode('utf-8'))['output_format'], 'webp')
+
+    def test_reference_outside_platform_limits_fails_before_request(self):
+        for name, size in (('tiny.png', (100, 300)), ('strip.png', (2000, 400))):
+            ref = self.write_local_reference(name, size=size)
+            with self.assertRaises(HTTPException) as ctx:
+                self.generate(lambda request: self.fail('参考图不合规时不得发请求'), references=[ref])
+            self.assertEqual(ctx.exception.status_code, 400)
+            self.assertIn('参考图尺寸', str(ctx.exception.detail))
 
 
 class MinimaxEndpointOverrideTests(MinimaxBase):
@@ -430,11 +444,24 @@ class MinimaxErrorMappingTests(MinimaxBase):
         self.assertEqual(calls, 1)
         self.assertIn('余额不足', str(exc.detail))
 
-    def test_unknown_422_keeps_generic_validation_text(self):
-        exc, calls = self._generate_with(422, {'code': 0, 'message': 'invalid params: aspect_ratio'})
+    def test_all_items_failed_content_safety_422(self):
+        # 文档：全部生成项未过内容安全时整体返回 422
+        exc, calls = self._generate_with(422, {'data': [{'error': {'code': '1027', 'message': 'output image failed content safety check'}}]})
         self.assertEqual(calls, 1)
         self.assertEqual(exc.status_code, 422)
+        self.assertIn('内容安全', str(exc.detail))
+
+    def test_real_error_shape_code_in_message(self):
+        # 国内站实测错误体：业务码只在 error.message 末尾括号里
+        exc, _calls = self._generate_with(402, {'type': 'error', 'error': {'type': 'insufficient_balance_error', 'message': 'insufficient balance (1008)', 'http_code': '402'}, 'request_id': 'r'})
+        self.assertIn('余额不足', str(exc.detail))
+        self.assertIn('code 1008', str(exc.detail))
+
+    def test_invalid_params_400_explains_limits(self):
+        exc, _calls = self._generate_with(400, {'type': 'error', 'error': {'type': 'bad_request_error', 'message': 'invalid params, image too small (2013)', 'http_code': '400'}})
+        self.assertEqual(exc.status_code, 400)
         self.assertIn('参数校验失败', str(exc.detail))
+        self.assertIn('image too small', str(exc.detail))
 
 
 class MinimaxNoRetryTests(MinimaxBase):

@@ -779,6 +779,7 @@ test('runApiGeneration: flush failure keeps the marker, save-settle replay reuse
     assert.equal(payload.media_type, 'image');
     assert.equal(payload.n, 1);
     assert.equal(payload.aspect_ratio, '1:1');
+    assert.equal(payload.output_format, '', '未声明 output_format 的模型发空串（适配器缺省）');
     assert.equal(node.pending, 1);
     assert.equal(evaluate(ctx, `smartPendingPersistenceKeys.has(${JSON.stringify(key)})`), true, '#189 键集记录待重放 key');
 
@@ -836,7 +837,7 @@ test('runApiGeneration: flush success sends exactly one POST with the durable pa
         throw new Error('unexpected fetch ' + url);
     };
 
-    const result = await run('make a cat', [], { provider_id: 'p1', model: 'm1', quality: 'auto' }, node, {});
+    const result = await run('make a cat', [], { provider_id: 'p1', model: 'm1', quality: 'auto', outputFormat: 'webp' }, node, {});
 
     // 外层调用经注册队列包装，透传内层的注册结果。
     assert.deepEqual(fromContext(result.taskIds), ['project_img_5']);
@@ -855,6 +856,7 @@ test('runApiGeneration: flush success sends exactly one POST with the durable pa
     assert.equal(body.base_revision, 7);
     assert.equal(body.media_type, 'image');
     assert.equal(body.aspect_ratio, '1:1');
+    assert.equal(body.output_format, 'webp', '节点「格式」控件值进入请求（#330 MiniMax H3）');
     assert.equal(node.generationSubmissions, undefined, 'POST 成功清除标记');
     // 新运行重置计时器：持久化节点不得带着上次生成的旧 runStartedAt 无限涨。
     assert.ok(node.runStartedAt > 111, 'runStartedAt 重置为当前时间');

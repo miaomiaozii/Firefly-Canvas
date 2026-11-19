@@ -1517,6 +1517,9 @@ MINIMAX_HTTP_ERROR_MESSAGES = {
     (429, '2056'): '当前 MiniMax M Plan 订阅已到达用量上限，请在下个计费周期再试。',
     (500, '1000'): 'MiniMax 服务端内部错误，请稍后重试。',
 }
+# 国内站实测错误体为 {"error": {"type", "message": "insufficient balance (1008)", "http_code"}}，
+# 业务码只出现在 message 末尾括号里。
+_MINIMAX_MESSAGE_CODE_RE = re.compile(r'\((\d{3,5})\)\s*$')
 _MINIMAX_ASPECT_RE = re.compile(r'^(\d{1,3}):(\d{1,3})$')
 _MINIMAX_AREAS = {'1K', '2K', '4K'}
 _MINIMAX_OUTPUT_FORMATS = {'png', 'jpeg', 'jpg', 'webp'}
@@ -1548,6 +1551,21 @@ def _minimax_output_format(value):
     text = str(value or '').strip().lower()
     return text if text in _MINIMAX_OUTPUT_FORMATS else 'png'
 
+def _minimax_check_reference(provider_name, index, image_url):
+    """官方参考图限制：宽高 [128, 8192] px、长短边比 ≤4:1。越界上游会 400，本地先拦并指明是哪张。
+
+    只检查 data URI（画布本地图）；公网 URL 原样透传，由上游校验。
+    """
+    if not image_url.startswith('data:'):
+        return
+    try:
+        with Image.open(BytesIO(base64.b64decode(image_url.split(',', 1)[1]))) as img:
+            width, height = img.size
+    except Exception:
+        return
+    if min(width, height) < 128 or max(width, height) > 8192 or max(width, height) > 4 * min(width, height):
+        raise HTTPException(status_code=400, detail=f'{provider_name} 第 {index} 张参考图尺寸 {width}x{height} 不符合平台限制（宽高 128–8192 px、长短边比 ≤4:1），请裁剪或更换参考图')
+
 def _minimax_upstream_error(response):
     """从 MiniMax 错误响应提取 (code, message)，兼容顶层 code / base_resp / error 对象三种形态。"""
     try:
@@ -1568,6 +1586,10 @@ def _minimax_upstream_error(response):
         if candidate not in (None, ''):
             message = str(candidate)
             break
+    if not code:
+        match = _MINIMAX_MESSAGE_CODE_RE.search(message)
+        if match:
+            code = match.group(1)
     return (code, message)
 
 def _minimax_http_error_detail(provider_name, response):
@@ -1579,7 +1601,10 @@ def _minimax_http_error_detail(provider_name, response):
         if code:
             detail = f'{detail}（code {code}）'
     elif status == 422:
-        detail = f'{provider_name} 参数校验失败（422），请检查提示词长度/比例/档位等参数'
+        # 官方文档：全部生成项都未过内容安全时整体返回 422。
+        detail = f'{provider_name} 内容安全：生成图全部未通过平台内容审核（422），请调整提示词或参考图后重试'
+    elif status == 400:
+        detail = f'{provider_name} 参数校验失败（{status}），请检查提示词长度、比例/档位，以及参考图尺寸（宽高 128–8192 px、长短边比 ≤4:1）'
     else:
         detail = f'{provider_name} 图片接口错误（HTTP {status}，code {code or "未知"}）'
     if message and message not in detail:
@@ -1657,6 +1682,8 @@ async def generate_minimax_provider_image(prompt, size, model, reference_images=
             {'image_url': _svc._main('reference_to_data_url')(ref, max_size=1536)}
             for ref in image_refs[:MINIMAX_REFERENCE_MAX]
         ]
+        for index, item in enumerate(body['images'], start=1):
+            _minimax_check_reference(provider_name, index, item['image_url'])
     base_url = str((provider or {}).get('base_url') or _svc._main('AI_BASE_URL') or '').strip().rstrip('/')
     if not base_url:
         raise HTTPException(status_code=400, detail=f'{provider_name} 未配置 Base URL（国内站默认 https://api.minimax.cn，也可用 https://api.minimaxi.com）')

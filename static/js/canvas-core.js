@@ -21,6 +21,7 @@ let settings = {
     customWidth:'',
     customHeight:'',
     quality:'auto',
+    outputFormat:'',
     count:1,
     videoRoutingMode:'auto',
     videoProvider:'',

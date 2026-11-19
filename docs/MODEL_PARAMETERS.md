@@ -197,6 +197,8 @@
 | qwen-image-max-2025-12-30 | qwen-image-max-2025-12-30 | images_generations | ✅ | ✅ |
 | qwen-image-edit-max-2026-01-16 | qwen-image-edit-max-2026-01-16 | images_generations | ✅ | ✅ |
 | grok-imagine-image-2.0 | grok-imagine-image-2.0 | images_generations | ✅ | ✅ |
+| MiniMax-H3-Image | MiniMax H3 Image（海螺·国内站） | minimax_images | ✅ | ❌ |
+| MiniMax-H3-Image-Highspeed | MiniMax H3 Image 高速版（海螺·国内站） | minimax_images | ✅ | ❌ |
 
 ### 图像模型参数详情
 
@@ -469,6 +471,20 @@
   - `response_format`: 枚举类型 (默认: b64_json)
     - 可选值: url, b64_json
   - `image`: array (默认: N/A)
+
+#### MiniMax-H3-Image / MiniMax-H3-Image-Highspeed
+- **模型 ID**: `MiniMax-H3-Image`、`MiniMax-H3-Image-Highspeed`（参数与限制相同）
+- **API 类型**: minimax_images（协议 `minimax`，国内站 `https://api.minimax.cn`）
+- **支持视觉**: 是（连接参考图自动走 `/v1/images/edits`，否则 `/v1/images/generations`）
+- **异步模式**: 否（同步，最长 600s；非幂等，不自动重试）
+- **参数**:
+  - `aspect_ratio`: 枚举类型 (默认: 1:1)
+    - 可选值: 1:1, 16:9, 9:16, 4:3, 3:4, 4:5, 5:4, 3:2, 2:3, 21:9, 9:21（平台范围 1:3–3:1）
+  - `resolution`: 枚举类型 (默认: 4K，映射为平台 `area`)
+    - 可选值: 1K, 2K, 4K（目标面积 1024² / 2048² / 4096²）
+  - `output_format`: 枚举类型 (默认: png)
+    - 可选值: png, jpeg, webp
+- **固定行为**: `size=auto`（不支持自定义宽高）、`n=1`、`response_format=url`、提示词增强恒开；参考图 1–16 张，宽高 128–8192 px、长短边比 ≤4:1
 
 ---
 

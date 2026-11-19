@@ -2811,9 +2811,27 @@ function apiImageUsesExplicitResolution(sourceSettings=settings){
     if(capabilities) return capabilities.arbitrary_resolution === true || (Array.isArray(capabilities.resolutions) && capabilities.resolutions.length > 0);
     return true;
 }
+function apiImageModelSpec(sourceSettings=settings){
+    if(String(sourceSettings?.engine || '') !== 'api') return null;
+    return (modelSpecs?.image_models || {})[String(sourceSettings?.model || '').trim()] || null;
+}
+// 只有 model_specs 声明了 output_format 的模型才发该字段（#330 MiniMax H3）；其他协议不读。
+function apiImageOutputFormat(sourceSettings=settings){
+    const param = apiImageModelSpec(sourceSettings)?.parameters?.output_format;
+    if(!param || !Array.isArray(param.options)) return '';
+    const value = String(sourceSettings.outputFormat || '');
+    return param.options.includes(value) ? value : String(param.default || '');
+}
+function apiImageAllowsCustomSize(sourceSettings=settings){
+    return apiImageModelSpec(sourceSettings)?.limits?.custom_size !== false;
+}
 function normalizeApiSizeSettings(prefix=''){
     const ratioKey = prefix ? `${prefix}Ratio` : 'ratio';
     const resKey = prefix ? `${prefix}Resolution` : 'resolution';
+    if(!prefix && !apiImageAllowsCustomSize(settings)){
+        if(settings[resKey] === 'custom') settings[resKey] = '1k';
+        if(settings[ratioKey] === 'custom') settings[ratioKey] = 'square';
+    }
     if(!prefix && !apiImageUsesExplicitResolution(settings)){
         settings[resKey] = 'auto';
         if(!settings[ratioKey]) settings[ratioKey] = 'square';
@@ -2945,6 +2963,7 @@ function renderApiParams(){
         ${renderSizePickerControl('', true)}
         ${renderAnglePresetControl()}
         ${renderQualityControl()}
+        ${renderOutputFormatControl()}
     `;
 }
 function renderApiVideoParams(){
@@ -3317,7 +3336,7 @@ function renderSizePickerControl(prefix='', includeSource=false){
                 <div class="size-picker-scope">
                     <button type="button" class="${scope === 'auto' ? 'active' : ''}" data-size-scope="auto" data-size-prefix="${escapeHtml(prefix)}" ${allowAuto ? '' : 'disabled'}>${escapeHtml(tr('smart.sizeAuto'))}</button>
                     <button type="button" class="${scope === 'preset' ? 'active' : ''}" data-size-scope="preset" data-size-prefix="${escapeHtml(prefix)}">${escapeHtml(tr('smart.sizeScopeSystem'))}</button>
-                    <button type="button" class="${scope === 'custom' ? 'active' : ''}" data-size-scope="custom" data-size-prefix="${escapeHtml(prefix)}">${escapeHtml(tr('smart.custom'))}</button>
+                    <button type="button" class="${scope === 'custom' ? 'active' : ''}" data-size-scope="custom" data-size-prefix="${escapeHtml(prefix)}" ${prefix || apiImageAllowsCustomSize(settings) ? '' : 'disabled'}>${escapeHtml(tr('smart.custom'))}</button>
                 </div>
             </div>
             ${scope === 'auto' ? `<div class="size-picker-pane size-picker-auto"><div class="size-picker-note"><strong>${escapeHtml(tr('smart.sizeAutoTitle'))}</strong><span>${escapeHtml(tr('smart.sizeAutoNote'))}</span></div></div>` : ''}
@@ -3341,7 +3360,22 @@ function renderSizePickerControl(prefix='', includeSource=false){
         </div>
     </div>`;
 }
+function renderOutputFormatControl(){
+    const param = apiImageModelSpec(settings)?.parameters?.output_format;
+    if(!param || !Array.isArray(param.options)) return '';
+    const value = apiImageOutputFormat(settings);
+    return `<div class="smart-control output-format-control">
+        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-sliders-horizontal"/></svg><span>${escapeHtml(value.toUpperCase())}</span></button>
+        <div class="smart-popover compact-popover">
+            <div class="smart-popover-title">${escapeHtml(tr('smart.outputFormat'))}</div>
+            <div class="seg-row">
+                ${param.options.map(k => `<button type="button" class="${k === value ? 'active' : ''}" data-smart-param="outputFormat" data-smart-value="${escapeHtml(k)}">${escapeHtml(String(k).toUpperCase())}</button>`).join('')}
+            </div>
+        </div>
+    </div>`;
+}
 function renderQualityControl(){
+    if((apiImageModelSpec(settings)?.limits?.unsupported_params || []).includes('quality')) return '';
     const value = settings.quality || 'auto';
     const labels = {auto:tr('smart.qualityAuto'), low:tr('smart.qualityLow'), medium:tr('smart.qualityMid'), high:tr('smart.qualityHigh')};
     return `<div class="smart-control quality-control">
@@ -3751,7 +3785,7 @@ function setDynamicSetting(key, value, {human=false}={}){
     if(human && !smartHumanSettingsEditable()) return;
     const action = human ? beginSmartSettingsHumanEdit(smartHumanSettingKeys(key), activeComposerNode(), ['outpaintSize']) : null;
     const numericKeys = new Set(['count','width','height','videoDuration','enhanceStrength','enhanceUpscaleRes','editUpscaleRes','customRatioWidth','customRatioHeight','customWidth','customHeight','msCustomRatioWidth','msCustomRatioHeight','msCustomWidth','msCustomHeight']);
-    const layoutKeys = new Set(['routingMode','anglePreset','provider_id','model','resolution','ratio','msgenModel','msCustomModel','msResolution','msRatio','videoRoutingMode','videoProvider','videoModel','videoAspect','videoResolution','quality','count','rhConfigKey','rhPayment','rhInstanceType']);
+    const layoutKeys = new Set(['routingMode','anglePreset','provider_id','model','resolution','ratio','msgenModel','msCustomModel','msResolution','msRatio','videoRoutingMode','videoProvider','videoModel','videoAspect','videoResolution','quality','outputFormat','count','rhConfigKey','rhPayment','rhInstanceType']);
     settings[key] = numericKeys.has(key) && value !== '' ? Number(value) : value;
     if(key === 'provider_id') settings.model = '';
     if(key === 'videoProvider') settings.videoModel = '';

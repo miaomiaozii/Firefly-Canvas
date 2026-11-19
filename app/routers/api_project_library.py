@@ -695,7 +695,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
         preexisting_asset_ids = {item.get('asset_id') for item in await asyncio.to_thread(_app_main.project_store_call, 'list_media', project_id) if item.get('asset_id')}
         references = await asyncio.to_thread(project_image_references, project_id, payload.reference_asset_ids)
         executed_prompt = apply_angle_preset(payload.prompt, payload.angle_preset)
-        image_parameters = {'width': request_snapshot.width, 'height': request_snapshot.height, 'aspect_ratio': request_snapshot.aspect_ratio, 'resolution': request_snapshot.resolution, 'media_type': request_snapshot.media_type}
+        image_parameters = {'width': request_snapshot.width, 'height': request_snapshot.height, 'aspect_ratio': request_snapshot.aspect_ratio, 'resolution': request_snapshot.resolution, 'media_type': request_snapshot.media_type, 'output_format': payload.output_format}
         if not references:
             update_project_image_task_progress(task_id, 'provider_generating')
         scope_token = PROJECT_MEDIA_ADAPTER_PROJECT.set(project_id)

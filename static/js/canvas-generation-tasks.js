@@ -189,6 +189,7 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
             aspect_ratio:aspectRatioForRun(runSettings),
             resolution:usesExplicitResolution ? (runSettings.resolution || '') : '',
             quality:runSettings.quality || 'auto',
+            output_format:runSettings.outputFormat || '',
             n:count,
             reference_asset_ids,
             media_type:'image',

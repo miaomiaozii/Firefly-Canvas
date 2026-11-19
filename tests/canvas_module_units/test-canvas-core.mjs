@@ -60,6 +60,7 @@ const EXPECTED_SETTINGS = {
     customWidth: '',
     customHeight: '',
     quality: 'auto',
+    outputFormat: '',
     count: 1,
     videoRoutingMode: 'auto',
     videoProvider: '',

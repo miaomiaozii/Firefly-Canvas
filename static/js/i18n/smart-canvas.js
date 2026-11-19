@@ -194,6 +194,7 @@
         "smart.ratio": { zh: "比例", en: "Ratio" },
         "smart.resolution": { zh: "分辨率", en: "Resolution" },
         "smart.quality": { zh: "质量", en: "Quality" },
+        "smart.outputFormat": { zh: "格式", en: "Format" },
         "smart.count": { zh: "生成数量", en: "Count" },
         "smart.qualityAuto": { zh: "自动", en: "Auto" },
         "smart.qualityLow": { zh: "低", en: "Low" },
