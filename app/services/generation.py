@@ -10,6 +10,7 @@ import app.services as _svc  # noqa: E402
 from app.core import _local_upload_kind_ext, banana_model_family, clamp_size_to_spec, looks_like_gemini_image_model, model_spec_for  # noqa: E402,F401
 from .comfyui_workflows import COMFYUI_MAX_REFERENCES, COMFYUI_REFERENCE_JPEG_QUALITY, comfyui_edit_target_size, comfyui_h3_resolution, comfyui_h3_workflow, comfyui_pe_enabled, comfyui_ratio_is_auto, comfyui_resolution_tier  # noqa: E402
 from firefly_diagnostics import emit as _diag_emit
+from firefly_generation import is_soon_openrouter_video_model, soon_gemini_native_model
 import logging
 logger = logging.getLogger(__name__)
 
@@ -1470,7 +1471,7 @@ async def save_remote_video_to_output(url, prefix='video_', category='output'):
         return url
 
 async def generate_gemini_provider_image(prompt, size, model, reference_images=None, provider=None, image_parameters=None):
-    model_name = gemini_model_name(model)
+    model_name = gemini_model_name(soon_gemini_native_model(provider, model))
     endpoint = _svc.gemini_endpoint_url(provider, model_name)
     parts = [{'text': prompt.strip()}]
     for ref in (reference_images or [])[:ONLINE_IMAGE_REFERENCE_MAX]:
@@ -3049,6 +3050,70 @@ async def generate_lingjing_openai_video(client, payload, provider, base_url, re
     local_urls = [await _svc._main('save_remote_video_to_output')(url) for url in urls]
     return {'videos': local_urls, 'task_id': task_id, 'raw': result}
 
+async def generate_soon_openrouter_video(client, payload, provider, base_url, requested_model):
+    """soon 的 openrouter/* 视频：POST /openrouter/v1/videos → 轮询 /openrouter/v1/videos/{id} → completed 后取结果。
+
+    格式来自 soon 模型页 bundle（ModelDetailPage）与 OpenRouter 视频 API 文档；提交、查询、下载都要带同一渠道分组头。
+    """
+    root = f'{base_url}/openrouter/v1/videos'
+    headers = {**_svc._main('api_headers')(provider=provider), 'x-studio-channel-group': 'openrouter'}
+    # 请求体用 OpenRouter 自己的模型名（实测带 openrouter/ 前缀回 400 "does not exist"）。
+    body = {'model': requested_model.split('/', 1)[1], 'prompt': str(payload.prompt or ''), 'duration': int(payload.duration), 'generate_audio': bool(payload.generate_audio)}
+    if payload.aspect_ratio:
+        body['aspect_ratio'] = payload.aspect_ratio
+    if payload.resolution:
+        body['resolution'] = payload.resolution
+    if payload.seed is not None:
+        body['seed'] = payload.seed
+    frame_images, input_references = [], []
+    for ref in payload.images or []:
+        url = _svc.reference_to_data_url({'url': getattr(ref, 'url', '')}, max_size=2048)
+        if not url:
+            continue
+        item = {'type': 'image_url', 'image_url': {'url': url}}
+        role = str(getattr(ref, 'role', '') or '').strip()
+        if role in {'first_frame', 'last_frame'}:
+            frame_images.append({**item, 'frame_type': role})
+        else:
+            input_references.append(item)
+    if frame_images:
+        body['frame_images'] = frame_images
+    if input_references:
+        body['input_references'] = input_references
+    response = await client.post(root, headers=headers, json=body)
+    response.raise_for_status()
+    raw = response.json()
+    job_id = str(raw.get('id') or '').strip()
+    if not job_id:
+        raise HTTPException(status_code=502, detail=f'soon 视频接口没有返回任务 ID：{raw}')
+    job_url = f"{root}/{urllib.parse.quote(job_id, safe='')}"
+    deadline = time.monotonic() + VIDEO_POLL_TIMEOUT
+    delay = 5.0
+    while str(raw.get('status') or '').lower() in {'pending', 'in_progress', ''}:
+        if time.monotonic() >= deadline:
+            raise HTTPException(status_code=504, detail=f'soon 视频生成任务超时：{job_id}')
+        await asyncio.sleep(delay)
+        delay = min(delay * 1.35, 12)
+        poll = await client.get(job_url, headers=headers)
+        poll.raise_for_status()
+        raw = poll.json()
+    if str(raw.get('status')).lower() != 'completed':
+        raise HTTPException(status_code=502, detail=humanize_video_task_failure(raw.get('error') or f"任务状态 {raw.get('status')}"))
+    # urls 是免 Key 的签名地址，可直接走通用下载；只有 unsigned_urls 时必须带 Key 和分组头从 /content 取。
+    signed = [str(url) for url in raw.get('urls') or [] if url]
+    if signed:
+        local_urls = [await _svc._main('save_remote_video_to_output')(url) for url in signed]
+    else:
+        content = await client.get(f'{job_url}/content', params={'index': 0}, headers=headers, follow_redirects=True)
+        content.raise_for_status()
+        if 'json' in (content.headers.get('Content-Type') or '').lower() or not content.content:
+            raise HTTPException(status_code=502, detail=f'soon 视频生成完成但没有返回视频：{raw}')
+        filename = f'video_{uuid.uuid4().hex[:10]}.mp4'
+        with open(_svc.output_path_for(filename, 'output'), 'wb') as handle:
+            handle.write(content.content)
+        local_urls = [_svc.output_url_for(filename, 'output')]
+    return {'videos': local_urls, 'task_id': job_id, 'raw': raw}
+
 async def generate_yuli_openai_video(client, payload, provider, base_url, requested_model):
     """玉玉API veo3.1 走 OpenAI multipart 格式 /v1/videos，支持 seconds 时长控制。"""
     submit_url = f'{base_url}/v1/videos'
@@ -3515,6 +3580,15 @@ async def execute_canvas_video(payload: CanvasVideoRequest, provider: Mapping[st
         except httpx.HTTPError as exc:
             log_net_error(f'视频(灵境) 网络/TLS错误 model={requested_model}', exc)
             raise HTTPException(status_code=502, detail=f'请求灵境 API 视频接口失败：{exc}') from exc
+    if is_soon_openrouter_video_model(provider, requested_model):
+        try:
+            async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as soon_client:
+                return await generate_soon_openrouter_video(soon_client, payload, provider, base_url, requested_model)
+        except httpx.HTTPStatusError as exc:
+            raise HTTPException(status_code=exc.response.status_code, detail=f'soon 视频接口错误：{exc.response.text}') from exc
+        except httpx.HTTPError as exc:
+            log_net_error(f'视频(soon openrouter) 网络/TLS错误 model={requested_model}', exc)
+            raise HTTPException(status_code=502, detail=f'请求 soon 视频接口失败：{exc}') from exc
     if is_yuli and yuli_is_veo_openai_model(requested_model):
         try:
             async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as yuli_client:

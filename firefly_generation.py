@@ -257,17 +257,35 @@ def is_soon_provider(provider: Mapping[str, Any] | None) -> bool:
     return host == "soonstudio.ai" or host.endswith(".soonstudio.ai")
 
 
+# soon 的 nano-banana-pro 走 /v1/images/generations 无论 size/resolution 都只出 1264x848；
+# 它就是 Gemini 3 Pro Image，同一服务商的原生 gemini-3-pro-image 实测 imageSize=4K 出 4096x4096
+# （2026-11-19）。所以后台换成原生模型发出，节点上仍显示用户选的名字。
+SOON_GEMINI_NATIVE_ALIASES = {"nano-banana-pro": "gemini-3-pro-image"}
+
+
+def soon_gemini_native_model(provider: Mapping[str, Any] | None, model: str) -> str:
+    """返回实际发给 soon 原生接口的模型名；非 soon 或无别名时原样返回。"""
+    if not is_soon_provider(provider):
+        return model
+    return SOON_GEMINI_NATIVE_ALIASES.get(str(model or "").strip().lower(), model)
+
+
 def is_soon_gemini_native_image_model(provider: Mapping[str, Any] | None, model: str) -> bool:
     """soon 的 Gemini 图像模型只认原生 generateContent。
 
     /v1/images/generations 会回 400 gemini_native_request_required（日志 2026-11-19）；
     gemini-nano-banana-2.1 走 images 端点则是异步任务且实测失败退款，原生同步出图正常。
-    nano-banana-pro 不在此列：soon 文档只给它 OpenAI images 格式，原生返回的是 markdown 链接。
     """
     if not is_soon_provider(provider):
         return False
-    value = str(model or "").strip().lower()
+    value = str(soon_gemini_native_model(provider, model) or "").strip().lower()
     return value.startswith("gemini-") and ("image" in value or "nano-banana" in value)
+
+
+def is_soon_openrouter_video_model(provider: Mapping[str, Any] | None, model: str) -> bool:
+    # soon 的 openrouter/* 视频模型只在 openrouter 渠道分组可用（默认分组回 model_group_unavailable），
+    # 走 /openrouter/v1/videos，格式同 OpenRouter 视频 API。
+    return is_soon_provider(provider) and str(model or "").strip().lower().startswith("openrouter/")
 
 
 def _soon_gemini_native_capabilities(model: str) -> dict[str, Any]:
@@ -316,7 +334,7 @@ def normalize_image_model_capabilities(
         if is_soon_gemini_native_image_model(provider, model):
             # 已保存的 soon 能力表是旧推断（按变体模型名把基础模型锁在 1k）的快照，
             # 不是用户声明，所以档位/尺寸/比例以原生协议能力为准。
-            normalized.update(_soon_gemini_native_capabilities(model))
+            normalized.update(_soon_gemini_native_capabilities(soon_gemini_native_model(provider, model)))
         normalized.setdefault("media_types", ["image"])
         result[model] = normalized
     return result
