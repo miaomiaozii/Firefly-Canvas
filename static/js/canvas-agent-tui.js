@@ -3202,7 +3202,7 @@ function bindAgentTaskNodeControls(el, node){
 // 不动 agentTuiState、不改 node.x/y、不动视口。全量 render() 跳过停靠节点，
 // 消息/流式更新走 renderAgentNode 就地路径（它按 [data-id] 全文档查找，元素在停靠槽里同样工作）——
 // 所以输入/IME 永不被全量重建打断（#314 同一原因）；只有显式切换形态才搬 DOM，搬前抓焦点/选区、搬完恢复。
-const AGENT_DOCK_GAP = 12;              // 停靠面板与屏幕边缘的间距（CSS .agent-dock-node left/right）
+const AGENT_DOCK_GAP = 12;              // 收起窄条与屏幕边缘的间距（CSS .agent-dock-node left/right）
 const AGENT_DOCK_COLLAPSED_W = 44;      // 窄条态宽度
 const AGENT_DOCK_NARROW_VW = 900;       // 视口宽低于此值 → 自动收起（只收不展，展开由用户手动）
 const AGENT_DOCK_CLEAR_VW = 480;        // 面板宽 + 此值 > 视口宽 → 自动收起（给中央内容留位置）
@@ -3489,9 +3489,10 @@ function syncAgentDock(){
                 btn.setAttribute('aria-label', btn.textContent);
             });
         }
-        const reserveW = collapsed ? AGENT_DOCK_COLLAPSED_W : agentDockNodeWidth(node);
-        if(node.dock === 'left') leftReserve = AGENT_DOCK_GAP + reserveW;
-        else rightReserve = AGENT_DOCK_GAP + reserveW;
+        // 展开态贴边（CSS left/right:0），只有收起窄条离边 AGENT_DOCK_GAP；展开时再加 GAP 会让小地图与面板间距变成双份。
+        const reserve = collapsed ? AGENT_DOCK_GAP + AGENT_DOCK_COLLAPSED_W : agentDockNodeWidth(node);
+        if(node.dock === 'left') leftReserve = reserve;
+        else rightReserve = reserve;
     });
     const shellEl = document.getElementById('shell');
     if(shellEl){

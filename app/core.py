@@ -68,7 +68,7 @@ from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.requests import HTTPConnection
 from pydantic import BaseModel, Field, StrictBool, model_validator
 from firefly_projects import InvalidMutation, ProjectNotFound, ProjectStore, ProjectStoreError, RevisionConflict
-from firefly_generation import ImageGenerationRequest, ModelRoutingError, VIDEO_EXECUTION_PROTOCOLS, VideoGenerationRequest, apply_angle_preset, normalize_image_model_capabilities, normalize_video_model_capabilities, route_image_generation, route_video_generation
+from firefly_generation import ImageGenerationRequest, ModelRoutingError, VIDEO_EXECUTION_PROTOCOLS, VideoGenerationRequest, apply_angle_preset, is_soon_gemini_native_image_model, normalize_image_model_capabilities, normalize_video_model_capabilities, route_image_generation, route_video_generation
 from local_edit import as_rgba, composite_preserve, composite_rect, encode_png, rasterize_preserve_mask, selection_json
 QUIET_ACCESS_PATHS = {'/api/queue_status', '/api/canvases', '/api/canvases/trash'}
 QUIET_ACCESS_PREFIXES = ('/api/canvases/',)
@@ -1028,7 +1028,7 @@ def normalize_provider(item):
         model_selection_version = max(0, int(item.get('model_selection_version') or 0))
     except (TypeError, ValueError):
         model_selection_version = 0
-    return {'id': provider_id, 'name': name, 'base_url': base_url, 'protocol': protocol, 'image_request_mode': image_request_mode, 'image_generation_endpoint': image_generation_endpoint, 'image_edit_endpoint': image_edit_endpoint, 'video_generation_endpoint': video_generation_endpoint, 'enabled': bool(item.get('enabled', True)), 'primary': bool(item.get('primary', False)), 'image_models': image_models, 'image_model_capabilities': normalize_image_model_capabilities(item.get('image_model_capabilities'), image_models), 'chat_models': model_list_from_values(item.get('chat_models') or []), 'chat_audio_input': bool(item.get('chat_audio_input', False)), 'video_models': video_models, 'video_model_capabilities': normalize_video_model_capabilities(item.get('video_model_capabilities'), video_models), 'recommended_models': normalize_recommended_models(item.get('recommended_models')), 'available_models': normalize_available_models(item.get('available_models')), 'model_selection_version': model_selection_version, 'model_names': normalize_model_name_map(item.get('model_names')), 'model_protocols': normalize_model_protocols(item.get('model_protocols')), 'model_request_modes': normalize_model_request_modes(item.get('model_request_modes')), 'ms_loras': normalize_ms_loras(item.get('ms_loras') or []), 'ms_defaults_version': int(item.get('ms_defaults_version') or 0), 'rh_apps': normalize_runninghub_entries(item.get('rh_apps') or [], 'app'), 'volcengine_project_name': volc_project, 'volcengine_region': volc_region}
+    return {'id': provider_id, 'name': name, 'base_url': base_url, 'protocol': protocol, 'image_request_mode': image_request_mode, 'image_generation_endpoint': image_generation_endpoint, 'image_edit_endpoint': image_edit_endpoint, 'video_generation_endpoint': video_generation_endpoint, 'enabled': bool(item.get('enabled', True)), 'primary': bool(item.get('primary', False)), 'image_models': image_models, 'image_model_capabilities': normalize_image_model_capabilities(item.get('image_model_capabilities'), image_models, {'base_url': base_url}), 'chat_models': model_list_from_values(item.get('chat_models') or []), 'chat_audio_input': bool(item.get('chat_audio_input', False)), 'video_models': video_models, 'video_model_capabilities': normalize_video_model_capabilities(item.get('video_model_capabilities'), video_models), 'recommended_models': normalize_recommended_models(item.get('recommended_models')), 'available_models': normalize_available_models(item.get('available_models')), 'model_selection_version': model_selection_version, 'model_names': normalize_model_name_map(item.get('model_names')), 'model_protocols': normalize_model_protocols(item.get('model_protocols')), 'model_request_modes': normalize_model_request_modes(item.get('model_request_modes')), 'ms_loras': normalize_ms_loras(item.get('ms_loras') or []), 'ms_defaults_version': int(item.get('ms_defaults_version') or 0), 'rh_apps': normalize_runninghub_entries(item.get('rh_apps') or [], 'app'), 'volcengine_project_name': volc_project, 'volcengine_region': volc_region}
 
 def modelscope_image_api_root():
     return MODELSCOPE_CHAT_BASE_URL.rstrip('/')
@@ -2419,7 +2419,7 @@ def normalize_model_name_map(value):
     return normalized
 
 def effective_protocol(provider, model=''):
-    """返回某模型实际生效的协议：优先单模型覆盖，否则用平台全局协议。"""
+    """返回某模型实际生效的协议：单模型覆盖 > 服务商内建按模型路由 > 平台全局协议。"""
     base = provider_protocol(provider)
     pid = str((provider or {}).get('id') or '').strip().lower()
     if pid in FIXED_PROTOCOL_PROVIDER_IDS:
@@ -2429,6 +2429,8 @@ def effective_protocol(provider, model=''):
         val = str(overrides.get(str(model or '').strip()) or '').strip().lower()
         if val in PER_MODEL_PROTOCOL_OPTIONS:
             return val
+    if base == 'openai' and is_soon_gemini_native_image_model(provider, model):
+        return 'gemini'
     return base
 
 def is_apimart_provider(provider):

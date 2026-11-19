@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import re
+import urllib.parse
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -251,7 +252,39 @@ def apply_angle_preset(prompt: str, preset: str) -> str:
     return f"{original}\n\n角度参考：{instruction}。" if original else f"角度参考：{instruction}。"
 
 
-def normalize_image_model_capabilities(value: Any, models: Sequence[str]) -> dict[str, dict[str, Any]]:
+def is_soon_provider(provider: Mapping[str, Any] | None) -> bool:
+    host = urllib.parse.urlsplit(str((provider or {}).get("base_url") or "").strip()).hostname or ""
+    return host == "soonstudio.ai" or host.endswith(".soonstudio.ai")
+
+
+def is_soon_gemini_native_image_model(provider: Mapping[str, Any] | None, model: str) -> bool:
+    """soon 的 Gemini 图像模型只认原生 generateContent。
+
+    /v1/images/generations 会回 400 gemini_native_request_required（日志 2026-11-19）；
+    gemini-nano-banana-2.1 走 images 端点则是异步任务且实测失败退款，原生同步出图正常。
+    nano-banana-pro 不在此列：soon 文档只给它 OpenAI images 格式，原生返回的是 markdown 链接。
+    """
+    if not is_soon_provider(provider):
+        return False
+    value = str(model or "").strip().lower()
+    return value.startswith("gemini-") and ("image" in value or "nano-banana" in value)
+
+
+def _soon_gemini_native_capabilities(model: str) -> dict[str, Any]:
+    # 原生 imageConfig.imageSize 收 1K/2K/4K，不靠 -2k/-4k 变体模型名（soon 的 /v1/models
+    # 没有这些变体，查询返回 model_not_found）。实测 gemini-nano-banana-2.1 imageSize=4K 出 5056x3392。
+    return {
+        "aspect_ratios": _banana_aspect_ratios(str(model or "").strip().lower()),
+        "resolutions": ["1k", "2k", "4k"],
+        "sizes": [size for values in COMMON_IMAGE_SIZES.values() for size in values],
+    }
+
+
+def normalize_image_model_capabilities(
+    value: Any,
+    models: Sequence[str],
+    provider: Mapping[str, Any] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Return sanitized explicit or trusted built-in online-image capabilities."""
     source = value if isinstance(value, Mapping) else {}
     result: dict[str, dict[str, Any]] = {}
@@ -280,6 +313,10 @@ def normalize_image_model_capabilities(value: Any, models: Sequence[str]) -> dic
         # 参数集来自服务商/fal 官方 schema，必须随能力一起存活，不能写死在代码里。
         if isinstance(raw.get("fal_request"), Mapping):
             normalized["fal_request"] = copy.deepcopy(dict(raw["fal_request"]))
+        if is_soon_gemini_native_image_model(provider, model):
+            # 已保存的 soon 能力表是旧推断（按变体模型名把基础模型锁在 1k）的快照，
+            # 不是用户声明，所以档位/尺寸/比例以原生协议能力为准。
+            normalized.update(_soon_gemini_native_capabilities(model))
         normalized.setdefault("media_types", ["image"])
         result[model] = normalized
     return result
@@ -485,7 +522,7 @@ def route_image_generation(
         available_models = provider.get("available_models") or {}
         discovered_models = _string_list(available_models.get("image_models")) if isinstance(available_models, Mapping) else []
         known_models = list(dict.fromkeys([*models, *discovered_models]))
-        capabilities = normalize_image_model_capabilities(provider.get("image_model_capabilities"), known_models)
+        capabilities = normalize_image_model_capabilities(provider.get("image_model_capabilities"), known_models, provider)
         resolution_tag = str(request_snapshot.get("resolution") or "").strip().lower()
         candidates_to_check: list[str] = []
         if pinned_model:

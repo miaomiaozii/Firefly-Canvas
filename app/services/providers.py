@@ -629,6 +629,11 @@ def public_base_url() -> str:
 
 def gemini_endpoint_url(provider, model):
     model_name = urllib.parse.quote(gemini_model_name(model), safe='')
+    base_url = str((provider or {}).get('base_url') or '').strip().rstrip('/')
+    if base_url.endswith('/v1') and not str((provider or {}).get('image_generation_endpoint') or '').strip():
+        # OpenAI 兼容服务商常把 Base URL 填到 /v1（如 soon 自动走原生的 Gemini 图像模型），
+        # 原生路径在 /v1beta 下，直接拼会变成 /v1/v1beta/...。
+        provider = {**provider, 'base_url': base_url[:-len('/v1')]}
     return provider_endpoint_url(provider, 'image_generation_endpoint', f'/v1beta/models/{model_name}:generateContent')
 
 def volcengine_endpoint_url(provider):

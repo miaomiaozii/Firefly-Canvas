@@ -1457,7 +1457,7 @@ input[type=range].smart-range::-webkit-slider-thumb { -webkit-appearance:none; w
 .asset-hover-preview { position:fixed; z-index:88; display:none; width:260px; max-height:300px; border-radius:16px; overflow:hidden; background:var(--card); border:1px solid var(--line); box-shadow:0 24px 70px color-mix(in srgb, var(--shadow-color) 22%, var(--transparent)); pointer-events:none; }
 .asset-hover-preview img,.asset-hover-preview video { width:100%; max-height:260px; display:block; object-fit:contain; background:var(--soft); }
 .asset-hover-preview .asset-hover-name { padding:8px 10px; color:var(--text); font-size:11px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; border-top:1px solid var(--line); }
-.toast { position:absolute; top:24px; right:24px; z-index:60; max-width:360px; padding:10px 12px; border-radius:12px; background:var(--panel); border:1px solid var(--line); color:var(--text); box-shadow:0 16px 44px var(--shadow); font-size:12px; font-weight:800; opacity:0; transform:translateY(-8px); pointer-events:none; transition:.18s ease; }
+.toast { position:absolute; top:24px; right:calc(24px + var(--agent-dock-right)); z-index:60; max-width:360px; padding:10px 12px; border-radius:12px; background:var(--panel); border:1px solid var(--line); color:var(--text); box-shadow:0 16px 44px var(--shadow); font-size:12px; font-weight:800; opacity:0; transform:translateY(-8px); pointer-events:none; transition:.18s ease; }
 .toast.show { opacity:1; transform:translateY(0); }
 .selection-box { position:absolute; z-index:18; border:1px solid var(--strong); background:color-mix(in srgb, var(--panel) 8%, var(--transparent)); border-radius:10px; pointer-events:none; display:none; }
 .theme-dark .selection-box { background:rgba(248,250,252,.1); }
@@ -3698,7 +3698,7 @@ dialog.agent-tui-model-picker {
     --agent-panel-shadow:0 10px 42px var(--shadow);
 }
 .image-node.agent-dock-node:not(.dock-collapsed, .drag-out) {
-    top:64px;
+    top:0;
     bottom:0;
     border-width:0;
     border-radius:0;
@@ -4569,7 +4569,6 @@ button.agent-tui-more:hover,
 @keyframes agent-node-ref-flash { 0%,100% { outline-color:transparent; } 35% { outline-color:var(--glow, var(--accent)); } }
 .agent-node-ref-flash { outline:2px solid transparent; outline-offset:3px; animation:agent-node-ref-flash .9s ease 1; }
 @media (max-height:800px) {
-    .image-node.agent-dock-node:not(.dock-collapsed, .drag-out) { top:56px; }
     .agent-node-ref-chips { margin-top:2px; padding-bottom:7px; }
     .agent-tui-conversation-date { margin:6px 0 13px; }
     .agent-tui-body { padding-top:5px; }
