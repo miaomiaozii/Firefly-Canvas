@@ -1,12 +1,15 @@
+import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import shutil
 import sys
 import tempfile
 import time
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
 from unittest import mock
 
@@ -51,6 +54,47 @@ from tools.ui_integrity_evidence import accept_baseline
 ROOT = Path(__file__).resolve().parents[1]
 QUALITY_GATE = ROOT / "tools" / "quality_gate.py"
 
+
+def node_modules_snapshot(repo_root):
+    entries = {}
+
+    def visit(path, relative, ancestors):
+        info = path.lstat()
+        metadata = (info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        is_link = stat.S_ISLNK(info.st_mode) or os.path.isjunction(path)
+        if is_link:
+            entries[relative] = (metadata, os.readlink(path))
+            if not path.exists():
+                return
+            info = path.stat()
+            metadata = (info.st_mode, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        if stat.S_ISREG(info.st_mode):
+            with path.open("rb") as stream:
+                digest = hashlib.file_digest(stream, "sha256").digest()
+            entries[relative] = (entries.get(relative), metadata, digest)
+        elif stat.S_ISDIR(info.st_mode):
+            identity = (info.st_dev, info.st_ino)
+            entries[relative] = (entries.get(relative), metadata, "directory")
+            if identity not in ancestors:
+                with os.scandir(path) as children:
+                    for child in children:
+                        visit(Path(child.path), relative / child.name, ancestors | {identity})
+        elif not is_link:
+            entries[relative] = (metadata, "special")
+
+    root = repo_root / "node_modules"
+    if os.path.lexists(root):
+        visit(root, Path("."), set())
+    return entries
+
+
+@contextmanager
+def assert_node_modules_unchanged(test, repo_root):
+    before = node_modules_snapshot(repo_root)
+    try:
+        yield
+    finally:
+        test.assertEqual(before, node_modules_snapshot(repo_root), "步骤写到了工作仓库的 node_modules")
 
 
 def unattributable_noise_source(targets, kind):
@@ -345,12 +389,7 @@ class QualityGateTests(unittest.TestCase):
             self.assertEqual(steps.index(step), steps.index("javascript-syntax") + 1)
 
     def test_javascript_types_step_installs_offline_and_rejects_bad_js(self):
-        # #369 验收：红绿有效性。最小 fixture 没有类型检查配置，步骤在整条 fast 门
-        # 里是 no-op（接线由 test_fast_mode_…reports_dirty_tree 覆盖）；这里造一个
-        # 带完整类型检查配置的仓库直接跑步骤模块，断言：
-        # (a) vendored tarball 能 integrity 校验 + 解进 node_modules（无 npm、无网络、
-        #     不写本机 npm 缓存/临时目录）；(b) 正确的 @ts-check 文件绿；
-        # (c) 类型错误红、TS 错误码进 stderr。
+        # #369：最小门禁 fixture 无类型检查配置，必须另用完整配置验证离线安装及类型检查红绿。
         scratch = Path(self.temp_dir.name) / "type-repo"
         (scratch / "static" / "js").mkdir(parents=True)
         (scratch / "tests").mkdir()
@@ -371,38 +410,38 @@ class QualityGateTests(unittest.TestCase):
         )
 
         environment = os.environ.copy()
-        # 钉死：步骤不得跑 npm / 写任何 npm 缓存——给一个必须保持不存在的目录。
         environment["NPM_CONFIG_CACHE"] = str(Path(self.temp_dir.name) / "npm-cache-must-stay-empty")
         command = [sys.executable, "-m", "unittest", "-b", "tests.test_javascript_types"]
-        green = subprocess.run(
-            command,
-            cwd=scratch,
-            env=environment,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=120,
-            check=False,
-        )
+        with assert_node_modules_unchanged(self, ROOT):
+            green = subprocess.run(
+                command,
+                cwd=scratch,
+                env=environment,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=120,
+                check=False,
+            )
         self.assertEqual(green.returncode, 0, green.stdout + green.stderr)
         self.assertTrue((scratch / "node_modules" / "typescript" / "lib" / "tsc.js").is_file())
         self.assertFalse(Path(environment["NPM_CONFIG_CACHE"]).exists(), "步骤跑了 npm / 写了 npm 缓存")
-        self.assertFalse((ROOT / "node_modules").exists(), "步骤写到了工作仓库的 node_modules")
 
         (scratch / "static" / "js" / "bad.js").write_text(
             "// @ts-check\n/** @type {number} */\nconst value = \"not a number\";\nexport { value };\n",
             encoding="utf-8",
         )
-        red = subprocess.run(
-            command,
-            cwd=scratch,
-            env=environment,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=120,
-            check=False,
-        )
+        with assert_node_modules_unchanged(self, ROOT):
+            red = subprocess.run(
+                command,
+                cwd=scratch,
+                env=environment,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=120,
+                check=False,
+            )
         self.assertNotEqual(red.returncode, 0)
         self.assertIn("TS2322", red.stderr)
 
