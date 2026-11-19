@@ -231,7 +231,7 @@ function agentNodeRefsSettle(nodeId, state, snapshot, receipt, error = '', uncer
             refs.manual = snapshot.manual;
             refs.dismissed = snapshot.dismissed;
             refs.revision++;
-            if (snapshot.kind === 'prompt' && !(state.pendingImages || []).length) state.pendingImages = snapshot.images;
+            if (!(state.pendingImages || []).length) state.pendingImages = snapshot.images;
         }
         if (!uncertain && snapshot.kind === 'prompt') refs.rejectedPrompt = snapshot;
         const notice = tr('smart.agentRefFailed').replace('{error}', error);
@@ -256,6 +256,8 @@ function agentNodeRefsTransport(nodeId, projectId, snapshot) {
     const body = { message: snapshot.message, request_id: snapshot.id };
     if (snapshot.labels.length) body.refs = snapshot.labels.map(ref => ({ node_id: ref.node_id }));
     if (snapshot.kind === 'prompt') body.images = snapshot.images.map(img => typeof img === 'string' ? img : (img && img.dataUrl) || '').filter(Boolean);
+    const attachments = snapshot.images.map(img => img && img.attachmentId).filter(Boolean);
+    if (attachments.length) body.attachments = attachments;
     if (state.socket && state.socket.readyState === WebSocket.OPEN) {
         try { state.socket.send(JSON.stringify({ type: snapshot.kind, ...body })); }
         catch (error) { agentNodeRefsSettle(nodeId, state, snapshot, null, String(error.message || error)); }
@@ -297,7 +299,9 @@ function agentNodeRefsApplyEvent(nodeId, event, recordedAt) {
         renderAgentNode(nodeId);
         return true;
     }
-    if (event.type === 'queued_input' || (event.type === 'user_prompt' && (event.request_id || (Array.isArray(event.node_refs) && event.node_refs.length)))) {
+    if (event.type === 'queued_input' || (event.type === 'user_prompt' && (event.request_id ||
+        (Array.isArray(event.node_refs) && event.node_refs.length) ||
+        (Array.isArray(event.attachments) && event.attachments.length)))) {
         // Reconnect may replay the already-optimistic row; reconcile by per-input identity.
         if (event.type === 'queued_input' && event.replay_delivery === 'delivered') return true;
         if (event.type === 'queued_input' && !event.replay_delivery) state.queuedInputs.add(event.request_id || `queued:${event.seq}`);
@@ -305,11 +309,13 @@ function agentNodeRefsApplyEvent(nodeId, event, recordedAt) {
         const existing = event.request_id && state.messages.find(msg => msg.request_id === event.request_id);
         const pending = refs.pending.get(event.request_id);
         const canonical = Array.isArray(event.node_refs) ? event.node_refs : [];
+        const attachments = Array.isArray(event.attachments) ? event.attachments.map(item => item.name).filter(Boolean) : [];
         if (pending) agentNodeRefsSettle(nodeId, state, pending, { node_refs: canonical });
         const timestamp = event.type === 'user_prompt' ? recordedAt : undefined;
         if (existing) {
             existing.node_refs = canonical;
             existing.attachments_missing_on_restart = event.attachments_missing_on_restart || 0;
+            if (event.attachments) existing.attachments = attachments;
             existing.delivery = 'accepted';
             if (event.type === 'user_prompt') {
                 existing.role = 'user';
@@ -318,7 +324,7 @@ function agentNodeRefsApplyEvent(nodeId, event, recordedAt) {
             if (timestamp !== undefined) existing.timestamp = timestamp;
         } else agentAppendMessage(state, { role: event.type === 'user_prompt' ? 'user' : 'system',
             text: event.type === 'user_prompt' ? String(event.text || '') : `${event.input_type === 'steer' ? '↪ steer' : '⏳ follow_up queued'}: ${String(event.text || '')}`,
-            node_refs: canonical, request_id: event.request_id, queue_id: event.type === 'queued_input' ? (event.request_id || `queued:${event.seq}`) : undefined, input_type: event.input_type, delivery: 'accepted',
+            node_refs: canonical, attachments, request_id: event.request_id, queue_id: event.type === 'queued_input' ? (event.request_id || `queued:${event.seq}`) : undefined, input_type: event.input_type, delivery: 'accepted',
             attachments_missing_on_restart: event.attachments_missing_on_restart || 0,
             ...(timestamp !== undefined ? { timestamp } : {}) });
         if (event.type === 'queued_input' && event.replay_delivery) {
@@ -1369,9 +1375,7 @@ function sendAgentPrompt(nodeId, projectId, message, images = []) {
     });
 }
 
-// ---- #268：聊天附件（图片/视频/音频） ----
-// 图片 → dataURL 直发；视频 → 后端 contact sheet（抽帧+时间戳拼贴）；
-// 音频 → 后端波形卡（保守版：不转写，transcription=None）。
+// 原文件流式上传后，图片/视频/音频仍使用现有预处理。
 function readAsDataURL(file){
     return new Promise((resolve, reject) => {
         const reader = new FileReader();
@@ -1402,35 +1406,42 @@ async function handleAgentAttachments(nodeId, projectId, files) {
     const state = getAgentTuiState(nodeId);
     if (agentIsReadonly(state)) return;
     if (!Array.isArray(state.pendingImages)) state.pendingImages = [];
-    const ATTACH_MAX_BYTES = 8 * 1024 * 1024; // #317：图片 dataURL 直发无上限→大文件卡死/撞请求体上限；统一 8MB 拒收线（dataURL 膨胀后≈11MB）
     for (const file of files) {
         const name = file.name || 'attachment';
         try {
             const mime = (file.type || '').toLowerCase();
-            if (Number(file.size) > ATTACH_MAX_BYTES) {
-                agentAppendMessage(state, { role: 'system',
-                    text: tr('smart.agentAttachTooBig').replace('{name}', name).replace('{size}', (file.size / 1048576).toFixed(1)).replace('{max}', '8') });
-                continue;
-            }
-            state.attachWorking = name; // #317：转码/读取期间卡片可见进度
+            state.attachWorking = name;
             renderAgentNode(nodeId);
+            const url = `/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/attachments`;
+            const response = await fetch(url, { method: 'POST', headers: {
+                'Content-Type': file.type || 'application/octet-stream', 'X-Attachment-Name': encodeURIComponent(name),
+            }, body: file });
+            if (!response.ok) {
+                const body = await response.json();
+                if (response.status === 413 && body.detail && body.detail.max_bytes !== undefined) {
+                    agentAppendMessage(state, { role: 'system', text: tr('smart.agentAttachTooBig')
+                        .replace('{name}', name).replace('{size}', String(file.size)).replace('{max}', String(body.detail.max_bytes)) });
+                    continue;
+                }
+                throw new Error(typeof body.detail === 'string' ? body.detail : `HTTP ${response.status}`);
+            }
+            const uploaded = await response.json();
             if (mime.startsWith('image/')) {
                 const dataUrl = await readAsDataURL(file);
-                state.pendingImages.push({ dataUrl, name, caption: '' });
+                state.pendingImages.push({ dataUrl, name, caption: '', attachmentId: uploaded.id });
             } else if (mime.startsWith('video/')) {
                 const body = await convertAgentMediaAttachment(file);
                 const ts = body.frames_at_s || [];
                 const range = ts.length ? `${ts[0]}s–${ts[ts.length - 1]}s` : '';
-                state.pendingImages.push({ dataUrl: body.data_url, name,
+                state.pendingImages.push({ dataUrl: body.data_url, name, attachmentId: uploaded.id,
                     caption: tr('smart.agentAttachVideoReady')
                         .replace('{name}', name).replace('{frames}', String(ts.length)).replace('{range}', range) });
             } else if (mime.startsWith('audio/')) {
                 const body = await convertAgentMediaAttachment(file);
-                state.pendingImages.push({ dataUrl: body.data_url, name,
+                state.pendingImages.push({ dataUrl: body.data_url, name, attachmentId: uploaded.id,
                     caption: tr('smart.agentAttachAudioReady').replace('{name}', name) });
             } else {
-                agentAppendMessage(state, { role: 'system',
-                    text: tr('smart.agentAttachUnsupported').replace('{name}', name) });
+                state.pendingImages.push({ name, attachmentId: uploaded.id });
             }
         } catch (e) {
             console.error('Failed to prepare attachment:', name, e);
@@ -1492,17 +1503,17 @@ function sendAgentCommand(nodeId, projectId, command, options = {}) {
     renderAgentNode(nodeId);
 }
 
-function sendAgentSteer(nodeId, projectId, message) {
+function sendAgentSteer(nodeId, projectId, message, attachments = []) {
     if (agentIsReadonly(getAgentTuiState(nodeId))) return;
     return sendAgentCommand(nodeId, projectId, 'steer', {
-        nodeRefsSubmission: agentNodeRefsPrepare(nodeId, 'steer', message),
+        nodeRefsSubmission: agentNodeRefsPrepare(nodeId, 'steer', message, attachments),
     });
 }
 
-function sendAgentFollowUp(nodeId, projectId, message) {
+function sendAgentFollowUp(nodeId, projectId, message, attachments = []) {
     if (agentIsReadonly(getAgentTuiState(nodeId))) return;
     return sendAgentCommand(nodeId, projectId, 'follow_up', {
-        nodeRefsSubmission: agentNodeRefsPrepare(nodeId, 'follow_up', message),
+        nodeRefsSubmission: agentNodeRefsPrepare(nodeId, 'follow_up', message, attachments),
     });
 }
 
@@ -2473,14 +2484,14 @@ function agentNodeBodyHtml(node) {
     if (pendingImages.length) {
         const chips = pendingImages.map((img, idx) => `
             <div class="agent-tui-attach">
-                <img class="agent-tui-attach-thumb" src="${escapeAttr(img.dataUrl)}" alt="${escapeAttr(img.name)}">
+                ${img.dataUrl ? `<img class="agent-tui-attach-thumb" src="${escapeAttr(img.dataUrl)}" alt="${escapeAttr(img.name)}">` : agentIco('file')}
                 <div class="agent-tui-attach-meta">
                     <div class="agent-tui-attach-name">${escapeHtml(img.name)}</div>
                     ${img.caption ? `<div class="agent-tui-attach-caption">${escapeHtml(img.caption)}</div>` : ''}
                 </div>
                 <button type="button" class="agent-tui-attach-remove" data-agent-attach-remove="${idx}" title="${tr('smart.agentAttachRemove')}" aria-label="${tr('smart.agentAttachRemove')}">×</button>
             </div>`).join('');
-        pendingHtml = `<div class="agent-tui-attach-row">${chips}</div>`;
+        pendingHtml += `<div class="agent-tui-attach-row">${chips}</div>`;
     }
 
     // #301：空会话给 body 加类，空状态垂直居中，缓解「中间大空白」的失衡感。
@@ -2526,7 +2537,7 @@ function agentNodeBodyHtml(node) {
                 <button type="button" class="agent-tui-btn agent-tui-btn-followup" data-agent-followup="${escapeAttr(nodeId)}" title="排队后续指令" aria-label="排队后续指令">${agentIco('loader-2')}</button>` : ''}
                 <button type="button" class="agent-tui-btn agent-tui-btn-abort" data-agent-abort="${escapeAttr(nodeId)}" title="中止当前回合" aria-label="中止当前回合">${agentIco('square')}</button>
             </div>` : ''}
-            <input type="file" class="agent-tui-file-input" data-agent-tui-file="${escapeAttr(nodeId)}" accept="image/*,video/*,audio/*" multiple style="display:none">
+            <input type="file" class="agent-tui-file-input" data-agent-tui-file="${escapeAttr(nodeId)}" multiple style="display:none">
         </div>
         <div class="agent-tui-composer-hint"><span>Enter 发送 · Shift+Enter 换行</span><span class="agent-tui-effort-hint" role="status">${escapeHtml(state.effortNotice || '')}</span></div>
         </div>
@@ -2563,9 +2574,7 @@ function agentTaskNodeBodyHtml(node){
 
 function agentProjectId(){ return canvas?.project_id || canvas?.project || sourceProjectId || ''; }
 
-// #301：「Enter 发送」与「发送」按钮共用的提交逻辑（空输入 no-op）：
-// busy → 排队 follow_up（#268：该通道无 images 参数，附件留在队列随下一条 prompt 发出）；
-// 否则发 prompt 并带上待发附件（图片/视频 contact sheet/音频波形卡）。
+// #403：steer 和排队输入携带项目内附件引用，不传 inline 媒体。
 // #313：输入框随内容自动增高，上限 140px（与 CSS max-height 一致）后出内部滚动
 const AGENT_TUI_INPUT_MAX_H = 140;
 function agentTuiAutoGrow(inputEl){
@@ -2578,21 +2587,26 @@ function agentTuiResetGrow(inputEl){
     inputEl.style.height = '';
 }
 
-function agentTuiSendInput(inputEl, nodeId, projectId) {
-    const message = (inputEl && inputEl.value) ? inputEl.value.trim() : '';
-    if (!message) return;
+function agentTuiSendInput(inputEl, nodeId, projectId, kind) {
+    if (!inputEl) return;
     const inputState = getAgentTuiState(nodeId);
-    if (inputState.composing || agentIsReadonly(inputState) || inputState.stopPending || inputState.settingsPending) return;
+    const pending = (inputState.pendingImages || []).slice();
+    const message = inputEl.value.trim() || (pending.length ? tr('smart.agentAttachOnlyMessage') : '');
+    if (!message) return;
+    if (inputState.composing || agentIsReadonly(inputState) || inputState.stopPending || inputState.settingsPending || inputState.attachWorking) return;
     inputState.nodeRefsControlDraft = inputEl.value;
     // Clear before the sender rebuilds the DOM, not on the now-detached old textarea afterward.
     inputEl.value = '';
     inputState.draft = '';
     agentTuiResetGrow(inputEl);
-    if (['busy', 'retrying'].includes(inputState.status) || (inputState.status === 'idle' && !inputState.queueStopped && inputState.queuedInputs.size)) {
-        sendAgentFollowUp(nodeId, projectId, message);
+    inputState.pendingImages = [];
+    const shouldQueue = ['busy', 'retrying'].includes(inputState.status)
+        || (inputState.status === 'idle' && !inputState.queueStopped && inputState.queuedInputs.size);
+    if (kind === 'steer') {
+        sendAgentSteer(nodeId, projectId, message, pending);
+    } else if (kind === 'follow_up' || shouldQueue) {
+        sendAgentFollowUp(nodeId, projectId, message, pending);
     } else {
-        const pending = (inputState && inputState.pendingImages) ? inputState.pendingImages.slice() : [];
-        if (inputState) inputState.pendingImages = [];
         sendAgentPrompt(nodeId, projectId, message, pending);
     }
 }
@@ -3002,15 +3016,7 @@ function bindAgentNodeControls(el, node){
         steerBtn.addEventListener('mousedown', event => event.stopPropagation());
         steerBtn.addEventListener('click', event => {
             event.stopPropagation();
-            const inputEl = el.querySelector('[data-agent-tui-input]');
-            const message = inputEl ? inputEl.value.trim() : '';
-            const state = getAgentTuiState(nodeId);
-            if (message && !agentIsReadonly(state) && !state.composing && !state.stopPending) {
-                inputEl.value = '';
-                getAgentTuiState(nodeId).draft = '';
-                agentTuiResetGrow(inputEl);
-                sendAgentSteer(nodeId, projectId, message);
-            }
+            agentTuiSendInput(el.querySelector('[data-agent-tui-input]'), nodeId, projectId, 'steer');
         });
     }
 
@@ -3020,15 +3026,7 @@ function bindAgentNodeControls(el, node){
         followupBtn.addEventListener('mousedown', event => event.stopPropagation());
         followupBtn.addEventListener('click', event => {
             event.stopPropagation();
-            const inputEl = el.querySelector('[data-agent-tui-input]');
-            const message = inputEl ? inputEl.value.trim() : '';
-            const state = getAgentTuiState(nodeId);
-            if (message && !agentIsReadonly(state) && !state.composing && !state.stopPending) {
-                inputEl.value = '';
-                getAgentTuiState(nodeId).draft = '';
-                agentTuiResetGrow(inputEl);
-                sendAgentFollowUp(nodeId, projectId, message);
-            }
+            agentTuiSendInput(el.querySelector('[data-agent-tui-input]'), nodeId, projectId, 'follow_up');
         });
     }
 
@@ -3151,6 +3149,20 @@ function bindAgentNodeControls(el, node){
             if (files.length) handleAgentAttachments(nodeId, projectId, files);
         });
     }
+    el.addEventListener('dragover', event => {
+        if (Array.from(event.dataTransfer?.types || []).includes('Files')) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+    });
+    el.addEventListener('drop', event => {
+        const files = Array.from(event.dataTransfer?.files || []);
+        if (!files.length) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const state = getAgentTuiState(nodeId);
+        if (!agentIsReadonly(state) && !state.attachWorking) handleAgentAttachments(nodeId, projectId, files);
+    });
     el.querySelectorAll('[data-agent-attach-remove]').forEach(btn => {
         btn.addEventListener('mousedown', event => event.stopPropagation());
         btn.addEventListener('click', event => {

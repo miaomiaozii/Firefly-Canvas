@@ -890,7 +890,8 @@
         "smart.agentRefNode": { zh: "画布节点", en: "Canvas node" },
         "smart.agentAttachUnsupported": { zh: "附件 {name}：类型暂不支持（图片/视频/音频）", en: "Attachment {name}: unsupported type (image/video/audio)" },
         "smart.agentAttachFailed": { zh: "附件 {name} 处理失败：{err}", en: "Failed to process attachment {name}: {err}" },
-        "smart.agentAttachTooBig": { zh: "附件 {name} 过大（{size}MB，上限 {max}MB），已拒收", en: "Attachment {name} too large ({size}MB, limit {max}MB), rejected" },
+        "smart.agentAttachTooBig": { zh: "附件 {name} 过大（{size} 字节，上限 {max} 字节），已拒收", en: "Attachment {name} too large ({size} bytes, limit {max} bytes), rejected" },
+        "smart.agentAttachOnlyMessage": { zh: "请处理附件。", en: "Please process the attachments." },
         "smart.agentAttachWorking": { zh: "正在处理附件：{name}…", en: "Processing attachment: {name}…" }
     });
 

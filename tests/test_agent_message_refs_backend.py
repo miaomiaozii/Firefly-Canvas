@@ -768,3 +768,93 @@ def test_empty_http_body_is_a_validation_error_without_side_effects(backend, inp
     response = b.client.post(b.base + "/" + input_type, content=b"", headers=headers)
     assert response.status_code in (400, 422)
     assert b.events() == [] and b.spawns == [] and b.workers == []
+
+
+@pytest.mark.parametrize("transport", ["rest", "ws"])
+@pytest.mark.parametrize("input_type", ["prompt", "steer"])
+def test_attachments_reach_agent_and_survive_replay(backend, transport, input_type):
+    b = backend
+    if input_type == "steer":
+        b.start()
+    records = []
+    for name in ("plan.xlsx", "document.pdf", "archive.zip", "no-extension"):
+        response = b.client.post(b.base + "/attachments", content=b"file content", headers={
+            "X-Attachment-Name": name, "Content-Type": "application/octet-stream",
+        })
+        assert response.status_code == 200, response.text
+        record = response.json()
+        assert Path(record["path"]).read_bytes() == b"file content"
+        assert record["name"] == name and record["size"] == 12
+        records.append(record)
+    status, response = b.send(transport, input_type, {
+        "message": "read", "attachments": [item["id"] for item in records], "request_id": "files",
+    })
+    assert status == 200, response
+    sent = b.workers[0].command()
+    assert sent["type"] == input_type
+    assert json.loads(sent["message"].splitlines()[-2]) == records
+    assert b.events()[0]["attachments"] == records
+
+
+@pytest.mark.parametrize("transport", ["rest", "ws"])
+@pytest.mark.parametrize("input_type", ["prompt", "follow_up"])
+def test_busy_input_keeps_attachment_snapshot_through_delivery_and_restart(backend, transport, input_type):
+    b = backend
+
+    def upload(name):
+        path = b.client.post(b.base + "/attachments", content=b"file content", headers={"X-Attachment-Name": name})
+        assert path.status_code == 200, path.text
+        return path.json()
+
+    first, pending = upload("first.pdf"), upload("pending.zip")
+    status, reply = b.send(transport, "prompt", {"message": "start", "request_id": "start"})
+    assert status == 200, reply
+    worker = b.workers[0]
+    assert worker.command() == {"type": "prompt", "message": "start"}
+    for request_id, record in (("first", first), ("pending", pending)):
+        status, reply = b.send(transport, input_type, {
+            "message": request_id, "attachments": [record["id"]], "request_id": request_id,
+        })
+        assert status == 200, reply
+    assert worker.received.empty()
+    assert [(e["request_id"], e["attachments"]) for e in b.events() if e["type"] == "queued_input"] == [
+        ("first", [first]), ("pending", [pending]),
+    ]
+
+    asyncio.run(b.manager._dispatch_event(b.session, {"type": "agent_end"}))
+    command = worker.command()
+    assert command["type"] == "prompt" and command["message"].splitlines()[0] == "first"
+    assert json.loads(command["message"].splitlines()[-2]) == [first]
+
+    restarted = AgentHostManager()
+    session = asyncio.run(restarted.get_or_create_session(b.pid, "agent"))
+    assert not session._follow_ups and not session.is_running
+    events = [r["event"] for r in restarted.load_events_page(b.pid, "agent", "pi", turns=5)["events"]]
+    assert [(e["request_id"], e.get("attachments")) for e in events if e["type"] == "user_prompt"] == [
+        ("start", None), ("first", [first]),
+    ]
+    queued = next(e for e in events if e["type"] == "queued_input" and e["request_id"] == "pending")
+    assert queued["attachments"] == [pending]
+    assert "attachments_missing_on_restart" not in queued
+    assert [(e["request_id"], e["delivery"]) for e in events if e["type"] == "input_delivery_terminal"] == [
+        ("pending", "unsent"),
+    ]
+    assert Path(pending["path"]).read_bytes() == b"file content"
+
+
+def test_attachment_limit_and_scope_are_server_enforced(backend, monkeypatch):
+    from app.services import agent_attachments
+    b = backend
+    monkeypatch.setattr(agent_attachments, "AGENT_ATTACHMENT_MAX_BYTES", 4)
+    headers = {"X-Attachment-Name": "a.txt", "Content-Type": "text/plain"}
+    response = b.client.post(b.base + "/attachments", content=b"12345", headers=headers)
+    assert response.status_code == 413
+    assert response.json()["detail"] == {"code": "attachment_too_large", "max_bytes": 4}
+    root = agent_attachments.attachment_root(b.store.root, b.pid, "agent")
+    assert list(root.iterdir()) == []
+    ok = b.client.post(b.base + "/attachments", content=b"1234", headers=headers).json()
+    rejected = b.client.post(b.base + "/prompt", json={"message": "x", "attachments": ["../other"]})
+    assert rejected.status_code == 400
+    b.upsert({"id": "other", "type": NODE_TYPE_AGENT})
+    rejected = b.client.post(b.base.rsplit("/", 1)[0] + "/other/prompt", json={"message": "x", "attachments": [ok["id"]]})
+    assert rejected.status_code == 404

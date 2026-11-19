@@ -54,6 +54,35 @@ test('multiple follow-ups survive ends and reconcile one by one without replacin
     assert.equal(steer.type, 'steer');
 });
 
+test('explicit steer and follow-up send file references through the composer', () => {
+    for (const kind of ['steer', 'follow_up']) {
+        const f = fixture();
+        f.state.status = 'busy';
+        f.context.input = { value: '', style: {} };
+        f.state.pendingImages = [{ name: 'test.pdf', attachmentId: 'file-id', dataUrl: 'media' }];
+        f.run(`agentTuiSendInput(input, 'a', 'project', '${kind}')`);
+        const [request] = f.sent;
+        assert.equal(request.type, kind);
+        assert.equal(request.message, 'smart.agentAttachOnlyMessage');
+        assert.deepEqual(request.attachments, ['file-id']);
+        assert.equal('images' in request, false);
+        assert.equal(f.state.pendingImages.length, 0);
+        f.apply({ type: 'input_rejected', input_type: kind, request_id: request.request_id });
+        assert.equal(f.state.pendingImages[0].attachmentId, 'file-id');
+    }
+});
+
+test('restart history keeps persisted attachments on the unsent row and warns only for legacy inline images', () => {
+    const f = fixture();
+    f.apply({ type: 'queued_input', input_type: 'follow_up', request_id: 'file', text: 'read',
+        attachments: [{ name: 'stored.pdf' }], attachments_missing_on_restart: 1, replay_delivery: 'unsent' });
+    assert.deepEqual(Array.from(f.state.messages[0].attachments), ['stored.pdf']);
+    assert.equal(f.state.messages[0].text, '未发送: read（1 个附件不可恢复，请重新添加）');
+    assert.equal(f.state.queuedInputs.size, 0);
+    f.apply({ type: 'user_prompt', text: 'past', attachments: [{ name: 'past.pdf' }] });
+    assert.deepEqual(Array.from(f.state.messages[1].attachments), ['past.pdf']);
+});
+
 test('rejection removes only the rejected input, while a delivery error retains the queue', () => {
     const f = fixture();
     f.run("sendAgentFollowUp('a','project','bad');sendAgentFollowUp('a','project','waiting')");

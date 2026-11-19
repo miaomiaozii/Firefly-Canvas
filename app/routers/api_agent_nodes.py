@@ -13,6 +13,7 @@ from app.services.agent_host import (
 )
 from app.services.agent_errors import agent_error, translate_detail
 from app.services.agent_message_refs import resolve_node_refs
+from app.services.agent_attachments import attachment_root, resolve_attachments, save_attachment
 from app.services.agent_node_host_settings import AgentHostTransaction
 from app.routers.api_agent_tools import (
     _find_node, _snapshot_node, _apply_mutations, _broadcast_canvas_updated,
@@ -453,7 +454,7 @@ async def _input_body(request: Optional[Request], message: Any, images=None) -> 
             raise HTTPException(status_code=400, detail="Input body must be valid JSON") from exc
         if isinstance(raw, dict):
             body["message"] = raw.get("message")
-            for key in ("refs", "request_id", "images"):
+            for key in ("refs", "request_id", "images", "attachments"):
                 if key in raw:
                     body[key] = raw[key]
     return body
@@ -480,6 +481,9 @@ def _prepare_input(project_id: str, node_id: str, input_type: str, body: dict) -
     if node.get("type") not in (NODE_TYPE_AGENT, "agent"):
         raise agent_error(400, "INVALID_ARGUMENT", "The input target must be an Agent node.")
     resolved = resolve_node_refs(canvas, body["refs"]) if "refs" in body else resolve_node_refs(canvas)
+    if "attachments" in body:
+        root = attachment_root(_app_main.FIREFLY_PROJECT_STORE.root, project_id, node_id)
+        resolved["attachments"] = resolve_attachments(root, body["attachments"])
     return resolved
 
 
@@ -502,6 +506,8 @@ async def _send_input_admitted(project_id: str, node_id: str, input_type: str, b
         metadata.update(node_refs=resolved["node_refs"], node_ref_context=resolved["context"])
     if "request_id" in body:
         metadata["request_id"] = body["request_id"]
+    if resolved.get("attachments"):
+        metadata["attachment_refs"] = resolved["attachments"]
     try:
         if input_type == "prompt":
             _apply_node_host(project_id, node_id, session)
@@ -524,6 +530,16 @@ async def _send_input_admitted(project_id: str, node_id: str, input_type: str, b
     if "request_id" in body:
         accepted["request_id"] = body["request_id"]
     return accepted
+
+
+@router.post("/{node_id}/attachments")
+async def upload_agent_attachment(project_id: str, node_id: str, request: Request):
+    canvas = _open_canvas(project_id)
+    node = _snapshot_node(canvas, node_id)
+    if node.get("type") not in (NODE_TYPE_AGENT, "agent"):
+        raise agent_error(400, "INVALID_ARGUMENT", "The attachment target must be an Agent node.")
+    root = attachment_root(_app_main.FIREFLY_PROJECT_STORE.root, project_id, node_id)
+    return await save_attachment(request, root)
 
 
 @router.post("/{node_id}/prompt")

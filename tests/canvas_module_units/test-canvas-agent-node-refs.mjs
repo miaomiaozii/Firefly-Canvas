@@ -27,6 +27,20 @@ function fixture() {
     vm.runInContext(source,context,{filename:'canvas-agent-tui.js'});
     return {context,canvasState,requests,timers,run:code=>vm.runInContext(code,context)};
 }
+test('attachments travel with prompt and follow-up and replay retains file names', async()=>{
+    for (const busy of [false,true]) {
+        const f=fixture();
+        f.context.input={value:'read files',style:{}};
+        f.run(`getAgentTuiState('a').pendingImages=[{name:'plan.xlsx',attachmentId:'file-id'}];getAgentTuiState('a').status='${busy?'busy':'idle'}';agentTuiSendInput(input,'a','project')`);
+        await new Promise(resolve=>setImmediate(resolve));
+        assert.deepEqual(f.requests[0].body.attachments,['file-id']);
+        assert.equal(f.requests[0].url.split('/').pop(),busy?'follow_up':'prompt');
+        const requestId=f.requests[0].body.request_id;
+        f.context.replay={type:busy?'queued_input':'user_prompt',text:'read files',request_id:requestId,input_type:busy?'follow_up':'prompt',node_refs:[],attachments:[{name:'plan.xlsx'}]};
+        f.run("getAgentTuiState('a').messages=[];agentNodeRefsApplyEvent('a',replay)");
+        assert.equal(f.run("getAgentTuiState('a').messages[0].attachments[0]"),'plan.xlsx');
+    }
+});
 test('selected canvas references travel with this prompt and do not leak to the next', async()=>{
     const f=fixture();
     f.run("syncAgentInputNodeRefs('a')");
