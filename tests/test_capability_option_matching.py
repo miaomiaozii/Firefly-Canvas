@@ -38,13 +38,13 @@ class MinimaxResolutionRoutingTests(unittest.TestCase):
     def providers(self):
         return main.load_api_providers()
 
-    def route(self, resolution):
+    def route(self, resolution, aspect_ratio='3:2'):
         request = ImageGenerationRequest(
             prompt='三颗草莓微距特写',
             size='1024x1024',
             width=None,
             height=None,
-            aspect_ratio='3:2',
+            aspect_ratio=aspect_ratio,
             resolution=resolution,
             quality='auto',
             count=1,
@@ -69,6 +69,12 @@ class MinimaxResolutionRoutingTests(unittest.TestCase):
         with self.assertRaises(ModelRoutingError) as ctx:
             self.route('8K')
         self.assertIn('resolution', ctx.exception.incompatible_parameters)
+
+    def test_source_image_ratio_routes(self):
+        # 「原图比例」算出的非内置比例由适配器近似，预检不拦
+        for ratio in ('1920:1081', '4:1'):
+            with self.subTest(ratio=ratio):
+                self.assertEqual(self.route('2K', ratio).provider_id, 'minimax')
 
 
 if __name__ == '__main__':

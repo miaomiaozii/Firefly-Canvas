@@ -625,7 +625,7 @@ def minimax_default_provider():
     # 档位 1k/2k/4k 映射 area；参考图 1–16 张；size 恒为 auto（画布像素值不发送）。
     minimax_aspect_ratios = ['1:1', '16:9', '9:16', '4:3', '3:4', '4:5', '5:4', '3:2', '2:3', '21:9', '9:21']
     minimax_image_models = list(MINIMAX_DEFAULT_IMAGE_MODELS)
-    return {'id': 'minimax', 'name': 'MiniMax（海螺）', 'base_url': MINIMAX_DEFAULT_BASE_URL, 'protocol': 'minimax', 'image_request_mode': 'openai', 'image_generation_endpoint': '', 'image_edit_endpoint': '', 'enabled': True, 'primary': False, 'image_models': minimax_image_models, 'image_model_capabilities': {model: {'media_types': ['image'], 'sizes': ['*'], 'aspect_ratios': list(minimax_aspect_ratios), 'resolutions': ['1k', '2k', '4k'], 'max_reference_images': 16} for model in minimax_image_models}, 'chat_models': [], 'video_models': [], 'ms_loras': [], 'ms_defaults_version': 0, 'volcengine_project_name': '', 'volcengine_region': ''}
+    return {'id': 'minimax', 'name': 'MiniMax（海螺）', 'base_url': MINIMAX_DEFAULT_BASE_URL, 'protocol': 'minimax', 'image_request_mode': 'openai', 'image_generation_endpoint': '', 'image_edit_endpoint': '', 'enabled': True, 'primary': False, 'image_models': minimax_image_models, 'image_model_capabilities': {model: {'media_types': ['image'], 'sizes': ['*'], 'aspect_ratios': list(minimax_aspect_ratios), 'resolutions': ['1k', '2k', '4k'], 'max_reference_images': 16, 'arbitrary_aspect_ratio': True} for model in minimax_image_models}, 'chat_models': [], 'video_models': [], 'ms_loras': [], 'ms_defaults_version': 0, 'volcengine_project_name': '', 'volcengine_region': ''}
 
 def default_api_providers():
     return [{'id': 'volcengine', 'name': '火山引擎', 'base_url': VOLCENGINE_DEFAULT_BASE_URL, 'protocol': 'volcengine', 'image_request_mode': 'openai', 'image_generation_endpoint': '', 'image_edit_endpoint': '', 'enabled': True, 'primary': False, 'image_models': [], 'chat_models': [], 'video_models': [], 'ms_loras': [], 'ms_defaults_version': 0, 'volcengine_project_name': VOLCENGINE_DEFAULT_PROJECT_NAME, 'volcengine_region': VOLCENGINE_DEFAULT_REGION}, minimax_default_provider()]
@@ -662,6 +662,13 @@ def merge_default_api_providers(providers, inject_missing=True):
             if not current.get('base_url'):
                 current['base_url'] = minimax_default['base_url']
             current['protocol'] = 'minimax'
+            # 适配器把任意比例近似到 H3 可接受范围（「原图比例」会算出非内置值），
+            # 旧配置的能力表没有这一位，加载时补上，否则预检仍会拒。
+            capabilities = current.get('image_model_capabilities')
+            if isinstance(capabilities, dict):
+                for model in MINIMAX_DEFAULT_IMAGE_MODELS:
+                    if isinstance(capabilities.get(model), dict):
+                        capabilities[model]['arbitrary_aspect_ratio'] = True
     for current in merged:
         current_protocol = str((current or {}).get('protocol') or '').strip().lower()
         if current_protocol not in {'codex', 'gemini-cli'}:

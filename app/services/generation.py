@@ -4,6 +4,7 @@ import time
 import threading  # noqa: E402
 import random  # noqa: E402
 import email.utils  # noqa: E402
+from fractions import Fraction  # noqa: E402
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
 from app.core import _local_upload_kind_ext, banana_model_family, clamp_size_to_spec, looks_like_gemini_image_model, model_spec_for  # noqa: E402,F401
@@ -1520,15 +1521,19 @@ MINIMAX_HTTP_ERROR_MESSAGES = {
 # 国内站实测错误体为 {"error": {"type", "message": "insufficient balance (1008)", "http_code"}}，
 # 业务码只出现在 message 末尾括号里。
 _MINIMAX_MESSAGE_CODE_RE = re.compile(r'\((\d{3,5})\)\s*$')
-_MINIMAX_ASPECT_RE = re.compile(r'^(\d{1,3}):(\d{1,3})$')
+_MINIMAX_ASPECT_RE = re.compile(r'^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$')
+_MINIMAX_ASPECT_MAX_TERM = 300
+_MINIMAX_ASPECT_MIN = Fraction(1, 3)
+_MINIMAX_ASPECT_MAX = Fraction(3, 1)
 _MINIMAX_AREAS = {'1K', '2K', '4K'}
 _MINIMAX_OUTPUT_FORMATS = {'png', 'jpeg', 'jpg', 'webp'}
 
 def _minimax_aspect_ratio(value):
-    """校验 H3 的 aspect_ratio：整数 1–300，比例 1:3–3:1。
+    """把任意比例换成 H3 接受的 X:Y（X、Y 为 1–300 整数，比值在 1:3–3:1 之间）。
 
-    合法返回原值；缺失/不可解析返回 None（退回纯 auto，不硬塞）；
-    可解析但超范围直接 400 报错——不静默换比例，避免用户预期 1:4 却拿到 auto。
+    画布「原图比例」会算出 1920:1081 这类值，维护者定为自动取最接近的比例：
+    超出 1:3–3:1 先钳到边界，再在 Y∈1..300 里找误差最小的 X:Y（同误差取最小 Y，即最简形式）。
+    本身合法的值原样返回。缺失/不可解析返回 None（退回纯 auto）。
     """
     text = str(value or '').strip()
     if not text:
@@ -1537,10 +1542,24 @@ def _minimax_aspect_ratio(value):
     if not match:
         logger.warning(f'MiniMax 比例不可解析，忽略：{text}')
         return None
-    width, height = int(match.group(1)), int(match.group(2))
-    if not (1 <= width <= 300 and 1 <= height <= 300) or not (width / height >= 1 / 3 and width / height <= 3):
-        raise HTTPException(status_code=400, detail=f'MiniMax H3 不支持宽高比 {text}（平台仅支持 1:3–3:1 之间、整数 1–300）')
-    return text
+    width, height = Fraction(match.group(1)), Fraction(match.group(2))
+    if not width or not height:
+        logger.warning(f'MiniMax 比例不可解析，忽略：{text}')
+        return None
+    target = min(max(width / height, _MINIMAX_ASPECT_MIN), _MINIMAX_ASPECT_MAX)
+    if target == width / height and width.denominator == height.denominator == 1 and max(width, height) <= _MINIMAX_ASPECT_MAX_TERM:
+        return text
+    best = None
+    for y in range(1, _MINIMAX_ASPECT_MAX_TERM + 1):
+        x = min(_MINIMAX_ASPECT_MAX_TERM, max(1, round(target * y)))
+        if not (_MINIMAX_ASPECT_MIN <= Fraction(x, y) <= _MINIMAX_ASPECT_MAX):
+            continue
+        error = abs(Fraction(x, y) - target)
+        if best is None or error < best[0]:
+            best = (error, x, y)
+    snapped = f'{best[1]}:{best[2]}'
+    logger.info(f'MiniMax 比例 {text} 近似为 {snapped}')
+    return snapped
 
 def _minimax_area(value):
     """画布档位 1k/2k/4k → H3 的 area；未知值回落 4K（H3 缺省档）。"""

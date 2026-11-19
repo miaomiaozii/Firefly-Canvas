@@ -65,6 +65,7 @@ def minimax_capabilities():
             'aspect_ratios': ['1:1', '16:9', '9:16', '4:3', '3:4', '4:5', '5:4', '3:2', '2:3', '21:9', '9:21'],
             'resolutions': ['1k', '2k', '4k'],
             'max_reference_images': 16,
+            'arbitrary_aspect_ratio': True,
         }
         for model in (H3_MODEL, H3_FAST_MODEL)
     }
@@ -225,17 +226,23 @@ class MinimaxRegistrationTests(MinimaxBase):
         self.assertEqual(route.model, H3_MODEL)
         self.assertEqual(route.request, request.to_dict())
 
-    def test_routing_preflight_rejects_out_of_range_ratio(self):
-        provider = normalize_provider(minimax_record())
-        request = ImageGenerationRequest(prompt=CONTRACT_PROMPT, size='1024x1024', width=1024, height=1024,
-                                         aspect_ratio='1:4', resolution='1k', reference_asset_ids=(),
-                                         media_type='image', quality='auto', count=1)
-        try:
-            route_image_generation(request, [provider], provider_id=PROVIDER_ID, model=H3_MODEL)
-        except ModelRoutingError as exc:
-            self.assertIn('aspect_ratio', list(exc.incompatible_parameters))
-        else:
-            self.fail('1:4 超出 H3 的 1:3–3:1 上限，预检必须拒绝')
+    def test_routing_preflight_accepts_source_image_ratio(self):
+        # 「原图比例」会算出 1920:1081 这类非内置值；超出 1:3–3:1 的也放行，由适配器近似/钳位。
+        # 已保存的旧配置没有 arbitrary_aspect_ratio，加载时也要放行。
+        legacy = minimax_record()
+        for caps in legacy['image_model_capabilities'].values():
+            caps.pop('arbitrary_aspect_ratio')
+        with open(main.API_PROVIDERS_FILE, 'w', encoding='utf-8') as f:
+            json.dump([legacy], f, ensure_ascii=False)
+        for model in (H3_MODEL, H3_FAST_MODEL):
+            for ratio in ('1920:1081', '1:4', '4:1'):
+                with self.subTest(model=model, ratio=ratio):
+                    request = ImageGenerationRequest(prompt=CONTRACT_PROMPT, size='1024x1024', width=1024, height=1024,
+                                                     aspect_ratio=ratio, resolution='1k', reference_asset_ids=(),
+                                                     media_type='image', quality='auto', count=1)
+                    for provider in (normalize_provider(minimax_record()), main.load_api_providers()[0]):
+                        route = route_image_generation(request, [provider], provider_id=PROVIDER_ID, model=model)
+                        self.assertEqual(route.model, model)
 
     def test_routing_preflight_rejects_too_many_references(self):
         provider = normalize_provider(minimax_record())
@@ -304,15 +311,19 @@ class MinimaxRequestShapeTests(MinimaxBase):
         self.assertNotIn('disable_prompt_enhanced', body)
         self.assertNotIn('stream', body)
 
-    def test_out_of_range_aspect_ratio_fails_fast_without_request(self):
-        # 1:4 超出 H3 的 1:3–3:1：发请求前就报 400（非幂等接口，不浪费一次计费）
-        with self.assertRaises(HTTPException) as ctx:
-            self.generate(
-                lambda request: httpx.Response(200, json=ok_response()),
-                parameters={'aspect_ratio': '1:4', 'resolution': '1k'},
-            )
-        self.assertEqual(ctx.exception.status_code, 400)
-        self.assertIn('1:4', str(ctx.exception.detail))
+    def test_arbitrary_aspect_ratio_snaps_to_nearest_supported(self):
+        cases = {
+            '16:9': '16:9', '9:21': '9:21', '300:299': '300:299',
+            '1920:1081': '119:67', '21:9': '21:9', '1080:1920': '9:16',
+            '4:1': '3:1', '1:4': '1:3', '1000:1': '3:1', '1.5:1': '3:2',
+        }
+        for requested, expected in cases.items():
+            with self.subTest(requested=requested):
+                (_image_data, _raw), captured = self.generate(
+                    lambda request: httpx.Response(200, json=ok_response()),
+                    parameters={'aspect_ratio': requested, 'resolution': '1k'},
+                )
+                self.assertEqual(json.loads(captured[0].content.decode('utf-8'))['aspect_ratio'], expected)
 
     def test_local_reference_converted_to_real_data_uri(self):
         # 不打桩：真实走 reference_to_data_url（画布现有压缩辅助）把本地媒体转 data URI
