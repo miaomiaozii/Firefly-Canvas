@@ -30,6 +30,7 @@ from contextlib import asynccontextmanager
 
 from app.core import *  # noqa: F401,F403
 import app.core as _core_runtime
+from app.static_pages import FireflyStaticFiles
 import firefly_json_io
 
 import os as _os_boot
@@ -84,7 +85,7 @@ app = FastAPI()
 # 留着等于对任意网页开放跨域读写。外部预检（OPTIONS）现在落到 protect_api_origin → 403，
 # 响应不再带 access-control-allow-origin。
 
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+app.mount("/static", FireflyStaticFiles(directory=STATIC_DIR), name="static")
 
 app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
 

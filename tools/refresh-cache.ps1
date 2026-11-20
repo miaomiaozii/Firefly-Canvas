@@ -5,8 +5,7 @@
 # Firefly Canvas 缓存刷新：
 #   1) 停止运行中的服务（端口 3000 + 孤儿 run-server.py / main.py 进程）
 #   2) 清理全部 __pycache__（后端字节码缓存）
-#   3) bump 所有 static/*.html 里的 ?v= 资源版本号（前端浏览器缓存）
-#   4) 重启服务并等待就绪后自动打开浏览器
+#   3) 重启服务（#452：新进程在 HTML 响应中刷新前端缓存戳），就绪后自动打开浏览器
 #
 # 用法（在项目根目录）：  powershell -ExecutionPolicy Bypass -File tools\refresh-cache.ps1
 # 或直接双击根目录的  刷新缓存.bat
@@ -74,32 +73,6 @@ function Clean-PythonCaches {
     Write-Host "[REFRESH] Removed $($removed.Count) __pycache__ director$(if ($removed.Count -eq 1) { 'y' } else { 'ies' }) (backend bytecode cache)."
 }
 
-function Bump-AllAssetVersions {
-    # Frontend cache: bump every ?v= parameter in static/*.html so the browser
-    # re-fetches all referenced CSS/JS (the version string is unique per run).
-    # Read/write via .NET with explicit UTF-8 (no BOM) to preserve encoding/CRLF;
-    # Set-Content's default encoding corrupts the files.
-    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-    $newVersion = (Get-Date -Format 'yyyyMMdd.HHmmss') + '.' + ((Get-Random -Maximum 9000) + 1000)
-    $htmlFiles = Get-ChildItem -Path (Join-Path $root 'static') -Filter '*.html' -File -ErrorAction SilentlyContinue
-    $bumped = 0
-    foreach ($html in $htmlFiles) {
-        $content = [System.IO.File]::ReadAllText($html.FullName, $utf8NoBom)
-        if ($content -notmatch '\?v=') { continue }
-        # ${1} (not $1) so .NET does not swallow the version digits into the group ref.
-        # #371: replace only v, preserving &amp;agent= and any other query parameters.
-        $updated = [regex]::Replace($content, '(\?v=)[^"''&\s>]+', "`${1}$newVersion")
-        if ($updated -ne $content) {
-            [System.IO.File]::WriteAllText($html.FullName, $updated, $utf8NoBom)
-            Write-Host "[REFRESH] $($html.Name): all asset versions bumped to $newVersion"
-            $bumped++
-        }
-    }
-    if ($bumped -eq 0) {
-        Write-Host "[WARN] No ?v= parameters found in static\*.html; browser may still serve cached assets."
-    }
-}
-
 function Start-FireflyServer {
     $py = Resolve-Python
     # issue #364：不再重定向到 data\ 下的 server.*.log（固定名、下次启动直接盖掉）。
@@ -126,7 +99,6 @@ function Start-FireflyServer {
 Write-Host "=== Firefly Canvas cache refresh ==="
 Stop-FireflyServer
 Clean-PythonCaches
-Bump-AllAssetVersions
 Start-FireflyServer
 
 # Reuse the existing wait + open-browser helper.

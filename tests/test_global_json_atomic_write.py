@@ -15,7 +15,6 @@ dump 到一半断电/崩溃就什么都不剩；读侧再 ``except Exception: re
 import builtins
 import json
 import os
-import re
 import sys
 import tempfile
 import unittest
@@ -382,15 +381,6 @@ class FrontendWiringTests(unittest.TestCase):
         script = (ROOT / "static" / "js" / "global-settings.js").read_text(encoding="utf-8")
         self.assertIn("/api/config/data-diagnostics", script)
         self.assertIn("corrupt", script, "提示里要告诉用户坏文件保在 .corrupt-… 里")
-
-    def test_settings_page_assets_carry_a_fresh_cache_buster(self):
-        # #224 同类坑：restart-firefly.ps1 的 Bump-AssetVersions 只刷 smart-canvas.html，
-        # 改了 global-settings.js 不跡戳，用户 Ctrl+F5 也拿不到新代码。
-        html = (ROOT / "static" / "global-settings.html").read_text(encoding="utf-8")
-        stamps = {value for _, value in re.findall(r'"(/static/[^"]*)\?v=([0-9][0-9.]*)"', html)}
-        self.assertEqual(len(stamps), 1, "设置页所有静态资产必须共用一个 ?v=")
-        stamp = stamps.pop()
-        self.assertGreater(".".join(stamp.split(".")[:2]), "20261114.174656", "本票改过 JS，戳记必须比 #346 那次新")
 
 
 if __name__ == "__main__":

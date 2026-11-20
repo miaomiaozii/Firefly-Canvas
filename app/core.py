@@ -49,6 +49,7 @@ from contextvars import ContextVar
 logger = logging.getLogger(__name__)
 from typing import List, Dict, Any, Mapping, Optional, Tuple
 from threading import Lock, RLock, Thread
+from app.static_pages import html_response as _versioned_html_response
 from app.project_activity import (
     PROJECT_LIFECYCLE_LOCKS,
     PROJECT_LIFECYCLE_LOCKS_GUARD,
@@ -1062,10 +1063,7 @@ def current_app_version():
         return ''
 
 def static_html_response(filename: str):
-    path = os.path.join(STATIC_DIR, filename)
-    with open(path, 'r', encoding='utf-8') as f:
-        html = f.read()
-    return Response(html, media_type='text/html; charset=utf-8', headers={'Cache-Control': 'no-cache'})
+    return _versioned_html_response(os.path.join(STATIC_DIR, filename))
 
 def prompt_template_markdown_path() -> str:
     for path in PROMPT_TEMPLATE_PATHS:

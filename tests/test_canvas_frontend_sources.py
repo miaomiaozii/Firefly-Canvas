@@ -156,13 +156,8 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
             self.assertIn(f'"{key}"', i18n)
 
     def test_canvas_assets_share_one_cache_buster(self):
-        # 事故复盘（#224）：smart-canvas.html 里曾并存四个不同的 ?v= 值，
-        # 改了 canvas-media-history.js 却把它的戳记停在两天前——浏览器继续用旧文件，
-        # 用户 Ctrl+F5 也拿不到修复，而我一度把这种“没变化”当成代码缺陷在查。
-        # 我自己也犯过一次：只刷新了 script 标签，漏了 css，直接弄红
-        # test_creative_history_experience（它只比对 smart-canvas.css 与 smart-canvas.js 两个文件）。
-        # 仓库有 Bump-AssetVersions（tools/restart-firefly.ps1）但没人跡。
-        # 画布资源是一起发布的：整页所有 ?v= 必须同一个值。
+        # #224 / #452：静态文件的 ?v= 是直接读取 HTML 时的回退值，整页共用一个；
+        # 服务启动后发给浏览器的是进程戳，见 test_asset_version_bump.py。
         html = (ROOT / "static" / "smart-canvas.html").read_text(encoding="utf-8")
         tagged = re.findall(r'(/static/[^"\s]+)\?v=([0-9][0-9.]*)', html)
         self.assertTrue(tagged, "smart-canvas.html 里找不到任何带 ?v= 的本地资源")
@@ -170,7 +165,7 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
         self.assertEqual(
             len(distinct),
             1,
-            "同一页的本地资源缓存戳必须一致（不一致 = 有人改文件没跡版本，用户拿到旧代码）：\n"
+            "同一页的本地资源回退缓存戳必须一致：\n"
             + "\n".join(f"  {path} -> {value}" for path, value in tagged if value != max(distinct)),
         )
         stamped_scripts = {path.rsplit("/", 1)[-1] for path, _ in tagged if path.endswith(".js")}
@@ -239,8 +234,7 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
                         CANVAS_SCRIPTS.index("canvas-agent-tui.js"))
 
     def test_css_imports_carry_a_cache_stamp(self):
-        # 样式表里的 @import 不在 restart/refresh 的 bump 正则范围内（那个只碰 HTML 的 href/src），
-        # 所以只能靠这里钉：没 ?v= 的 @import 永远拿旧文件。
+        # #452：样式表不是 HTML 响应，@import 保留自己的缓存戳并按静态资源规则重新验证。
         offenders = []
         for css in (ROOT / "static" / "css").glob("*.css"):
             text = css.read_text(encoding="utf-8")
@@ -250,9 +244,7 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
         self.assertEqual([], offenders, "样式表里的 @import 必须带 ?v=")
 
     def test_product_pages_share_one_stamp_across_the_repo(self):
-        # 三页共用 studio-foundation.css / theme.js 这些资产。tools/refresh-cache.ps1 刷所有页，
-        # 而 tools/restart-firefly.ps1 以前只刷 smart-canvas.html——那意味着改完 CSS 走普通重启，
-        # project-list.html / global-settings.html 的戳停在旧值。两边现在刷同一批页。
+        # 三页共用 studio-foundation.css / theme.js 等资产，静态回退 URL 应保持一致。
         stamps = {}
         for page in self.PRODUCT_PAGES:
             values = set(re.findall(r'"/static/[^"]+\?v=([0-9][0-9.]*)"', self.page_html(page)))
@@ -261,16 +253,8 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
         distinct = set(stamps.values())
         self.assertEqual(
             len(distinct), 1,
-            "三个产品页的缓存戳必须同值（不同值 = 某个启动器没刷到那页）：\n"
+            "三个产品页的回退缓存戳必须同值：\n"
             + "\n".join(f"  {page} -> {value}" for page, value in stamps.items()),
-        )
-
-    def test_restart_and_refresh_bump_the_same_product_pages(self):
-        restart = (ROOT / "tools" / "restart-firefly.ps1").read_text(encoding="utf-8")
-        self.assertIn(
-            "static\\*.html",
-            restart,
-            "restart-firefly.ps1 必须刷所有 static\\*.html（只刷 smart-canvas.html 会让另两页的 CSS/JS 停在旧戳）",
         )
 
 
