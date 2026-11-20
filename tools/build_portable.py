@@ -29,6 +29,7 @@ INCLUDE_TOP = [
     'firefly_server_log.py',
     'firefly_project_annotations.py', 'firefly_project_undo.py', 'firefly_project_versions.py',
     'firefly_projects.py', 'firefly_projects_cleanup.py', 'firefly_projects_deletion.py',
+    'firefly_withdrawn_refs.py',
     # 存量缺口：main.py 直接 `import firefly_json_io`（#345 原子写走它），
     # static 搜索走 firefly_search——INCLUDE_TOP 一直漏这两个，便携包里没文件。
     # 由 tests/test_server_logging.py 的便携包清单守卫钉住，不能再靠自觉。

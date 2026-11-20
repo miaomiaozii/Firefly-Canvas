@@ -39,6 +39,7 @@ from app.project_activity import (
 from app.project_downloads import ProjectMediaFileResponse
 from app.project_sessions import project_has_open_session
 from firefly_projects import CleanupDrift
+from firefly_withdrawn_refs import AUTO_ARCHIVED_REFS, historical_image_retry_hint
 from app.routers import api_image_task_query as _api_image_task_query
 _from_main_names = ['FIREFLY_PROJECT_STORE', 'FLY_MAX_PACKAGE_BYTES', 'LOCAL_UPLOAD_DIR', 'PROJECT_AGENT_MAX_PENDING', 'PROJECT_AGENT_MAX_PER_NODE', 'PROJECT_CONVERSATION_MAX_IMAGE_REFERENCES', 'PROJECT_CONVERSATION_RUNNER', 'PROJECT_MEDIA_IMPORT_MAX_PER_PROJECT', 'PROJECT_VIDEO_REFERENCE_INLINE_MAX_BYTES', '_agent_active_counts', '_agent_apply_mutations', '_agent_mark_recovered_uncertain', '_agent_result_node', '_agent_submit_task', '_agent_task_node', '_local_upload_item', '_photoshop_mark_returned', '_photoshop_prune_requests_locked', '_photoshop_request_snapshot', 'archive_project_generated_image', 'archive_project_generated_video', 'build_project_media_preview', 'cleanup_project_generation_orphans', 'conversation_pending_task_keys', 'copy_project_media_to_global_library', 'execute_canvas_video', 'execute_project_video_generation', 'export_project_package', 'finalize_visible_project_conversation_terminal', 'forget_project_conversation_durable', 'generate_ai_image', 'generate_project_video', 'generate_video_preview_image', 'get_api_provider', 'load_api_providers', 'local_edit_adapter', 'manager', 'merge_project_conversation_result', 'now_ms', 'output_file_from_url', 'persist_project_conversation_pending', 'preflight_project_video_providers', 'project_agent_cancel_task', 'project_agent_connected_inputs', 'project_agent_retry_task', 'project_conversation_connected_references', 'project_has_active_conversation', 'project_image_references', 'project_lifecycle_store_call', 'project_media_adapter_path', 'project_media_source_path', 'project_store_call', 'project_video_adapter_incompatible_parameters', 'project_video_all_references', 'project_video_candidate_execution_incompatible_parameters', 'project_video_candidate_inline_reference_kinds', 'project_video_references', 'provider_env_key_value', 'reserve_project_media_import', 'route_image_generation', 'route_video_generation', 'run_project_image_task', 'run_project_video_task', 'runninghub_api_key', 'runninghub_model_definition', 'runninghub_wallet_key_value', 'schedule_project_conversation_task', 'video_adapter_incompatible_parameters', 'video_api_root']
 import app.services as _svc
@@ -436,7 +437,7 @@ def durable_project_image_task(canvas: Mapping[str, Any], task_id: str) -> Optio
             'error': record.get('error') or '',
             'upstream_task_id': record.get('upstream_task_id') or '',
             'history_record': copy.deepcopy(record),
-            **{key: record[key] for key in ('source_node_id', 'op_id') if key in record},
+            **{key: record[key] for key in ('source_node_id', 'op_id', AUTO_ARCHIVED_REFS) if key in record},
         }
     for node in canvas.get('nodes') or []:
         if not isinstance(node, dict):
@@ -457,7 +458,7 @@ def durable_project_image_task(canvas: Mapping[str, Any], task_id: str) -> Optio
                 'request_payload': copy.deepcopy(pending.get('requestPayload') or {}),
                 'idempotency_key': pending.get('idempotencyKey') or clean_task_id,
                 'created_at': float(pending.get('createdAt') or pending.get('created_at') or time.time()),
-                **{key: pending[key] for key in ('source_node_id', 'op_id') if key in pending},
+                **{key: pending[key] for key in ('source_node_id', 'op_id', AUTO_ARCHIVED_REFS) if key in pending},
             }
     return None
 
@@ -593,7 +594,7 @@ def recover_project_image_task(
                 'termination_reason': termination_reason,
                 'error': termination_error,
                 'outputs': _history_output_entries(outputs, 'image'),
-                **{key: durable[key] for key in ('source_node_id', 'op_id') if key in durable},
+                **{key: durable[key] for key in ('source_node_id', 'op_id', AUTO_ARCHIVED_REFS) if key in durable},
             }
             if terminal_status == 'cancelled':
                 canvas = write('cancel_image_generation', project_id, durable['result_node_id'], task_id, failure_record)
@@ -1590,6 +1591,16 @@ async def retry_project_image_task(project_id: str, task_id: str, request: Reque
         or str(current.get('project_id') or '') != str(project_id)
     ):
         raise HTTPException(status_code=404, detail='项目生图任务不存在')
+    if task_id.startswith('agent_img_'):
+        try:
+            opened = await asyncio.to_thread(_app_main.project_store_call, 'open_project', project_id)
+        except ProjectNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        canvas = opened['canvas']
+        hint = historical_image_retry_hint(canvas, task_id)
+        if not current and not durable_project_image_task(canvas, task_id):
+            raise HTTPException(status_code=404, detail='项目生图任务不存在')
+        raise HTTPException(status_code=409, detail=hint or '请从 Agent 重新发起生成并确认')
     if not current:
         try:
             opened, current = await asyncio.to_thread(recover_project_image_task, project_id, str(task_id), for_retry=True)
@@ -1601,8 +1612,6 @@ async def retry_project_image_task(project_id: str, task_id: str, request: Reque
             raise HTTPException(status_code=404, detail='项目生图任务不存在')
     else:
         opened = None
-    if task_id.startswith('agent_img_'):
-        raise HTTPException(status_code=409, detail='请从 Agent 重新发起生成并确认')
     if current.get('status') != 'failed':
         raise HTTPException(status_code=409, detail='只有失败的任务可以重试')
     request_payload = copy.deepcopy(current.get('request_payload') or {})
@@ -1702,8 +1711,10 @@ async def create_project_image_task_core(project_id: str, payload: ProjectImageG
         raise HTTPException(status_code=409, detail='Agent 生图请求不能通过浏览器重新提交')
     try:
         request_snapshot = prepared[0] if prepared else project_image_request(payload)
+        planned = {image.asset_id for image in hooks.legacy_images} if hooks else set()
         for asset_id in payload.reference_asset_ids:
-            await asyncio.to_thread(_app_main.project_store_call, 'media_record', project_id, asset_id)
+            if asset_id not in planned:
+                await asyncio.to_thread(_app_main.project_store_call, 'media_record', project_id, asset_id)
         route = prepared[1] if prepared else route_canvas_image(
             request_snapshot, payload, _app_main.load_api_providers(), _app_main.route_image_generation,
         )

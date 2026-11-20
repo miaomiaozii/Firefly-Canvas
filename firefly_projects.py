@@ -177,6 +177,9 @@ from firefly_project_versions import ProjectVersionsMixin
 from firefly_project_undo import ProjectUndoStackMixin
 from firefly_project_annotations import ProjectAnnotationsMixin
 from firefly_usage import ProjectUsageMixin
+from firefly_withdrawn_refs import (
+    AUTO_ARCHIVED_REFS, WITHDRAWN_HISTORY_REFS, WITHDRAWN_REFS, annotate_history, preserve_withdrawals,
+)
 
 # 生成原件的媒体 name 常常就是 <asset_id>.png；这种“名字”写回列表等于又把裸 ID
 # 塞回用户眼前（#224 要修的就是这个），所以按裸 ID 形态剔除。
@@ -1186,6 +1189,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                     "nodes": copy.deepcopy(source_nodes),
                     "connections": copy.deepcopy(source_connections),
                 }
+                preserve_withdrawals(canvas, source_canvas)
                 history = copy.deepcopy(source_history)
                 for name, member in safe_members.items():
                     if member.is_dir() or not name.startswith("media/") or name == "media/index.json":
@@ -1283,7 +1287,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                 self.flush(project_id)
             self._ensure_output_occurrence_ids(canvas, history)
             opened_canvas = copy.deepcopy(canvas)
-            opened_canvas["history"] = copy.deepcopy(history)
+            opened_canvas["history"] = annotate_history(canvas, copy.deepcopy(history))
             mark = self._recovery_marks.get(project_id)
             if mark:
                 opened_canvas["_recovery"] = dict(mark)
@@ -1291,6 +1295,28 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
 
     def canvas(self, canvas_id: str) -> Dict[str, Any]:
         return self.open_project(canvas_id)["canvas"]
+
+    def agent_inverse_snapshot(self, project_id):
+        """Undo must not repair documents or migrate nodes during conflict preflight."""
+        project_id = _clean_project_id(project_id)
+        with self._lock:
+            directory = self._project_directory(project_id)
+            if not self._safe_project_path(directory, 'project.json').is_file():
+                raise ProjectNotFound('项目不存在')
+            canvas = self._canvases.get(project_id)
+            if canvas is None:
+                try:
+                    canvas = _read_json(self._safe_project_path(directory, 'canvas.json'))
+                except (OSError, ValueError) as exc:
+                    raise ProjectStoreError('画布不可读；请先在浏览器中打开项目恢复') from exc
+            if canvas.get('id') != project_id or canvas.get('project_id') != project_id:
+                raise ProjectStoreError('画布不属于请求的项目')
+            history = self._histories.get(project_id)
+            if history is None:
+                history = canvas.get('logs') or canvas.get('history') or self._load_history(project_id)
+            canvas, history = copy.deepcopy(canvas), copy.deepcopy(history)
+            self._ensure_output_occurrence_ids(canvas, history)
+            return canvas, history
 
     def image_reference_snapshot(self, project_id: str, *, include_canvas: bool = True):
         """Read generation inputs without triggering open_project's on-disk repairs/migrations."""
@@ -1455,6 +1481,17 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             raise ProjectStoreError("项目媒体归档失败") from exc
         finally:
             temporary.unlink(missing_ok=True)
+
+    def import_agent_reference_file(self, project_id, staged_path, digest, name, mime, locator):
+        """The staged file has already been fingerprinted by the server (#460)."""
+        with self._lock:
+            index = self._load_media_index(project_id)
+            if self._existing_media_record(project_id, index, digest, None) is not None:
+                self.check_image_reference_files(project_id, [digest])
+                return False
+            self.import_media_file(project_id, staged_path, name, mime,
+                                   source_info={'type': 'agent_legacy_reference', 'locator': locator, 'name': name})
+            return True
 
     def media_record(self, project_id: str, asset_id: str) -> Dict[str, Any]:
         project_id = _clean_project_id(project_id)
@@ -2988,6 +3025,11 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             force_empty=force_empty, trusted_agent_bindings=True,
         )
 
+    def apply_agent_inverse(self, project_id, mutations, *, base_revision, force_empty, withdrawals):
+        # A withdrawal must never persist separately from the canvas inverse (#460).
+        return self._apply_mutations(project_id, mutations, base_revision=base_revision, force_empty=force_empty,
+                                     trusted_agent_bindings=True, withdrawals=withdrawals)
+
     def _apply_mutations(
         self,
         project_id: str,
@@ -2996,20 +3038,18 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
         base_revision: int,
         force_empty: bool,
         trusted_agent_bindings: bool,
+        withdrawals=None,
     ) -> Dict[str, Any]:
         project_id = _clean_project_id(project_id)
         items = list(mutations)
-        if not items:
+        if not items and not withdrawals:
             return {"project_id": project_id, "applied": 0, "revision": self.canvas(project_id)["revision"]}
         with self._lock:
             canvas = self.open_project(project_id)["canvas"]
             current_revision = int(canvas.get("revision") or 0)
             if int(base_revision) != current_revision:
                 raise RevisionConflict(canvas)
-            # Empty-canvas guard (H39 incident): reject a "non-empty -> empty"
-            # wipe unless the caller explicitly sets force_empty=True.  A tab
-            # that failed to load its canvas otherwise autosaves an empty
-            # node set and silently overwrites the server's real canvas.
+            # H39: a failed browser load must not silently wipe a nonempty canvas.
             original_node_count = len(canvas.get("nodes") or [])
             canvas.pop("history", None)
             history = copy.deepcopy(self._histories.get(project_id, []))
@@ -3064,6 +3104,8 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                         elif task_id and task_id in active_generation_task_ids:
                             continue
                         else:
+                            item.pop(AUTO_ARCHIVED_REFS, None)
+                            item.pop(WITHDRAWN_HISTORY_REFS, None)
                             incoming.append(item)
                     incoming_by_id = {
                         str(item.get("id")): item
@@ -3097,12 +3139,12 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                     history = merged[-5000:]
                 self._apply_mutation(canvas, normalized, trusted_agent_bindings=trusted_agent_bindings)
             if not force_empty and original_node_count and not (canvas.get("nodes") or []):
-                # Re-open to hand back the un-mutated server canvas so the
-                # client can rebase onto the intact state instead of losing it.
                 raise RevisionConflict(
                     self.open_project(project_id)["canvas"],
                     "检测到空画布覆盖，已拒绝以防数据丢失",
                 )
+            if withdrawals:
+                preserve_withdrawals(canvas, {WITHDRAWN_REFS: withdrawals})
             self._ensure_output_occurrence_ids(canvas, history)
             canvas["revision"] = int(canvas.get("revision") or 0) + 1
             canvas["updated_at"] = max(_now_ms(), int(canvas.get("updated_at") or 0) + 1)
@@ -3300,6 +3342,13 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                     raise ProjectStoreError("没有可读取的备份")
                 chosen = valid[0]
             data = _read_json(chosen[1])
+            if file == "canvas.json" and data.get("id") == project_id:
+                try:
+                    current = _read_json(primary)
+                except (OSError, ValueError):
+                    current = None
+                if isinstance(current, dict) and current.get("id") == project_id:
+                    preserve_withdrawals(data, current)
             quarantined = None
             if primary.is_file():
                 # #345：改名走公共实现（第三副本收掉）；改不动就报错不恢复——

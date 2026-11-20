@@ -9,8 +9,11 @@ from __future__ import annotations
 from copy import deepcopy
 import sqlite3
 import json
+from urllib.parse import quote, unquote
 
 from firefly_opsdb import OpsDb
+from firefly_withdrawn_refs import AUTO_ARCHIVED_REFS, archive_ids, task_id, withdrawal_map
+from app.services.canvas_image_refs import prompt_parts
 from firefly_projects import InvalidMutation
 from app.services import agent_ops_delta as delta_ops, agent_ops_store
 
@@ -111,6 +114,75 @@ def _completed_inverse_ids(canvas, deltas):
     return {op_id for op_id, _ in deltas}
 
 
+def _withdrawal_plan(store, project_id, canvas, candidate, history, records, deltas):
+    """Match exact operation ancestry, never all runs from a source node."""
+    existing = withdrawal_map(canvas)
+    owned = {}
+
+    def add(record):
+        task = task_id(record)
+        assets = archive_ids(record.get(AUTO_ARCHIVED_REFS)) - set(existing.get(task, []))
+        if task.startswith('agent_img_') and assets:
+            owned.setdefault(task, set()).update(assets)
+
+    for run in history:
+        if isinstance(run, dict) and any(
+            record['op_id'] == run.get('op_id') or (
+                record.get('parent_op_id') == run.get('op_id') and run.get('op_id')
+                and run.get('result_node_id') in record['touched_node_ids'])
+            for record in records
+        ):
+            add(run)
+    # A journaled pending snapshot is evidence even if the user removed history.
+    origins = {record['op_id']: record.get('parent_op_id') for record in records}
+    for op_id, delta in deltas:
+        for change in delta:
+            if change['entity'] != 'node' or change['path'] not in ([], ['pendingTasks']):
+                continue
+            for side in ('before', 'after'):
+                value = change[side].get('value')
+                tasks = value.get('pendingTasks') if isinstance(value, dict) else value
+                for task in tasks if isinstance(tasks, list) else []:
+                    if (isinstance(task, dict) and task.get('op_id')
+                            and task['op_id'] in (op_id, origins[op_id])):
+                        add(task)
+    if not owned:
+        return {}, []
+
+    prefix = f'/api/project-library/{quote(project_id, safe="")}/media/'
+
+    def locators(value):
+        if isinstance(value, str) and value.startswith(prefix):
+            yield unquote(value[len(prefix):].split('?', 1)[0].split('#', 1)[0].split('/', 1)[0])
+        elif isinstance(value, list):
+            for item in value:
+                yield from locators(item)
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                if key == 'promptDraftHtml' and isinstance(item, str) and 'mention-image-token' in item:
+                    yield from locators([part.get('url') for part in prompt_parts(item)])
+                elif isinstance(item, (dict, list)) or key.lower().endswith(('url', 'src')):
+                    yield from locators(item)
+
+    def references(value):
+        return store._collect_asset_ids(value) | set(locators(value))
+
+    remaining = references([candidate.get('nodes', []), candidate.get('connections', [])])
+    for record in history:
+        if not isinstance(record, dict):
+            continue
+        task = task_id(record)
+        excluded = owned.get(task, set()) | set(existing.get(task, []))
+        remaining.update(references(record) - excluded)
+        # Excluding an owned input must not also exclude a distinct output
+        # that happens to deduplicate to the same asset (#460).
+        remaining.update(references(record.get('outputs')))
+    blocked = remaining.intersection(asset for assets in owned.values() for asset in assets)
+    blocked.update(asset for assets in owned.values() for asset in assets
+                   if store._active_generation_references_asset(canvas, asset))
+    return {task: sorted(assets) for task, assets in owned.items()}, sorted(blocked)
+
+
 def undo_ops(store, project_id, *, op_id=None, turn_id=None, is_running=None):
     """Undo an op and descendants or all retained operations in a turn.
 
@@ -184,7 +256,7 @@ def undo_ops(store, project_id, *, op_id=None, turn_id=None, is_running=None):
         if not active:
             result["status"] = "already_reverted"
             return result
-        canvas = store.open_project(project_id)["canvas"]
+        canvas, history = store.agent_inverse_snapshot(project_id)
         # A process crash drops the in-memory tokens, not the admitted task. Do
         # not undo a family (or just one of its children) before reconciliation.
         pending = {task['op_id'] for node in canvas.get('nodes', [])
@@ -222,6 +294,11 @@ def undo_ops(store, project_id, *, op_id=None, turn_id=None, is_running=None):
             candidate = updated
             if is_already:
                 already.append(current_op)
+        withdrawals, blocked = _withdrawal_plan(store, project_id, canvas, candidate, history, active, deltas)
+        if blocked:
+            result.update(status='conflict', conflicts=[{'node_id': None, 'asset_id': asset,
+                          'reason': 'Auto-archived reference is still in use'} for asset in blocked])
+            return result
         mutations = _mutations(canvas, candidate)
         if mutations:
             # Preflight the real mutation rules, including server-owned task fields,
@@ -233,14 +310,15 @@ def undo_ops(store, project_id, *, op_id=None, turn_id=None, is_running=None):
             except InvalidMutation as exc:
                 result.update(status="conflict", conflicts=[{"node_id": None, "reason": f"store rejected inverse: {exc}"}])
                 return result
-            store._ensure_output_occurrence_ids(preview, deepcopy(store._histories.get(project_id, [])))
+            store._ensure_output_occurrence_ids(preview, deepcopy(history))
             if (not delta_ops._equal(preview.get("nodes", []), candidate.get("nodes", [])) or
                     not delta_ops._equal(preview.get("connections", []), candidate.get("connections", []))):
                 result.update(status="conflict", conflicts=[{"node_id": None, "reason": "store mutation changes additional canvas data"}])
                 return result
-            store.apply_agent_host_mutations(project_id, mutations, base_revision=canvas["revision"],
-                                             force_empty=bool(canvas.get("nodes")) and not candidate.get("nodes"))
-        if not deltas:
+        if mutations or withdrawals:
+            store.apply_agent_inverse(project_id, mutations, base_revision=canvas['revision'], withdrawals=withdrawals,
+                                      force_empty=bool(canvas.get('nodes')) and not candidate.get('nodes'))
+        if not deltas and not withdrawals:
             try:
                 agent_ops_store.mark_undone(db, project_id, [record["op_id"] for record in active])
             except (OSError, sqlite3.Error, KeyError) as exc:
@@ -248,7 +326,7 @@ def undo_ops(store, project_id, *, op_id=None, turn_id=None, is_running=None):
                 return result
             result.update(status="reverted", reverted=[record["op_id"] for record in active])
             return result
-        expected = store._project_canvas_for_persistence(store._canvases[project_id])
+        expected = store._project_canvas_for_persistence(store._canvases.get(project_id, canvas))
         try:
             broadcast_ids = _broadcast_ids(baseline, expected, deltas) if baseline is not None else []
         except (ValueError, TypeError, KeyError, AttributeError):

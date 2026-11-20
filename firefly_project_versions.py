@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from firefly_opsdb import OpsDb
 from firefly_projects import _clean_project_id
+from firefly_withdrawn_refs import preserve_withdrawals
 
 # 节点级运行时字段：不参与版本 diff 对比（与 duplicate_project 的剥离口径一致）
 RUNTIME_NODE_KEYS = {"prompt", "modelId", "provider", "engine", "pendingTasks", "pending"}
@@ -261,7 +262,6 @@ class ProjectVersionsMixin:
                 self.flush(project_id)  # 未保存内容先落盘，保证"当前"完整
                 target = self.get_project_version(project_id, version_id)
 
-                # ① 先存当前（防回滚毁数据）
                 latest_before = self.list_project_versions(project_id, limit=1)
                 latest_before_id = latest_before[0]["id"] if latest_before else None
                 pre_restore_id = latest_before_id
@@ -276,15 +276,16 @@ class ProjectVersionsMixin:
                     if snapshot is not None:
                         pre_restore_id = snapshot["id"]
 
-                # ② 回滚目标版本
                 canvas = copy.deepcopy(target["canvas"])
+                # Restoring creative content must not reactivate withdrawn historical inputs (#460).
+                preserve_withdrawals(canvas, current)
                 canvas.pop("_recovery", None)
                 canvas["id"] = project_id
                 canvas["project_id"] = project_id
                 canvas["project"] = project_id
                 canvas["revision"] = int(canvas.get("revision") or 0) + 1
                 self._canvases[project_id] = canvas
-                result = self.flush(project_id)  # flush 内自动快照会因去重跳过（内容 = 目标版本）
+                result = self.flush(project_id)
             return {
                 "project_id": project_id,
                 "version_id": version_id,

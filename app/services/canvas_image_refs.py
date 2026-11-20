@@ -340,7 +340,8 @@ class ReferenceGraph:
             return []  # explicitly cleared in the browser
         return [{'text': text or _str(node.get('prompt')) or _str(node.get('text'))}]
 
-    def resolve(self, target, *, html=None, prompt_override=None, ctx=None, override_source=None, cascade_fallback=None):
+    def resolve(self, target, *, html=None, prompt_override=None, ctx=None, override_source=None,
+                cascade_fallback=None, track_saved_mentions=False):
         node = self.nodes[target]
         ctx = ctx or {}
         managed, linked = self._managed(node)
@@ -388,6 +389,7 @@ class ReferenceGraph:
         parts = ([{'text': prompt_override}] if prompt_override is not None else
                  prompt_parts(html) if html is not None else self._saved_parts(node))
         mentioned, body, display = False, [], []
+        saved_mentions = set() if track_saved_mentions and html is None and prompt_override is None else None
         for part in parts:
             if 'text' in part:
                 display.append(part['text'])
@@ -415,6 +417,9 @@ class ReferenceGraph:
                 if managed and asset:
                     assets[asset] = number
                 refs.append(part)
+            # A label or an asset match alone cannot authorize a different locator (#460).
+            if saved_mentions is not None and _url(refs[number - 1]) == url:
+                saved_mentions.add(number - 1)
             body.append(f'图{number}')
         body_text = _trim(''.join(body))
         if prompt_override is None:
@@ -433,11 +438,13 @@ class ReferenceGraph:
         header, user_need = ('Reference image map:', 'User request:') if ctx.get('english') else ('下面是参考图编号：', '用户需求：')
         mapping = '\n'.join(f'图{n}：{ref["name"]}' for n, ref in enumerate(numbered, 1))
         prompt = f'{header}\n{mapping}\n\n{user_need}\n{body_text}' if mentioned else body_text
-        return {'prompt': prompt, 'displayPrompt': _trim(''.join(display)) or body_text, 'refs': numbered, 'mentioned': mentioned}
+        request = {'prompt': prompt, 'displayPrompt': _trim(''.join(display)) or body_text, 'refs': numbered, 'mentioned': mentioned}
+        if track_saved_mentions:
+            request['saved_mention_positions'] = saved_mentions or set()
+        return request
 
-    def owned_image_ids(self, request):
-        """Mirror browser import's fast path, without attempting any import."""
-        for ref in request['refs']:
+    def image_positions(self, request):
+        for position, ref in enumerate(request['refs']):
             if _kind(ref) != 'image':
                 continue
             url = _url(ref)
@@ -447,4 +454,9 @@ class ReferenceGraph:
                     asset = unquote(urlsplit(url).path[len(self.prefix):].split('/')[0])
                 except ValueError:
                     asset = ''
-            yield (asset if _ASSET.fullmatch(asset) else '', ref.get('agentRefRole'))
+            yield position, asset if _ASSET.fullmatch(asset) else '', ref.get('agentRefRole')
+
+    def owned_image_ids(self, request):
+        """Mirror browser import's fast path, without attempting any import."""
+        for _, asset, role in self.image_positions(request):
+            yield asset, role

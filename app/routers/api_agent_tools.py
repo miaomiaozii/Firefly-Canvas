@@ -27,6 +27,8 @@ _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys
 from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK, ensure_agent_same_origin
 from app.constants import NODE_TYPE_AGENT, NODE_TYPE_GROUP
 from app.services import agent_batch_prompt, agent_frame, agent_image_settings, agent_layout, agent_refs
+from app.services.agent_legacy_image_refs import LegacyImage, archive_legacy_images, inspect_legacy_images, unavailable
+from firefly_withdrawn_refs import AUTO_ARCHIVED_REFS
 from app.services.agent_errors import agent_error
 from app.services.agent_tools_manifest import LAYOUT_TOOLS, UPDATABLE_NODE_FIELDS as _UPDATABLE_NODE_FIELDS
 from app.core import ONLINE_IMAGE_REFERENCE_MAX, PROJECT_IMAGE_GENERATION_FUTURES, ProjectImageGenerationRequest
@@ -1518,6 +1520,7 @@ class _PreparedGeneration:
     route: object
     node_type: str
     original_prompt: tuple
+    legacy_images: tuple[LegacyImage, ...] = ()
 
 
 def _node_prompt_fields(node):
@@ -1544,19 +1547,22 @@ async def prepare_generation(project_id, node_id, *, canvas=None, prompt_overrid
         canvas = saved
     node = _snapshot_node(canvas, node_id)
     graph = ReferenceGraph(canvas, project_id, catalog)
-    selection = graph.resolve(node_id, prompt_override=prompt_override)
-    refs = list(graph.owned_image_ids(selection))
-    if any(not asset for asset, _ in refs):
-        raise agent_error(400, 'REF_NOT_IN_PROJECT', 'Selected reference image has not been archived in this project',
-                          '请先将参考图导入或归档到此项目，再重新挂图。')
-    if len(refs) > ONLINE_IMAGE_REFERENCE_MAX:
+    selection = graph.resolve(node_id, prompt_override=prompt_override, track_saved_mentions=saved is not None)
+    positions = list(graph.image_positions(selection))
+    legacy = [position for position, asset, _ in positions if not asset]
+    if legacy and (saved is None or not set(legacy) <= selection['saved_mention_positions']):
+        raise unavailable()
+    if len(positions) > ONLINE_IMAGE_REFERENCE_MAX:
         raise agent_image_settings.invalid('Selected reference images exceed the application safety limit')
-    if refs:
+    if owned := [asset for _, asset, _ in positions if asset]:
         try:
-            await asyncio.to_thread(store.check_image_reference_files, project_id, [asset for asset, _ in refs])
+            await asyncio.to_thread(store.check_image_reference_files, project_id, owned)
         except ProjectStoreError as exc:
             raise agent_error(400, 'ASSET_NOT_FOUND', str(exc),
                               '参考图资产不可用；请先导入或归档，再重新挂图。') from exc
+    selected_urls = {position: selection['refs'][position]['url'] for position in legacy}
+    images = await asyncio.to_thread(inspect_legacy_images, _app_main, store, saved, selected_urls.values()) if legacy else {}
+    refs = [(asset or images[selected_urls[position]].asset_id, role) for position, asset, role in positions]
     prompt = selection['prompt']
     if not prompt:
         raise agent_error(400, "NODE_NOT_GENERATABLE", f"Node {node_id} has no prompt",
@@ -1584,7 +1590,8 @@ async def prepare_generation(project_id, node_id, *, canvas=None, prompt_overrid
                           details={"routing": exc.to_dict()}) from exc
     except ValueError as exc:
         raise agent_image_settings.invalid(str(exc)) from exc
-    return _PreparedGeneration(request, wire, route, str(node.get("type", "")), _node_prompt_fields(node))
+    return _PreparedGeneration(request, wire, route, str(node.get("type", "")), _node_prompt_fields(node),
+                               tuple(images.values()))
 
 
 async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: str = "", *, plan=None) -> dict:
@@ -1631,7 +1638,8 @@ async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: 
             and (context.tool == 'generate.trigger' or
                  (context.tool == 'canvas.batch_edit' and batch is not None))):
         context = None
-    hooks = _AgentImageLifecycle(project_id, task_id, node_id, result_node_id, context, build_result)
+    hooks = _AgentImageLifecycle(project_id, task_id, node_id, result_node_id, context, build_result,
+                                 legacy_images=plan.legacy_images)
     payload = plan.payload.model_copy(update={'result_node_id': result_node_id, 'idempotency_key': task_id})
     await create_project_image_task_core(project_id, payload, prepared=(plan.request, plan.route), hooks=hooks)
     if context:
@@ -1680,8 +1688,9 @@ async def wait_for_task_core(project_id: str, task_id: str, timeout: int = 120) 
 class _AgentImageLifecycle:
     """A3 adapter for the project image task; owns attribution, not generation."""
 
-    def __init__(self, project_id, task_id, node_id, result_id, context, build_result):
+    def __init__(self, project_id, task_id, node_id, result_id, context, build_result, *, legacy_images=()):
         self.project_id, self.task_id, self.result_id = project_id, task_id, result_id
+        self.legacy_images = legacy_images
         self.store = _app_main.FIREFLY_PROJECT_STORE
         self.context, self.build_result = context, build_result
         self.metadata = {'source_node_id': node_id, 'op_id': context.op_id if context else None}
@@ -1689,6 +1698,7 @@ class _AgentImageLifecycle:
         self.event = {'op_id': self.metadata['op_id'], 'node_id': result_id,
                       'persisted': False, 'pending': False, 'updated_at': None, 'listener': self.persisted}
         self.registered = self.start_error = self.failure_record = None
+        self.registration_started = False
         self.archived = []
 
     def persisted(self, pid, canvas):
@@ -1705,6 +1715,20 @@ class _AgentImageLifecycle:
             return self.store.apply_mutations(self.project_id, self.build_result(canvas), base_revision=canvas['revision'])
 
         def register():
+            if not self.legacy_images:
+                return register_result()
+            with self.store._lock:
+                canvas = self.store.canvas(self.project_id)
+                planned = {image.asset_id for image in self.legacy_images}
+                self.store.check_image_reference_files(self.project_id, set(task_record['referenceAssetIds']) - planned)
+                imported = archive_legacy_images(_app_main, self.store, self.project_id, canvas, self.legacy_images)
+                if imported:
+                    self.metadata[AUTO_ARCHIVED_REFS] = sorted(set(imported))
+                    task_record.update(self.metadata)
+                return register_result()
+
+        def register_result():
+            self.registration_started = True
             batch = _BATCH_GENERATION.get()
             if self.context:
                 self.store.add_persisted_canvas_listener(self.persisted)
@@ -1833,6 +1857,10 @@ class _AgentImageLifecycle:
             _track_lifetime_task(create_agent_ops_task(recover()))
 
     async def registration_failed(self, error):
+        if not self.registration_started:
+            with CANVAS_TASK_LOCK:
+                CANVAS_TASKS.pop(self.task_id, None)
+            return
         self.update(**self.metadata)
         error.add_note(f'Generation operation {self.metadata["op_id"]} task {self.task_id}')
         await _generation_archive_to_completion(self.finalize(error, registration=True))
