@@ -467,6 +467,27 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(self.session.effort_state["requested"], "low")
                 self.assertIsNone(self.session.effort_state["effective"])
 
+    async def test_codex_model_change_resumes_original_thread_with_new_model(self):
+        self.session.agent_cli = "codex"
+        self.session.model, self.session.reasoning_effort = "model-old", "high"
+        spawned = []
+        def spawn(argv, **kwargs):
+            spawned.append(list(argv))
+            return CodexProcess(argv)
+        with patch.object(ah.shutil, "which", return_value="fake-codex.exe"), \
+                patch("app.services.agent_adapters.codex_adapter.codex_spawn_env", return_value={"CODEX_HOME": str(self.root / "home")}), \
+                patch("app.services.agent_adapters.codex_adapter.write_home_mcp_config"), \
+                patch.object(ah.subprocess, "Popen", side_effect=spawn):
+            await self.manager._codex_turn(self.session, "first")
+            await asyncio.wait_for(asyncio.shield(self.session._reader_task), 3)
+            self.assertEqual(self.session.ext_session_id, "codex-native")
+            await self.manager.apply_runtime_settings(self.session, "model-new", "high")
+            await self.manager._codex_turn(self.session, "second")
+            await asyncio.wait_for(asyncio.shield(self.session._reader_task), 3)
+        self.assertEqual(spawned[0][spawned[0].index("-m") + 1], "model-old")
+        self.assertEqual(spawned[1][spawned[1].index("-m") + 1], "model-new")
+        self.assertEqual(spawned[1][spawned[1].index("resume") + 1], "codex-native")
+
     async def test_codex_failed_resume_replay_retry_reuses_pair_and_reference_snapshot(self):
         captured, spawned = await self.run_codex(binding="missing-thread", fail_resume=True, mutate=True)
         self.assertEqual(captured, [("gpt-test", "high", "missing-thread"), ("gpt-test", "high", None)])

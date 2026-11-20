@@ -119,7 +119,7 @@ async function agentViewHost(nodeId, projectId, host) {
     agentChangeHostView(nodeId, state, host);
     renderAgentNode(nodeId);
     state.projectId = projectId;
-    replayAgentEvents(nodeId, state);
+    return replayAgentEvents(nodeId, state);
 }
 
 // #409: references belong to this input draft, never to a saved canvas node.
@@ -874,7 +874,7 @@ function replayAgentEvents(nodeId, state) {
     if (!projectId) return;
     if (state._replayInFlight) {
         if (!state._applyingReplay) state._replayAgain = true;
-        return;
+        return state._replayPromise;
     }
     state._replayInFlight = true;
     state._replayBuffer = state._replayBuffer || [];
@@ -894,7 +894,7 @@ function replayAgentEvents(nodeId, state) {
     const usablePrefetch = initial && prefetch && prefetch.projectId === projectId && prefetch.host === host
         && prefetch.epoch === epoch && prefetch.generation === generation;
     const request = usablePrefetch ? prefetch.promise.then(data => data || agentReadHistoryResponse(url)) : agentReadHistoryResponse(url);
-    request.then(data => {
+    const replay = request.then(data => {
         if (initial && (typeof data.has_more !== 'boolean' || (data.has_more && typeof data.cursor !== 'string'))) {
             throw new Error('Invalid Agent history cursor');
         }
@@ -961,8 +961,7 @@ function replayAgentEvents(nodeId, state) {
         // Otherwise a buffered higher seq can hide an unbroadcast user prompt.
         if (succeeded && replayAgain) {
             renderAgentNode(nodeId);
-            replayAgentEvents(nodeId, state);
-            return;
+            return replayAgentEvents(nodeId, state);
         }
         if (succeeded) {
             const buf = state._replayBuffer || [];
@@ -994,8 +993,7 @@ function replayAgentEvents(nodeId, state) {
                 } else {
                     state._historyGapSince = since;
                     renderAgentNode(nodeId);
-                    replayAgentEvents(nodeId, state);
-                    return;
+                    return replayAgentEvents(nodeId, state);
                 }
             } else {
                 state._historyGapSince = null;
@@ -1003,6 +1001,8 @@ function replayAgentEvents(nodeId, state) {
         }
         renderAgentNode(nodeId);
     });
+    state._replayPromise = replay;
+    return replay;
 }
 
 // Older pages are complete turns. Reduce into an isolated view, then prepend
@@ -1710,6 +1710,7 @@ function applyAgentHostSettingsAuthority(nodeId, data) {
     if (!node) throw new Error('权威设置对应的 Agent 节点已不存在');
     const state = getAgentTuiState(nodeId);
     agentSyncHostView(node, state);
+    delete state.sessionModel;
     const activeView = agentIsReadonly(state) ? state.hostViews.get(state.activeHost) : state;
     if (data.effort_state) activeView.effortState = data.effort_state;
     renderAgentNode(nodeId);
@@ -1781,20 +1782,13 @@ async function agentSelectHost(nodeId, projectId, host) {
     if (!live || agentNodeHost(live) !== sourceHost || state.settingsRequestSeq !== sourceSeq) return;
     return setAgentHostSettings(nodeId, projectId, { host, ...agentHostSetting(live, host) });
 }
-function agentEffortHint(state, setting) {
-    const evidence = state.effortState;
-    if (evidence && evidence.effective !== null && evidence.effective !== undefined && state.viewHost !== 'codex') {
-        return `思考已生效：${evidence.effective} · 来源：${evidence.source}`;
-    }
-    const label = evidence && evidence.submitted !== null && evidence.submitted !== undefined ? '已提交' : '已设置';
-    return `${setting.effort === null ? '跟随宿主' : `思考 ${setting.effort} ${label}`} · 生效未确认${evidence?.source ? ` · 来源：${evidence.source}` : '（尚无宿主回读）'}`;
-}
 function closeAgentModelPicker(state) {
     const picker = state.modelPicker;
     if (!picker) return;
     state.modelPicker = null;
-    picker.dialog.close();
-    picker.dialog.remove();
+    document.removeEventListener('pointerdown', picker.outside, true);
+    document.removeEventListener('keydown', picker.keydown, true);
+    picker.menu.remove();
 }
 function agentCapabilitiesValid(data, host) {
     return data && data.host === host && ['available', 'unavailable'].includes(data.status)
@@ -1831,72 +1825,114 @@ async function loadAgentPickerCapabilities(nodeId, projectId, picker) {
     }
 }
 function renderAgentModelPicker(nodeId, projectId, picker) {
-    const cap = picker.capabilities, available = cap && cap.status === 'available';
-    const options = [{ id: '', name: '跟随宿主' }, ...(cap ? cap.models : [])];
-    if (picker.model && !options.some(m => m.id === picker.model)) options.push({ id: picker.model, name: `${picker.model}（已保存，未验证）` });
-    const efforts = available ? cap.selection.efforts.filter(e => e.toLowerCase() !== 'ultra') : [];
-    if (picker.confirming) {
-        // The picker is in the native top layer. A body-level ffDialog would be inert behind it.
-        picker.dialog.innerHTML = `<h3>新模型不支持当前思考档位</h3>
-            <p>当前 ${escapeHtml(picker.effort)} 不能用于所选模型。确认后将模型和“思考跟随宿主”组合提交；宿主默认无法验证时会明确失败，不会静默降档。</p>
-            <div class="agent-fork-actions"><button type="button" data-agent-picker-mismatch-cancel>取消</button><button type="button" data-agent-picker-apply>跟随宿主并切换</button></div>`;
-        const cancel = picker.dialog.querySelector('[data-agent-picker-mismatch-cancel]');
-        cancel.addEventListener('click', () => {
-            picker.confirming = false;
-            renderAgentModelPicker(nodeId, projectId, picker);
-            picker.dialog.querySelector('[data-agent-picker-apply]').focus();
-        });
-        picker.dialog.querySelector('[data-agent-picker-apply]').addEventListener('click', () => applyAgentModelPicker(nodeId, projectId, picker, true));
-        cancel.focus();
-        return;
-    }
-    picker.dialog.innerHTML = `<h3>节点模型与思考 · ${picker.host === 'pi' ? 'Pi' : 'Codex'}</h3>
-        <label>模型 <select data-agent-picker-model${picker.loading ? ' disabled' : ''}>${options.map(m => `<option value="${escapeAttr(m.id)}"${m.id === picker.model ? ' selected' : ''}>${escapeHtml(m.name)}</option>`).join('')}</select></label>
-        <label>思考 <select data-agent-picker-effort${picker.loading ? ' disabled' : ''}><option value="">跟随宿主</option>${efforts.map(e => `<option value="${escapeAttr(e)}"${e === picker.effort ? ' selected' : ''}>${escapeHtml(e)}</option>`).join('')}</select></label>
-        ${picker.effort !== null && !efforts.includes(picker.effort) ? `<p role="status">已保存思考 ${escapeHtml(picker.effort)} 尚不在当前模型能力内；提交前必须确认。</p>` : ''}
-        <p class="agent-tui-parameter-hint">${picker.loading ? '正在读取真实宿主能力…' : escapeHtml(cap ? `能力来源：${typeof cap.selection.source === 'string' ? cap.selection.source : Object.values(cap.selection.source).join('；')}；能力不代表当前运行已生效。` : '')}</p>
-        ${picker.error ? `<p role="alert">${escapeHtml(picker.error)}</p>` : ''}
-        <div class="agent-fork-actions"><button type="button" data-agent-picker-cancel>取消</button><button type="button" data-agent-picker-retry>重试读取</button><button type="button" data-agent-picker-apply${picker.loading || !available ? ' disabled' : ''}>确认设置</button></div>`;
-    picker.dialog.querySelector('[data-agent-picker-model]').addEventListener('change', event => {
-        picker.model = event.target.value;
-        picker.capabilities = null;
-        loadAgentPickerCapabilities(nodeId, projectId, picker);
-    });
-    picker.dialog.querySelector('[data-agent-picker-effort]').addEventListener('change', event => { picker.effort = event.target.value || null; });
-    picker.dialog.querySelector('[data-agent-picker-cancel]').addEventListener('click', () => closeAgentModelPicker(getAgentTuiState(nodeId)));
-    picker.dialog.querySelector('[data-agent-picker-retry]').addEventListener('click', () => loadAgentPickerCapabilities(nodeId, projectId, picker));
-    picker.dialog.querySelector('[data-agent-picker-apply]').addEventListener('click', () => applyAgentModelPicker(nodeId, projectId, picker));
+    const cap = picker.capabilities;
+    const models = [{ id: '', name: '跟随宿主' }, ...(cap?.models || [])];
+    if (picker.model && !models.some(m => m.id === picker.model)) models.push({ id: picker.model, name: picker.model });
+    const options = picker.kind === 'model' ? models : [{ id: '', name: '跟随宿主' },
+        ...(cap?.selection.efforts || []).filter(e => e && e.toLowerCase() !== 'ultra').map(e => ({ id: e, name: e }))];
+    const selected = picker.kind === 'model' ? picker.model : (picker.effort || '');
+    picker.menu.innerHTML = picker.loading ? '<div role="status">正在读取宿主能力…</div>'
+        : picker.error ? `<div role="alert">${escapeHtml(picker.error)} <button type="button" data-agent-picker-retry>重试</button></div>`
+        : options.map((option, i) => `<button type="button" role="menuitemradio" aria-checked="${option.id === selected}" data-agent-picker-option="${i}">${escapeHtml(option.name)}</button>`).join('');
+    picker.menu.querySelector('[data-agent-picker-retry]')?.addEventListener('click', () => loadAgentPickerCapabilities(nodeId, projectId, picker));
+    picker.menu.querySelectorAll('[data-agent-picker-option]').forEach(button => button.addEventListener('click', () => {
+        applyAgentModelPicker(nodeId, projectId, picker, options[Number(button.getAttribute('data-agent-picker-option'))].id);
+    }));
+    if (document.activeElement === picker.menu) picker.menu.querySelector('[aria-checked="true"]')?.focus();
 }
-async function applyAgentModelPicker(nodeId, projectId, picker, confirmMismatch = false) {
-    const state = getAgentTuiState(nodeId), cap = picker.capabilities;
-    if (state.modelPicker !== picker || picker.loading || cap?.status !== 'available' || agentIsReadonly(state) || agentParametersLocked(state)) return;
-    if (confirmMismatch !== picker.confirming) return;
-    let effort = picker.effort;
-    if (effort !== null && (!cap.selection.efforts.includes(effort) || effort.toLowerCase() === 'ultra')) {
-        if (!confirmMismatch) {
-            picker.confirming = true;
-            renderAgentModelPicker(nodeId, projectId, picker);
+function agentFloorEffort(current, supported) {
+    const order = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh'];
+    const index = order.indexOf(current.toLowerCase());
+    if (index < 0) return supported[0];
+    let floor, lowest;
+    for (const value of supported) {
+        const rank = order.indexOf(value.toLowerCase());
+        if (rank < 0) continue;
+        if (!lowest || rank < lowest.rank) lowest = { value, rank };
+        if (rank <= index && (!floor || rank > floor.rank)) floor = { value, rank };
+    }
+    return floor?.value ?? lowest?.value ?? supported[0];
+}
+async function applyAgentModelPicker(nodeId, projectId, picker, value) {
+    const state = getAgentTuiState(nodeId);
+    if (state.modelPicker !== picker || picker.loading || picker.error || agentIsReadonly(state) || agentParametersLocked(state)) return;
+    const selectionSeq = ++state.modelPickerSeq;
+    closeAgentModelPicker(state);
+    let model = picker.kind === 'model' ? value : picker.model;
+    let effort = picker.kind === 'effort' ? (value || null) : picker.effort;
+    if (model === picker.model && effort === picker.effort) return;
+    if (picker.kind === 'model' && effort !== null) {
+        const seq = state.settingsRequestSeq, epoch = state.viewEpoch;
+        try {
+            const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/capabilities?host=${encodeURIComponent(picker.host)}&model=${encodeURIComponent(model)}`, { cache: 'no-store' });
+            const cap = await response.json();
+            if (!response.ok || !agentCapabilitiesValid(cap, picker.host) || cap.status !== 'available' || (model && cap.selection.model !== model)) throw new Error('宿主能力不可用');
+            const live = canvasState.nodes.find(n => n.id === nodeId);
+            if (agentTuiState.get(nodeId) !== state || state.closing || state.viewEpoch !== epoch || state.settingsRequestSeq !== seq
+                || state.modelPickerSeq !== selectionSeq || !live || agentNodeHost(live) !== picker.host
+                || JSON.stringify(agentHostSetting(live, picker.host)) !== JSON.stringify({ model: picker.model, effort: picker.effort })) return;
+            const efforts = cap.selection.efforts.filter(e => e && e.toLowerCase() !== 'ultra');
+            if (!efforts.includes(effort)) {
+                if (!efforts.length) throw new Error('新模型没有可用的思考档位');
+                effort = agentFloorEffort(effort, efforts);
+            }
+        } catch (error) {
+            if (agentTuiState.get(nodeId) === state && !state.closing && state.viewEpoch === epoch && state.settingsRequestSeq === seq
+                && state.modelPickerSeq === selectionSeq) {
+                state.modelPicker = picker;
+                picker.error = `读取宿主能力失败：${error.message || error}`;
+                document.body.appendChild(picker.menu);
+                document.addEventListener('pointerdown', picker.outside, true);
+                document.addEventListener('keydown', picker.keydown, true);
+                renderAgentModelPicker(nodeId, projectId, picker);
+                picker.menu.focus();
+            }
             return;
         }
-        effort = null;
     }
-    const setting = { host: picker.host, model: picker.model, effort };
-    closeAgentModelPicker(state);
-    return setAgentHostSettings(nodeId, projectId, setting);
+    const changedEffort = effort !== picker.effort;
+    if (await setAgentHostSettings(nodeId, projectId, { host: picker.host, model, effort }) && changedEffort && picker.kind === 'model') {
+        state.effortNotice = `已改为 ${effort}`;
+        renderAgentNode(nodeId);
+        clearTimeout(state.effortNoticeTimer);
+        state.effortNoticeTimer = setTimeout(() => { state.effortNotice = ''; renderAgentNode(nodeId); }, 3000);
+    }
 }
-function openAgentModelPicker(nodeId, projectId) {
+function openAgentModelPicker(nodeId, projectId, kind = 'model', anchor = null) {
     const state = getAgentTuiState(nodeId);
     if (agentIsReadonly(state) || agentParametersLocked(state)) return;
-    if (state.modelPicker) { state.modelPicker.dialog.focus(); return; }
+    if (state.modelPicker) closeAgentModelPicker(state);
+    state.modelPickerSeq = (state.modelPickerSeq || 0) + 1;
     const node = canvasState.nodes.find(n => n.id === nodeId);
     if (!node) return;
-    const setting = agentHostSetting(node, state.viewHost), dialog = document.createElement('dialog');
-    dialog.className = 'agent-tui-model-picker';
-    const picker = { host: state.viewHost, model: setting.model, effort: setting.effort, dialog, seq: 0, capabilities: null, confirming: false };
+    const setting = agentHostSetting(node, state.viewHost), menu = document.createElement('div');
+    menu.className = 'agent-tui-model-picker';
+    menu.setAttribute('role', 'menu');
+    menu.tabIndex = -1;
+    anchor = anchor || Array.from(document.querySelectorAll('[data-agent-model-picker]')).find(el => el.getAttribute('data-agent-model-picker') === nodeId);
+    const rect = anchor?.getBoundingClientRect();
+    if (rect) { menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 228))}px`; menu.style.bottom = `${window.innerHeight - rect.top + 4}px`; }
+    const picker = { projectId, host: state.viewHost, model: setting.model, effort: setting.effort, kind, menu, seq: 0, capabilities: null };
+    picker.outside = event => { if (!menu.contains(event.target) && event.target !== anchor) closeAgentModelPicker(state); };
+    picker.keydown = event => {
+        if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeAgentModelPicker(state); anchor?.focus(); return; }
+        if (event.key === 'Enter' && menu.contains(document.activeElement) && document.activeElement !== menu) {
+            event.preventDefault(); event.stopPropagation(); document.activeElement.click(); return;
+        }
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+        const items = Array.from(menu.querySelectorAll('button'));
+        if (!items.length) return;
+        event.preventDefault(); event.stopPropagation();
+        const index = items.indexOf(document.activeElement);
+        const next = index < 0 ? (event.key === 'ArrowDown' ? 0 : items.length - 1)
+            : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+        items[next].focus();
+    };
     state.modelPicker = picker;
-    dialog.addEventListener('close', () => { if (state.modelPicker === picker) state.modelPicker = null; dialog.remove(); });
-    document.body.appendChild(dialog);
-    dialog.showModal();
+    document.body.appendChild(menu);
+    document.addEventListener('pointerdown', picker.outside, true);
+    document.addEventListener('keydown', picker.keydown, true);
+    menu.focus();
     return loadAgentPickerCapabilities(nodeId, projectId, picker);
 }
 
@@ -2417,8 +2453,8 @@ function agentNodeBodyHtml(node) {
                 <button type="button" data-agent-host-choice="pi" aria-pressed="${state.viewHost === 'pi'}"${disabled}>Pi</button><button type="button" data-agent-host-choice="codex" aria-pressed="${state.viewHost === 'codex'}"${disabled}>Codex</button>
             </div>
         </details>
-        <span class="agent-tui-setting-dot" aria-hidden="true">·</span><button type="button" class="agent-tui-setting-trigger" data-agent-model-picker="${escapeAttr(nodeId)}" aria-haspopup="dialog" title="${escapeAttr(modelLabel)}" aria-label="模型 ${escapeAttr(modelLabel)}"${disabled}><span class="agent-tui-setting-caption">模型</span><b>${escapeHtml(shortModel)}</b>${chevron}</button>
-        <span class="agent-tui-setting-dot" aria-hidden="true">·</span><button type="button" class="agent-tui-setting-trigger" data-agent-effort-picker="${escapeAttr(nodeId)}" aria-haspopup="dialog"${disabled}><span class="agent-tui-setting-caption">思考</span><b>${escapeHtml(effortLabel)}</b>${chevron}</button>
+        <span class="agent-tui-setting-dot" aria-hidden="true">·</span><button type="button" class="agent-tui-setting-trigger" data-agent-model-picker="${escapeAttr(nodeId)}" aria-haspopup="menu" title="${escapeAttr(modelLabel)}" aria-label="模型 ${escapeAttr(modelLabel)}"${disabled}><span class="agent-tui-setting-caption">模型</span><b>${escapeHtml(shortModel)}</b>${chevron}</button>
+        <span class="agent-tui-setting-dot" aria-hidden="true">·</span><button type="button" class="agent-tui-setting-trigger" data-agent-effort-picker="${escapeAttr(nodeId)}" aria-haspopup="menu"${disabled}><span class="agent-tui-setting-caption">思考</span><b>${escapeHtml(effortLabel)}</b>${chevron}</button>
     </div>`;
     const autonomyHtml = `<div class="agent-tui-autonomy" role="group" aria-label="自治确认档位">${[['cautious', '每张'], ['standard', '每批'], ['autonomous', '无需']].map(([value, label]) =>
         `<button type="button" data-agent-autonomy-choice="${value}" aria-pressed="${value === currentAutonomy}"${disabled}>${label}</button>`).join('')}</div>`;
@@ -2492,7 +2528,7 @@ function agentNodeBodyHtml(node) {
             </div>` : ''}
             <input type="file" class="agent-tui-file-input" data-agent-tui-file="${escapeAttr(nodeId)}" accept="image/*,video/*,audio/*" multiple style="display:none">
         </div>
-        <div class="agent-tui-composer-hint"><span>Enter 发送 · Shift+Enter 换行</span><span class="agent-tui-effort-hint" role="status">${escapeHtml(agentEffortHint(state, setting))}</span></div>
+        <div class="agent-tui-composer-hint"><span>Enter 发送 · Shift+Enter 换行</span><span class="agent-tui-effort-hint" role="status">${escapeHtml(state.effortNotice || '')}</span></div>
         </div>
     </div>`;
 }
@@ -3027,7 +3063,7 @@ function bindAgentNodeControls(el, node){
 
     el.querySelectorAll('[data-agent-model-picker],[data-agent-effort-picker]').forEach(button => {
         button.addEventListener('mousedown', event => event.stopPropagation());
-        button.addEventListener('click', event => { event.stopPropagation(); openAgentModelPicker(nodeId, projectId); });
+        button.addEventListener('click', event => { event.stopPropagation(); openAgentModelPicker(nodeId, projectId, button.hasAttribute('data-agent-effort-picker') ? 'effort' : 'model', button); });
     });
     const hostPicker = /** @type {HTMLDetailsElement|null} */ (el.querySelector('.agent-tui-host-picker'));
     if (hostPicker) {
@@ -3568,6 +3604,7 @@ function cleanupAgentTuiState(nodeId) {
         disposeAgentScroll(state);
         closeAgentModelPicker(state);
         if (state.stopStatusTimer) clearTimeout(state.stopStatusTimer);
+        if (state.effortNoticeTimer) clearTimeout(state.effortNoticeTimer);
         for (const view of state.hostViews.values()) {
             if (view.nodeRefsDraft) for (const pending of view.nodeRefsDraft.pending.values()) clearTimeout(pending.timer);
         }

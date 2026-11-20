@@ -236,4 +236,4 @@ _Avoid_: 独立音频项目、音频工作站
 - 人工 host/model/effort 的专用历史项只保存 `{agentHostSettingsEdit:{nodeId,before,after}}`；before/after 各为 `{host,model,effort}`。撤销提交 before 并带 `expected:after`，重做相反，均走 `/settings` 和 `user_edit:true`，不经普通画布 `scheduleSave` 恢复设置。
 - 仅服务器确认成功持久化、权威画布接收成功且项目/画布/历史上下文仍有效才移栈；失败、busy、预期值冲突、默认未确认或上下文失效均保留原栈。不得用历史快照回滚原生绑定、消息、其它节点或旧时间戳；通用 actionDelta / 普通保存路径不变。
 - 设置及设置历史成功回包都须在接收权威画布后同步 TUI 活跃宿主视图与 `effort_state`，并就地刷新（包括全量 render 跳过的停靠元素）；运行时缓存不是设置/绑定真源。
-- requested 是保存意图，submitted 是已实际提交宿主的参数，effective 是可信宿主回读。能力目录、配置回显或命令成功不等于 effective；Codex effective 仍为 null，UI 必须显示“生效未确认”，不可把“已设置/已提交”改称“已生效”。Pi 只有严格 ACK 和 state 回读后才有生效证据。能力只在模型/思考选择器生命周期内读取，普通 render 不触发探测。
+- requested 是保存意图，submitted 是已实际提交宿主的参数，effective 是可信宿主回读。能力目录、配置回显或命令成功不等于 effective；Codex effective 仍为 null，Pi 只有严格 ACK 和 state 回读后才有生效证据。界面只显示所选模型和思考档位，不展示运行时证据状态（#448）。能力只在模型/思考选择器生命周期内读取，普通 render 不触发探测。换模型后若旧思考档位不受支持，向下取最接近的受支持档位；若所有受支持档位都更高，则取最低档。

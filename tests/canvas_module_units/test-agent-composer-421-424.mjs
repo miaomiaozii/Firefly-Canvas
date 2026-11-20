@@ -63,7 +63,8 @@ test('r3 composer has no duplicate internal header; real parameters and more men
     assert.doesNotMatch(html, /<select\b/);
     assert.equal((html.match(/class="agent-tui-setting-dot"/g) || []).length, 2);
     assert.match(html, /data-agent-autonomy-choice="standard" aria-pressed="true">每批/);
-    for (const text of ['每张', '每批', '无需', '生效未确认']) assert.ok(html.includes(text));
+    for (const text of ['每张', '每批', '无需']) assert.ok(html.includes(text));
+    assert.doesNotMatch(html, /生效未确认/);
     const head = fn(m.ctx, 'agentHeadActionButtonsHtml')(m.node);
     assert.match(head, /^<details class="agent-tui-more"><summary aria-label="更多会话操作">.*<\/summary><div data-agent-more-content>/);
     assert.equal((head.match(/<summary /g) || []).length, 1);
@@ -91,38 +92,14 @@ test('capabilities are fetched only during the shared model+effort picker lifecy
     assert.equal(m.calls.length, 2); assert.match(m.calls[1].url, /capabilities\?host=pi&model=native%2Fa$/);
     m.calls[1].resolve(reply(native('pi', 'native/a', ['low', 'high', 'ultra']))); await flush();
     const picker = m.state.modelPicker;
-    assert.match(picker.dialog.innerHTML, /Native A/); assert.match(picker.dialog.innerHTML, /native:levels/);
-    assert.doesNotMatch(picker.dialog.innerHTML, /value="ultra"/);
-    picker.dialog.querySelector('[data-agent-picker-model]').dispatchEvent(event('change', { target: { value: 'native/b' } }));
-    assert.match(m.calls[2].url, /model=native%2Fb$/);
+    assert.equal(picker.kind, 'effort');
+    assert.match(picker.menu.innerHTML, /low/); assert.match(picker.menu.innerHTML, /high/);
+    assert.doesNotMatch(picker.menu.innerHTML, /ultra/);
+    const reload = fn(m.ctx, 'loadAgentPickerCapabilities')('a', 'project', picker);
     fn(m.ctx, 'closeAgentModelPicker')(m.state);
-    m.calls[2].resolve(reply(native('pi', 'native/b', ['low']))); await flush();
+    m.calls[2].resolve(reply(native('pi', 'native/a', ['low']))); await reload;
     assert.equal(m.state.modelPicker, null, 'closed picker cannot be reopened by late capability response');
     assert.equal(m.calls.length, 3);
-});
-
-test('unsupported previous effort requires explicit confirmation and submits model+null effort atomically; 409 is visible', async () => {
-    const m = setup();
-    const opening = fn(m.ctx, 'openAgentModelPicker')('a', 'project');
-    m.calls[0].resolve(reply(native())); await opening;
-    const picker = m.state.modelPicker;
-    picker.model = 'native/b'; picker.capabilities = native('pi', 'native/b', ['low']);
-    await fn(m.ctx, 'applyAgentModelPicker')('a', 'project', picker);
-    assert.match(picker.dialog.innerHTML, /新模型不支持当前思考档位/);
-    assert.equal(m.asks.length, 0, 'a backdrop outside the native picker would be inert');
-    assert.equal(m.calls.length, 1, 'the confirmation view does not write settings');
-    picker.dialog.querySelector('[data-agent-picker-mismatch-cancel]').dispatchEvent(event('click'));
-    assert.match(picker.dialog.innerHTML, /节点模型与思考/);
-    assert.equal(m.calls.length, 1); assert.equal(m.state.modelPicker, picker);
-    await fn(m.ctx, 'applyAgentModelPicker')('a', 'project', picker);
-    const applying = fn(m.ctx, 'applyAgentModelPicker')('a', 'project', picker, true);
-    await flush();
-    assert.deepEqual(JSON.parse(m.calls[1].opts.body), { host: 'pi', model: 'native/b', effort: null, user_edit: true });
-    m.calls[1].resolve({ ok: false, status: 409, json: async () => ({ detail: { message: 'Production default unverified' } }) });
-    assert.equal(await applying, false);
-    assert.equal(m.node.model, 'native/a'); assert.equal(m.node.agentHostSettings.pi.effort, 'high');
-    assert.match(fn(m.ctx, 'agentNodeBodyHtml')(m.node), /Production default unverified/);
-    assert.equal(m.received.length, 0);
 });
 
 test('first host switch can cancel, then saves the backend-restored per-host choice only through the canvas receiver', async () => {
@@ -140,7 +117,7 @@ test('first host switch can cancel, then saves the backend-restored per-host cho
     assert.deepEqual(fromContext(m.received[0].options.fields), ['agentCli', 'agentHostSettings', 'model']);
     assert.equal(m.state.activeHost, 'codex');
     const html = fn(m.ctx, 'agentNodeBodyHtml')(m.ctx.canvasState.nodes[0]);
-    assert.match(html, /已设置/); assert.match(html, /生效未确认/); assert.doesNotMatch(html, /思考已生效/);
+    assert.match(html, /<b>low<\/b>/); assert.doesNotMatch(html, /生效未确认|思考已生效/);
     assert.equal(m.node.agentHostSessions.pi.extSessionId, 'pi-original', 'TUI never mutates bindings');
 });
 
@@ -181,7 +158,7 @@ test('per-host transient views preserve messages, draft/focus/selection/reading 
 test('readonly history uses only host-filtered GET events and rejects late frames/replays and all send routes', async () => {
     const m = setup(), socket = fn(m.ctx, 'openAgentWebSocket')('a', 'project');
     m.state.status = 'idle';
-    await fn(m.ctx, 'agentViewHost')('a', 'project', 'codex');
+    const codexHistory = fn(m.ctx, 'agentViewHost')('a', 'project', 'codex');
     assert.equal(m.sockets.length, 1); assert.equal(m.calls[0].url, '/api/projects/project/agent-nodes/a/events/page?host=codex&turns=5'); assert.equal(m.calls[0].opts.method, undefined);
     socket.onmessage({ data: JSON.stringify({ host: 'pi', type: 'user_prompt', text: 'late old frame', seq: 7 }) });
     for (const sender of ['sendAgentPrompt', 'sendAgentSteer', 'sendAgentFollowUp']) fn(m.ctx, sender)('a', 'project', 'must not send');
@@ -189,19 +166,19 @@ test('readonly history uses only host-filtered GET events and rejects late frame
     assert.equal(m.calls.length, 1); assert.equal(m.state.messages.length, 0);
     m.calls[0].resolve(reply({ events: [ { seq: 1, host: 'pi', event: { type: 'user_prompt', text: 'wrong host' } },
         { seq: 2, host: 'codex', event: { host: 'codex', type: 'user_prompt', text: 'saved Codex' } } ], has_more: false, cursor: null }));
-    await flush(); assert.equal(m.state.messages.length, 1); assert.equal(m.state.messages[0].text, 'saved Codex');
+    await codexHistory; assert.equal(m.state.messages.length, 1); assert.equal(m.state.messages[0].text, 'saved Codex');
     assert.match(fn(m.ctx, 'agentNodeBodyHtml')(m.node), /agent-tui-readonly-banner/);
     assert.equal(fn(m.ctx, 'connectAgentWebSocket')('a', 'project'), null);
-    await fn(m.ctx, 'agentViewHost')('a', 'project', 'pi');
+    const piHistory = fn(m.ctx, 'agentViewHost')('a', 'project', 'pi');
     const piReplay = m.calls[1];
     assert.equal(piReplay.url, '/api/projects/project/agent-nodes/a/events/page?host=pi&turns=5');
     assert.equal(piReplay.opts.method, undefined);
-    await fn(m.ctx, 'agentViewHost')('a', 'project', 'codex');
+    const backToCodex = fn(m.ctx, 'agentViewHost')('a', 'project', 'codex');
     assert.equal(m.calls[2].url, '/api/projects/project/agent-nodes/a/events?since=2&host=codex');
     assert.equal(m.calls[2].opts.method, undefined);
     piReplay.resolve(reply({ events: [{ seq: 10, host: 'pi', event: { type: 'user_prompt', text: 'late Pi replay' } }], has_more: false, cursor: null }));
-    await flush(); assert.equal(m.state.messages[0].text, 'saved Codex');
-    m.calls[2].resolve(reply({ events: [] })); await flush();
+    await piHistory; assert.equal(m.state.messages[0].text, 'saved Codex');
+    m.calls[2].resolve(reply({ events: [] })); await backToCodex;
 });
 
 test('busy/starting/retrying/confirmation/queue and uncompleted stop lock every parameter path, but steer still queues', async () => {
@@ -298,9 +275,9 @@ test('malformed/unavailable capability responses surface errors rather than inve
     for (const data of [{ ...native(), selection: null }, { ...native(), status: 'unavailable', error: { message: 'CLI offline' } }]) {
         const m = setup(), opening = fn(m.ctx, 'openAgentModelPicker')('a', 'project');
         m.calls[0].resolve(reply(data)); await opening;
-        assert.match(m.state.modelPicker.dialog.innerHTML, /role="alert"/);
-        assert.match(m.state.modelPicker.dialog.innerHTML, /data-agent-picker-apply disabled/);
-        assert.doesNotMatch(m.state.modelPicker.dialog.innerHTML, /value="(?:medium|ultra)"/);
+        assert.match(m.state.modelPicker.menu.innerHTML, /role="alert"/);
+        assert.match(m.state.modelPicker.menu.innerHTML, /data-agent-picker-retry/);
+        assert.doesNotMatch(m.state.modelPicker.menu.innerHTML, /data-agent-picker-option/);
     }
 });
 

@@ -33,6 +33,7 @@ function setup({before=node(a), after=node(b), record=true}={}){
     ctx.scheduleSave = () => saves.push('ordinary-save');
     // Runtime/DOM adoption is covered by the real TUI integration tests.
     ctx.applyAgentHostSettingsAuthority = () => {};
+    ctx.agentNodeHost = node => node.agentCli;
     ctx.cancelPendingMediaArchives = () => {};
     ctx.fetch = (url, options) => new Promise((resolve,reject) => calls.push({url, options, resolve, reject}));
     // Explicit authoritative receiver seam: adopts only this response, records no
@@ -44,6 +45,7 @@ function setup({before=node(a), after=node(b), record=true}={}){
         return true;
     };
     harness.element('smartUndoButton'); harness.element('smartRedoButton');
+    for(const id of ['agentUndoNotice','agentUndoNoticeText','agentUndoNoticeSettings','agentUndoNoticeClose']) harness.element(id);
     loadModules(ctx, ['canvas-undo.js']);
     if(record) ctx.pushAgentHostSettingsUndo(before, after);
     const state = () => fromContext(evaluate(ctx, 'canvasState.nodes'));
@@ -156,8 +158,13 @@ for(const direction of ['undo','redo']){
             assert.deepEqual(h.stacks(),stacks);
             assert.deepEqual(h.state(),state);
             assert.equal(h.received.length,received);
-            assert.match(h.toasts.at(-1),/Agent 设置.*失败/);
-            if(mode.startsWith('agent_')) assert.ok(h.toasts.at(-1).includes(mode));
+            if(mode === 'agent_default_unverified'){
+                assert.equal(h.harness.element('agentUndoNotice').hidden, false);
+                assert.match(h.harness.element('agentUndoNoticeText').textContent, /原默认无法确认/);
+            } else {
+                assert.match(h.toasts.at(-1),/Agent 设置.*失败/);
+                if(mode.startsWith('agent_')) assert.ok(h.toasts.at(-1).includes(mode));
+            }
             assert.deepEqual(h.saves,[]);
         });
     }

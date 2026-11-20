@@ -200,14 +200,12 @@ test('real bound settings handlers declare human intent without optimistic persi
         defaults:{model:null, effort:null}, selection:{model, efforts:['low'], source:'pi'} });
     assert.match(m.calls[0].url, /capabilities\?host=pi&model=old-model$/);
     m.calls[0].resolve(response(caps('old-model'))); await flush();
-    const picker = m.state.modelPicker.dialog;
-    picker.querySelector('[data-agent-picker-model]').dispatchEvent(event('change', { target:{value:'runtime-model'} }));
-    assert.match(m.calls[1].url, /capabilities\?host=pi&model=runtime-model$/);
-    m.calls[1].resolve(response(caps('runtime-model'))); await flush();
-    picker.querySelector('[data-agent-picker-apply]').dispatchEvent(event('click'));
-    assert.deepEqual(JSON.parse(m.calls[2].opts.body), { host:'pi', model:'runtime-model', effort:null, user_edit:true });
+    const picker = m.state.modelPicker;
+    assert.match(picker.menu.innerHTML, /New/);
+    const applying = fn(m.ctx, 'applyAgentModelPicker')('n1', 'project', picker, 'runtime-model');
+    assert.deepEqual(JSON.parse(m.calls[1].opts.body), { host:'pi', model:'runtime-model', effort:null, user_edit:true });
     assert.deepEqual(persisted(m.ctx), before);
-    m.calls[2].resolve({ ok:false, status:409, json:async () => ({detail:'model rejected'}) }); await flush();
+    m.calls[1].resolve({ ok:false, status:409, json:async () => ({detail:'model rejected'}) }); await applying;
     assert.match(m.harness.toasts.shift().message, /model rejected/);
 
     controls['autonomy-choice'].dispatchEvent(event('click'));
@@ -215,14 +213,14 @@ test('real bound settings handlers declare human intent without optimistic persi
     controls['more-branch'].dispatchEvent(event('change'));
     assert.equal(controls['more-branch'].value, 'b1', 'native select stays on authoritative branch pending receipt');
     controls.fork.dispatchEvent(event('click'));
-    assert.deepEqual(m.calls.slice(3, 5).map(call => JSON.parse(call.opts.body)), [
+    assert.deepEqual(m.calls.slice(2, 4).map(call => JSON.parse(call.opts.body)), [
         { autonomy: 'autonomous', user_edit: true }, { branch_id: 'b2', user_edit: true },
     ]);
-    assert.equal(m.calls[5].opts.body, undefined, 'picker GET does not claim a human persisted edit');
+    assert.equal(m.calls[4].opts.body, undefined, 'picker GET does not claim a human persisted edit');
     assert.deepEqual(persisted(m.ctx), before);
-    m.calls[5].resolve(response({ messages: [{ text: 'Fork here', entryId: 'e1' }] }));
+    m.calls[4].resolve(response({ messages: [{ text: 'Fork here', entryId: 'e1' }] }));
     await flush();
-    const dlg = m.harness.dialogs[1];
+    const dlg = m.harness.dialogs[0];
     const radio = m.harness.makeElement('input');
     radio.value = '0';
     const name = m.harness.makeElement('input');
@@ -230,8 +228,8 @@ test('real bound settings handlers declare human intent without optimistic persi
     dlg.querySelector = selector => selector === 'input[name="forkidx"]:checked' ? radio : selector === 'input[name="branchname"]' ? name : null;
     dlg.close('ok');
     await flush();
-    assert.deepEqual(JSON.parse(m.calls[6].opts.body), { entry_id: 'e1', name: 'Branch', user_edit: true });
-    for (const call of [...m.calls.slice(3, 5), m.calls[6]]) {
+    assert.deepEqual(JSON.parse(m.calls[5].opts.body), { entry_id: 'e1', name: 'Branch', user_edit: true });
+    for (const call of [...m.calls.slice(2, 4), m.calls[5]]) {
         call.resolve({ ok: false, status: 409, json: async () => ({ detail: 'rejected' }) });
     }
     await flush();

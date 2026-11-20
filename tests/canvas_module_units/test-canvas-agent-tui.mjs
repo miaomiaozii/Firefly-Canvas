@@ -1601,13 +1601,26 @@ test('bindAgentNodeControls: confirm 批准/取消、model/autonomy/branch chang
             if (url.endsWith('/fork-messages')) return { ok: true, json: async () => ({ messages: [{ text: '第一轮', entryId: 'e1' }] }) };
             if (url.includes('/capabilities?')) return { ok: true, json: async () => ({ host:'pi', status:'available',
                 models:[{id:'m0', name:'m0'}, {id:'m2', name:'m2'}], defaults:{model:null, effort:null},
-                selection:{ model:new URL(url, 'http://example.test').searchParams.get('model'), efforts:[], source:'pi' } }) };
+                selection:{ model:new URL(url, 'http://example.test').searchParams.get('model') || '', efforts:[], source:'pi' } }) };
             return { ok: true, json: async () => ({}) };
         },
     });
     const create = ctx.document.createElement;
+    let modelOption;
     ctx.document.createElement = tag => {
         const element = create(tag), fields = new Map();
+        if (tag === 'div') {
+            element.querySelectorAll = selector => {
+                if (selector !== '[data-agent-picker-option]') return [];
+                return Array.from(element.innerHTML.matchAll(/data-agent-picker-option="(\d+)">([^<]+)</g), ([,index,label]) => {
+                    const button = harness.makeElement('button');
+                    button.setAttribute('data-agent-picker-option', index);
+                    if (label === 'm2') modelOption = button;
+                    return button;
+                });
+            };
+            return element;
+        }
         element.querySelector = selector => {
             if (!fields.has(selector)) fields.set(selector, harness.makeElement('button'));
             return fields.get(selector);
@@ -1643,10 +1656,9 @@ test('bindAgentNodeControls: confirm 批准/取消、model/autonomy/branch chang
     // Native picker + segment declare human intent without optimistic persistence.
     tree.model.dispatchEvent(ev('click'));
     await d2Drain();
-    const picker = harness.dialogs[0];
-    picker.querySelector('[data-agent-picker-model]').dispatchEvent(ev('change', { target:{value:'m2'} }));
-    await d2Drain();
-    picker.querySelector('[data-agent-picker-apply]').dispatchEvent(ev('click'));
+    assert.ok(modelOption, 'm2 appears in the capability menu');
+    assert.equal(harness.dialogs.length, 0, 'model picker is not modal');
+    modelOption.click();
     assert.equal(fromContext(fetchCalls.at(-1).url), '/api/projects/canvas-id-1/agent-nodes/n1/settings');
     assert.deepEqual(JSON.parse(fromContext(fetchCalls.at(-1).opts.body)), { host:'pi', model:'m2', effort:null, user_edit:true });
     assert.equal(fromContext(evaluate(ctx, 'canvasState.nodes[0].model')), 'm0');
@@ -1674,9 +1686,9 @@ test('bindAgentNodeControls: confirm 批准/取消、model/autonomy/branch chang
     // fork 按钮 → showForkPicker（异步 fire-and-forget）：#317 起走画布自有 <dialog>。
     tree.forkBtn.dispatchEvent(ev('click'));
     await new Promise(r => setImmediate(r));
-    assert.equal(harness.dialogs.length, 2, 'fork 按钮打开独立 <dialog> 选择器');
-    assert.ok(harness.dialogs[1].innerHTML.includes('agent-fork-idx">1.</span><span>第一轮'), harness.dialogs[1].innerHTML);
-    fillForkDialog(harness, harness.dialogs[1], { index: 0, name: '线' });
+    assert.equal(harness.dialogs.length, 1, 'fork 按钮打开独立 <dialog> 选择器');
+    assert.ok(harness.dialogs[0].innerHTML.includes('agent-fork-idx">1.</span><span>第一轮'), harness.dialogs[0].innerHTML);
+    fillForkDialog(harness, harness.dialogs[0], { index: 0, name: '线' });
     await new Promise(r => setImmediate(r));
     const forkCall = fetchCalls.at(-1);
     assert.ok(forkCall.url.endsWith('/agent-nodes/n1/fork'), forkCall.url);

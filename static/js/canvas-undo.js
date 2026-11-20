@@ -18,6 +18,82 @@ let redoPushing = false;
 let pendingAgentHostSettingsUndo = null; // one settings history transaction, never a canvas save
 const smartUndoButton = document.getElementById('smartUndoButton');
 const smartRedoButton = document.getElementById('smartRedoButton');
+const agentUndoNotices = new Map();
+const agentUndoNoticeBar = document.getElementById('agentUndoNotice');
+let locateAgentUndoNoticeNode = null;
+
+function agentUndoNoticeKey(){
+    const projectId = undoStackProjectId();
+    return projectId && canvas?.id ? `firefly.agentUndoNotice:${JSON.stringify([projectId, canvas.id])}` : '';
+}
+function readAgentUndoNotice(key){
+    if(!key) return null;
+    if(agentUndoNotices.has(key)) return agentUndoNotices.get(key);
+    let notice = null;
+    try { notice = JSON.parse(localStorage.getItem(key) || 'null'); } catch(error) { console.warn('Unable to read Agent undo notice', error); /* #348: use in-memory notice when storage is unavailable */ }
+    if(!notice || typeof notice.nodeId !== 'string' || !notice.nodeId || !['backward','forward'].includes(notice.direction)) notice = null;
+    agentUndoNotices.set(key, notice);
+    return notice;
+}
+function syncAgentUndoNotice(){
+    if(!agentUndoNoticeBar) return;
+    const notice = readAgentUndoNotice(agentUndoNoticeKey());
+    agentUndoNoticeBar.hidden = !notice;
+    if(!notice) return;
+    const node = canvasState.nodes.find(item => item.id === notice.nodeId && item.type === 'smart-agent');
+    const host = ['pi','codex'].includes(notice.host) ? notice.host : '';
+    const active = node && agentNodeHost(node);
+    document.getElementById('agentUndoNoticeText').textContent = '上次尝试：原默认无法确认，当时设置未变，撤销/重做记录保留。手动设置将算作新编辑。';
+    const button = document.getElementById('agentUndoNoticeSettings');
+    button.disabled = !node || !host || active !== host;
+    button.title = !node ? '该 Agent 节点已不存在' : !host ? '旧提示未记录目标宿主' : active !== host ? '目标宿主未激活，设置只读' : '';
+}
+function showAgentUndoNotice(nodeId, direction, host){
+    const key = agentUndoNoticeKey();
+    if(!key) return;
+    const notice = {nodeId, direction, host};
+    agentUndoNotices.set(key, notice);
+    try { localStorage.setItem(key, JSON.stringify(notice)); } catch(error) { console.warn('Unable to persist Agent undo notice', error); /* #348: keep the notice visible in memory */ }
+    syncAgentUndoNotice();
+}
+function dismissAgentUndoNotice(){
+    const key = agentUndoNoticeKey();
+    if(!key) return;
+    agentUndoNotices.set(key, null);
+    try { localStorage.removeItem(key); } catch(error) { console.warn('Unable to dismiss stored Agent undo notice', error); /* #348: keep it dismissed in memory */ }
+    syncAgentUndoNotice();
+}
+async function openAgentUndoNoticeSettings(){
+    const key = agentUndoNoticeKey(), projectId = undoStackProjectId();
+    const notice = readAgentUndoNotice(key);
+    const target = () => key && agentUndoNoticeKey() === key && readAgentUndoNotice(key) === notice
+        && canvasState.nodes.find(item => item.id === notice?.nodeId && item.type === 'smart-agent' && agentNodeHost(item) === notice.host);
+    let node = target();
+    if(!node || !['pi','codex'].includes(notice.host)){ syncAgentUndoNotice(); return; }
+    const state = getAgentTuiState(node.id);
+    agentSyncHostView(node, state);
+    if(agentIsReadonly(state)){
+        if(state.composing || state.settingsPending || state.attachWorking){ toast('节点忙碌，请稍后查看设置'); return; }
+        await agentViewHost(node.id, projectId, state.activeHost);
+    }
+    node = target();
+    if(!node || agentIsReadonly(state)) return;
+    if(agentDockState(node)){
+        if(agentDockIsCollapsed(node.id)) agentDockCollapseToggle(node.id);
+    } else if(!locateAgentUndoNoticeNode?.(node.id)) return;
+    while(state._replayInFlight && state._replayPromise) await state._replayPromise;
+    if(!target() || agentIsReadonly(state)) return;
+    if(agentParametersLocked(state)){ toast('节点忙碌，请稍后查看设置'); return; }
+    const anchor = Array.from(document.querySelectorAll('[data-agent-model-picker]'))
+        .find(el => el.getAttribute('data-agent-model-picker') === node.id);
+    if(anchor) await openAgentModelPicker(node.id, projectId, 'model', anchor);
+}
+window.addEventListener('studio-canvas-selection-sync', event => {
+    if(event.detail?.locate) locateAgentUndoNoticeNode = event.detail.locate;
+    syncAgentUndoNotice();
+});
+document.getElementById('agentUndoNoticeClose')?.addEventListener('click', dismissAgentUndoNotice);
+document.getElementById('agentUndoNoticeSettings')?.addEventListener('click', () => { void openAgentUndoNoticeSettings(); });
 
 function syncUndoRedoButtons(){
     if(smartUndoButton) smartUndoButton.disabled = !undoStack.length;
@@ -322,6 +398,10 @@ async function restoreAgentHostSettingsUndo(snap, direction){
         assertCurrent();
         if(!response.ok){
             const detail = data?.detail;
+            if(detail?.code === 'agent_default_unverified'){
+                showAgentUndoNotice(edit.nodeId, direction, target.host);
+                return;
+            }
             throw new Error(`${detail?.code || `HTTP ${response.status}`}：${detail?.message || (typeof detail === 'string' ? detail : '设置事务被拒绝')}`);
         }
         if(data?.success !== true || data.persisted === false || !data.canvas) throw new Error('服务端未确认设置已保存');

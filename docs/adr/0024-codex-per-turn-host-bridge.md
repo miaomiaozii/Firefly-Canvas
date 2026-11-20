@@ -140,3 +140,7 @@ resume 失败（session 缺失/版本不兼容，实测报错退出）──▶
 - 模型和思考共用选择器，打开、模型变更或显式重试才读取原生 capabilities，不在 render/控制绑定时探测。无能力就显示错误/不可用，不编造档位；ultra 不暴露。新模型不支持已存 effort 时须明确确认组合提交 `effort:null`，后端默认未确认仍拒绝，不静默降档。
 - requested/submitted/effective 三层语义继续适用：只把权威 `effort_state` 当运行时证据；Codex 仍为 effective=null，UI 区分“已设置”“已提交”和“生效未确认”，不能拿配置或目录回显冒充生效。Pi 生效提示依赖严格 ACK/state 回读。停止请求送达不是宿主已停止，终态反馈/状态核验前参数保持锁定。
 - 本门不修改 Store 绑定保护、generation、ownership、outbox、pendingTasks，不授予客户端 trusted 权限。r3、480px 回退、临时呈现状态与用户消息导航详见 [ADR 0028](0028-agent-node-dockable.md)；浏览器、完整 Store 证据及截图矩阵见门 3 交付记录，本文不替代验收。
+
+## #448：同会话切模型与选择器呈现
+
+同一宿主切模型保留原生会话：Codex 下一轮用新 `-m` 和原 thread ID 续接，Pi 用既有严格原生设置事务。界面显示用户选定的模型和思考档位，不展示 requested/submitted/effective 三态；内部证据与原有事务安全边界不变。模型/思考改用非模态上拉菜单，选择即提交，旧思考档位不受支持时向下取最接近的受支持档位；若所有受支持档位都更高，则取最低档。档位变化时短暂提示。能力读取失败时在菜单提供重试，不影响关闭菜单。此前门 3 关于三态呈现及不支持档位须确认并清空的 UI 规定由本节取代；busy、默认值保护、CAS 和 Pi 回滚继续适用。

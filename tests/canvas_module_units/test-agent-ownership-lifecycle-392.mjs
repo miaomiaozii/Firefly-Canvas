@@ -201,7 +201,7 @@ for(const hostSwitch of [false,true]) test(`settings undo refreshes docked ${hos
     assert.deepEqual(fromContext(state.effortState),evidence);
     assert.deepEqual(rendered,[{id:'prompt',host:'pi',effective:'low'}]);
     assert.equal(evaluate(e.ctx,'undoStack.length'),0);assert.equal(evaluate(e.ctx,'redoStack.length'),1);
-    assert.match(e.ctx.agentEffortHint(state,e.node().agentHostSettings.pi),/思考已生效：low/);
+    assert.match(e.ctx.agentNodeBodyHtml(e.node()), /data-agent-effort-picker="prompt"[^>]*><span[^>]*>思考<\/span><b>low<\/b>/);
 });
 
 test('already accepted branch transitions clear old history even when HTTP authority is now stale',async()=>{
