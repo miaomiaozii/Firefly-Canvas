@@ -2844,53 +2844,54 @@ async def batch_edit_core(project_id: str, node_ids, prompt, agent_node_id: str 
              "tokens": {context.op_id}, "tasks": tasks, "unregistered": {}} if context else None
     token = _BATCH_GENERATION.set(batch)
     guarded = set()
-    def check_prompt(node, plan):
-        if plan and (str(node.get("type", "")) != plan.node_type or
-                     _node_prompt_fields(node) != plan.original_prompt):
-            raise agent_error(409, "CANVAS_CONFLICT", "Batch source prompt changed before write",
-                              "画布上的提示词已改变；检查后重新请求整批确认。")
+
+    def conflict():
+        return agent_error(409, "CANVAS_CONFLICT", "Canvas changed before the batch write",
+                           "画布已改变；检查后重新请求整批确认。")
 
     try:
-        if plans is not None:
-            canvas = store.canvas(project_id)
-            for node_id, plan in zip(node_ids, plans):
-                check_prompt(_snapshot_node(canvas, node_id), plan)
+        from firefly_projects import RevisionConflict
+
+        # The same revision that produced every source update must still hold
+        # after the start event; do not rebase an already confirmed batch.
+        canvas = store.canvas(project_id)
+        nodes = {node['id']: node for node in canvas.get('nodes', [])}
+        revision = canvas['revision']
+        updated_at = _app_main.now_ms()
+        mutations = []
         for index, node_id in enumerate(node_ids):
             plan = plans[index] if plans is not None else None
-            updated_at = _app_main.now_ms()
-
-            def build(canvas):
+            node = nodes.get(node_id)
+            if plan is not None and (node is None or str(node.get('type', '')) != plan.node_type or
+                                     _node_prompt_fields(node) != plan.original_prompt):
+                raise conflict()
+            if node is None:
                 node = _snapshot_node(canvas, node_id)
-                check_prompt(node, plan)
-                update = agent_batch_prompt.prompt_update(node, prompt, legacy=True)
-                if all(node.get(key) == value for key, value in update.items()):
-                    return []
-                return [{"op": "upsert_node", "node": {**node, **update, "updated_at": updated_at}}]
+            update = agent_batch_prompt.prompt_update(node, prompt, legacy=True)
+            if any(node.get(key) != value for key, value in update.items()):
+                mutations.append({'op': 'upsert_node', 'node': {**node, **update, 'updated_at': updated_at}})
 
-            if context:
-                from contextlib import nullcontext
-                from app.services.agent_ops_context import agent_ops_scope
-                child = batch['root_exists']
-                scope = (agent_ops_scope(project_id=project_id, agent_node_id=context.agent_node_id,
-                                         turn_id=context.turn_id, tool=context.tool, args=context.args)
-                         if child else nullcontext(context))
-                with scope as source_context:
-                    lifecycle = await _media_start(project_id, source_context, [node_id])
-                    try:
-                        def update():
-                            def apply():
-                                canvas = store.canvas(project_id)
-                                mutations = build(canvas)
-                                if mutations:
-                                    return store.apply_mutations(project_id, mutations, base_revision=canvas["revision"])
-                            return _generation_mutation(store, project_id, source_context, context.op_id,
-                                                        guarded, apply,
-                                                        parent_id=context.op_id if child else None)
-                        await run_blocking_to_completion(update)
-                    finally:
-                        await _media_end(project_id, *lifecycle)
-            else:
-                await _apply_mutations_from_snapshot(project_id, build)
+        def apply():
+            try:
+                if mutations:
+                    return store.apply_mutations(project_id, mutations, base_revision=revision)
+                if store.canvas(project_id)['revision'] != revision:
+                    raise conflict()
+            except RevisionConflict as exc:
+                raise conflict() from exc
+
+        if context:
+            lifecycle = await _media_start(project_id, context, node_ids)
+            try:
+                await run_blocking_to_completion(_generation_mutation, store, project_id, context,
+                                                 context.op_id, guarded, apply)
+            finally:
+                await _media_end(project_id, *lifecycle)
+        elif await run_blocking_to_completion(apply):
+            await _broadcast_canvas_updated(project_id, source='agent')
+
+        for index, node_id in enumerate(node_ids):
+            plan = plans[index] if plans is not None else None
             triggered = await trigger_generation_core(project_id, node_id, agent_node_id=agent_node_id, plan=plan)
             if not context:
                 tasks.append({"node_id": node_id, "task_id": str(triggered.get("task_id") or "")})

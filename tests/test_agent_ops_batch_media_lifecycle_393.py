@@ -186,8 +186,8 @@ def test_batch_noop_or_missing_source_reports_no_touched(env, events, monkeypatc
         with scope(project, 'canvas.batch_edit') as context:
             with pytest.raises((HTTPException, RuntimeError)):
                 await routes.batch_edit_core(project, [node_id], prompt, 'actor')
-            assert [(e['phase'], e['touched_node_ids']) for e in events] == [
-                ('start', [node_id]), ('end', [])]
+            expected = [] if node_id == 'missing' else [('start', [node_id]), ('end', [])]
+            assert [(e['phase'], e['touched_node_ids']) for e in events] == expected
             assert get_operation(db, project, context.op_id) is None
     asyncio.run(run())
 
@@ -234,7 +234,7 @@ def test_batch_source_lifecycle_http(env, events, monkeypatch, transport):
     asyncio.run(run())
 
 
-def test_batch_source_parent_and_child_lifecycles(env, events, monkeypatch):
+def test_batch_source_uses_one_root_lifecycle(env, events, monkeypatch):
     store, project, db = env
     store.apply_mutations(project, [{'op': 'upsert_node', 'node': {'id': n, 'type': 'prompt', 'prompt': 'old'}}
                                     for n in ('a', 'b')], base_revision=store.canvas(project)['revision'])
@@ -249,10 +249,9 @@ def test_batch_source_parent_and_child_lifecycles(env, events, monkeypatch):
             result = await routes.batch_edit_core(project, ['a', 'b'], 'new', 'actor')
             roots = [e for e in events if e['op_id'] == context.op_id]
             assert [(e['phase'], e['touched_node_ids']) for e in roots] == [
-                ('start', ['a']), ('end', ['a'])]
-            source_b = [e for e in events if e['touched_node_ids'] == ['b']]
-            assert [e['phase'] for e in source_b] == ['start', 'end']
-            assert get_operation(db, project, source_b[0]['op_id'])['parent_op_id'] == context.op_id
+                ('start', ['a', 'b']), ('end', ['a', 'b'])]
+            assert not [e for e in events if e['touched_node_ids'] in (['a'], ['b'])]
+            assert get_operation(db, project, context.op_id)['touched_node_ids'] == ['a', 'b']
             for task in result['tasks']:
                 await eventually(lambda: main.CANVAS_TASKS[task['task_id']]['status'] in ('failed', 'succeeded'))
     asyncio.run(run())

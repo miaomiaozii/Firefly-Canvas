@@ -1,6 +1,5 @@
 import asyncio
 import json
-import inspect
 import tempfile
 import unittest
 from copy import deepcopy
@@ -70,6 +69,41 @@ class BatchJournalTests(unittest.IsolatedAsyncioTestCase):
         with agent_ops_scope(project_id=self.pid, agent_node_id='actor', turn_id='actual-turn',
                              tool='canvas.batch_edit', args=args):
             return await routes.batch_edit_core(self.pid, args['node_ids'], args['prompt'], 'actor')
+
+    async def test_conflict_during_start_preserves_only_the_human_edit(self):
+        args = {'node_ids': ['a', 'b'], 'prompt': 'new'}
+        _, plans = await routes.prepare_batch_generation(self.pid, args['node_ids'], args['prompt'])
+        before = self.store.canvas(self.pid)
+        human = None
+        events = []
+
+        async def broadcast(_project, **event):
+            nonlocal human
+            events.append(event)
+            if human is None and event.get('phase') == 'start':
+                self.store.apply_mutations(self.pid, [{'op': 'upsert_node', 'node': {
+                    **next(node for node in before['nodes'] if node['id'] == 'b'), 'prompt': 'human',
+                }}], base_revision=before['revision'])
+                self.store.flush(self.pid)
+                human = self.store.canvas(self.pid)
+
+        trigger = AsyncMock(return_value={})
+        with patch.object(routes, '_broadcast_canvas_updated', side_effect=broadcast), \
+                patch.object(routes, 'trigger_generation_core', trigger), \
+                agent_ops_scope(project_id=self.pid, agent_node_id='actor', turn_id='actual-turn',
+                                tool='canvas.batch_edit', args=args) as operation:
+            with self.assertRaises(HTTPException) as caught:
+                await routes.batch_edit_core(self.pid, args['node_ids'], args['prompt'], 'actor', plans=plans)
+        self.assertEqual(caught.exception.status_code, 409)
+        self.assertEqual(caught.exception.detail['code'], 'CANVAS_CONFLICT')
+        self.assertIsNotNone(human)
+        self.assertEqual(self.store.canvas(self.pid), human)
+        self.assertEqual(self.records(), [])
+        self.assertFalse(routes.agent_generation_is_running(self.store, self.pid, operation.op_id))
+        trigger.assert_not_awaited()
+        self.assertEqual([(e['phase'], e['op_id'], e['touched_node_ids']) for e in events], [
+            ('start', operation.op_id, ['a', 'b']), ('end', operation.op_id, []),
+        ])
 
     async def test_guard_all_children_and_undo_actual_root(self):
         entered, release = asyncio.Event(), asyncio.Event()
@@ -158,14 +192,25 @@ class BatchJournalTests(unittest.IsolatedAsyncioTestCase):
     async def test_partial_failure_reports_root_and_started_task(self):
         async def provider(_):
             raise RuntimeError('failed')
-        with patch_candidate(provider):
+
+        trigger = routes.trigger_generation_core
+        async def second_task_fails(project_id, node_id, **kwargs):
+            if node_id == 'b':
+                raise HTTPException(status_code=503, detail='task registration unavailable')
+            return await trigger(project_id, node_id, **kwargs)
+
+        original = self.store.canvas(self.pid)['nodes']
+        with patch_candidate(provider), patch.object(routes, 'trigger_generation_core', second_task_fails):
             with self.assertRaises(HTTPException) as caught:
-                await self.call(('a', 'missing'))
+                await self.call()
             await asyncio.gather(*self.workers)
+        self.assertEqual(caught.exception.status_code, 503)
         details = caught.exception.detail['details']
         self.assertEqual(len(details['tasks']), 1)
-        self.assertTrue(any(r['op_id'] == details['op_id'] for r in self.records()))
+        root = next(r for r in self.records() if r['op_id'] == details['op_id'])
+        self.assertEqual(root['touched_node_ids'], ['a', 'b'])
         self.assertEqual(self.undo(details['op_id'])['status'], 'reverted')
+        self.assertEqual(self.store.canvas(self.pid)['nodes'], original)
 
     async def test_noop_before_write_creates_no_operation(self):
         with self.assertRaises(HTTPException):
@@ -191,64 +236,34 @@ class BatchJournalTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(any(r['op_id'] == details['op_id'] for r in self.records()))
         self.assertEqual(self.undo(details['op_id'])['status'], 'reverted')
 
-    async def test_reservation_failures_over_http_do_not_commit_unjournaled_sources(self):
+    async def test_reservation_failure_over_http_leaves_batch_untouched(self):
         from app.services import agent_ops_store
-        reserve = agent_ops_store._reserve
         for transport in ('rest', 'mcp'):
-            for failure_at in (1, 2):
-                with self.subTest(transport=transport, failure_at=failure_at):
-                    # Each case starts from the same persisted canvas and a fresh turn.
-                    calls = 0
-                    release = asyncio.Event()
-                    async def provider(_):
-                        await release.wait()
-                        raise RuntimeError('provider failed')
-                    def fail_reservation(*args):
-                        nonlocal calls
-                        frame = inspect.currentframe().f_back
-                        while frame is not None and frame.f_code.co_name != '_generation_mutation':
-                            frame = frame.f_back
-                        action = frame.f_locals['action'] if frame else None
-                        if action is not None and 'build' in action.__code__.co_freevars:
-                            calls += 1
-                            if calls == failure_at:
-                                raise HTTPException(status_code=500, detail='reserve failed')
-                        return reserve(*args)
-                    original = deepcopy(self.store.canvas(self.pid)['nodes'])
-                    args = {'node_ids': ['a', 'b'], 'prompt': 'new'}
-                    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),
-                                                 base_url='http://127.0.0.1:3000') as client:
-                        with patch.object(agent_ops_store, '_reserve', side_effect=fail_reservation), \
-                             patch_candidate(provider):
-                            if transport == 'rest':
-                                response = await client.post(f'/api/projects/{self.pid}/canvas/batch_edit?agent_node_id=actor',
-                                                             headers={'X-Agent-Project': self.pid}, json=args)
-                                self.assertEqual(response.status_code, 500, response.text)
-                                detail = response.json()['detail']
-                            else:
-                                response = await client.post(f'/api/mcp?project={self.pid}&node=actor&caller=hosted',
-                                    json={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-                                          'params': {'name': 'canvas.batch_edit', 'arguments': args}})
-                                payload = response.json()['result']
-                                self.assertTrue(payload['isError'], payload)
-                                detail = payload['structuredContent']
-                            self.assertEqual(calls, failure_at)
-                            nodes = {n['id']: n for n in self.store.canvas(self.pid)['nodes']}
-                            self.assertEqual(nodes['b']['prompt'], 'old')
-                            if failure_at == 1:
-                                self.assertEqual(nodes['a']['prompt'], 'old')
-                                self.assertNotIn('details', detail)
-                            else:
-                                partial = detail['details']
-                                self.assertEqual(len(partial['tasks']), 1)
-                                root = partial['op_id']
-                                self.assertEqual(self.undo(root)['status'], 'generating')
-                            release.set()
-                            await asyncio.gather(*self.workers)
-                            self.workers.clear()
-                    if failure_at == 2:
-                        self.assertEqual(self.undo(root)['status'], 'reverted')
-                    self.assertEqual(self.store.canvas(self.pid)['nodes'], original)
+            with self.subTest(transport=transport):
+                before = self.store.canvas(self.pid)
+                args = {'node_ids': ['a', 'b'], 'prompt': 'new'}
+                async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),
+                                             base_url='http://127.0.0.1:3195') as client:
+                    with patch.object(agent_ops_store, '_reserve',
+                                      side_effect=HTTPException(status_code=500, detail='reserve failed')) as reserve, \
+                         patch.object(routes, 'trigger_generation_core', new_callable=AsyncMock) as trigger:
+                        if transport == 'rest':
+                            response = await client.post(f'/api/projects/{self.pid}/canvas/batch_edit?agent_node_id=actor',
+                                                         headers={'X-Agent-Project': self.pid}, json=args)
+                            self.assertEqual(response.status_code, 500, response.text)
+                            detail = response.json()['detail']
+                        else:
+                            response = await client.post(f'/api/mcp?project={self.pid}&node=actor&caller=hosted',
+                                json={'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+                                      'params': {'name': 'canvas.batch_edit', 'arguments': args}})
+                            payload = response.json()['result']
+                            self.assertTrue(payload['isError'], payload)
+                            detail = payload['structuredContent']
+                        reserve.assert_called_once()
+                        trigger.assert_not_awaited()
+                self.assertIn('reserve failed', str(detail))
+                self.assertEqual(self.store.canvas(self.pid), before)
+                self.assertEqual(self.records(), [])
 
     async def test_failed_sidecar_after_canvas_replacement_keeps_batch_running_but_blocks_undo(self):
         from app.services import agent_ops_store
@@ -299,8 +314,10 @@ class BatchJournalTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(HTTPException) as caught:
                 await self.call()
             root = caught.exception.detail['details']['op_id']
-            self.assertEqual(next(n for n in self.store.canvas(self.pid)['nodes'] if n['id'] == 'b')['prompt'], 'new')
-            self.assertEqual(self.undo(root)['status'], 'generating')
+            self.assertEqual({n['id']: n['prompt'] for n in self.store.canvas(self.pid)['nodes']},
+                             {'a': 'new', 'b': 'new'})
+            self.assertTrue(routes.agent_generation_is_running(self.store, self.pid, root))
+            self.assertEqual(self.undo(root)['status'], 'not_found')
             blocked = False
             release.set()
             await asyncio.wait_for(asyncio.gather(*self.workers), 10)
