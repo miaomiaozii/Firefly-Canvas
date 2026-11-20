@@ -20,7 +20,7 @@ from app.services.agent_host import AgentHostManager, AgentSession
 class AgentEventDispatchTests(unittest.TestCase):
     def setUp(self):
         self.manager = AgentHostManager()
-        self._previous_current_loop = asyncio.get_event_loop()
+        # asyncio.run() 后可以没有当前 loop；夹具只拥有自己的 loop，不改调用方状态（#467）。
         self.loop = asyncio.new_event_loop()
         self.addCleanup(self._close_loop)
         self.session = AgentSession(project_id="p1", node_id="node-281")
@@ -31,7 +31,6 @@ class AgentEventDispatchTests(unittest.TestCase):
         except Exception:
             pass
         finally:
-            asyncio.set_event_loop(self._previous_current_loop)
             self.loop.close()
 
     def test_sync_and_async_handlers_both_receive_without_error(self):

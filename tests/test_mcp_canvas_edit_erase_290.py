@@ -232,7 +232,8 @@ class EditEraseSurfaceTests(McpTestBase):
         resp = self.mcp({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
         listed = resp.json()["result"]["tools"]
         tools = {t["name"]: t for t in listed}
-        # #395/#397/#398 add tools without changing edit_erase's registration contract.
+        # 保留精确基数和 manifest 对齐；#399/+3、#400/+4、#401/+1 扩展了此前的 36 项。
+        self.assertEqual(len(listed), 44)
         self.assertEqual(len(tools), len(listed))
         self.assertEqual(set(tools), TOOL_NAMES)
         self.assertIn("canvas.edit_erase", tools)

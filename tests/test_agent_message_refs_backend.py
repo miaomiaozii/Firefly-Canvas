@@ -532,8 +532,6 @@ def test_replay_has_exact_saved_snapshots_and_only_user_prompt_round_boundaries(
 @pytest.mark.parametrize("backend", ["codex"], indirect=True)
 def test_codex_lost_resume_preserves_saved_snapshots_without_automatic_resend(backend, monkeypatch, transport):
     b = backend
-    # The fixture creates both node and runtime as Codex from the start. Only
-    # its per-turn process boundary is faked; real send/persistence stays in use.
     assert b.session.agent_cli == "codex"
     assert next(node for node in b.store.canvas(b.pid)["nodes"] if node["id"] == "agent")["agentCli"] == "codex"
 
@@ -554,8 +552,7 @@ def test_codex_lost_resume_preserves_saved_snapshots_without_automatic_resend(ba
         turn_patch.setattr(b.manager, "_codex_turn", codex_input)
         block, accepted = _save_and_check_snapshot_chronology(b, monkeypatch, transport)
 
-    # Exercise the real process boundary with a fake CLI. The failed resume
-    # must not spawn a fresh execution or resend the recorded prompt.
+    # A failed resume must not start a fresh execution or resend the recorded prompt.
     which = agent_host.shutil.which
     stub = str(ROOT / "tests" / "stubs" / "fake_codex_resume_fail.cmd")
     monkeypatch.setattr(agent_host.shutil, "which", lambda name, *a, **kw: stub if name == "codex" else which(name, *a, **kw))
@@ -569,10 +566,10 @@ def test_codex_lost_resume_preserves_saved_snapshots_without_automatic_resend(ba
 
     async def resumed_input():
         await b.manager.send_prompt(b.session, "ECHO_MODE verify saved chronology")
-        deadline = asyncio.get_running_loop().time() + 20
-        while b.session.process is not None or b.session._turn_open:
-            assert asyncio.get_running_loop().time() < deadline, "fake CLI replay did not finish"
-            await asyncio.sleep(0.02)
+        # Process/turn slots clear before terminal delivery classification; await the owner (#467).
+        reader = b.session._reader_task
+        if reader is not None:
+            await asyncio.wait_for(reader, timeout=20)
 
     asyncio.run(resumed_input())
     assert any(event.get("type") == "error" and event.get("delivery") == "uncertain" for event in emitted)
@@ -582,6 +579,24 @@ def test_codex_lost_resume_preserves_saved_snapshots_without_automatic_resend(ba
     saved, _ = b.manager._build_replay_context(b.session)
     assert saved.startswith(block.removesuffix("</canvas-history-replay>"))
     assert accepted[0]["node_ref_context"] in saved and accepted[1]["node_ref_context"] in saved
+
+
+@pytest.mark.parametrize("transport", ["rest", "ws"])
+@pytest.mark.parametrize("backend", ["codex"], indirect=True)
+def test_codex_lost_resume_waits_for_terminal_reader_cleanup(backend, monkeypatch, transport):
+    dispatch = backend.manager._dispatch_event
+    terminal_windows = []
+
+    async def delayed_terminal(session, event, **kwargs):
+        if event.get("type") == "error" and event.get("delivery") == "uncertain":
+            terminal_windows.append((session.process, session._turn_open, session._codex_cleanup))
+            # 确定性覆盖进程槽已清空、送达归类仍待广播的调度窗口（#467）。
+            await asyncio.sleep(0.05)
+        await dispatch(session, event, **kwargs)
+
+    monkeypatch.setattr(backend.manager, "_dispatch_event", delayed_terminal)
+    test_codex_lost_resume_preserves_saved_snapshots_without_automatic_resend(backend, monkeypatch, transport)
+    assert terminal_windows == [(None, False, True)]
 
 
 @pytest.mark.parametrize("transport", ["rest", "ws"])

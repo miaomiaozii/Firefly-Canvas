@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -53,23 +54,29 @@ def make_history_record(task_id, project_id, *, status='succeeded', provider='p1
 
 class GlobalTasksConsoleTests(unittest.TestCase):
     def setUp(self):
+        # 控制台也会读取进程任务表，临时项目库为空不能隔离前序测试的任务（#467）。
+        with CANVAS_TASK_LOCK:
+            previous_tasks = dict(CANVAS_TASKS)
+            CANVAS_TASKS.clear()
+        self.addCleanup(self._restore_tasks, previous_tasks)
         self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
         self.store = ProjectStore(Path(self.temp_dir.name) / "projects", snapshot_delay=0.05)
-        self.previous_store = main.FIREFLY_PROJECT_STORE
-        main.FIREFLY_PROJECT_STORE = self.store
+        self.addCleanup(self.store.close)
+        store_patch = patch.object(main, "FIREFLY_PROJECT_STORE", self.store)
+        store_patch.start()
+        self.addCleanup(store_patch.stop)
         self.client = TestClient(
             main.app,
             base_url="http://127.0.0.1",
             headers={"origin": "http://127.0.0.1"},
         )
+        self.addCleanup(self.client.close)
 
-    def tearDown(self):
+    def _restore_tasks(self, previous_tasks):
         with CANVAS_TASK_LOCK:
             CANVAS_TASKS.clear()
-        self.client.close()
-        self.store.close()
-        main.FIREFLY_PROJECT_STORE = self.previous_store
-        self.temp_dir.cleanup()
+            CANVAS_TASKS.update(previous_tasks)
 
     def _create_project(self, name):
         response = self.client.post("/api/project-library", json={"name": name})

@@ -34,6 +34,10 @@ def browser_process_environment() -> dict[str, str]:
     browser_userprofile = environment.get("FIREFLY_QUALITY_GATE_BROWSER_USERPROFILE", "").strip()
     if browser_userprofile:
         environment["USERPROFILE"] = browser_userprofile
+    if os.name == "nt" and environment.get("USERPROFILE"):
+        # Windows 的 known-folder 查询仍展开 USERPROFILE；仅重定向 LOCALAPPDATA 不够。
+        # 缺少该目录会使 Chrome 无法比较默认数据目录，连隔离的 --user-data-dir 也被拒绝（#467）。
+        (Path(environment["USERPROFILE"]) / "AppData" / "Local").mkdir(parents=True, exist_ok=True)
     return environment
 
 

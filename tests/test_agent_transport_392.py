@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 from app.constants import NODE_TYPE_AGENT, NODE_TYPE_GROUP, NODE_TYPE_IMAGE, NODE_TYPE_PROMPT
 from app.services.agent_errors import is_agent_error_shape, translate_detail
 from app.services.agent_tools_manifest import TOOLS
+from tests.agent_image_task_fakes import route_stub, stub_providers
 
 
 def run(coro):
@@ -245,74 +246,150 @@ class McpReservedMetadata392Tests(_Transport392):
 class GenerationIdentity392Tests(_Transport392):
     def setUp(self):
         super().setUp()
-        from tests.agent_image_task_fakes import route_stub
-
-        # #454: routing/target preflight runs before the mocked generation cores.
-        self.start_patch(self.main, "load_api_providers", Mock(return_value=[]))
-        self.start_patch(self.main, "route_image_generation", Mock(return_value=route_stub()))
+        # #401 的重试作用域包含 MCP session，固定输入才能精确检查透传身份。
+        self.mcp_session_id = "transport-392-session"
+        self.client.headers[self.mcp.SESSION_HEADER] = self.mcp_session_id
+        # #396/#454 要求真实预检；#463 的混合张数用于区分节点数和图片预算。
         self.seed(
-            {"id": "source", "type": NODE_TYPE_IMAGE, "prompt": "one", "runSettings": {"count": 2}},
-            {"id": "source-2", "type": NODE_TYPE_IMAGE, "prompt": "two"},
+            {"id": "source", "type": NODE_TYPE_IMAGE, "prompt": "before source",
+             "runSettings": {"provider_id": "mock", "count": 2}},
+            {"id": "source-2", "type": NODE_TYPE_IMAGE, "prompt": "before source-2",
+             "runSettings": {"provider_id": "mock", "count": 1}, "promptEditedByUser": True},
         )
+        self.start_patch(self.main, "load_api_providers", Mock(return_value=stub_providers()))
+        self.start_patch(self.main, "route_image_generation", Mock(return_value=route_stub()))
+        self.plans = []
+        prepare = self.tools.prepare_generation
+
+        async def record_plan(*args, **kwargs):
+            plan = await prepare(*args, **kwargs)
+            self.plans.append(plan)
+            return plan
+
+        self.prepared = self.start_patch(self.tools, "prepare_generation", AsyncMock(side_effect=record_plan))
 
     def test_trigger_and_batch_forward_explicit_resolved_node_not_argument_override(self):
         self.seed({"id": "owner", "type": NODE_TYPE_AGENT})
-        before = self.canvas()
-        for name, args, core_name, core_args, count, gate_owner, gate_name in [
+        before = copy.deepcopy(self.canvas())
+        for name, args, core_name, core_args, plan_count, count, gate_owner, gate_name, gate_args in [
             ("generate.trigger", {"node_id": "source"}, "trigger_generation_core",
-             (self.pid, "source"), 2, self.mcp, "_confirm_gate"),
-            ("canvas.batch_edit", {"node_ids": ["source", "source-2"], "prompt": "edit"}, "batch_edit_core",
-             (self.pid, ["source", "source-2"], "edit"), 3, self.tools, "confirm_batch_prompt"),
+             (self.pid, "source"), 1, 2, self.mcp, "_confirm_gate", {"node_id": "source", "n": 2}),
+            ("canvas.batch_edit", {"node_ids": ["source", "source-2"], "prompt": "edit"},
+             "batch_edit_core", (self.pid, ["source", "source-2"], "edit"), 2, 3,
+             self.tools, "confirm_batch_prompt", {"node_count": 2, "user_edited_count": 1, "n": 3}),
         ]:
+            confirmation = AsyncMock(return_value={"approved": True})
+            start = len(self.plans)
+            # 同时观察工具门和共享确认核，不用替身门绕过真实确认参数构造（#463/#467）。
+            gate = AsyncMock(wraps=getattr(gate_owner, gate_name))
             with self.subTest(tool=name), patch.object(self.mcp, core_name, new=AsyncMock(
                 return_value={"ok": True},
-            )) as core, patch.object(gate_owner, gate_name, new=AsyncMock()) as gate, patch.object(
+            )) as core, patch.object(gate_owner, gate_name, gate), patch.object(
+                self.mcp, "request_confirmation_core", confirmation,
+            ), patch.object(self.tools, "request_confirmation_core", confirmation), patch.object(
                 self.tools, "enforce_generation_limit",
             ) as limit, patch.object(self.mcp, "ensure_external_agent_node", new=AsyncMock()) as carrier:
-                # #396: unknown input fields are rejected, not used or silently ignored.
                 rejected = self.call(name, {**args, "agent_node_id": "forged"}, node="owner")
                 self.assertTrue(rejected["isError"], rejected)
                 self.assertTrue(is_agent_error_shape(rejected["structuredContent"]), rejected)
                 self.assertEqual(rejected["structuredContent"]["code"], "INVALID_ARGUMENT")
+                self.assertEqual(len(self.plans), start)
                 core.assert_not_awaited()
                 gate.assert_not_awaited()
+                confirmation.assert_not_awaited()
                 limit.assert_not_called()
+                carrier.assert_not_awaited()
 
                 self.assertEqual(self.read_result(self.call(name, args, node="owner")), {"ok": True})
+                plans = self.plans[start:]
+                self.assertEqual(len(plans), plan_count)
+                self.assertEqual(sum(plan.request.count for plan in plans), count)
+                prepared = {"plan": plans[0], "retry_caller": self.mcp.agent_batch.Caller(
+                    self.pid, "owner", self.mcp_session_id,
+                )} if name == "generate.trigger" else {"plans": tuple(plans)}
+                core.assert_awaited_once_with(*core_args, agent_node_id="owner", **prepared)
                 self.assertEqual(core.await_args.args, core_args)
                 self.assertEqual(core.await_args.kwargs["agent_node_id"], "owner")
                 core.assert_awaited_once()
                 self.assertEqual(gate.await_args.args[:3], (self.pid, "owner", name))
                 gate.assert_awaited_once()
+                confirmation.assert_awaited_once()
+                self.assertEqual(confirmation.await_args.args[:4], (self.pid, "owner", name, gate_args))
                 limit.assert_called_once_with(self.pid, "owner", count=count)
                 carrier.assert_not_awaited()
         self.assertEqual(self.canvas(), before)
 
+    def test_generation_arguments_cannot_override_bound_identity(self):
+        self.seed({"id": "owner", "type": NODE_TYPE_AGENT})
+        before = copy.deepcopy(self.canvas())
+        # #396（2cc0361）明确拒绝付费工具的额外字段，不再静默忽略伪造身份。
+        for name, args, core_name in [
+            ("generate.trigger", {"node_id": "source", "agent_node_id": "forged"}, "trigger_generation_core"),
+            ("canvas.batch_edit", {"node_ids": ["source"], "prompt": "edit", "agent_node_id": "forged"},
+             "batch_edit_core"),
+        ]:
+            confirmation = AsyncMock(return_value={"approved": True})
+            with self.subTest(tool=name), patch.object(self.mcp, core_name, new=AsyncMock()) as core, patch.object(
+                self.mcp, "request_confirmation_core", confirmation,
+            ), patch.object(self.tools, "request_confirmation_core", confirmation), patch.object(
+                self.tools, "enforce_generation_limit",
+            ) as limit, patch.object(self.mcp, "ensure_external_agent_node", new=AsyncMock()) as carrier:
+                result = self.call(name, args, node="owner")
+                self.assertTrue(result["isError"], result)
+                self.assertTrue(is_agent_error_shape(result["structuredContent"]), result)
+                self.assertEqual(result["structuredContent"]["code"], "INVALID_ARGUMENT")
+                self.prepared.assert_not_awaited()
+                core.assert_not_awaited()
+                confirmation.assert_not_awaited()
+                limit.assert_not_called()
+                carrier.assert_not_awaited()
+        self.assertEqual(self.canvas(), before)
+        self.broadcast.assert_not_awaited()
+
     def test_external_generation_tools_use_self_owned_carrier_as_context(self):
-        before = {node["id"]: node for node in self.canvas()["nodes"]}
+        before_nodes = copy.deepcopy(self.canvas()["nodes"])
+        before = {node["id"]: node for node in before_nodes}
+        confirmation = AsyncMock(return_value={"approved": True})
         with patch.object(self.mcp, "trigger_generation_core", new=AsyncMock(
             return_value={"task_id": "stub-task"},
         )) as trigger, patch.object(self.mcp, "batch_edit_core", new=AsyncMock(
             return_value={"tasks": []},
-        )) as batch, patch.object(self.mcp, "_confirm_gate", new=AsyncMock()), patch.object(
-            self.tools, "confirm_batch_prompt", new=AsyncMock(),
-        ), patch.object(self.tools, "enforce_generation_limit"):
+        )) as batch, patch.object(self.mcp, "request_confirmation_core", confirmation), patch.object(
+            self.tools, "request_confirmation_core", confirmation,
+        ), patch.object(self.tools, "enforce_generation_limit") as limit:
             self.read_result(self.call("generate.trigger", {"node_id": "source"}))
             self.read_result(self.call("canvas.batch_edit", {"node_ids": ["source"], "prompt": "edit"}))
-        nodes = {node["id"]: node for node in self.canvas()["nodes"]}
+        all_nodes = self.canvas()["nodes"]
+        self.assertEqual(len(all_nodes), 3)
+        nodes = {node["id"]: node for node in all_nodes}
         self.assertEqual({key: nodes.pop(key) for key in before}, before)
         self.assertEqual(len(nodes), 1)
-        carrier = next(iter(nodes.values()))
+        carriers = [node for node in all_nodes if node["type"] == NODE_TYPE_AGENT]
+        self.assertEqual(len(carriers), 1)
+        carrier = carriers[0]
         self.assertEqual(carrier["type"], NODE_TYPE_AGENT)
+        self.assertEqual([node for node in all_nodes if node["type"] != NODE_TYPE_AGENT], before_nodes)
         self.assertEqual(carrier["createdBy"], "agent")
         self.assertEqual(carrier["agentNodeId"], carrier["id"])
         self.assertIsNone(carrier["userTouchedAt"])
         self.assertIs(carrier["promptEditedByUser"], False)
+        self.assertEqual(len(self.plans), 2)
+        trigger.assert_awaited_once_with(self.pid, "source", agent_node_id=carrier["id"], plan=self.plans[0],
+                                         retry_caller=self.mcp.agent_batch.Caller(
+                                             self.pid, carrier["id"], self.mcp_session_id))
+        batch.assert_awaited_once_with(self.pid, ["source"], "edit", agent_node_id=carrier["id"],
+                                      plans=(self.plans[1],))
         for core, expected_args in ((trigger, (self.pid, "source")),
                                     (batch, (self.pid, ["source"], "edit"))):
             core.assert_awaited_once()
             self.assertEqual(core.await_args.args, expected_args)
             self.assertEqual(core.await_args.kwargs["agent_node_id"], carrier["id"])
+        self.assertEqual([args.args[:3] for args in confirmation.await_args_list], [
+            (self.pid, carrier["id"], "generate.trigger"), (self.pid, carrier["id"], "canvas.batch_edit"),
+        ])
+        self.assertEqual([(args.args, args.kwargs) for args in limit.call_args_list], [
+            ((self.pid, carrier["id"]), {"count": 2}), ((self.pid, carrier["id"]), {"count": 2}),
+        ])
 
 
 class McpCarrierCas392Tests(_Transport392):

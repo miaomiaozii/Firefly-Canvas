@@ -17,6 +17,7 @@ from tests.native_browser import (
     NativeBrowser,
     VIEWPORTS,
     browser_process_environment,
+    find_browser,
 )
 
 
@@ -320,18 +321,52 @@ class NativeBrowserContractTests(unittest.TestCase):
         self.assertEqual(cdp.events, [])
 
     def test_quality_gate_browser_uses_host_profile_identity_without_changing_test_home(self):
-        with patch.dict(
-            os.environ,
-            {
-                "USERPROFILE": r"C:\isolated-test-home",
-                "HOME": r"C:\isolated-test-home",
-                "FIREFLY_QUALITY_GATE_BROWSER_USERPROFILE": r"C:\host-profile",
-            },
-        ):
-            environment = browser_process_environment()
+        with tempfile.TemporaryDirectory(prefix="firefly-native-environment-") as root:
+            test_home = str(Path(root) / "test-home")
+            browser_home = str(Path(root) / "browser-home")
+            with patch.dict(
+                os.environ,
+                {
+                    "USERPROFILE": test_home,
+                    "HOME": test_home,
+                    "FIREFLY_QUALITY_GATE_BROWSER_USERPROFILE": browser_home,
+                },
+            ):
+                environment = browser_process_environment()
 
-        self.assertEqual(environment["USERPROFILE"], r"C:\host-profile")
-        self.assertEqual(environment["HOME"], r"C:\isolated-test-home")
+                self.assertEqual(os.environ["USERPROFILE"], test_home)
+                self.assertEqual(environment["USERPROFILE"], browser_home)
+                self.assertEqual(environment["HOME"], test_home)
+                self.assertEqual((Path(browser_home) / "AppData" / "Local").is_dir(), os.name == "nt")
+                self.assertFalse((Path(test_home) / "AppData").exists())
+
+    def test_launch_starts_real_chrome_with_an_isolated_windows_home(self):
+        with tempfile.TemporaryDirectory(prefix="firefly-native-launch-") as root:
+            root = Path(root)
+            isolated = {
+                "USERPROFILE": str(root / "home"),
+                "HOME": str(root / "home"),
+                "APPDATA": str(root / "roaming"),
+                "LOCALAPPDATA": str(root / "local"),
+                "FIREFLY_QUALITY_GATE_BROWSER_USERPROFILE": "",
+            }
+            for name in ("home", "roaming", "local"):
+                (root / name).mkdir()
+            known_local = root / "home" / "AppData" / "Local"
+            self.assertFalse(known_local.exists())
+            with patch.dict(os.environ, isolated):
+                browser = NativeBrowser.launch(find_browser())
+                process, profile = browser.process, browser.profile
+                try:
+                    self.assertEqual(browser.evaluate("6 * 7"), 42)
+                    self.assertEqual(known_local.is_dir(), os.name == "nt")
+                    self.assertNotEqual(profile, known_local / "Google" / "Chrome" / "User Data")
+                    self.assertTrue(profile.name.startswith("firefly-native-browser-profile-"))
+                    self.assertEqual({key: os.environ[key] for key in isolated}, isolated)
+                finally:
+                    browser.close()
+                self.assertIsNotNone(process.poll())
+                self.assertFalse(profile.exists())
 
     def test_asgi_browser_server_serves_the_real_app_on_loopback(self):
         async def app(scope, receive, send):

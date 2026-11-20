@@ -20,6 +20,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
@@ -123,33 +124,31 @@ class AgentHostKillBase(unittest.TestCase):
         super().setUp()
         self.temp_dir = tempfile.TemporaryDirectory(prefix="firefly-agent-kill-")
         self.addCleanup(self.temp_dir.cleanup)
-        _AGENT_LOOP[0] = None  # 本测试用例尚无 loop
+        _AGENT_LOOP[0] = None
         self._previous_store = getattr(main, "FIREFLY_PROJECT_STORE", None)
         self.addCleanup(self._restore_store)
         self.store = ProjectStore(Path(self.temp_dir.name) / "projects", snapshot_delay=0)
         main.FIREFLY_PROJECT_STORE = self.store
         self.project = self.store.create_project("Agent Kill Test")
         self.project_id = self.project["id"]
+        # 先导入 app 的测试可让宿主绑定到 __main__；夹具显式注入自己隔离的 main（#467）。
+        self.enterContext(patch.object(agent_host, "_app_main", main))
         self.manager = AgentHostManager()
         # 确定性模式：禁用自愈 respawn，让「无残留」断言精确（respawn 本身有独立回归用例）
         self._previous_constants = {}
         self._patch("MAX_CONSECUTIVE_RESPAWNS", 0)
         self.addCleanup(self._restore_constants)
-        # PI_CLI 指向假 sidecar（stub 层保证不会落到真实 pi）
         self._previous_pi_cli = agent_host.PI_CLI
         self.addCleanup(self._restore_pi_cli)
         self._previous_pi_env = os.environ.get("FIREFLY_PI_CLI")
         agent_host.PI_CLI = str(FAKE_PI_HANG_CMD)
         os.environ["FIREFLY_PI_CLI"] = str(FAKE_PI_HANG_CMD)
         self.addCleanup(self._restore_pi_env)
-        # env 门控
         self.env_backup = {}
         for key, value in self.fake_env.items():
             self._set_fake_env(key, value)
         self.addCleanup(self._restore_env)
-        # 保存主线程当前 loop：本模块用完必须原样恢复（置 None 会击穿
-        # test_agent_tui 等依赖 asyncio.get_event_loop() 的既有模块）
-        self._previous_current_loop = asyncio.get_event_loop()
+        # asyncio.run() 后可以没有当前 loop；夹具只拥有自己的 loop，不改调用方状态（#467）。
         self.loop = asyncio.new_event_loop()
         _AGENT_LOOP[0] = self.loop
         self.addCleanup(self._close_loop)
@@ -166,7 +165,10 @@ class AgentHostKillBase(unittest.TestCase):
         os.environ[key] = value
 
     def _restore_store(self):
-        main.FIREFLY_PROJECT_STORE = self._previous_store
+        try:
+            self.store.close()
+        finally:
+            main.FIREFLY_PROJECT_STORE = self._previous_store
 
     def _restore_constants(self):
         for name, value in self._previous_constants.items():
@@ -197,11 +199,9 @@ class AgentHostKillBase(unittest.TestCase):
                 except Exception:
                     pass
         finally:
-            previous = self._previous_current_loop
-            try:
-                self.loop.close()
-            finally:
-                asyncio.set_event_loop(previous if not previous.is_closed() else asyncio.new_event_loop())
+            self.loop.close()
+            if _AGENT_LOOP[0] is self.loop:
+                _AGENT_LOOP[0] = None
 
     def _run(self, coro):
         return self.loop.run_until_complete(coro)

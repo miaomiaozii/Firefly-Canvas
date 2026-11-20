@@ -38,9 +38,7 @@ class AgentHostUsageTests(unittest.TestCase):
         self.store = ProjectStore(self.root, snapshot_delay=60.0)
         self.project_id = self.store.create_project("Agent用量")["id"]
         self.manager = AgentHostManager()
-        # 保存主线程当前 loop：本模块用完必须原样恢复（置 None 会击穿
-        # test_agent_tui 等依赖 asyncio.get_event_loop() 的既有模块）
-        self._previous_current_loop = asyncio.get_event_loop()
+        # asyncio.run() 后可以没有当前 loop；夹具只拥有自己的 loop，不改调用方状态（#467）。
         self.loop = asyncio.new_event_loop()
         self.addCleanup(self._close_loop)
         self._old_main = agent_host_module._app_main
@@ -58,11 +56,7 @@ class AgentHostUsageTests(unittest.TestCase):
         except Exception:
             pass
         finally:
-            previous = self._previous_current_loop
-            try:
-                self.loop.close()
-            finally:
-                asyncio.set_event_loop(previous if not previous.is_closed() else asyncio.new_event_loop())
+            self.loop.close()
 
     def _run(self, coro):
         return self.loop.run_until_complete(coro)
