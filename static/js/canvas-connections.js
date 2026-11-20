@@ -8,6 +8,20 @@
 
 // 这些状态本来属于本模块，#173 核心下沉第 2 步从 smart-canvas.js 搬回此处。
 let connectionEraseState = null;
+function isManagedAgentReference(conn){
+    return conn?.kind === 'input' && conn.agentRef === true;
+}
+
+function managedAgentReferenceOrder(conn){
+    return Number.isSafeInteger(conn.order) && conn.order > 0 ? conn.order : Infinity;
+}
+
+function smartConnectionDedupeKey(conn){
+    return JSON.stringify(isManagedAgentReference(conn)
+        ? ['agentRef', conn.to, conn.asset_id || conn.id]
+        : [conn.from, conn.to, conn.kind || 'flow']);
+}
+
 function rerouteSmartConnections(fromId, toId){
     if(canvas){
         canvas.connections = (canvas.connections || []).map(c => {
@@ -15,7 +29,14 @@ function rerouteSmartConnections(fromId, toId){
             if(c.from === fromId) conn = {...conn, from:toId};
             if(c.to === fromId) conn = {...conn, to:toId};
             return conn;
-        }).filter((c, i, arr) => c.from !== c.to && arr.findIndex(x => x.from === c.from && x.to === c.to && (x.kind || 'flow') === (c.kind || 'flow')) === i);
+        }).filter(c => c.from !== c.to);
+        const seen = new Set();
+        canvas.connections = canvas.connections.filter(conn => {
+            const key = smartConnectionDedupeKey(conn);
+            if(seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
     }
     canvasState.nodes.forEach(n => {
         if(Array.isArray(n.inputNodeIds)) n.inputNodeIds = Array.from(new Set(n.inputNodeIds.map(id => id === fromId ? toId : id).filter(id => id !== n.id)));
@@ -94,7 +115,7 @@ function mergeSmartConnections(localConns, remoteConns, nodeIds){
     const seen = new Set();
     [...(localConns || []), ...(remoteConns || [])].forEach(c => {
         if(!c || !nodeIds.has(c.from) || !nodeIds.has(c.to)) return;
-        const key = `${c.from}->${c.to}:${c.kind || 'flow'}`;
+        const key = smartConnectionDedupeKey(c);
         if(seen.has(key)) return;
         seen.add(key);
         out.push(c);
@@ -113,11 +134,23 @@ function renderConnections(){
     // 减少“每张图都拖一条线”的杂乱。history 连线不合并。
     const buckets = new Map();
     const items = [];
+    const managedPairs = new Map();
+    const ordinaryPairs = new Set();
     conns.forEach(conn => {
         const kind = conn.kind || 'flow';
         // #85：候选池不再绘制 history 连线（数据关联保留在 canvas.connections 与 historyFor 字段，
         // 级联删除/撤销/保存恢复均不受影响）。
         if(kind === 'history') return;
+        // #395: keep individual asset edges identifiable and cuttable inside a frame.
+        if(isManagedAgentReference(conn)){
+            const key = JSON.stringify([conn.from, conn.to]);
+            const peers = managedPairs.get(key) || [];
+            const item = {from:conn.from, toId:conn.to, kind, indices:[conn.index], targets:[conn.to], managed:conn, peers};
+            peers.push(item);
+            managedPairs.set(key, peers);
+            items.push(item);
+            return;
+        }
         const fromScope = kind === 'history' ? '' : smartGroupScopeId(conn.from);
         const toScope = kind === 'history' ? '' : smartGroupScopeId(conn.to);
         // 同一分组内部的连线（成员↔成员、成员↔分组本体）属于内部关系，入组后隐藏，保持整洁。
@@ -131,10 +164,11 @@ function renderConnections(){
             b.indices.push(conn.index);
             b.targets.push(conn.to);
         } else {
+            ordinaryPairs.add(JSON.stringify([conn.from, conn.to]));
             items.push({merged:false, from:conn.from, toId:conn.to, kind, indices:[conn.index], targets:[conn.to]});
         }
     });
-    const paths = items.map(item => {
+    const pathFor = item => {
         const fromNode = canvasState.nodes.find(n => n.id === item.from);
         const toNode = canvasState.nodes.find(n => n.id === item.toId);
         if(!fromNode || !toNode) return '';
@@ -149,8 +183,8 @@ function renderConnections(){
         if(states.includes('active')) cascadeState = 'active';
         else if(states.some(s => s !== 'done')) cascadeState = states.find(s => s !== 'done');
         else if(states.length) cascadeState = 'done';
-        const isCascade = !isHistory && (edgeKeys.some(k => cascadeKeys.has(k)) || Boolean(cascadeState) || isInsertPreview);
-        const isPendingLine = !isCascade && item.targets.some(t => canvasState.nodes.find(n => n.id === t)?.pending);
+        const isCascade = !item.managed && !isHistory && (edgeKeys.some(k => cascadeKeys.has(k)) || Boolean(cascadeState) || isInsertPreview);
+        const isPendingLine = !item.managed && !isCascade && item.targets.some(t => canvasState.nodes.find(n => n.id === t)?.pending);
         const isSelectedLine = selectedConnIds.size > 0 && (selectedConnIds.has(item.from) || selectedConnIds.has(item.toId) || item.targets.some(t => selectedConnIds.has(t)));
         const fx = isHistory ? fr.x + fr.width / 2 : fr.x + fr.width;
         const fy = isHistory ? fr.y + fr.height : fr.y + fr.height / 2;
@@ -158,10 +192,16 @@ function renderConnections(){
         const ty = isHistory ? tr.y : tr.y + tr.height / 2;
         const dx = Math.max(50, Math.abs(tx - fx) * 0.45);
         const dy = Math.max(36, Math.abs(ty - fy) * 0.45);
+        let lane = item.managed ? item.peers.indexOf(item) - (item.peers.length - 1) / 2 : 0;
+        // Reserve the center lane for a visible ordinary edge between the same cards.
+        if(item.managed && ordinaryPairs.has(JSON.stringify([item.from, item.toId]))){
+            lane += lane < 0 ? -1 : 1;
+        }
+        const offset = lane * 32;
         const curve = isHistory
             ? `M${fx} ${fy} C ${fx} ${fy+dy}, ${tx} ${ty-dy}, ${tx} ${ty}`
-            : `M${fx} ${fy} C ${fx+dx} ${fy}, ${tx-dx} ${ty}, ${tx} ${ty}`;
-        const mx = (fx + tx) / 2, my = (fy + ty) / 2;
+            : `M${fx} ${fy} C ${fx+dx} ${fy+offset}, ${tx-dx} ${ty+offset}, ${tx} ${ty}`;
+        const mx = (fx + tx) / 2, my = (fy + ty) / 2 + offset * .75;
         const cls = [
             isPendingLine ? 'conn-pending' : '',
             isCascade ? 'conn-cascade' : '',
@@ -172,11 +212,26 @@ function renderConnections(){
             isSelectedLine ? 'conn-selected' : ''
         ].filter(Boolean).join(' ');
         const color = isCascade ? 'var(--connection-cascade)' : isHistory ? 'var(--connection-history)' : kind === 'input' ? 'var(--connection-input)' : 'var(--connection)';
-        const opacity = isPendingLine ? '.82' : '1';
+        const enabled = item.managed?.enabled === true;
+        const opacity = item.managed ? (enabled ? '1' : '.45') : isPendingLine ? '.82' : '1';
         const width = kind === 'input' ? '1.9' : '1.6';
-        return `<path class="${cls} conn-line" data-conn-index="${dataIndex}" d="${curve}" stroke="${color}" stroke-width="${width}" fill="none" opacity="${opacity}"></path><path class="conn-hit" data-conn-index="${dataIndex}" d="${curve}" stroke="transparent" stroke-width="14" fill="none"></path><circle class="conn-end" data-conn-index="${dataIndex}" cx="${tx}" cy="${ty}" r="3.5" fill="${color}" opacity=".66"></circle><g class="conn-cut" data-conn-index="${dataIndex}" transform="translate(${mx} ${my})"><circle r="8" fill="var(--card)" stroke="${color}" stroke-width="1.4"></circle><path d="M-3 -3 L3 3 M3 -3 L-3 3" stroke="${color}" stroke-width="1.5" stroke-linecap="round"></path></g>`;
-    }).join('');
-    return `<svg class="connection-layer ${reduceMotion ? 'conn-reduce-motion' : ''}" width="6000" height="4000" viewBox="0 0 6000 4000" xmlns="http://www.w3.org/2000/svg">${paths}</svg>`;
+        // Only allowlisted roles and validated orders enter SVG markup.
+        const role = ['product','detail','layout','scene_style','general'].includes(item.managed?.role) ? item.managed.role : 'general';
+        const order = item.managed ? managedAgentReferenceOrder(item.managed) : Infinity;
+        const number = Number.isFinite(order) ? order : '';
+        const caption = `${number ? `#${number} ` : ''}${role}${enabled ? '' : ' (disabled)'}`;
+        const label = `Agent reference: ${role}; ${enabled ? 'enabled' : 'disabled'}; order ${number || 'unknown'}`;
+        const attrs = item.managed ? ` role="img" aria-label="${label}" data-agent-ref-role="${role}" data-agent-ref-enabled="${enabled}" data-agent-ref-order="${number}" stroke-dasharray="${enabled ? '8 3' : '3 5'}"` : '';
+        const title = item.managed ? `<title>${label}</title>` : '';
+        const badge = item.managed ? `<text x="${mx + 11}" y="${my + 4}" fill="var(--strong)" stroke="var(--card)" stroke-width="3" paint-order="stroke" font-size="11" pointer-events="none" aria-hidden="true">${caption}</text>` : '';
+        return `<path class="${cls} conn-line" data-conn-index="${dataIndex}"${attrs} d="${curve}" stroke="${color}" stroke-width="${width}" fill="none" opacity="${opacity}"></path><path class="conn-hit" data-conn-index="${dataIndex}" d="${curve}" stroke="transparent" stroke-width="14" fill="none">${title}</path><circle class="conn-end" data-conn-index="${dataIndex}" cx="${tx}" cy="${ty}" r="3.5" fill="${color}" opacity=".66"></circle><g class="conn-cut" data-conn-index="${dataIndex}" transform="translate(${mx} ${my})"><circle r="8" fill="var(--card)" stroke="${color}" stroke-width="1.4"></circle><path d="M-3 -3 L3 3 M3 -3 L-3 3" stroke="${color}" stroke-width="1.5" stroke-linecap="round"></path></g>${badge}`;
+    };
+    const motionClass = reduceMotion ? 'conn-reduce-motion' : '';
+    const layer = (paths, managed=false) => `<svg class="connection-layer ${motionClass}${managed ? ' agent-reference-layer' : ''}"${managed ? ' style="z-index:1"' : ''} width="6000" height="4000" viewBox="0 0 6000 4000" xmlns="http://www.w3.org/2000/svg">${paths}</svg>`;
+    const paths = items.filter(item => !item.managed).map(pathFor).join('');
+    // Above frame backdrops (0), below member cards (2).
+    const managedPaths = items.filter(item => item.managed).map(pathFor).join('');
+    return layer(paths) + (managedPaths ? layer(managedPaths, true) : '');
 }
 
 function refreshConnectionLayer(){
@@ -186,7 +241,12 @@ function refreshConnectionLayer(){
     const tpl = document.createElement('template');
     tpl.innerHTML = renderConnections().trim();
     const nextSvg = tpl.content.firstElementChild;
-    if(nextSvg) oldSvg.replaceWith(nextSvg);
+    if(nextSvg){
+        const managedSvg = nextSvg.nextElementSibling;
+        canvasCore.world.querySelector('svg.agent-reference-layer')?.remove();
+        if(managedSvg) oldSvg.replaceWith(nextSvg, managedSvg);
+        else oldSvg.replaceWith(nextSvg);
+    }
     bindConnectionEvents();
 }
 
@@ -250,6 +310,24 @@ function beginConnectionRemovalHumanEdit(removed){
     });
 }
 
+function applyRemovedConnections(removed){
+    removed.forEach(conn => {
+        const toNode = canvasState.nodes.find(n => n.id === conn.to);
+        // Managed edges never own node-level input IDs or local-edit roles.
+        if(!isManagedAgentReference(conn)){
+            if(toNode && Array.isArray(toNode.inputNodeIds)){
+                toNode.inputNodeIds = toNode.inputNodeIds.filter(id => id !== conn.from);
+            }
+            if(toNode?.type === NODE_TYPE_LOCAL_EDIT) syncLocalEditInputRoles(toNode);
+        }
+        if(toNode && ['input','flow'].includes(conn.kind || 'flow')) clearDetachedRunInputRefs(toNode);
+        if((conn.kind || 'flow') === 'history'){
+            const group = canvasState.nodes.find(n => n.id === conn.to && isHistoryGroupNode(n) && n.historyFor === conn.from);
+            demoteHistoryGroupNode(group);
+        }
+    });
+}
+
 function disconnectConnections(spec){
     if(!canvas || !Array.isArray(canvas.connections)) return;
     const indices = (Array.isArray(spec) ? spec : String(spec).split(','))
@@ -262,18 +340,7 @@ function disconnectConnections(spec){
     pushUndo();
     const action = beginConnectionRemovalHumanEdit(removed);
     canvas.connections = canvas.connections.filter((_, i) => !set.has(i));
-    removed.forEach(conn => {
-        const toNode = canvasState.nodes.find(n => n.id === conn.to);
-        if(toNode && Array.isArray(toNode.inputNodeIds)){
-            toNode.inputNodeIds = toNode.inputNodeIds.filter(id => id !== conn.from);
-        }
-        if(toNode?.type === NODE_TYPE_LOCAL_EDIT) syncLocalEditInputRoles(toNode);
-        if(toNode && ['input','flow'].includes(conn.kind || 'flow')) clearDetachedRunInputRefs(toNode);
-        if((conn.kind || 'flow') === 'history'){
-            const group = canvasState.nodes.find(n => n.id === conn.to && isHistoryGroupNode(n) && n.historyFor === conn.from);
-            demoteHistoryGroupNode(group);
-        }
-    });
+    applyRemovedConnections(removed);
     canvasCore.finishSmartHumanEdit(action, canvasState.nodes);
     canvasCore.render();
     canvasCore.scheduleSave();
@@ -312,18 +379,7 @@ function finishConnectionErase(){
     pushUndo();
     const action = beginConnectionRemovalHumanEdit(removed);
     canvas.connections = canvas.connections.filter((_, i) => !set.has(i));
-    removed.forEach(conn => {
-        const toNode = canvasState.nodes.find(n => n.id === conn.to);
-        if(toNode && Array.isArray(toNode.inputNodeIds)){
-            toNode.inputNodeIds = toNode.inputNodeIds.filter(id => id !== conn.from);
-        }
-        if(toNode?.type === NODE_TYPE_LOCAL_EDIT) syncLocalEditInputRoles(toNode);
-        if(toNode && ['input','flow'].includes(conn.kind || 'flow')) clearDetachedRunInputRefs(toNode);
-        if((conn.kind || 'flow') === 'history'){
-            const group = canvasState.nodes.find(n => n.id === conn.to && isHistoryGroupNode(n) && n.historyFor === conn.from);
-            demoteHistoryGroupNode(group);
-        }
-    });
+    applyRemovedConnections(removed);
     canvasCore.finishSmartHumanEdit(action, canvasState.nodes);
     connectionEraseState.indices.clear();
     canvasCore.render();
@@ -400,7 +456,7 @@ function insertionConnectionForNode(node){
     let best = null;
     (canvas.connections || []).forEach((conn, index) => {
         const kind = conn.kind || 'flow';
-        if(!['input','flow'].includes(kind)) return;
+        if(isManagedAgentReference(conn) || !['input','flow'].includes(kind)) return;
         if(conn.from === node.id || conn.to === node.id) return;
         const fromNode = canvasState.nodes.find(n => n.id === conn.from);
         const toNode = canvasState.nodes.find(n => n.id === conn.to);
@@ -418,7 +474,7 @@ function addConnection(fromId, toId, kind='flow'){
     if(!fromId || !toId || fromId === toId) return;
     if(!canvas) return;
     canvas.connections = canvas.connections || [];
-    if(canvas.connections.some(c => c.from === fromId && c.to === toId && (c.kind || 'flow') === kind)) return;
+    if(canvas.connections.some(c => !isManagedAgentReference(c) && c.from === fromId && c.to === toId && (c.kind || 'flow') === kind)) return;
     canvas.connections.push({from:fromId, to:toId, kind});
 }
 
@@ -474,7 +530,7 @@ function connectInputNode(fromId, toId){
 function lineConnectionsFor(node){
     if(!node) return [];
     return (canvas?.connections || []).filter(conn => {
-        if(!conn?.from || !conn?.to || conn.from === conn.to) return false;
+        if(!conn?.from || !conn?.to || conn.from === conn.to || isManagedAgentReference(conn)) return false;
         return ['input', 'flow'].includes(conn.kind || 'flow');
     });
 }
@@ -482,7 +538,7 @@ function lineConnectionsFor(node){
 function outgoingConnectionsFor(node, kinds=['input']){
     if(!node) return [];
     const allowed = new Set(kinds);
-    return (canvas?.connections || []).filter(conn => conn.from === node.id && allowed.has(conn.kind || 'flow'));
+    return (canvas?.connections || []).filter(conn => !isManagedAgentReference(conn) && conn.from === node.id && allowed.has(conn.kind || 'flow'));
 }
 
 function cascadeConnectionKeys(){
@@ -502,7 +558,7 @@ function cascadeConnectionKeys(){
         const chainIds = new Set(graph.path.map(n => n.id));
         graph.edges.forEach(edge => addKey(edge.source.id, edge.target.id));
         (canvas?.connections || []).forEach(conn => {
-            if((conn.kind || 'flow') === 'history') return;
+            if((conn.kind || 'flow') === 'history' || isManagedAgentReference(conn)) return;
             const toNode = canvasState.nodes.find(n => n.id === conn.to);
             if(conn.from === loop.id && (chainIds.has(conn.to) || downstreamNodesForId(conn.to).some(n => chainIds.has(n.id)))) addKey(conn.from, conn.to);
             if(toNode && chainIds.has(toNode.id)){

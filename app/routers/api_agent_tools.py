@@ -25,7 +25,7 @@ import os as _os
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK, ensure_agent_same_origin
 from app.constants import NODE_TYPE_AGENT, NODE_TYPE_GROUP
-from app.services import agent_frame
+from app.services import agent_frame, agent_refs
 from app.services.agent_errors import agent_error
 from app.services.agent_tools_manifest import UPDATABLE_NODE_FIELDS as _UPDATABLE_NODE_FIELDS
 from app.core import OnlineImageRequest, AIReference
@@ -62,7 +62,8 @@ _LIFETIME_TASKS = set()
 _LIFETIME_STOPPING = weakref.WeakSet()
 _LIFETIME_LOCK = threading.RLock()
 _JOURNALED_TOOLS = frozenset({"canvas.create_node", "canvas.update_node", "canvas.delete_node",
-                              "canvas.connect", "canvas.disconnect"})
+                              "canvas.connect", "canvas.disconnect", "canvas.place_media",
+                              "canvas.attach_refs", "canvas.set_ref_order"})
 
 
 def _track_lifetime_task(task):
@@ -577,6 +578,30 @@ async def create_node(project_id: str, request: Request, x_agent_project: str = 
                                   lambda: create_node_core(project_id, body.get("node", {}), agent_node_id=agent), agent)
 
 
+async def _rest_reference_tool(project_id, request, tool, core):
+    args = await request.json()
+    if not isinstance(args, dict):
+        raise agent_refs.invalid("Tool arguments must be an object")
+    agent = _creation_context(request, args.pop("agent_node_id", ""))
+    return await _rest_agent_call(request, project_id, tool, args,
+                                  lambda: core(project_id, args, agent_node_id=agent), agent)
+
+
+@router.post("/place_media")
+async def place_media(project_id: str, request: Request):
+    return await _rest_reference_tool(project_id, request, "canvas.place_media", place_media_core)
+
+
+@router.post("/attach_refs")
+async def attach_refs(project_id: str, request: Request):
+    return await _rest_reference_tool(project_id, request, "canvas.attach_refs", attach_refs_core)
+
+
+@router.post("/set_ref_order")
+async def set_ref_order(project_id: str, request: Request):
+    return await _rest_reference_tool(project_id, request, "canvas.set_ref_order", set_ref_order_core)
+
+
 @router.patch("/nodes/{node_id}")
 async def update_node(project_id: str, node_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Update an existing node's properties."""
@@ -901,35 +926,40 @@ async def create_node_core(project_id: str, node: dict, agent_node_id: str = "")
 
     def build(canvas):
         nonlocal created
-        nodes = _placement_nodes(canvas)
-        agent = nodes.get(agent_node_id, {})
-        bindings = []
-        frame = None
-        if not explicit_position and agent.get("type") in (NODE_TYPE_AGENT, "agent"):
-            frame = nodes.get(str(agent.get("chatFrameId") or ""))
-            if not frame or frame.get("type") != NODE_TYPE_GROUP:
-                x, y = agent_frame.right_of_canvas(nodes.values()), agent_frame.coordinate(agent.get("y"))
-                frame = {"id": frame_id, "type": NODE_TYPE_GROUP, "x": x, "y": y, "w": 800, "h": 360,
-                         "title": f"{agent.get('title') or 'Agent'} · 会话框", "items": [],
-                         "chatFrame": True, "chatFrameFor": agent_node_id,
-                         "created_at": node["created_at"], **ownership_fields(agent_node_id)}
-                # Binding, frame and card belong to the same CAS write and undo delta.
-                bindings.append({"op": "upsert_node", "node": {**agent, "chatFrameId": frame_id}})
-
-        w, h = agent_frame.node_size(node, grouped=frame is not None)
-        created = {**node, "w": w, "h": h}
-        if frame is not None:
-            created, frame = agent_frame.place_in_frame(frame, created, nodes)
-            bindings.append({"op": "upsert_node", "node": frame})
-        elif explicit_position:
-            created.update(x=node.get("x", 0), y=node.get("y", 0))
-        else:
-            created.update(x=agent_frame.right_of_canvas(nodes.values()), y=0)
-        return [{"op": "upsert_node", "node": created}, *bindings]
+        created, mutations = _build_placement(_placement_nodes(canvas), node, agent_node_id,
+                                             frame_id=frame_id, explicit_position=explicit_position)
+        return mutations
 
     created = None
     await _apply_mutations_from_snapshot(project_id, build)
     return _op_result({"success": True, "node_id": node["id"], **_geometry(created)})
+
+
+def _build_placement(nodes, node, agent_node_id, *, frame_id=None, explicit_position=False, group=None):
+    agent = nodes.get(agent_node_id, {})
+    bindings = []
+    frame = group
+    if frame is None and not explicit_position and agent.get("type") in (NODE_TYPE_AGENT, "agent"):
+        frame = nodes.get(str(agent.get("chatFrameId") or ""))
+        if not frame or frame.get("type") != NODE_TYPE_GROUP:
+            x, y = agent_frame.right_of_canvas(nodes.values()), agent_frame.coordinate(agent.get("y"))
+            frame = {"id": frame_id, "type": NODE_TYPE_GROUP, "x": x, "y": y, "w": 800, "h": 360,
+                     "title": f"{agent.get('title') or 'Agent'} · 会话框", "items": [],
+                     "chatFrame": True, "chatFrameFor": agent_node_id,
+                     "created_at": node["created_at"], **ownership_fields(agent_node_id)}
+            # Binding, frame and card belong to the same CAS write and undo delta.
+            bindings.append({"op": "upsert_node", "node": {**agent, "chatFrameId": frame_id}})
+
+    w, h = agent_frame.node_size(node, grouped=frame is not None)
+    created = {**node, "w": w, "h": h}
+    if frame is not None:
+        created, frame = agent_frame.place_in_frame(frame, created, nodes)
+        bindings.append({"op": "upsert_node", "node": frame})
+    elif explicit_position:
+        created.update(x=node.get("x", 0), y=node.get("y", 0))
+    else:
+        created.update(x=agent_frame.right_of_canvas(nodes.values()), y=0)
+    return created, [{"op": "upsert_node", "node": created}, *bindings]
 
 
 def _placement_nodes(canvas):
@@ -938,6 +968,132 @@ def _placement_nodes(canvas):
 
 def _geometry(node):
     return {key: node[key] for key in ("x", "y", "w", "h")}
+
+
+def _media_card(image, agent_node_id, *, title=None):
+    return {"id": f"node-{uuid.uuid4().hex[:12]}", "type": "smart-image",
+            "title": image["name"] if title is None else title, "images": [image],
+            "created_at": _app_main.now_ms(), **ownership_fields(agent_node_id)}
+
+
+async def place_media_core(project_id: str, args: dict, agent_node_id: str = "") -> dict:
+    _validate_project(project_id)
+    agent_refs.require_object(args, "place_media", required=("asset_id",), optional=("title", "node_id", "group_id"))
+    asset_id = agent_refs.validate_asset_id(args["asset_id"])
+    for key in ("node_id", "group_id"):
+        if key in args:
+            agent_refs.identifier(args[key], key)
+    title = args.get("title")
+    if "title" in args and not isinstance(title, str):
+        raise agent_refs.invalid("title must be a string")
+    target, group_id = args.get("node_id"), args.get("group_id")
+    result = {}
+
+    def build(canvas):
+        nodes = _placement_nodes(canvas)
+        image = agent_refs.media_image(_app_main.FIREFLY_PROJECT_STORE, project_id, asset_id, reference=False)
+        group = nodes.get(group_id)
+        if group_id and (not group or group.get("type") != NODE_TYPE_GROUP):
+            raise agent_error(404, "NODE_NOT_FOUND", "Group not found", "选择 canvas.list_nodes 返回的组框。",
+                              details={"group_id": group_id})
+        if not target:
+            card = _media_card(image, agent_node_id, title=title)
+            placed, mutations = _build_placement(nodes, card, agent_node_id, group=group,
+                                                  frame_id=f"node-{uuid.uuid4().hex[:12]}")
+        else:
+            node = _snapshot_node(canvas, target)
+            if node.get("type") not in agent_refs.IMAGE_TYPES:
+                raise agent_refs.invalid("place_media needs an image node")
+            if group and target not in (group.get("items") or []):
+                raise agent_refs.invalid("The existing image node is not a member of the requested group")
+            images = list(node.get("images") or [])
+            placed = dict(node)
+            if not any(isinstance(item, dict) and item.get("asset_id") == asset_id for item in images):
+                placed["images"] = [*images, image]
+            if title is not None:
+                placed["title"] = title
+            mutations = [] if node == placed else [{"op": "upsert_node", "node": placed}]
+        w, h = agent_frame.node_size(placed)
+        result.update(node_id=placed["id"], x=agent_frame.coordinate(placed.get("x")),
+                      y=agent_frame.coordinate(placed.get("y")), w=w, h=h)
+        return mutations
+
+    await _apply_mutations_from_snapshot(project_id, build)
+    return _op_result(result)
+
+
+async def attach_refs_core(project_id: str, args: dict, agent_node_id: str = "") -> dict:
+    mode, refs = agent_refs.parse_attachments(args)
+
+    def edit(canvas, node, before):
+        target = node["id"]
+        nodes = _placement_nodes(canvas)
+        additions = []
+
+        def resolve(source, existing):
+            if "node_id" in source:
+                source_id = source["node_id"]
+                images = nodes.get(source_id, {}).get("images") or []
+                index = source.get("image_index", 0)
+                selected = images[index] if isinstance(images, list) and index < len(images) else None
+                asset = selected.get("asset_id") if isinstance(selected, dict) else None
+                if not asset or source_id == target:
+                    raise agent_error(400, "REF_NOT_IN_PROJECT", "Source does not name a usable project image",
+                                      "先用 media.upload / canvas.place_media，或选择另一个来源节点。")
+            else:
+                asset = source["asset_id"]
+                source_id = (existing.get(asset) or {}).get("from")
+                if source_id == target or source_id not in nodes:
+                    source_id = next((key for key, candidate in nodes.items() if key != target
+                                      and any(isinstance(image, dict) and image.get("asset_id") == asset
+                                              for image in candidate.get("images") or [])), None)
+            image = agent_refs.media_image(_app_main.FIREFLY_PROJECT_STORE, project_id,
+                                           agent_refs.validate_asset_id(asset), reference=True)
+            if not source_id:
+                card = _media_card(image, agent_node_id)
+                placed, mutations = _build_placement(nodes, card, agent_node_id,
+                                                      frame_id=f"node-{uuid.uuid4().hex[:12]}")
+                for mutation in mutations:
+                    changed = mutation["node"]
+                    nodes[changed["id"]] = changed
+                additions.extend(mutations)
+                source_id = placed["id"]
+            return asset, source_id
+
+        return agent_refs.attach(before, refs, mode, target, resolve), additions
+
+    return await _edit_agent_references(project_id, args["node_id"], edit)
+
+
+async def set_ref_order_core(project_id: str, args: dict, agent_node_id: str = "") -> dict:
+    order, overrides = agent_refs.parse_reorder(args)
+    return await _edit_agent_references(project_id, args["node_id"],
+                                        lambda _, node, before: (agent_refs.reorder(before, order, overrides), []))
+
+
+async def _edit_agent_references(project_id, target, edit):
+    _validate_project(project_id)
+    target = agent_refs.identifier(target, "node_id")
+    result = {}
+
+    def build(canvas):
+        node = _snapshot_node(canvas, target)
+        if node.get("type") not in agent_refs.IMAGE_TYPES:
+            raise agent_error(400, "NODE_NOT_GENERATABLE", "Target is not an image generation node",
+                              "选择可生成图片的节点；先调用 canvas.list_nodes。")
+        before = agent_refs.managed_edges(canvas, target)
+        after, mutations = edit(canvas, node, before)
+        result.update(agent_refs.ref_result(after))
+        if before != after:
+            mutations.extend(agent_refs.edge_changes(before, after))
+            # Do not rewrite manual inputs, excludes or original prompt.
+            ids = [edge["asset_id"] for edge in after if edge["enabled"]]
+            if node.get("reference_asset_ids") != ids:
+                mutations.append({"op": "upsert_node", "node": {**node, "reference_asset_ids": ids}})
+        return mutations
+
+    await _apply_mutations_from_snapshot(project_id, build)
+    return _op_result(result)
 
 
 async def update_node_core(project_id: str, node_id: str, updates: dict) -> dict:

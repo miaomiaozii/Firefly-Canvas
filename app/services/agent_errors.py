@@ -39,6 +39,10 @@ AGENT_ERROR_CODES = (
     "CONFIRM_MISSING_NODE_ID",
     "SERVER_NOT_READY",
     "UPSTREAM_MODEL_ERROR",
+    # A5 参考图工具
+    "ASSET_IS_MASK",
+    "REF_NOT_IN_PROJECT",
+    "REF_NOT_ATTACHED",
     # 兜底翻译器专用（status→通用码，见 translate_detail）
     "NOT_FOUND",
     "CONFLICT",

@@ -394,6 +394,21 @@ async def _impl_disconnect(project_id, agent_node_id, args):
     return await delete_edge_core(project_id, str(args.get("from_node") or ""), str(args.get("to_node") or ""))
 
 
+async def _impl_place_media(project_id, agent_node_id, args):
+    from app.routers.api_agent_tools import place_media_core
+    return await place_media_core(project_id, args, agent_node_id=agent_node_id)
+
+
+async def _impl_attach_refs(project_id, agent_node_id, args):
+    from app.routers.api_agent_tools import attach_refs_core
+    return await attach_refs_core(project_id, args, agent_node_id=agent_node_id)
+
+
+async def _impl_set_ref_order(project_id, agent_node_id, args):
+    from app.routers.api_agent_tools import set_ref_order_core
+    return await set_ref_order_core(project_id, args, agent_node_id=agent_node_id)
+
+
 async def _impl_search_projects(project_id, agent_node_id, args):
     from app.routers.api_search import get_searcher
     query = str(args.get("query") or "").strip()
@@ -558,6 +573,12 @@ async def _impl_ops_undo(project_id, agent_node_id, args):
     return await undo_ops_core(project_id, args)
 
 
+_MEDIA_REF_TOOL_IMPLS = {
+    "canvas.place_media": _impl_place_media,
+    "canvas.attach_refs": _impl_attach_refs,
+    "canvas.set_ref_order": _impl_set_ref_order,
+}
+
 TOOL_IMPLS = {
     "ops.list": _impl_ops_list,
     "ops.undo": _impl_ops_undo,
@@ -568,6 +589,7 @@ TOOL_IMPLS = {
     "canvas.delete_node": _impl_delete_node,
     "canvas.connect": _impl_connect,
     "canvas.disconnect": _impl_disconnect,
+    **_MEDIA_REF_TOOL_IMPLS,
     "canvas.search_projects": _impl_search_projects,
     "generate.trigger": _impl_trigger,
     "generate.status": _impl_status,
@@ -650,6 +672,9 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
             200, msg_id, sid,
             result=_mcp_error_result(name, translate_detail(400, f"Unknown tool: {name}")),
         )
+    if name in _MEDIA_REF_TOOL_IMPLS:
+        # Identity and turn come from MCP binding/query, not the JSON tool arguments.
+        args = {key: value for key, value in args.items() if key not in {"agent_node_id", "turn_id"}}
     started = time.time()
     slow_timeout = SLOW_TOOL_TIMEOUTS.get(name)
     turn_lease = None

@@ -37,6 +37,24 @@ PARAM_RECT = {
     "additionalProperties": False,
 }
 
+PARAM_REF_ROLE = {"type": "string", "enum": ["product", "detail", "layout", "scene_style", "general"]}
+_REF_SOURCE_PROPERTIES = {
+    "asset_id": {"type": "string", "minLength": 1},
+    "node_id": {"type": "string", "minLength": 1},
+    "image_index": {"type": "integer", "minimum": 0},
+}
+PARAM_REF_SOURCE = {
+    "type": "object",
+    "description": "二选一：资源库 asset_id，或来源节点 node_id 与可选的 image_index（默认 0）",
+    "properties": _REF_SOURCE_PROPERTIES,
+    "additionalProperties": False,
+    "oneOf": [
+        {"type": "object", "properties": {k: _REF_SOURCE_PROPERTIES[k] for k in keys},
+         "required": [keys[0]], "additionalProperties": False}
+        for keys in (["asset_id"], ["node_id", "image_index"])
+    ],
+}
+
 VIEW_TIMEOUT_NOTE = "慢操作独立 90s 超时契约：客户端请求超时应设为 >= 90s"
 
 # #355 W1：canvas.update_node / REST PATCH /canvas/nodes/{id} 可更新字段白名单——
@@ -85,6 +103,38 @@ TOOLS = [
         "kind": {"type": "string", "description": "连线类型，可选，缺省 flow"},
     }, "required": ["from_node", "to_node"], "additionalProperties": False}},
     {"name": "canvas.disconnect", "description": "删除节点连线（破坏性：需画布确认门批准，阻塞最长 90s）", "inputSchema": {"type": "object", "properties": {"from_node": {"type": "string"}, "to_node": {"type": "string"}}, "required": ["from_node", "to_node"], "additionalProperties": False}},
+    {"name": "canvas.place_media", "description": "将项目资源库中的媒体放到画布上，可指定目标节点、组框或标题。", "inputSchema": {
+        "type": "object", "properties": {
+            "asset_id": {"type": "string", "minLength": 1, "description": "项目媒体资源 ID"},
+            "node_id": {"type": "string", "minLength": 1, "description": "目标节点 ID（可选）"},
+            "group_id": {"type": "string", "minLength": 1, "description": "目标组框 ID（可选）"},
+            "title": {"type": "string", "description": "节点标题（可选）"},
+        }, "required": ["asset_id"], "additionalProperties": False,
+    }},
+    {"name": "canvas.attach_refs", "description": "为目标节点挂参考图。replace 只替换 Agent 标记的参考图，绝不替换用户的参考图。", "inputSchema": {
+        "type": "object", "properties": {
+            "node_id": {"type": "string", "minLength": 1, "description": "目标节点 ID"},
+            "refs": {"type": "array", "items": {
+                "type": "object", "properties": {
+                    "source": PARAM_REF_SOURCE,
+                    "role": {**PARAM_REF_ROLE, "default": "general", "description": "参考图角色，省略时为 general"},
+                    "enabled": {"type": "boolean", "description": "是否启用该参考图（可选）"},
+                }, "required": ["source"], "additionalProperties": False,
+            }},
+            "mode": {"type": "string", "enum": ["append", "replace"], "default": "append",
+                     "description": "append 追加（默认）；replace 只替换 Agent 标记的参考图"},
+        }, "required": ["node_id", "refs"], "additionalProperties": False,
+    }},
+    {"name": "canvas.set_ref_order", "description": "调整目标节点的参考图顺序、角色，或同时调整两者。", "inputSchema": {
+        "type": "object", "properties": {
+            "node_id": {"type": "string", "minLength": 1, "description": "目标节点 ID"},
+            "order": {"type": "array", "items": {"type": "string", "minLength": 1},
+                      "description": "按目标顺序列出的参考图资源 ID"},
+            "role_overrides": {"type": "object", "additionalProperties": PARAM_REF_ROLE,
+                               "description": "参考图资源 ID → 角色（product/detail/layout/scene_style/general）"},
+        }, "required": ["node_id"], "anyOf": [{"required": ["order"]}, {"required": ["role_overrides"]}],
+        "additionalProperties": False,
+    }},
     {"name": "canvas.search_projects", "description": "跨项目搜索（只读，票 F/ADR-0026）：按关键词搜所有项目画布节点的标题/prompt/正文与项目名，返回按项目分组命中（node_id/kind/field/snippet）；不搜 agent 会话内容，不建索引", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 200, "description": "搜索关键词（大小写不敏感）"}, "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "命中总数上限（默认 50）"}}, "required": ["query"], "additionalProperties": False}},
     # #266 只读视图工具（ComfyArt §59.4 语义；只读不走确认门——#242 语义：写操作才需确认）
     {"name": "canvas.view", "description": f"整页/选区节点媒体导出为一张图（contact sheet，以 MCP image 内容块返回，文本块仅含元数据）喂模型（只读）。{VIEW_TIMEOUT_NOTE}；超时时先调低 max_px 或改用 selection 缩小批量，再重试", "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["page", "selection"], "description": "page=整页（所有带媒体节点）；selection=指定 node_ids"}, "node_ids": PARAM_NODE_IDS, "max_px": PARAM_MAX_PX}, "required": ["scope"], "additionalProperties": False}},
@@ -114,9 +164,10 @@ TOOL_NAMES = {t["name"] for t in TOOLS}
 # #350：写类工具集——MCP 无 &node= 时才允许回退到共享外部节点（ensure upsert）；
 # 其余只读工具绝不写画布（票面：「MCP 只读工具也 upsert 节点」）。
 WRITE_TOOLS = frozenset({
-    "canvas.batch_edit", "canvas.connect", "canvas.create_node", "canvas.delete_node",
-    "canvas.disconnect", "canvas.edit_crop", "canvas.edit_erase", "canvas.edit_flip",
-    "canvas.edit_outpaint", "canvas.edit_rotate", "canvas.update_node",
+    "canvas.attach_refs", "canvas.batch_edit", "canvas.connect", "canvas.create_node",
+    "canvas.delete_node", "canvas.disconnect", "canvas.edit_crop", "canvas.edit_erase",
+    "canvas.edit_flip", "canvas.edit_outpaint", "canvas.edit_rotate", "canvas.place_media",
+    "canvas.set_ref_order", "canvas.update_node",
     "generate.trigger", "media.delete", "media.upload",
 })
 

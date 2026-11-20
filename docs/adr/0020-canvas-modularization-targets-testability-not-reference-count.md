@@ -504,3 +504,13 @@ fast 运行完整核心层和报告套件；保留 30 秒预算，不豁免任�
 fast 实测 23.953 秒（同机原基线 26.422 秒）；均不是跨机器耗时保证。隔离夹具给
 模块添加一处 `render()` 后，真实逐模块棘轮报告 2 > 1；将该失败暴露给三步并行
 fast 时整门 exit 1，恢复后通过，具体证据见本次 QA 记录。
+
+### #395：并行 input 连线
+
+相对 `9f4e294`，模块→核心总数 **617→616**（connections 42→41）；核心→模块
+四项 **257 / 965 / 171 / 785 → 261 / 983 / 174 / 802**。核心新用
+`disconnectConnections` 1、`isManagedAgentReference` 9、`managedAgentReferenceOrder` 2、
+`smartConnectionDedupeKey` 4 次，统一拖拽、去重、保存和渲染所用的连线身份；
+`rerouteSmartConnections` 2→3，节点合并复用重映射逻辑；媒体接线
+`hydrateProjectMediaReferences` 7→8、`projectMediaUrl` 5→6，`NODE_TYPE_LOOP` 26→25。
+新名字中除断开接口外，其他三个进入核心主导集合。这些是词频而非运行时调用数。

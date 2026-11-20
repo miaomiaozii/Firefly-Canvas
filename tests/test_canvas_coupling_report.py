@@ -223,10 +223,11 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # 四个口径全降（-5/-8/-4/-7），纯还债，非新债（见 ADR 0020 漂移日志）。
         # 936655c（#431）：fbb6299 的 257/961/172/783 → 257/965/171/785。
         # 四处新增引用及主导集合变化逐项对账见 ADR 0020；保持四项精确相等。
-        self.assertEqual(rev["reverse_names"], 257)
-        self.assertEqual(rev["reverse_core_refs"], 965)
-        self.assertEqual(rev["core_dominant_names"], 171)
-        self.assertEqual(rev["core_dominant_core_refs"], 785)
+        # #395：核心调用连线标识、编号、去重及断开接口；见 ADR 0020 的对账。
+        self.assertEqual(rev["reverse_names"], 261)
+        self.assertEqual(rev["reverse_core_refs"], 983)
+        self.assertEqual(rev["core_dominant_names"], 174)
+        self.assertEqual(rev["core_dominant_core_refs"], 802)
         # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。
         self.assertNotIn("canvas-core.js", rev["by_owner"])
         self.assertNotIn("smart-canvas.js", rev["by_owner"])

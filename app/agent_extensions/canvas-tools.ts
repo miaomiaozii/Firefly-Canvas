@@ -108,7 +108,7 @@ function buildViewToolResult(data) {
 // ── #356 结构说明 ──
 // 工具 name/description/参数 schema 全部来自 CANVAS_TOOL_DEFS（canvas-tools.generated.ts），
 // 由 tools/gen_canvas_tools.py 从 app/services/agent_tools_manifest.py 生成——与 MCP 端
-// （app/routers/api_mcp.py）同一来源；本文件只剩 execute 执行器（REST 孪生调用）。
+// （app/routers/api_mcp.py）同一来源；本文件负责 REST 孪生调用及生成器不支持的约束补齐。
 // 每个清单工具必须在 EXECUTORS 里有同名键，否则加载即 throw；
 // tests/test_tool_surface_consistency.py 双向钉住名字集合。
 // D11（#356）：客户端不做参数默认值——create_node 不发 id、不默认 x/y（服务端 frame
@@ -197,6 +197,15 @@ const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any
 
     "canvas.disconnect": async (_toolCallId, params) =>
         textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/edges/${params.from_node}/${params.to_node}${gateQuery()}`, "DELETE")),
+
+    "canvas.place_media": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/place_media`, "POST", { ...params, agent_node_id: NODE_ID || undefined })),
+
+    "canvas.attach_refs": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/attach_refs`, "POST", { ...params, agent_node_id: NODE_ID || undefined })),
+
+    "canvas.set_ref_order": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/set_ref_order`, "POST", { ...params, agent_node_id: NODE_ID || undefined })),
 
     "canvas.search_projects": async (_toolCallId, params) => {
         // D13（#356）：limit 透传（此前声明了但从不拼进查询串，永远 50）。
@@ -301,12 +310,59 @@ const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any
         textResult(await callApi(`/api/projects/${PROJECT_ID}/viewport/state`, "GET")),
 };
 
+// #395: The generator handles declared fields and enum values but not object
+// constraints or defaults. Complete these schemas without redefining those fields.
+function toolParameters(name: string, parameters: any) {
+    const properties = parameters.properties;
+    switch (name) {
+        case "canvas.place_media":
+            return { ...parameters, additionalProperties: false };
+        case "canvas.attach_refs": {
+            const { refs, mode } = properties;
+            const { source, role } = refs.items.properties;
+            const oneOf = [["asset_id"], ["node_id", "image_index"]].map(keys => ({
+                type: "object",
+                properties: Object.fromEntries(keys.map(key => [key, source.properties[key]])),
+                required: [keys[0]],
+                additionalProperties: false,
+            }));
+            const items = {
+                ...refs.items,
+                additionalProperties: false,
+                properties: {
+                    ...refs.items.properties,
+                    source: { ...source, oneOf, additionalProperties: false },
+                    role: { ...role, default: "general" },
+                },
+            };
+            return {
+                ...parameters,
+                additionalProperties: false,
+                properties: { ...properties, refs: { ...refs, items }, mode: { ...mode, default: "append" } },
+            };
+        }
+        case "canvas.set_ref_order": {
+            const attach = CANVAS_TOOL_DEFS.find(def => def.name === "canvas.attach_refs")!;
+            const { anyOf } = attach.parameters.properties.refs.items.properties.role;
+            return { ...parameters, additionalProperties: false,
+                anyOf: [{ required: ["order"] }, { required: ["role_overrides"] }],
+                properties: {
+                    ...properties,
+                    role_overrides: { ...properties.role_overrides, additionalProperties: { anyOf } },
+                },
+            };
+        }
+        default:
+            return parameters;
+    }
+}
+
 export default function (pi: ExtensionAPI) {
     for (const def of CANVAS_TOOL_DEFS) {
         const execute = EXECUTORS[def.name];
         if (!execute) {
             throw new Error(`[canvas-tools] EXECUTORS 缺少工具 ${def.name}（清单与执行器漂移）`);
         }
-        pi.registerTool({ name: def.name, description: def.description, parameters: def.parameters, execute });
+        pi.registerTool({ name: def.name, description: def.description, parameters: toolParameters(def.name, def.parameters), execute });
     }
 }

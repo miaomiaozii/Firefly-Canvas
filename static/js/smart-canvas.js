@@ -1499,7 +1499,7 @@ function promptNodeInputImages(node){
 }
 function promptNodeInputMediaForLLM(node){
     const refs = smartImageUsesWorkflowInput(node) ? workflowInputImagesFor(node) : inputImagesFor(node);
-    return (refs || []).filter(ref => ref?.url);
+    return managedAgentReferenceEdgesFor(node).length ? refs.filter(referenceCandidateFilter(true)) : refs.filter(ref => ref?.url);
 }
 function smartNodeInputThumbsHtml(images, opts={}){
     const refs = (images || []).filter(img => img?.url);
@@ -7245,7 +7245,9 @@ function replaySmartCanvasPending(){
     state.conflicts = result.conflicts;
     // Deltas use storage-form asset references. Hydrate only the replayed UI
     // view, never the authoritative server anchor or the next storage payload.
-    canvas = hydrateProjectMediaReferences(result.canvas);
+    // An edge's asset_id is a selection, not a media item to hydrate.
+    const {connections, ...content} = result.canvas;
+    canvas = {...hydrateProjectMediaReferences(content), connections:(connections || []).map(edge => isManagedAgentReference(edge) ? edge : hydrateProjectMediaReferences(edge))};
     canvasState.nodes = canvas.nodes;
     if(result.conflicts.length) toast(result.conflicts[0].message);
     return result;
@@ -7580,10 +7582,6 @@ function cloneSmartNode(node, dx=0, dy=0){
     if(copy.type === NODE_TYPE_GROUP) copy.title = copy.title || '智能分组';
     return copy;
 }
-function cloneSmartConnection(conn, idMap){
-    // #451: A copied edge is a new entity for undo and incremental saving.
-    return {...conn, id:uid('edge'), from:idMap.get(conn.from) || conn.from, to:idMap.get(conn.to) || conn.to};
-}
 function rejectSmartHumanCopy(nodes){
     if(!nodes.some(node => canvasCore.smartConversationPendingIntents(node).length)) return false;
     toast('包含未决执行意图的对话，暂不能复制；请等待对话完成后重试。');
@@ -7629,10 +7627,7 @@ function pasteNodes(){
         }
         if(copy.sourceNodeId) copy.sourceNodeId = idMap.get(copy.sourceNodeId) || copy.sourceNodeId;
     });
-    // 连线：选中集内的端点映射到新 ID，外部的保留原 ID（保持连线不断）
-    const newConnections = (nodeClipboard.connections || [])
-        .map(conn => cloneSmartConnection(conn, idMap))
-        .filter(conn => conn.from && conn.to && conn.from !== conn.to);
+    const newConnections = (nodeClipboard.connections || []).map(conn => copySmartConnection(conn, idMap)).filter(Boolean);
     const action = beginSmartNodeInputEdit(canvasState.nodes.filter(node => newConnections.some(conn => conn.to === node.id)));
     canvas.connections = [...(canvas.connections || []), ...newConnections];
     canvasState.nodes.push(...copies);
@@ -7686,6 +7681,15 @@ function pasteAssetsFromInbox(){
     toast(trf('smart.pastedAssets', {n: created.length}));
     return true;
 }
+function copySmartConnection(conn, idMap){
+    const from = idMap.get(conn.from) || conn.from;
+    const to = idMap.get(conn.to) || conn.to;
+    if(!from || !to || from === to) return null;
+    // Copying a source alone must not add a second selection to the original target.
+    if(isManagedAgentReference(conn) && !idMap.has(conn.to)) return null;
+    // #451: A copied edge is a new entity for undo and incremental saving.
+    return {...conn, id:uid('edge'), from, to};
+}
 function duplicateForAltDrag(node, preserveConnections=false){
     const ids = (isNodeSelected(node.id) ? selectedNodeIds() : [node.id]);
     const sourceNodes = ids.map(id => canvasState.nodes.find(n => n.id === id)).filter(Boolean);
@@ -7709,15 +7713,13 @@ function duplicateForAltDrag(node, preserveConnections=false){
         const idSet = new Set(sourceNodes.map(n => n.id));
         const newConnections = (canvas.connections || [])
             .filter(conn => idSet.has(conn.to))
-            .map(conn => cloneSmartConnection(conn, idMap))
-            .filter(conn => conn.from && conn.to && conn.from !== conn.to);
+            .map(conn => copySmartConnection(conn, idMap)).filter(Boolean);
         const nextConnections = [...(canvas.connections || [])];
         newConnections.forEach(conn => {
-            const kind = conn.kind || 'flow';
-            if(nextConnections.some(c => c.from === conn.from && c.to === conn.to && (c.kind || 'flow') === kind)) return;
+            if(nextConnections.some(c => smartConnectionDedupeKey(c) === smartConnectionDedupeKey(conn))) return;
             nextConnections.push(conn);
             const toNode = canvasState.nodes.find(n => n.id === conn.to) || copies.find(n => n.id === conn.to);
-            if(toNode && (conn.kind || 'flow') === 'input'){
+            if(toNode && conn.kind === 'input' && !isManagedAgentReference(conn)){
                 toNode.inputNodeIds = Array.from(new Set([...(toNode.inputNodeIds || []), conn.from]));
             }
         });
@@ -11987,7 +11989,7 @@ function setDropHighlight(targetId){
 }
 
 function insertLoopNodeIntoConnection(loopNode, hit){
-    if(!loopNode || loopNode.type !== NODE_TYPE_LOOP || !hit?.conn) return false;
+    if(!loopNode || loopNode.type !== NODE_TYPE_LOOP || !hit?.conn || isManagedAgentReference(hit.conn)) return false;
     const conn = hit.conn;
     const action = beginSmartNodeInputEdit([loopNode, canvasState.nodes.find(node => node.id === conn.to)]);
     const kind = conn.kind || 'flow';
@@ -12847,13 +12849,8 @@ function promptFlowReferenceImagesFor(node){
         ? workflowInputImagesFor(node)
         : inputImagesFor(node);
     const combined = [...upstream, ...manualReferenceImagesFor(node), ...collectMentionedImagesFromPrompt()];
-    const seen = new Set();
-    return combined.filter(item => {
-        const key = String(item?.url || '');
-        if(!key || seen.has(key)) return false;
-        seen.add(key);
-        return !isVideoMediaItem(item) && mediaKindForItem(item) === 'image';
-    }).map((item, index) => ({
+    const managed = Boolean(managedAgentReferenceEdgesFor(node).length);
+    return combined.filter(referenceCandidateFilter(managed)).filter(item => !isVideoMediaItem(item) && mediaKindForItem(item) === 'image').map((item, index) => ({
         ...item,
         name:item.name || `图${index + 1}`,
         role:item.role || `image_${index + 1}`,
@@ -13136,12 +13133,14 @@ function renderInputThumbsRow(node){
     if(!inputThumbsRow) return;
     const dedup = node ? visibleReferenceImagesFor(node) : [];
     const manualRefKeys = new Set(manualReferenceImagesFor(node).map(img => inputRefKey(img)));
+    const managed = Boolean(managedAgentReferenceEdgesFor(node).length);
     const addActive = mentionInsertMode === 'manual-ref';
     // 仅当参考图集合/状态真正变化时才重建缩略图 DOM。否则每敲一个字都重建并重新解码所有图片，
     // 参考图多时会让输入框打字明显卡顿。
     const thumbsSignature = JSON.stringify({
         node: node?.id || '',
-        items: dedup.map(img => `${inputRefKey(img)}@${img.url || ''}`),
+        items: dedup.map(img => [inputRefKey(img), img.url, img.agentRefEdgeId]),
+        managed,
         manual: [...manualRefKeys],
         add: addActive,
         mode: node ? smartImageMode(node) : ''
@@ -13171,17 +13170,19 @@ function renderInputThumbsRow(node){
             ? smartVideoPreviewHtml(img, 256, 'draggable="false" alt=""')
             : smartPreviewImgHtml(img, 256, 'draggable="false"');
         const count = (mediaCounters[kind] = (mediaCounters[kind] || 0) + 1);
-        const label = kind === 'audio' ? `音频${count}` : kind === 'video' ? `视频${count}` : `图${count}`;
-        const referenceMarker = kind === 'image' ? count : 0;
+        const referenceMarker = kind === 'image' ? (managed ? i + 1 : count) : 0;
+        const label = kind === 'audio' ? `音频${count}` : kind === 'video' ? `视频${count}` : `图${referenceMarker || count}`;
         const markerHint = referenceMarker
             ? (window.StudioI18n?.lang?.() === 'en' ? `Click to insert @${referenceMarker}` : `单击插入 @${referenceMarker}`)
             : '';
         const sourceUrl = img.originalLocalUrl || img.url || '';
         const key = inputRefKey(img);
-        const isUpstream = !manualRefKeys.has(key);
-        const removeBtn = `<button class="input-thumb-remove" type="button" data-input-remove-reference="${escapeHtml(key)}" title="${escapeHtml(isUpstream ? tr('smart.disconnectRef') : tr('smart.removeRef'))}" aria-label="${escapeHtml(isUpstream ? tr('smart.disconnectRef') : tr('smart.removeRef'))}">×</button>`;
+        const isManual = !img.agentRefEdgeId && manualRefKeys.has(key);
+        const removeLabel = escapeHtml(isManual ? tr('smart.removeRef') : tr('smart.disconnectRef'));
+        const edgeAttr = img.agentRefEdgeId ? ` data-agent-ref-edge-id="${escapeHtml(img.agentRefEdgeId)}"` : '';
+        const removeBtn = `<button class="input-thumb-remove" type="button" data-input-remove-reference="${escapeHtml(key)}"${edgeAttr} title="${removeLabel}" aria-label="${removeLabel}">×</button>`;
         const tooltip = [img.name || tr('smart.inputNum').replace('{n}', String(i + 1)), title, markerHint].filter(Boolean).join(' · ');
-        return `<div class="input-thumb ${isSelf ? 'input-self' : ''} ${manualRefKeys.has(key) ? 'input-manual-ref' : ''}" draggable="false" data-thumb-index="${i}" data-reference-marker="${referenceMarker || ''}" data-node-id="${escapeHtml(img.nodeId || '')}" data-image-index="${img.imageIndex ?? ''}" data-url="${escapeHtml(img.url || '')}" data-source-url="${escapeHtml(sourceUrl)}" title="${escapeHtml(tooltip)}">${inner}<span class="input-thumb-label">${escapeHtml(label)}</span>${removeBtn}</div>`;
+        return `<div class="input-thumb ${isSelf ? 'input-self' : ''} ${isManual ? 'input-manual-ref' : ''}" draggable="false" data-thumb-index="${i}" data-reference-marker="${referenceMarker || ''}" data-node-id="${escapeHtml(img.nodeId || '')}" data-image-index="${img.imageIndex ?? ''}" data-url="${escapeHtml(img.url || '')}" data-source-url="${escapeHtml(sourceUrl)}" title="${escapeHtml(tooltip)}">${inner}<span class="input-thumb-label">${escapeHtml(label)}</span>${removeBtn}</div>`;
     }).join('');
     inputThumbsRow.innerHTML = `<div class="input-thumb-list">${thumbsHtml}${dedup.length > 1 ? `<span class="input-thumb-count">${escapeHtml(tr('smart.inputCount').replace('{n}', String(dedup.length)))}</span>` : ''}</div><div class="input-thumb-actions">${addButton}</div>`;
     bindSmartPreviewImageFallbacks(inputThumbsRow);
@@ -13204,8 +13205,13 @@ function bindInputThumbReferenceActions(){
             const node = selectedNode();
             if(!node) return;
             const key = btn.dataset.inputRemoveReference || '';
-            const thumbs = Array.from(inputThumbsRow.querySelectorAll('.input-thumb'));
-            const thumb = thumbs.find(el => el.querySelector(`[data-input-remove-reference="${key}"]`));
+            const edgeId = btn.dataset.agentRefEdgeId;
+            if(edgeId){
+                const index = (canvas?.connections || []).findIndex(edge => edge.to === node.id && edge.id === edgeId && isManagedAgentReference(edge));
+                if(index >= 0) disconnectConnections([index]);
+                return;
+            }
+            const thumb = btn.closest('.input-thumb');
             if(!thumb) return;
             const nodeId = thumb.dataset.nodeId || '';
             const isManual = thumb.classList.contains('input-manual-ref');
@@ -13213,7 +13219,7 @@ function bindInputThumbReferenceActions(){
                 removeManualReferenceFromSelectedNode(key);
             } else if(nodeId && canvas){
                 // 断开上游节点的连线
-                canvas.connections = (canvas.connections || []).filter(c => !(c.from === nodeId && c.to === node.id && c.kind === 'input'));
+                canvas.connections = (canvas.connections || []).filter(c => isManagedAgentReference(c) || !(c.from === nodeId && c.to === node.id && c.kind === 'input'));
                 render();
                 scheduleSave();
             }
@@ -13228,8 +13234,8 @@ function bindInputThumbsDrag(node, items, manualRefKeys=new Set()){
         const index = Number(el.dataset.thumbIndex || -1);
         const item = items[index];
         const key = inputRefKey(item);
-        const canReorderManual = items.length > 1 && manualRefKeys.has(key);
-        const canReorderSource = items.length > 1 && Boolean(item?.nodeId);
+        const canReorderManual = items.length > 1 && !item?.agentRefEdgeId && manualRefKeys.has(key);
+        const canReorderSource = items.length > 1 && !item?.agentRefEdgeId && Boolean(item?.nodeId);
         el.draggable = canReorderManual || canReorderSource;
         el.addEventListener('click', e => {
             e.preventDefault();
@@ -13372,7 +13378,7 @@ function reorderInputSourceNodes(currentNode, movedId, targetId, placement='befo
         const relevant = [];
         canvas.connections.forEach((conn, index) => {
             const kind = conn?.kind || 'flow';
-            if(conn?.to === currentNode.id && ['input', 'flow'].includes(kind) && order.has(conn.from)){
+            if(conn?.to === currentNode.id && !isManagedAgentReference(conn) && ['input', 'flow'].includes(kind) && order.has(conn.from)){
                 relevantSlots.add(index);
                 relevant.push({conn, index});
             }
@@ -13394,7 +13400,7 @@ function reorderInputThumb(currentNode, items, from, to, placement='before'){
     if(inputThumbsRow) delete inputThumbsRow.dataset.thumbsSig;
     const fromImg = items[from];
     const toImg = items[to];
-    if(!fromImg || !toImg) return;
+    if(!fromImg || !toImg || fromImg.agentRefEdgeId || toImg.agentRefEdgeId) return;
     if(fromImg.nodeId === toImg.nodeId){
         const src = canvasState.nodes.find(n => n.id === fromImg.nodeId);
         if(!src) return;
@@ -13951,11 +13957,14 @@ function upstreamNodesForKinds(node, kinds=['input']){
     if(!node) return [];
     const allowed = new Set(kinds);
     const ids = new Set();
+    const managedSources = new Set();
     (canvas?.connections || []).forEach(conn => {
-        if(conn.to === node.id && allowed.has(conn.kind || 'flow')) ids.add(conn.from);
+        if(conn.to !== node.id || !allowed.has(conn.kind || 'flow')) return;
+        if(isManagedAgentReference(conn)) managedSources.add(conn.from);
+        else ids.add(conn.from);
     });
     if(!canvasUsesConnections && allowed.has('input')){
-        (node.inputNodeIds || []).forEach(id => ids.add(id));
+        (node.inputNodeIds || []).forEach(id => { if(!managedSources.has(id)) ids.add(id); });
     }
     return [...ids].map(id => canvasState.nodes.find(n => n.id === id)).filter(Boolean);
 }
@@ -14092,10 +14101,7 @@ function smartLoopPrompt(node, ctx=smartLoopContext){
 }
 function smartLoopInputImages(node, ctx=smartLoopContext){
     if(!node?.imageInput) return [];
-    const refs = inputNodesFor(node).flatMap(input => {
-        if(input?.type === NODE_TYPE_LOOP) return smartLoopInputImages(input, ctx);
-        return imagesForNode(input);
-    }).filter(img => img?.url);
+    const refs = loopReferenceInputs(node, ctx);
     if(!refs.length) return [];
     const startBase = Math.max(1, Number(node.loopStart) || 1);
     const batchSize = Math.max(1, Math.min(100, Number(node.imageBatchSize) || 1));
@@ -14104,11 +14110,14 @@ function smartLoopInputImages(node, ctx=smartLoopContext){
         .map((img, i) => ({...img, name:img.name || trf('canvas.loopImageLabel', {n:currentIndex + i})}));
 }
 function smartLoopPreviewImages(node){
-    if(!node?.imageInput) return [];
-    return inputNodesFor(node).flatMap(input => {
-        if(input?.type === NODE_TYPE_LOOP) return smartLoopInputImages(input, {index:Number(node.loopStart) || 1});
+    return node?.imageInput ? loopReferenceInputs(node, {index:Number(node.loopStart) || 1}) : [];
+}
+function loopReferenceInputs(node, ctx){
+    const refs = [...managedAgentReferenceImagesFor(node), ...inputNodesFor(node).flatMap(input => {
+        if(input?.type === NODE_TYPE_LOOP) return smartLoopInputImages(input, ctx);
         return imagesForNode(input);
-    }).filter(img => img?.url);
+    })];
+    return managedAgentReferenceEdgesFor(node).length ? refs.filter(referenceCandidateFilter(true)) : refs.filter(img => img?.url);
 }
 function outputImagesForNode(node, consume=false, ctx=smartLoopContext){
     if(node?.type === NODE_TYPE_GROUP) return imagesForNode(node).filter(img => img?.url);
@@ -14142,11 +14151,34 @@ function inputPromptTextFor(node, ctx=smartLoopContext){
         return true;
     }).join('\n\n');
 }
+function managedAgentReferenceEdgesFor(node){
+    return node ? (canvas?.connections || []).filter(edge => edge?.to === node.id && isManagedAgentReference(edge)) : [];
+}
+function managedAgentReferenceImagesFor(node){
+    const bySource = new Map();
+    const seen = new Set();
+    return managedAgentReferenceEdgesFor(node)
+        .filter(edge => edge.enabled === true && edge.asset_id)
+        .sort((a, b) => managedAgentReferenceOrder(a) - managedAgentReferenceOrder(b))
+        .flatMap(edge => {
+            if(seen.has(edge.asset_id)) return [];
+            const source = canvasState.nodes.find(n => n.id === edge.from);
+            if(!source) return [];
+            if(!bySource.has(source.id)) bySource.set(source.id, imagesForNode(source));
+            const item = bySource.get(source.id).find(img => img.asset_id === edge.asset_id)
+                || canvasState.projectMediaLibrary?.items?.find(img => img.asset_id === edge.asset_id);
+            // The selected asset survives changes in the source's displayed output.
+            const url = item?.url || (isProjectCanvasData() ? projectMediaUrl(edge.asset_id) : '');
+            if(!url) return [];
+            seen.add(edge.asset_id);
+            return [{...item, url, asset_id:edge.asset_id, agentRefEdgeId:edge.id}];
+        });
+}
 function inputImagesFor(node, consume=false, ctx=smartLoopContext){
-    return inputNodesFor(node).flatMap(input => outputImagesForNode(input, consume, ctx));
+    return [...managedAgentReferenceImagesFor(node), ...inputNodesFor(node).flatMap(input => outputImagesForNode(input, consume, ctx))];
 }
 function workflowInputImagesFor(node, consume=false, ctx=smartLoopContext){
-    return workflowInputNodesFor(node).flatMap(input => outputImagesForNode(input, consume, ctx));
+    return [...managedAgentReferenceImagesFor(node), ...workflowInputNodesFor(node).flatMap(input => outputImagesForNode(input, consume, ctx))];
 }
 function inputRefKey(img){
     if(!img?.url) return '';
@@ -14168,12 +14200,12 @@ function manualReferenceImagesFor(node){
         manualAdded:true
     }));
 }
+function referenceCandidatesFor(node, consume=false, ctx=smartLoopContext){
+    const upstream = smartImageUsesWorkflowInput(node, ctx) ? workflowInputImagesFor(node, consume, ctx) : inputImagesFor(node, consume, ctx);
+    return [...upstream.filter(img => img?.url), ...manualReferenceImagesFor(node)];
+}
 function defaultReferenceImagesFor(node, consume=false, ctx=smartLoopContext){
-    if(!node) return [];
-    const upstream = (smartImageUsesWorkflowInput(node, ctx) ? workflowInputImagesFor(node, consume, ctx) : inputImagesFor(node, consume, ctx))
-        .filter(img => img?.url);
-    const manual = manualReferenceImagesFor(node);
-    return uniqueReferenceImages([...upstream, ...manual]);
+    return node ? uniqueReferenceImages(referenceCandidatesFor(node, consume, ctx), Boolean(managedAgentReferenceEdgesFor(node).length)) : [];
 }
 function upstreamLineNodeIds(node){
     if(!node) return [];
@@ -14205,12 +14237,25 @@ function collectMentionedImagesFromPrompt(){
     });
     return images;
 }
-function uniqueReferenceImages(images){
+function referenceCandidateFilter(managed){
+    const urls = new Set();
+    const urlsWithoutAsset = new Set();
+    const assets = new Set();
+    return img => {
+        if(!img?.url) return false;
+        const asset = managed ? img.asset_id : '';
+        const duplicate = asset ? assets.has(asset) || urlsWithoutAsset.has(img.url) : urls.has(img.url);
+        urls.add(img.url);
+        if(asset) assets.add(asset);
+        else if(!duplicate) urlsWithoutAsset.add(img.url);
+        return !duplicate;
+    };
+}
+function uniqueReferenceImages(images, managed=false){
     const refs = [];
-    const seen = new Set();
+    const include = referenceCandidateFilter(managed);
     (images || []).forEach((img, index) => {
-        if(!img?.url || seen.has(img.url)) return;
-        seen.add(img.url);
+        if(!include(img)) return;
         if(refs.length >= SMART_REFERENCE_IMAGE_MAX) return;
         refs.push({
             ...img,
@@ -14222,17 +14267,15 @@ function uniqueReferenceImages(images){
     return refs;
 }
 function visibleReferenceImagesFor(node){
-    const base = defaultReferenceImagesFor(node);
-    return uniqueReferenceImages([...base, ...collectMentionedImagesFromPrompt()]);
+    const managed = Boolean(managedAgentReferenceEdgesFor(node).length);
+    const base = managed ? referenceCandidatesFor(node) : defaultReferenceImagesFor(node);
+    const refs = [...base, ...collectMentionedImagesFromPrompt()];
+    const blocked = managed ? blockedInputRefKeys(node) : null;
+    return uniqueReferenceImages(blocked ? refs.filter(img => !blocked.has(inputRefKey(img))) : refs, managed);
 }
 function inputMentionCandidateImages(node){
-    const current = node ? [...lineImagesFor(node), ...manualReferenceImagesFor(node)] : [];
-    const seen = new Set();
-    return current.filter(img => {
-        if(!img?.url || seen.has(img.url)) return false;
-        seen.add(img.url);
-        return true;
-    }).map((img, index) => ({
+    const current = node ? [...managedAgentReferenceImagesFor(node), ...lineImagesFor(node), ...manualReferenceImagesFor(node)] : [];
+    return current.filter(referenceCandidateFilter(Boolean(managedAgentReferenceEdgesFor(node).length))).map((img, index) => ({
         ...img,
         mentionId:`mention_${index}_${Math.random().toString(36).slice(2, 7)}`,
         alias:img.name || `图片${index + 1}`
@@ -14581,6 +14624,7 @@ function insertMentionToken(img, {human=false}={}){
     token.dataset.nodeId = img.nodeId || '';
     token.dataset.imageIndex = String(img.imageIndex ?? '');
     token.dataset.assetUris = JSON.stringify(img.asset_uris || {});
+    if(img.agentRefEdgeId && img.asset_id) token.dataset.assetId = img.asset_id;
     token.innerHTML = `${mentionTokenMediaHtml(img, token.dataset.kind)}<span>${escapeHtml(token.dataset.name)}</span>`;
     range.insertNode(token);
     bindSmartPreviewImageFallbacks(token);
@@ -14608,7 +14652,7 @@ function collectPromptParts(root=promptInput){
             let assetUris = {};
             try { assetUris = JSON.parse(node.dataset.assetUris || '{}') || {}; } catch(e) { assetUris = {}; }
             const kind = node.dataset.kind || 'image';
-            parts.push({type:'image', kind, url:node.dataset.url || '', name:node.dataset.name || (kind === 'audio' ? '音频' : '图片'), nodeId:node.dataset.nodeId || '', imageIndex:Number(node.dataset.imageIndex || 0), asset_uris:assetUris});
+            parts.push({type:'image', kind, url:node.dataset.url || '', name:node.dataset.name || (kind === 'audio' ? '音频' : '图片'), nodeId:node.dataset.nodeId || '', imageIndex:Number(node.dataset.imageIndex || 0), asset_uris:assetUris, ...(node.dataset.assetId ? {asset_id:node.dataset.assetId} : {})});
             return;
         }
         if(node.tagName === 'BR'){
@@ -14639,10 +14683,14 @@ function buildPromptRequest(node, overrideDefaultImages=null, consumeDefault=fal
     const parts = collectPromptParts(promptRoot);
     const originalPrompt = originalPromptTextFromParts(parts);
     const blockedRefs = blockedInputRefKeys(node);
+    const managed = Boolean(managedAgentReferenceEdgesFor(node).length);
     const hasOverrideImages = Array.isArray(overrideDefaultImages);
-    const filteredDefaultImages = (hasOverrideImages ? overrideDefaultImages : defaultReferenceImagesFor(node, consumeDefault, ctx))
-        .filter(img => !blockedRefs.has(inputRefKey(img)));
-    const defaultRefs = uniqueReferenceImages(filteredDefaultImages);
+    // Workflow batches override ordinary inputs, not a target's managed selection.
+    const defaults = hasOverrideImages
+        ? (managed ? [...managedAgentReferenceImagesFor(node), ...overrideDefaultImages, ...manualReferenceImagesFor(node)] : overrideDefaultImages)
+        : (managed ? referenceCandidatesFor(node, consumeDefault, ctx) : defaultReferenceImagesFor(node, consumeDefault, ctx));
+    const filteredDefaultImages = defaults.filter(img => !blockedRefs.has(inputRefKey(img)));
+    const defaultRefs = uniqueReferenceImages(filteredDefaultImages, managed);
     const refs = defaultRefs.map((img, index) => ({...img, role:`image_${index + 1}`}));
     // 扩图修复：扩图激活时，必须把扩图底图（红底+原图合成图，即节点当前图）作为参考图发给模型，
     // 否则模型只拿到提示词而没有底图，会凭空生成全新图而不是扩展原图（"扩图不生效"根因）。
@@ -14650,7 +14698,7 @@ function buildPromptRequest(node, overrideDefaultImages=null, consumeDefault=fal
     // 直接取 node.images[0]，生成时 importProjectMediaReference 会把它归档为项目媒体。
     if(validOutpaintSize(node)){
         const selfImg = (node.images || []).find(img => img?.url);
-        if(selfImg?.url && !refs.some(ref => ref.url === selfImg.url)){
+        if(selfImg?.url && !refs.some(ref => ref.url === selfImg.url || (managed && selfImg.asset_id && ref.asset_id === selfImg.asset_id))){
             if(refs.length >= SMART_REFERENCE_IMAGE_MAX){
                 // 扩图底图是必需参考，默认参考图是可选的：让出最后一位，保持不超过安全上限
                 refs.pop();
@@ -14660,7 +14708,18 @@ function buildPromptRequest(node, overrideDefaultImages=null, consumeDefault=fal
     }
     let hasMentionToken = false;
     const refMap = new Map();
-    refs.forEach((img, index) => refMap.set(img.url, index + 1));
+    const assetNumbers = new Map();
+    refs.forEach((img, index) => {
+        if(!refMap.has(img.url)) refMap.set(img.url, index + 1);
+        if(managed && img.asset_id) assetNumbers.set(img.asset_id, index + 1);
+    });
+    if(managed){
+        // Legacy tokens only carry URLs, including alternate URLs for an already selected asset.
+        filteredDefaultImages.forEach(img => {
+            const number = assetNumbers.get(img.asset_id);
+            if(number && !refMap.has(img.url)) refMap.set(img.url, number);
+        });
+    }
     let body = '';
     parts.forEach(part => {
         if(part.type === 'text'){
@@ -14674,15 +14733,20 @@ function buildPromptRequest(node, overrideDefaultImages=null, consumeDefault=fal
             body += `@${part.name || '图片'}`;
             return;
         }
-        if(!refMap.has(part.url)){
+        const byUrl = refMap.get(part.url);
+        let number = assetNumbers.get(part.asset_id) || byUrl;
+        if(managed && part.asset_id && !assetNumbers.has(part.asset_id) && byUrl && refs[byUrl - 1].asset_id) number = 0;
+        if(!number){
             if(refs.length >= SMART_REFERENCE_IMAGE_MAX){
                 body += `@${part.name || '图片'}`;
                 return;
             }
-            refMap.set(part.url, refs.length + 1);
-            refs.push({url:part.url, name:part.name || `图${refs.length + 1}`, nodeId:part.nodeId, imageIndex:part.imageIndex, kind:part.kind || 'image', asset_uris:part.asset_uris || {}, role:`image_${refs.length + 1}`});
+            number = refs.length + 1;
+            if(!byUrl) refMap.set(part.url, number);
+            if(managed && part.asset_id) assetNumbers.set(part.asset_id, number);
+            refs.push({url:part.url, name:part.name || `图${number}`, nodeId:part.nodeId, imageIndex:part.imageIndex, kind:part.kind || 'image', asset_uris:part.asset_uris || {}, asset_id:part.asset_id, role:`image_${number}`});
         }
-        body += `图${refMap.get(part.url)}`;
+        body += `图${number}`;
     });
     body = body.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
     const groupPrompt = isSmartGroupNode(node) ? textForNode(node, ctx).trim() : '';
@@ -14691,21 +14755,14 @@ function buildPromptRequest(node, overrideDefaultImages=null, consumeDefault=fal
     if(!body && settings.engine === 'runninghub'){
         body = rhDefaultPromptSuggestion();
     }
-    const displayPrompt = originalPrompt || body;
-    if(hasMentionToken && refs.length){
-        const mapText = refs.map((img, i) => `图${i + 1}：${img.name || `图片${i + 1}`}`).join('\n');
-        return {
-            prompt:`${tr('smart.refMapHeader')}\n${mapText}\n\n${tr('smart.refUserNeed')}\n${body}`,
-            displayPrompt,
-            refs:refs.map((img, index) => ({url:img.url, name:img.name || `图${index + 1}`, kind:img.kind || mediaKindForItem(img), asset_uris:img.asset_uris || {}, role:`image_${index + 1}`})),
-            mentioned:true
-        };
-    }
+    const requestRefs = refs.map((img, index) => ({url:img.url, name:img.name || `图${index + 1}`, kind:img.kind || mediaKindForItem(img), asset_uris:img.asset_uris || {}, role:`image_${index + 1}`, ...(img.asset_id && (managed || img.agentRefEdgeId) ? {asset_id:img.asset_id} : {})}));
+    const mentioned = hasMentionToken && refs.length > 0;
+    const mapText = mentioned ? refs.map((img, i) => `图${i + 1}：${img.name || `图片${i + 1}`}`).join('\n') : '';
     return {
-        prompt:body,
-        displayPrompt,
-        refs:refs.map((img, index) => ({url:img.url, name:img.name || `图${index + 1}`, kind:img.kind || mediaKindForItem(img), asset_uris:img.asset_uris || {}, role:`image_${index + 1}`})),
-        mentioned:false
+        prompt:mentioned ? `${tr('smart.refMapHeader')}\n${mapText}\n\n${tr('smart.refUserNeed')}\n${body}` : body,
+        displayPrompt:originalPrompt || body,
+        refs:requestRefs,
+        mentioned
     };
 }
 
@@ -15179,16 +15236,7 @@ function mergeImageNodesIntoGroup(sourceId, targetId){
     if(!Number.isFinite(Number(target.scale)) || Number(target.scale) === MEDIA_NODE_DEFAULT_SCALE) target.scale = MEDIA_GROUP_DEFAULT_SCALE;
     delete target.w;
     delete target.h;
-    canvas.connections = (canvas.connections || []).map(c => {
-        if(c.from === source.id) return {...c, from:target.id};
-        if(c.to === source.id) return {...c, to:target.id};
-        return c;
-    }).filter((c, index, arr) => c.from !== c.to && arr.findIndex(x => x.from === c.from && x.to === c.to && (x.kind || 'flow') === (c.kind || 'flow')) === index);
-    canvasState.nodes.forEach(node => {
-        if(Array.isArray(node.inputNodeIds)){
-            node.inputNodeIds = Array.from(new Set(node.inputNodeIds.map(id => id === source.id ? target.id : id).filter(id => id !== node.id)));
-        }
-    });
+    rerouteSmartConnections(source.id, target.id);
     canvasState.nodes = canvasState.nodes.filter(n => n.id !== source.id); if(canvas) canvas.nodes = canvasState.nodes;
     canvasState.selectedIds = [];
     canvasState.selectedId = target.id;
@@ -16826,10 +16874,8 @@ function duplicateSelectedNodes(dx=32, dy=32){
     const nextConnections = [...(canvas.connections || [])];
     (canvas.connections || []).forEach(conn => {
         if(!idSet.has(conn.from) || !idSet.has(conn.to)) return;
-        const mapped = cloneSmartConnection(conn, idMap);
-        if(!mapped.from || !mapped.to || mapped.from === mapped.to) return;
-        const kind = mapped.kind || 'flow';
-        if(nextConnections.some(c => c.from === mapped.from && c.to === mapped.to && (c.kind || 'flow') === kind)) return;
+        const mapped = copySmartConnection(conn, idMap);
+        if(!mapped || nextConnections.some(c => smartConnectionDedupeKey(c) === smartConnectionDedupeKey(mapped))) return;
         nextConnections.push(mapped);
     });
     canvas.connections = nextConnections;

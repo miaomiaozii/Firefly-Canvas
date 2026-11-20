@@ -194,7 +194,7 @@ REVERSE_REFERENCE_CEILINGS = {
     # 新增核心引用 +8，方向为「核心调模块」。棘轮不能低于实测。2026-10-29 实测 68->71：#246 freeSpot
     # 落点接线（createNodeFromMenu 扫描锚点 + 碰撞盒），canvasCore.mediaNodeDefaultScale×1 /
     # canvasCore.nodeRect×2 接口引用净 +3，全走 canvasCore 接口，无新自由全局。
-    "canvas-connections.js": 42,
+    "canvas-connections.js": 41,  # #395：节点合并的连线重映射不再在模块内扫描核心节点。
     # #223 新建下载层：不引用 smart-canvas.js 的任何顶层名（只依赖 canvas-core.js 的 tr）。
     "canvas-download.js": 0,
     # #255 新建分数坐标骨架：纯函数模块，不引用 smart-canvas.js 的任何顶层名。

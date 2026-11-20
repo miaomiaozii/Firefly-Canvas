@@ -6,7 +6,7 @@
    pi 扩展（app/agent_extensions/canvas-tools.ts）的工具注册段是
    tools/gen_canvas_tools.py 从清单 codegen 的 canvas-tools.generated.ts——
    freshness（重跑 diff 必须为空）、名字集合三方一致、schema 不变量。
-2) 行为层：对全部 27 个工具，比对 MCP 与 REST 的返回值及完整画布终态。
+2) 行为层：遍历清单工具，比对 MCP 与 REST 的返回值及完整画布终态。
    确认门工具（#242）经 gate 批准后比对 core 结果；canvas.edit_erase 消耗外部模型，
    只钉门与 schema。媒体写操作的 Agent 路径因记账尚不可用而 fail closed，用户路径仍可用。
 """
@@ -105,6 +105,37 @@ class SourceSameOriginTests(unittest.TestCase):
                           f"{tool['name']} 根 schema 必须 additionalProperties:false（#266 口径）")
             self.assertTrue(tool["description"].strip(), tool["name"])
 
+    def test_media_ref_schemas(self):
+        schemas = {tool["name"]: tool["inputSchema"] for tool in agent_tools_manifest.TOOLS}
+        for name in ("canvas.place_media", "canvas.attach_refs", "canvas.set_ref_order"):
+            self.assertIn(name, agent_tools_manifest.WRITE_TOOLS)
+        place = schemas["canvas.place_media"]
+        self.assertEqual(place["required"], ["asset_id"])
+        self.assertEqual(set(place["properties"]), {"asset_id", "node_id", "group_id", "title"})
+
+        attach = schemas["canvas.attach_refs"]
+        self.assertEqual(attach["required"], ["node_id", "refs"])
+        mode = attach["properties"]["mode"]
+        self.assertEqual(set(mode["enum"]), {"append", "replace"})
+        self.assertEqual(mode["default"], "append")
+        ref = attach["properties"]["refs"]["items"]
+        self.assertEqual(ref["required"], ["source"])
+        self.assertEqual(ref["properties"]["enabled"]["type"], "boolean")
+        role = ref["properties"]["role"]
+        self.assertEqual(set(role["enum"]), {"product", "detail", "layout", "scene_style", "general"})
+        self.assertEqual(role["default"], "general")
+        source = ref["properties"]["source"]
+        self.assertEqual([branch["required"] for branch in source["oneOf"]], [["asset_id"], ["node_id"]])
+        for branch, keys in zip(source["oneOf"], ({"asset_id"}, {"node_id", "image_index"})):
+            self.assertIs(branch["additionalProperties"], False)
+            self.assertEqual(set(branch["properties"]), keys)
+
+        order = schemas["canvas.set_ref_order"]
+        self.assertEqual(order["required"], ["node_id"])
+        self.assertEqual(order["anyOf"], [{"required": ["order"]}, {"required": ["role_overrides"]}])
+        self.assertEqual(order["properties"]["order"]["items"]["type"], "string")
+        self.assertEqual(order["properties"]["role_overrides"]["additionalProperties"]["enum"], role["enum"])
+
     def test_generated_names_match_manifest(self):
         gen = GEN_TS.read_text(encoding="utf-8")
         names = [m.group(1) for m in re.finditer(r'name: "([a-z_.]+)"', gen)]
@@ -123,7 +154,7 @@ class SourceSameOriginTests(unittest.TestCase):
 
 
 class DualPathEquivalenceTests(unittest.TestCase):
-    """行为层：27 工具逐个「同一输入 → MCP 与 REST 孪生同结果」。"""
+    """行为层：逐工具比较「同一输入 → MCP 与 REST 孪生同结果」。"""
 
     SEED = [
         {"op": "upsert_node", "node": {"id": "prompt-1", "type": "smart-prompt", "title": "Test Prompt", "text": "A glowing firefly", "x": 100, "y": 100}},
@@ -328,6 +359,23 @@ class DualPathEquivalenceTests(unittest.TestCase):
             with self.subTest(tool=name):
                 run_case()
 
+    def test_media_ref_mcp_dispatch_uses_binding_and_payload_only(self):
+        client, _, project, _ = self._fixture()
+        cases = {
+            "place_media": {"asset_id": "asset"},
+            "attach_refs": {"node_id": "image-1", "refs": [{"source": {"asset_id": "asset"}}]},
+            "set_ref_order": {"node_id": "image-1", "role_overrides": {"asset": "product"}},
+        }
+        for tool, args in cases.items():
+            with self.subTest(tool=tool):
+                core = AsyncMock(return_value={"ok": True})
+                with patch(f"app.routers.api_agent_tools.{tool}_core", new=core, create=True):
+                    result = self._mcp_call(client, project, f"canvas.{tool}", {
+                        **args, "agent_node_id": "unbound-agent", "turn_id": "not-a-query-turn",
+                    })
+                self.assertTrue(result["ok"], result)
+                core.assert_awaited_once_with(project, args, agent_node_id="agent-consistency")
+
     def test_error_comparison_keeps_structured_contract(self):
         detail = {"code": "INVALID_ARGUMENT", "message": "bad fields", "hint": "use summary", "retryable": False}
         original = self._canon_payload({"ok": False, "error": detail})
@@ -362,6 +410,21 @@ class DualPathEquivalenceTests(unittest.TestCase):
                 self._assert_pair(a, b, name)
                 self.assertEqual(self._canvas_state(store, pid_a), self._canvas_state(store, pid_b),
                                  f"{name}: 两路画布终态不一致")
+            return run
+
+        def media_ref_validation(name, args, expected_code):
+            def run():
+                client, store, pid_a, pid_b = self._fixture()
+                before = self._canvas_state(store, pid_a)
+                a = self._mcp_call(client, pid_a, name, args)
+                path = name.removeprefix("canvas.")
+                b = self._rest(client, "POST", f"/api/projects/{pid_b}/canvas/{path}",
+                               {**args, "agent_node_id": "agent-consistency"}, {"X-Agent-Project": pid_b})
+                self._assert_pair(a, b, name)
+                self.assertFalse(a["ok"], a)
+                self.assertEqual(a["error"]["code"], expected_code)
+                for pid in (pid_a, pid_b):
+                    self.assertEqual(self._canvas_state(store, pid), before)
             return run
 
         def gated(name, args, impl, method, url_path, body=None):
@@ -503,6 +566,13 @@ class DualPathEquivalenceTests(unittest.TestCase):
             "canvas.delete_node": gated("canvas.delete_node", {"node_id": "image-1"}, "_impl_delete_node", "DELETE", "/canvas/nodes/image-1"),
             "canvas.connect": pair("canvas.connect", {"from_node": "prompt-1", "to_node": "image-1", "kind": "input"}, "POST", "/canvas/edges", {"edge": {"from": "prompt-1", "to": "image-1", "kind": "input"}}),
             "canvas.disconnect": gated("canvas.disconnect", {"from_node": "prompt-1", "to_node": "image-1"}, "_impl_disconnect", "DELETE", "/canvas/edges/prompt-1/image-1"),
+            "canvas.place_media": media_ref_validation("canvas.place_media", {"asset_id": "missing-asset"}, "ASSET_NOT_FOUND"),
+            "canvas.attach_refs": media_ref_validation("canvas.attach_refs", {
+                "node_id": "missing-node", "refs": [{"source": {"node_id": "image-1", "image_index": 0}}],
+            }, "NODE_NOT_FOUND"),
+            "canvas.set_ref_order": media_ref_validation("canvas.set_ref_order", {
+                "node_id": "missing-node", "order": ["missing-asset"], "role_overrides": {"missing-asset": "detail"},
+            }, "NODE_NOT_FOUND"),
             "canvas.search_projects": search_run,
             "canvas.view": pair("canvas.view", {"scope": "page"}, "POST", "/canvas/view", {"scope": "page"}),
             "canvas.view_media": pair("canvas.view_media", {"node_id": "image-1"}, "POST", "/canvas/view_media", {"node_id": "image-1"}),

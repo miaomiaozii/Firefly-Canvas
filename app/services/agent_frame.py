@@ -117,6 +117,7 @@ def place_in_frame(frame: dict, node: dict, nodes: dict) -> tuple[dict, dict]:
     while True:
         if index % cols > last_col:
             index += cols - index % cols
+        # #323 票 E：容量不足时，组框按整行长高，不重排已有成员。
         dx, dy, grid_h = compute_frame_slot(grown, index)
         x, y = fx + dx, fy + dy
         if not any(x < r + CELL_GAP and x + node["w"] + CELL_GAP > l

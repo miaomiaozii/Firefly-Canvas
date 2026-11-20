@@ -57,6 +57,21 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
         parameters: Type.Object({ from_node: Type.String(), to_node: Type.String() }),
     },
     {
+        name: "canvas.place_media",
+        description: "将项目资源库中的媒体放到画布上，可指定目标节点、组框或标题。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        parameters: Type.Object({ asset_id: Type.String({description: "项目媒体资源 ID", minLength: 1}), node_id: Type.Optional(Type.String({description: "目标节点 ID（可选）", minLength: 1})), group_id: Type.Optional(Type.String({description: "目标组框 ID（可选）", minLength: 1})), title: Type.Optional(Type.String({description: "节点标题（可选）"})) }),
+    },
+    {
+        name: "canvas.attach_refs",
+        description: "为目标节点挂参考图。replace 只替换 Agent 标记的参考图，绝不替换用户的参考图。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        parameters: Type.Object({ node_id: Type.String({description: "目标节点 ID", minLength: 1}), refs: Type.Array(Type.Object({ source: Type.Object({ asset_id: Type.Optional(Type.String({minLength: 1})), node_id: Type.Optional(Type.String({minLength: 1})), image_index: Type.Optional(Type.Integer({minimum: 0})) }, {description: "二选一：资源库 asset_id，或来源节点 node_id 与可选的 image_index（默认 0）"}), role: Type.Optional(Type.Union([Type.Literal("product"), Type.Literal("detail"), Type.Literal("layout"), Type.Literal("scene_style"), Type.Literal("general")], {description: "参考图角色，省略时为 general"})), enabled: Type.Optional(Type.Boolean({description: "是否启用该参考图（可选）"})) })), mode: Type.Optional(Type.Union([Type.Literal("append"), Type.Literal("replace")], {description: "append 追加（默认）；replace 只替换 Agent 标记的参考图"})) }),
+    },
+    {
+        name: "canvas.set_ref_order",
+        description: "调整目标节点的参考图顺序、角色，或同时调整两者。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        parameters: Type.Object({ node_id: Type.String({description: "目标节点 ID", minLength: 1}), order: Type.Optional(Type.Array(Type.String({minLength: 1}), {description: "按目标顺序列出的参考图资源 ID"})), role_overrides: Type.Optional(Type.Object({}, {description: "参考图资源 ID → 角色（product/detail/layout/scene_style/general）"})) }),
+    },
+    {
         name: "canvas.search_projects",
         description: "跨项目搜索（只读，票 F/ADR-0026）：按关键词搜所有项目画布节点的标题/prompt/正文与项目名，返回按项目分组命中（node_id/kind/field/snippet）；不搜 agent 会话内容，不建索引",
         parameters: Type.Object({ query: Type.String({description: "搜索关键词（大小写不敏感）", minLength: 1, maxLength: 200}), limit: Type.Optional(Type.Integer({description: "命中总数上限（默认 50）", minimum: 1, maximum: 200})) }),

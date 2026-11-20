@@ -2,7 +2,7 @@
 
 This module reads an already-open canvas; it never repairs legacy data, writes a
 store, resolves media, or invokes generation/routing. ``run`` is saved config,
-not the actual execution request, and ``refs`` is a temporary snapshot view.
+not the actual execution request. ``refs`` prefers live Agent input edges.
 """
 from __future__ import annotations
 
@@ -13,10 +13,10 @@ from typing import Any
 
 from app.constants import NODE_TYPE_GROUP, NODE_TYPE_LOOP, NODE_TYPE_PROMPT
 from app.services.agent_errors import agent_error
+from app.services.agent_refs import ROLES, managed_edge, managed_order, numbered_refs
 
 
 _FIELDS = frozenset({"summary", "prompt", "refs", "run"})
-_REF_ROLES = frozenset({"product", "detail", "layout", "scene_style", "general"})
 # Same project-media ID syntax as ProjectStore._invalid_project_media_value.
 _ASSET_ID = re.compile(r"[A-Za-z0-9._-]{1,200}")
 _RATIO = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*:\s*([0-9]+(?:\.[0-9]+)?)")
@@ -163,9 +163,14 @@ def _asset_id(value: Any) -> str | None:
     return value if _ASSET_ID.fullmatch(value) else None
 
 
-def _project_refs(node: dict) -> list[dict]:
-    # TODO(A5): Delete this A2 snapshot adapter and resolve live input connections
-    # once attach_refs owns role/order/enabled and the shared reference truth.
+def _project_refs(node: dict, edges) -> list[dict]:
+    if edges:
+        return [
+            {"n": ref["n"], "role": ref["role"], "asset_id": ref["asset_id"]}
+            for ref in numbered_refs(sorted(edges, key=managed_order))
+            if ref["enabled"]
+        ]
+    # Legacy nodes may still carry the saved reference projection.
     refs = []
     if "reference_asset_ids" in node:
         # Presence is authoritative even for [] or malformed legacy values.
@@ -181,7 +186,7 @@ def _project_refs(node: dict) -> list[dict]:
             if not asset_id:
                 continue
             role = value.get("role")
-            role = role if isinstance(role, str) and role in _REF_ROLES else "general"
+            role = role if isinstance(role, str) and role in ROLES else "general"
             refs.append({"n": len(refs) + 1, "role": role, "asset_id": asset_id})
     return refs
 
@@ -290,6 +295,7 @@ def project_nodes(canvas: dict, *, group_id=None, fields=None, created_by=None) 
 
     incoming = defaultdict(list)
     outgoing = defaultdict(list)
+    reference_edges = defaultdict(list)
     for edge in _list(canvas.get("connections")):
         if not isinstance(edge, dict):
             continue
@@ -298,6 +304,8 @@ def project_nodes(canvas: dict, *, group_id=None, fields=None, created_by=None) 
         if source is not None and target is not None:
             outgoing[source].append(target)
             incoming[target].append(source)
+            if managed_edge(edge, target):
+                reference_edges[target].append(edge)
 
     summaries = []
     for node in nodes:
@@ -324,7 +332,7 @@ def project_nodes(canvas: dict, *, group_id=None, fields=None, created_by=None) 
         if "prompt" in selected:
             summary["prompt_preview"] = _project_prompt(node)
         if "refs" in selected:
-            summary["refs"] = _project_refs(node)
+            summary["refs"] = _project_refs(node, reference_edges.get(node_id))
         if "run" in selected:
             summary["run"] = _project_run(node)
         summaries.append(summary)
