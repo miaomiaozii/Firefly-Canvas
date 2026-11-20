@@ -1,231 +1,286 @@
-"""#295 tabbit 端到端套件交付门禁入口（quality_gate 的 tabbit-e2e-evidence 步直接调用）。
-
-失败自动重跑（attempt1/2）与场景结束态截图归档已在 #296 落地
-（tools/e2e_qa.sh 与 tools/e2e/scenario_*.sh 的 run() 循环 + EVID_DIR 拷贝），
-本入口只做编排，把套件接进交付门禁：
-
-1. 环境检查：定位 tabbit-cli（%LOCALAPPDATA%/Tabbit/LocalAgent/bin/tabbit-cli.exe），
-   再 curl app 的 /api/healthz。环境未就绪（tabbit 缺失 / app 没开 / curl、bash 不可用）
-   时打印原因并 exit 0——门禁把该步计为通过，无 tabbit 的机器上不会炸门。
-   注意措辞：行首不能出现 skip/skipped（quality_gate.py 的 output_reports_skip 会把
-   「skip 行首 + exit 0」判成 failed 步，见
-   tests/test_quality_gate.py::test_browser_tracer_reported_skip_is_failure_instead_of_green）。
-   真实门禁内 LOCALAPPDATA 指向临时 home（tools/quality_gate.py 的合成环境），
-   tabbit 必然不可见，所以门内该步恒为快速跳过；真跑发生在本机直接执行时。
-
-#310 路径裁定（采用 B：承认门内空步 + 换留证方式）：
-- 承认：门内本步恒为空步——合成临时 home（tools/quality_gate.py:1651）看不见
-  tabbit-cli，环境检查必然走「TABBIT-E2E 环境未就绪 → exit 0」，四个套件
-  （含 scenario_mouse.sh）在门内从不执行、不产任何端到端证据。
-- 不选 A（门内真跑）的原因：①让门内看见 tabbit/app 必须改 quality_gate 的
-  合成环境，属本票未声明的一票否决面；②鼠标套件最坏耗时 = 6 场景 ×
-  2 尝试 × 单次 --timeout-ms 180000（180 s）= 2160 s，单套件就超 trial 300 s /
-  release 900 s 的 mode 预算，门内真跑要么必撞 mode-budget 红、要么得动
-  MODE_BUDGETS 预算契约——后者超出本票范围。
-- B 的替代留证机制：门外直接执行本入口（python tests/tabbit_e2e_evidence.py）。
-  执行人＝交付方（每次交付前）＋验收监理（P6 门外复跑 bash tools/e2e/
-  scenario_mouse.sh 核验可得性）。证据落点：stdout 的 m1–m6 逐场景 PASS/FAIL 行、
-  .pipeline/evidence/screenshots/<场景>-attemptN.png（每场景结束态截图）、
-  <场景>-diff.png 对比图（归档到 FIREFLY_GATE_EVIDENCE_DIR 指向的交付证据目录）。
-  注意 tools/e2e_shot_diff.py 首跑对无基线场景（m* 系）会自动新建基线到
-  tools/e2e/baselines/——那是未跟踪产物，交付前必须清掉（P5 禁刷基线）。
-- 预算：门内本步成本＝环境检查耗时（秒级，实测见 #310 交付汇报）；门外四套件
-  串行、各被 SCENARIO_TIMEOUT=600 s 封顶，最坏 4×600=2400 s——只发生在门外
-  人肉执行，不占门禁 mode 预算；各套件实测耗时见 #310 交付汇报。
-2. 依次 bash tools/e2e/scenario_keys.sh、scenario_delete_undo.sh、scenario_ux_rules.sh、
-   scenario_mouse.sh（#310 补进鼠标维；四套件各 timeout 600s；脚本内部已有
-   attempt1/2 自动重跑），任一退出码非 0 → 打印其输出 tail 并 exit 1。
-3. 跑 python tools/e2e_shot_diff.py（不带 --strict，报告模式）：截图证据对基线对比。
-4. 把 .pipeline/evidence/screenshots/*-diff.png 拷贝到门禁证据目录
-   （环境变量 FIREFLY_GATE_EVIDENCE_DIR，默认 .pipeline/gate/evidence/）。
-
-用法：python tests/tabbit_e2e_evidence.py
-"""
+"""Run Tabbit QA against a runner-owned Firefly instance; never reuse a running app."""
 from __future__ import annotations
 
+import argparse
+import json
 import os
 import shutil
-import re
+import socket
 import subprocess
 import sys
+import tempfile
+import time
+import urllib.request
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-# #360：套件输出里带中文场景名与 →/ı 等非 GBK 字符，Windows 默认 stdout（cp936）
-# 会在 print 时 UnicodeEncodeError 把整个步炸掉（实测 shot_diff 输出里 'ı' 炸过）。
-for _stream in (sys.stdout, sys.stderr):
-    if hasattr(_stream, "reconfigure"):
-        _stream.reconfigure(encoding="utf-8", errors="replace")
-HEALTHZ_URL = "http://127.0.0.1:3000/api/healthz"
-SCENARIO_SCRIPTS = tuple(
-    f"tools/e2e/{p.name}" for p in sorted((ROOT / "tools" / "e2e").glob("scenario_*.sh"))
-)
-# #360：第五个写型入口。e2e_qa.sh（s1–s6）以前不在门里跑——它也从 healthz 取用户
-# 打开的项目写数据，现在同样走夹具（自建自删），所以接进门。
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from tools.e2e.e2e_harness import seed_mutations
+from tools.process_tree import kill_process_tree
+
+SCENARIO_SCRIPTS = tuple(f"tools/e2e/{p.name}" for p in sorted((ROOT / "tools/e2e").glob("scenario_*.sh")))
 QA_SCRIPT = "tools/e2e_qa.sh"
 ENTRY_SCRIPTS = SCENARIO_SCRIPTS + (QA_SCRIPT,)
-SCENARIO_TIMEOUT = 600
-# #360：超时预算按套件拆。实测（2026-11-14，应用开着跑本机）：keys 154s / mouse 67s /
-# ux_rules 44s / delete_undo 44s / qa 29s。预算给实测的 ~4 倍余量；以前共用 600s×4，
-# 历史最坏 mouse 单套 2160s 会把 release 档 900s 预算整块吃掉。
-SCENARIO_TIMEOUTS = {
-    "tools/e2e/scenario_keys.sh": 600,
-    "tools/e2e/scenario_mouse.sh": 300,
-    "tools/e2e/scenario_delete_undo.sh": 240,
-    "tools/e2e/scenario_ux_rules.sh": 240,
-    QA_SCRIPT: 180,
-}
-EVID_SHOTS = ROOT / ".pipeline" / "evidence" / "screenshots"
+SCENARIO_TIMEOUTS = {script: {
+    "tools/e2e/scenario_delete_undo.sh": 720,
+    "tools/e2e/scenario_keys.sh": 420,
+    "tools/e2e/scenario_mouse.sh": 420,
+    "tools/e2e/scenario_ux_rules.sh": 360,
+    QA_SCRIPT: 240,
+}.get(script, 360) for script in ENTRY_SCRIPTS}
+# 给 release 门的其他步骤保留预算；各套件预算还要受本次总上限约束。
+RUN_TIMEOUT_SECONDS = 540
+PORTS = range(3100, 3200)
+PREAMBLE = ROOT / "tools/e2e/scenario_preamble.js"
 
 
-def gate_evidence_dir() -> Path:
-    """门禁证据目录：环境变量优先，默认 .pipeline/gate/evidence/。"""
-    override = os.environ.get("FIREFLY_GATE_EVIDENCE_DIR", "").strip()
-    if override:
-        return Path(override)
-    return ROOT / ".pipeline" / "gate" / "evidence"
+def launcher() -> Path:
+    if os.name == "nt":
+        return Path(os.environ.get("LOCALAPPDATA", "")) / "Tabbit/LocalAgent/bin/tabbit-cli.exe"
+    return Path.home() / ".local/bin/tabbit-cli"
 
 
-def environment_skip(reason: str) -> int:
-    # 行首刻意不用 skip 开头——门禁的 output_reports_skip 会把「skip 行首 + exit 0」
-    # 判成 failed（tools/quality_gate.py:2045），与「无 tabbit 不炸门」的意图相反。
-    print(
-        f"TABBIT-E2E 环境未就绪，本步按跳过处理（exit 0，门禁计为通过）：{reason}。"
-        "五个入口（keys/delete_undo/ux_rules/mouse + e2e_qa）均未执行——门内该步恒为空步（#310 路径 B），"
-        "端到端留证走门外执行本入口，见 #310 评论的留证机制。"
-    )
-    return 0
+def isolated_env(work: Path, port: int) -> dict[str, str]:
+    if port not in PORTS:
+        raise ValueError("Only 31xx ports are allowed")
+    # Do not inherit API keys, root overrides, or CLI configuration from the caller.
+    keep = {"PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "SYSTEMDRIVE", "PATHEXT", "PROGRAMFILES", "PROGRAMDATA"}
+    env = {k: v for k, v in os.environ.items() if k.upper() in keep}
+    folders = {"HOME": "home", "USERPROFILE": "home", "APPDATA": "home/roaming", "LOCALAPPDATA": "home/local",
+               "TMP": "tmp", "TEMP": "tmp", "TMPDIR": "tmp", "FIREFLY_RUNTIME_ROOT": "runtime",
+               "FIREFLY_PROJECTS_ROOT": "projects"}
+    for key, name in folders.items():
+        path = work / name
+        path.mkdir(parents=True, exist_ok=True)
+        env[key] = str(path)
+    env.update(FIREFLY_PORT=str(port), FIREFLY_AGENT_API_BASE=f"http://127.0.0.1:{port}", PYTHONUTF8="1")
+    return env
 
 
-def check_environment() -> int | None:
-    """返回 None 表示环境就绪；返回退出码表示环境未就绪（应直接返回该码）。"""
-    tabbit = Path(os.path.expandvars(r"%LOCALAPPDATA%\Tabbit\LocalAgent\bin\tabbit-cli.exe"))
-    if not tabbit.is_file():
-        return environment_skip(f"tabbit-cli 不存在: {tabbit}")
-    if shutil.which("curl") is None:
-        return environment_skip("curl 不可用，无法确认 app 状态")
-    try:
-        health = subprocess.run(
-            ["curl", "-s", "-m", "5", HEALTHZ_URL],
-            capture_output=True,
-            text=True,
-            encoding="utf-8", errors="replace",
-            timeout=15,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        return environment_skip(f"healthz 请求失败: {error}")
-    if health.returncode != 0 or not health.stdout.strip():
-        return environment_skip(f"app 未开（healthz 失败: {HEALTHZ_URL}, curl rc={health.returncode}）")
-    if shutil.which("bash") is None:
-        return environment_skip("bash 不可用，scenario_*.sh 无法运行")
-    return None
+def pick_port() -> int:
+    for port in PORTS:
+        with socket.socket() as probe:
+            if os.name == "nt":
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            try:
+                probe.bind(("127.0.0.1", port))
+            except OSError:
+                continue
+            return port
+    raise OSError("No free loopback port in 3100–3199")
 
 
-TALLY = {"suites": [], "pass": 0, "fail": 0, "skip": 0, "skipped": []}
-RESULT_RE = re.compile(
-    r"^RESULT suite=(?P<suite>\S+) pass=(?P<pass>\d+) fail=(?P<fail>\d+) skip=(?P<skip>\d+)", re.M
-)
-SKIP_RE = re.compile(r'^SKIP\s+(?P<name>\S+)', re.M)
+def serve(work: Path, port: int, nonce: str) -> None:
+    work = work.resolve(strict=True)
+    for key, expected in (("FIREFLY_RUNTIME_ROOT", "runtime"), ("FIREFLY_PROJECTS_ROOT", "projects")):
+        if not os.environ.get(key) or Path(os.environ[key]).resolve() != work / expected:
+            raise RuntimeError(f"{key} not owned by this run")
+    if port not in PORTS:
+        raise ValueError("Only 31xx ports are allowed")
+    import uvicorn
+    import main
+
+    # Legacy startup migrations and CLI probes are unrelated to browser input QA.
+    main.app.router.on_startup.clear()
+
+    @main.app.get(f"/e2e-ready/{nonce}")
+    async def ready():
+        return {"nonce": nonce}
+
+    uvicorn.run(main.app, host="127.0.0.1", port=port, log_level="warning")
 
 
-def tally_scenarios(script: str, stdout: str) -> None:
-    """#360：把每个套件的三态计数汇总到 E2E_SUMMARY，skip 单独列出、不并进 pass。
-
-    套件脚本（tools/e2e/e2e_common.sh）打印 `RESULT suite=… pass=… fail=… skip=…`；
-    没有这行说明套件没按约定报告（例如中途崩掉），按失败处理。
-    """
-    m = RESULT_RE.search(stdout)
-    if not m:
-        raise SystemExit(f"FAIL  {script}: 没有 RESULT 三态汇总行（#360 要求 pass/fail/skip 可分辨）")
-    TALLY["suites"].append(m.group("suite"))
-    for key in ("pass", "fail", "skip"):
-        TALLY[key] += int(m.group(key))
-    TALLY["skipped"] += SKIP_RE.findall(stdout)
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
 
 
-def run_scenarios() -> int:
-    rc_all = 0
-    for script in ENTRY_SCRIPTS:
-        script_path = ROOT / script
-        timeout = SCENARIO_TIMEOUTS.get(script, SCENARIO_TIMEOUT)
-        print(f"== 运行 {script} （预算 {timeout}s）==")
+def request(base: str, method: str, path: str, body=None, timeout=5):
+    payload = None if body is None else json.dumps(body).encode("utf-8")
+    headers = {"Origin": base, "Content-Type": "application/json"}
+    req = urllib.request.Request(base + path, data=payload, headers=headers, method=method)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    with opener.open(req, timeout=timeout) as response:
+        raw = response.read()
+        return json.loads(raw) if raw else None
+
+
+def wait_ready(base: str, nonce: str, process) -> None:
+    deadline = time.monotonic() + 25
+    while time.monotonic() < deadline and process.poll() is None:
         try:
-            proc = subprocess.run(
-                ["bash", str(script_path)],
-                cwd=ROOT,
-                capture_output=True,
-                text=True,
-                encoding="utf-8", errors="replace",
-                timeout=timeout,
-                check=False,
-            )
-        except subprocess.TimeoutExpired:
-            print(f"FAIL  {script}: 超过 {timeout}s 未完成")
-            return 1
-        if proc.stdout:
-            print(proc.stdout.rstrip())
-        if proc.stderr:
-            print(proc.stderr.rstrip(), file=sys.stderr)
-        if proc.returncode != 0:
-            tail = (proc.stdout or proc.stderr or "").splitlines()[-40:]
-            print(f"FAIL  {script}: exit {proc.returncode}，输出 tail：")
-            print("\n".join(tail))
-            return 1
-        tally_scenarios(script, proc.stdout)
-    return 0
+            if request(base, "GET", f"/e2e-ready/{nonce}", timeout=.5) == {"nonce": nonce}:
+                return
+        except (OSError, ValueError):
+            pass
+        time.sleep(.1)
+    raise RuntimeError("Runner-owned server not confirmed; no project requests made")
 
 
-def run_shot_diff() -> None:
-    """报告模式（不带 --strict）：截图对基线对比，结果打印进门禁 stdout。"""
-    print("== e2e_shot_diff（报告模式） ==")
-    proc = subprocess.run(
-        [sys.executable, str(ROOT / "tools" / "e2e_shot_diff.py")],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        encoding="utf-8", errors="replace",
-        timeout=300,
-        check=False,
-    )
+def create_project(base: str, token: str, agent: bool):
+    name = f"e2e-tabbit-{token}"
+    project = request(base, "POST", "/api/project-library", {"name": name})["project"]
+    pid = project["id"]
+    if len(pid) != 32 or any(c not in "0123456789abcdef" for c in pid) or project["name"] != name:
+        raise RuntimeError("Unexpected fixture identity")
+    seeds = seed_mutations("e2e", 2, True, agent)
+    request(base, "PATCH", f"/api/project-library/{pid}/canvas", {
+        "mutations": seeds, "base_revision": 0, "client_id": "e2e-harness",
+    })
+    print(f"SEEDED project={pid} name={name}", flush=True)
+    nodes = [s["node"] for s in seeds if "node" in s]
+    return pid, {
+        "nodeIds": sorted(n["id"] for n in nodes),
+        "nodes": sorted(f"{n['id']}@{n['x']},{n['y']}" for n in nodes),
+        "edges": sorted(f"{e['id']}:{e['from']}>{e['to']}" for e in (s["edge"] for s in seeds if "edge" in s)),
+    }
+
+
+def register(script: str, bash: str, directory: Path):
+    directory.mkdir()
+    env = {**os.environ, "FIREFLY_E2E_REGISTRY": directory.as_posix(), "PYTHONUTF8": "1"}
+    proc = subprocess.run([bash, script], cwd=ROOT, env=env, capture_output=True, encoding="utf-8", timeout=15)
+    if proc.returncode:
+        raise RuntimeError(f"Registering {script}: {proc.stderr}")
     if proc.stdout:
         print(proc.stdout.rstrip())
-    if proc.stderr:
-        print(proc.stderr.rstrip(), file=sys.stderr)
+    suite, title, timeout, agent = (directory / "suite").read_text(encoding="utf-8").splitlines()
+    return suite, title, int(timeout), agent == "1", sorted(directory.glob("*.js"))
 
 
-def archive_diff_evidence() -> None:
-    diffs = sorted(EVID_SHOTS.glob("*-diff.png")) if EVID_SHOTS.is_dir() else []
-    dest = gate_evidence_dir()
-    if not diffs:
-        print(f"没有 *-diff.png 可归档（{EVID_SHOTS}）")
-        return
-    dest.mkdir(parents=True, exist_ok=True)
-    for shot in diffs:
-        shutil.copy2(shot, dest / shot.name)
-    print(f"已归档 {len(diffs)} 张对比图 -> {dest}")
+def tabbit_call(cli: Path, args: list[str], log: Path, timeout: float, program: Path | None = None):
+    with (program or Path(os.devnull)).open("rb") as stdin:
+        proc = subprocess.run([str(cli), *args], stdin=stdin, capture_output=True, encoding="utf-8",
+                              errors="replace", timeout=timeout)
+    log.with_suffix(".stdout.json").write_text(proc.stdout, encoding="utf-8")
+    log.with_suffix(".stderr.log").write_text(proc.stderr, encoding="utf-8")
+    if proc.returncode:
+        raise RuntimeError(f"Tabbit exit {proc.returncode}: {proc.stderr[-500:] or proc.stdout[-500:]}")
+    return json.loads(proc.stdout)
+
+
+def browser_result(response: dict, screenshot: Path) -> tuple[str, str]:
+    if response.get("status") != "succeeded":
+        return "fail", f"Tabbit did not complete: {response.get('error') or response.get('status')}"
+    receipt = response.get("result")
+    if not isinstance(receipt, dict) or not isinstance(payload := receipt.get("value"), dict):
+        return "fail", "Missing structured browser result"
+    shot = (receipt.get("nextAction") or {}).get("path")
+    has_screenshot = bool(shot and Path(shot).is_file())
+    if has_screenshot:
+        shutil.copy2(shot, screenshot)
+    result = payload.get("scene")
+    if not isinstance(result, dict):
+        return "fail", "Missing structured scene result"
+    if result.get("error"):
+        return "fail", str(result["error"])
+    if isinstance(result.get("skip"), str) and result["skip"].startswith("KNOWN-GAP:"):
+        return "skip", result["skip"]
+    if result.get("evidence") and not result.get("skip"):
+        if not has_screenshot:
+            return "fail", f"No screenshot: {payload.get('shotError') or 'no artifact'}"
+        return "pass", str(result["evidence"])
+    return "fail", "Scene did not produce evidence"
+
+
+def run_scene(cli: Path, base: str, title: str, scene: Path, timeout: int, agent: bool, evidence: Path):
+    token = uuid.uuid4().hex[:12]
+    pid, seed = create_project(base, token, agent)
+    name = scene.stem.split("-", 1)[1]
+    task = f"{title} {name} {token}"
+    url = f"{base}/static/smart-canvas.html?id={pid}&project={pid}&project_mode=1&focus_node=e2e-n1"
+    prelude = {"E2E_BASE": base, "E2E_PID": pid, "E2E_URL": url, "E2E_SEED": seed}
+    program = scene.with_name(scene.stem + ".program.js")
+    program.write_text(
+        "\n".join(f"const {key} = {json.dumps(value)};" for key, value in prelude.items())
+        + "\nlet scene, screenshot, shotError;\ntry {\n"
+        + PREAMBLE.read_text(encoding="utf-8") + "\nscene = await (async () => {\n"
+        + scene.read_text(encoding="utf-8") + "\n})();\n"
+        + "} catch (e) { scene = {error: String(e.stack || e).slice(0, 1500)}; }\n"
+        + "try { screenshot = await page.screenshot({timeout: 8000, fullPage: false}); }\n"
+        + "catch(e) { shotError = String(e); }\nreturn {scene, screenshot, shotError};\n",
+        encoding="utf-8",
+    )
+    log = evidence / name
+    try:
+        deadline = max(timeout, 60000)  # minimum supported by Tabbit
+        response = tabbit_call(cli, ["nodejs", "--task", task, "--request-id", token,
+                                    "--timeout-ms", str(deadline)], log, deadline / 1000 + 12, program)
+        result = browser_result(response, evidence / f"{name}.png")
+    except (OSError, subprocess.SubprocessError, ValueError, RuntimeError, KeyError) as exc:
+        result = "fail", f"{type(exc).__name__}: {exc}"
+    finally:
+        # Every task starts a new owned fixture tab. Never acquire or close the user's tabs.
+        try:
+            cleanup = tabbit_call(cli, ["finish", "--task", task, "--discard"], evidence / f"{name}-finish", 12)
+            if not cleanup.get("finished") or cleanup.get("forcedCleanup"):
+                raise RuntimeError(f"Unconfirmed Tabbit cleanup: {cleanup}")
+        except (OSError, subprocess.SubprocessError, ValueError, RuntimeError, KeyError) as exc:
+            result = "fail", f"{result[1]}; Tabbit cleanup failed: {exc}"
+        # All disk cleanup happens after the server stops, via TemporaryDirectory.
+    return name, *result
 
 
 def main() -> int:
-    skip_code = check_environment()
-    if skip_code is not None:
-        return skip_code
-    if run_scenarios() != 0:
-        return 1
-    # #360：三态汇总——skip 单独列，不并进 pass。“全绿”不等于零 skip，
-    # 零 skip 但里面有已知缺陷也不算验收过。
-    print(
-        f"E2E_SUMMARY suites={len(TALLY['suites'])} pass={TALLY['pass']} fail={TALLY['fail']} "
-        f"skip={TALLY['skip']} skipped=[{', '.join(TALLY['skipped'])}]"
-    )
-    if TALLY["fail"]:
-        print(f"FAIL 有 {TALLY['fail']} 个场景失败")
-        return 1
-    run_shot_diff()
-    archive_diff_evidence()
-    print(f"TABBIT-E2E 全绿（pass={TALLY['pass']}，skip={TALLY['skip']} 未计入通过）")
-    return 0
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--suite", action="append", choices=ENTRY_SCRIPTS)
+    parser.add_argument("--evidence-dir", type=Path, default=ROOT / ".qa/artifacts/tabbit")
+    args = parser.parse_args()
+    cli, bash = launcher(), shutil.which("bash")
+    if not cli.is_file() or not bash:
+        # #310: the synthetic quality-gate home deliberately lacks a real Tabbit install.
+        # Report zero executed scenarios; no gate budget or sandbox bypass.
+        print("TABBIT-E2E NOT_RUN: launcher or bash unavailable; pass=0 fail=0 skip=0")
+        return 0 if os.environ.get("FIREFLY_QUALITY_GATE_GUARD_EVENTS") else 2
+    evidence = args.evidence_dir.resolve() / uuid.uuid4().hex[:12]
+    evidence.mkdir(parents=True)
+    tally = {"pass": 0, "fail": 0, "skip": 0}
+    rows = []
+    run_deadline = time.monotonic() + RUN_TIMEOUT_SECONDS
+    with tempfile.TemporaryDirectory(prefix="e2e-tabbit-") as work_name:
+        work = Path(work_name).resolve()
+        port, nonce = pick_port(), uuid.uuid4().hex
+        env = isolated_env(work, port)
+        base = f"http://127.0.0.1:{port}"
+        print(f"E2E origin={base} runtime={env['FIREFLY_RUNTIME_ROOT']} projects={env['FIREFLY_PROJECTS_ROOT']} evidence={evidence}", flush=True)
+        with (evidence / "server.log").open("wb") as server_log:
+            process = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "--serve", str(work),
+                                       str(port), nonce], cwd=ROOT, env=env, stdout=server_log,
+                                       stderr=subprocess.STDOUT)
+            try:
+                wait_ready(base, nonce, process)
+                for index, script in enumerate(args.suite or ENTRY_SCRIPTS):
+                    suite, title, timeout, agent, scenes = register(script, bash, work / f"suite-{index}")
+                    deadline = min(run_deadline, time.monotonic() + SCENARIO_TIMEOUTS[script])
+                    counts = dict.fromkeys(tally, 0)
+                    for scene in scenes:
+                        remaining_ms = int((deadline - time.monotonic() - 35) * 1000)
+                        if remaining_ms < 60000:
+                            name = scene.stem.split("-", 1)[1]
+                            status, detail = "fail", "Suite or run deadline exhausted"
+                        else:
+                            name, status, detail = run_scene(cli, base, title, scene, min(timeout, remaining_ms), agent, evidence)
+                        print(f"{status.upper()} {name}: {detail}", flush=True)
+                        counts[status] += 1
+                        rows.append({"suite": suite, "name": name, "status": status, "detail": detail})
+                    for key in tally:
+                        tally[key] += counts[key]
+                    print(f"RESULT suite={suite} pass={counts['pass']} fail={counts['fail']} skip={counts['skip']}", flush=True)
+            finally:
+                kill_process_tree(process)
+    print(f"CLEANUP project and runtime roots removed={not work.exists()}", flush=True)
+    (evidence / "summary.json").write_text(json.dumps({**tally, "scenes": rows}, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"E2E_SUMMARY pass={tally['pass']} fail={tally['fail']} skip={tally['skip']} evidence={evidence}", flush=True)
+    return 1 if tally["fail"] else 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    if len(sys.argv) == 5 and sys.argv[1] == "--serve":
+        serve(Path(sys.argv[2]), int(sys.argv[3]), sys.argv[4])
+    else:
+        raise SystemExit(main())

@@ -3,11 +3,10 @@
 # 用法：bash tools/e2e/scenario_ux_rules.sh （需应用运行；项目由夹具自建自删）
 # 机制锚点：卡片 .image-node（canvas-nodes.js:142）；卡片内控件 .smart-node-floating-menu 等；
 # 折行检测：Range.getClientRects() 每个行片段一个 rect（>1 = 折行/竖排）。
-# #360：不再 inspect 用户打开的项目——inspect 结果取决于画布上有什么，借用户画布就不可复现。
-# 夹具种子给出确定画布；要看真项目：FIREFLY_E2E_PROJECT=<id> 只读跑（不建不删）。
+# #360：只检查 e2e_common 的隔离种子画布。
 set -u
 source "$(dirname "$0")/e2e_common.sh"
-e2e_start "ux_rules" "UX Rules QA" 90013
+e2e_start "ux_rules" "UX Rules QA" 25000
 
 # U1 文字溢出/截断：卡片内被 overflow:hidden 裁剪（水平或垂直）且无 ellipsis 豁免、不可滚动的文字
 e2e_run u1-text-overflow <<'JS'
@@ -70,6 +69,7 @@ const r = await page.evaluate(() => {
 });
 const j = JSON.parse(r);
 if (j.fails.length) throw new Error('BADGE_WRAP: ' + j.fails.join(' | '));
+if (!j.checked && !j.nowrap) return {skip: 'KNOWN-GAP: 种子卡未渲染徽章，未验证徽章折行'};
 return { evidence: 'badges=' + j.checked + ' nowrap-skip=' + j.nowrap };
 JS
 
@@ -146,23 +146,33 @@ if (j.fails.length) throw new Error('CONTROL_OUT_OF_BOUNDS: ' + j.fails.join(' |
 return { evidence: 'controls=' + j.checked + ' floating-wl=' + j.floatingWl + ' all in bounds' };
 JS
 
-# U6 空画布也要有可点控件：种子节点上悬停/选中后卡片内控件仍在界内（保证夹具本身有覆盖面）
+# U6：确认真实选中的种子卡上有可见、可命中、没有越界的关键控件，避免空覆盖。
 e2e_run u6-controls-present-on-seed <<'JS'
-const first = page.locator('.image-node').first();
-await first.click();
-await page.waitForTimeout(500);
-const seen = await page.evaluate(() => {
-  const card = document.querySelector('.image-node.selected, .image-node');
-  return {
-    card: !!card,
-    controls: card ? [...card.querySelectorAll('button, a[href]')].length : 0,
-    selected: !!document.querySelector('.image-node.selected'),
-  };
-});
-if (!seen.card) return { skip: '种子节点未渲染成卡片，覆盖面无从谈起' };
-if (!seen.selected) return { skip: '真实点击后节点未进入 selected 态，卡片控件覆盖面未验证' };
-if (!seen.controls) throw new Error('NO_CONTROLS_ON_SELECTED_SEED: ' + JSON.stringify(seen));
-return { evidence: '选中态卡片控件数=' + seen.controls + '（U3/U4/U5 在这个覆盖面之上才有意义）' };
+await selectImageCard(E2E_NODE_ID);
+await showEmptyCardDelete(E2E_NODE_ID);
+const seen = await page.evaluate(id => {
+  const card = document.querySelector(`.image-node.selected[data-id="${id}"]`);
+  if (!card) return {selected: false, controls: []};
+  const bounds = card.getBoundingClientRect();
+  const controls = [...card.querySelectorAll('button, a[href]')].filter(el => !el.closest('.smart-node-floating-menu')).map(el => {
+    const r = el.getBoundingClientRect();
+    const s = getComputedStyle(el);
+    const x = (Math.max(r.left, 0) + Math.min(r.right, innerWidth)) / 2;
+    const y = (Math.max(r.top, 0) + Math.min(r.bottom, innerHeight)) / 2;
+    return {
+      cls: el.className,
+      hit: !el.disabled && r.width > 0 && r.height > 0 && s.visibility === 'visible'
+        && s.opacity !== '0' && el.contains(document.elementFromPoint(x, y)),
+      inBounds: r.left >= bounds.left - 2 && r.right <= bounds.right + 2
+        && r.top >= bounds.top - 2 && r.bottom <= bounds.bottom + 2,
+    };
+  }).filter(control => control.hit);
+  return {selected: canvasState.selectedId === id, controls};
+}, E2E_NODE_ID);
+if (!seen.selected || !seen.controls.length || seen.controls.some(control => !control.inBounds)) {
+  throw new Error('SELECTED_SEED_CONTROLS: ' + JSON.stringify(seen));
+}
+return { evidence: '选中种子卡可命中且未越界的控件数=' + seen.controls.length };
 JS
 
 e2e_finish

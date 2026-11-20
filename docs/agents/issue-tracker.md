@@ -42,9 +42,9 @@ PRs as a request surface: no.
 ## 验收留证（#360）
 
 - UI 类 issue 的验收必须附 tabbit 实测截图：真鼠标/真键盘事件操作（`page.mouse.*` / `page.keyboard.*`），`page.evaluate` 只用于读断言，不用来 `el.click()` 或塞值。截图落 `.qa/shots/`（工树产物，不入库），票面写清路径与场景名。
-- e2e 套件只在夹具自建的隔离项目上跑：`python tools/e2e/e2e_harness.py create` 建、跑完 `cleanup` 删。禁止取 `/api/healthz` 的 `open_project_ids`——那是用户当前打开的真实项目。
-- 报告三态 pass / fail / skip，skip 不计通过；已知缺陷用 `SKIP KNOWN-GAP/KNOWN-STALE：<原因>`，不许静默绿。
-- 新增套件放进 `tools/e2e/scenario_*.sh` 就自动接进门（`tests/tabbit_e2e_evidence.py` 按名字扫），同时在 `SCENARIO_TIMEOUTS` 里给它单独超时预算。
+- 门外运行 `python tests/tabbit_e2e_evidence.py`；单跑可加 `--suite tools/e2e/scenario_mouse.sh`。入口只启动自己的 loopback 31xx 实例，给 runtime 和 projects 各建独立临时目录，每个场景新建 `e2e-tabbit-` 项目，最后停止实例并删除临时目录。不接用户实例，不从 `/api/healthz` 找项目。
+- 日志、逐场景截图与 `summary.json` 落在 `.qa/artifacts/tabbit/` 的本次目录（可用 `--evidence-dir` 改根）。报告区分 PASS / FAIL / SKIP，`KNOWN-GAP` 不计入 PASS。离线夹具不发起外部生成/对话；没有本地服务商时必须报告缺口。源码检查单列。
+- `tools/e2e/scenario_*.sh` 自动注册到入口，每个套件有独立超时。不安装 Tabbit 的合成门环境只报 `NOT_RUN`（见 #310），不是浏览器通过。实际验收以门外的截图和报告为准。
 
 ## Wayfinding
 

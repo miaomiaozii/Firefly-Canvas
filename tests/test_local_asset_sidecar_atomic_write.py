@@ -141,7 +141,6 @@ class TruncatingJsonWritesSweepTests(unittest.TestCase):
     KNOWN_UNMIGRATED = {
         # 确实是截断式，但不在 #383 范围（票面只点了 conversation.py 与 ui_integrity_evidence）。
         # 都是门/开发工具写的报告类文件，不在服务路径上；要不要收进 #383 或另开票，等 review 拍。
-        "tools/e2e/e2e_harness.py": "cmd_create / cmd_fingerprint 写 e2e 场景定义与指纹档，门侧产物",
         "tools/quality_gate_profile.py": "main 写门剖面报告，一次性诊断产物",
         "tools/verify_portable.py": "main 写便携包验证报告，一次性诊断产物",
     }
