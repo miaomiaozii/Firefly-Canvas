@@ -753,6 +753,8 @@
         "smart.sentToPs": { zh: "已发送到 Photoshop：{id}", en: "Sent to Photoshop: {id}" },
         "smart.mediaNotSupported": { zh: "当前素材不支持该操作", en: "Current media does not support this operation" },
         "smart.hintGroup": { zh: "双击添加 · 拖入归组 · 选中后生成", en: "Double-click to add · drag to group · generate when selected" },
+        "smart.layoutFrameCopyUnsupported": { zh: "暂不支持复制排版框；可以单独复制框内卡片。", en: "Layout frames can’t be copied. You can copy their cards independently." },
+        "smart.layoutFrameGroupUnsupported": { zh: "排版框内的卡片不能加入旧式分组。", en: "Cards in layout frames can’t be added to legacy groups." },
         "smart.hintAgentTask": { zh: "Agent 计划任务 · 状态持久保存", en: "Agent plan task · state persisted" },
         "smart.dragToUngroup": { zh: "拖动移出分组", en: "Drag out of group" }
     });

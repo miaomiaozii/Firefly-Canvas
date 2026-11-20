@@ -105,6 +105,13 @@ class SourceSameOriginTests(unittest.TestCase):
                           f"{tool['name']} 根 schema 必须 additionalProperties:false（#266 口径）")
             self.assertTrue(tool["description"].strip(), tool["name"])
 
+    def test_update_node_schema_covers_public_update_fields(self):
+        schema = next(tool["inputSchema"] for tool in agent_tools_manifest.TOOLS
+                      if tool["name"] == "canvas.update_node")
+        # #450: publish all supported updates except status, which stays off the tool surface.
+        public_fields = agent_tools_manifest.UPDATABLE_NODE_FIELDS - {"status"}
+        self.assertEqual(set(schema["properties"]), public_fields | {"node_id"})
+
     def test_media_ref_schemas(self):
         schemas = {tool["name"]: tool["inputSchema"] for tool in agent_tools_manifest.TOOLS}
         for name in ("canvas.place_media", "canvas.attach_refs", "canvas.set_ref_order"):
@@ -495,6 +502,39 @@ class DualPathEquivalenceTests(unittest.TestCase):
             self.assertLessEqual(total(pb), 3, f"REST 路径 limit 未生效: {pb}")
             self.assertEqual(pa.get("query"), pb.get("query"))
 
+        def layout_run(name, args):
+            def run():
+                client, store, pid_a, pid_b = self._fixture()
+                for pid in (pid_a, pid_b):
+                    nodes = [
+                        {"id": identity, "type": kind, "x": x, "y": y, "w": w, "h": h,
+                         "createdBy": "agent", "agentNodeId": "agent-consistency", **extra}
+                        for identity, kind, x, y, w, h, extra in (
+                            ("card-a", "smart-prompt", 240, 360, 316, 240, {}),
+                            ("card-b", "smart-prompt", 600, 460, 316, 240, {}),
+                            ("frame-a", "smart-group", 700, 100, 400, 400,
+                             {"layoutFrame": True, "items": ["card-c"]}),
+                            ("frame-b", "smart-group", 300, 800, 500, 400,
+                             {"layoutFrame": True, "items": []}),
+                            ("card-c", "smart-image", 800, 220, 136, 140, {}),
+                        )]
+                    store.apply_mutations(pid, [{"op": "upsert_node", "node": node} for node in nodes],
+                                          base_revision=store.canvas(pid)["revision"])
+                a = self._mcp_call(client, pid_a, f"canvas.{name}", args)
+                b = self._rest(client, "POST", f"/api/projects/{pid_b}/canvas/{name}?agent_node_id=agent-consistency",
+                               args, headers={"X-Agent-Project": pid_b})
+                for pid, response in ((pid_a, a), (pid_b, b)):
+                    self.assertTrue(response["ok"], response)
+                    body = json.loads(response["text"])
+                    op_id = body.pop("op_id")
+                    journal = self._rest(client, "GET", f"/api/projects/{pid}/ops")
+                    self.assertEqual(json.loads(journal["text"])["operations"][0]["op_id"], op_id)
+                    body["touched_node_ids"] = sorted(self._canon_text(n) for n in body["touched_node_ids"])
+                    response["text"] = json.dumps(body, sort_keys=True)
+                self._assert_pair(a, b, name)
+                self.assertEqual(self._canvas_state(store, pid_a), self._canvas_state(store, pid_b))
+            return run
+
         def seed_operation(store, pid):
             journal = AgentOpsJournal(store, OpsDb(store.root))
             try:
@@ -562,7 +602,7 @@ class DualPathEquivalenceTests(unittest.TestCase):
             "canvas.list_nodes": pair("canvas.list_nodes", {}, "GET", "/canvas/nodes"),
             "canvas.get_node": pair("canvas.get_node", {"node_id": "prompt-1"}, "GET", "/canvas/nodes/prompt-1"),
             "canvas.create_node": pair("canvas.create_node", {"type": "smart-prompt", "title": "New"}, "POST", "/canvas/nodes", {"node": {"type": "smart-prompt", "title": "New"}}),
-            "canvas.update_node": pair("canvas.update_node", {"node_id": "prompt-1", "title": "NT", "text": "NX"}, "PATCH", "/canvas/nodes/prompt-1", {"title": "NT", "text": "NX"}),
+            "canvas.update_node": pair("canvas.update_node", {"node_id": "prompt-1", "title": "NT", "text": "NX", "x": -32.5, "y": 48, "w": 360, "h": 260}, "PATCH", "/canvas/nodes/prompt-1", {"title": "NT", "text": "NX", "x": -32.5, "y": 48, "w": 360, "h": 260}),
             "canvas.delete_node": gated("canvas.delete_node", {"node_id": "image-1"}, "_impl_delete_node", "DELETE", "/canvas/nodes/image-1"),
             "canvas.connect": pair("canvas.connect", {"from_node": "prompt-1", "to_node": "image-1", "kind": "input"}, "POST", "/canvas/edges", {"edge": {"from": "prompt-1", "to": "image-1", "kind": "input"}}),
             "canvas.disconnect": gated("canvas.disconnect", {"from_node": "prompt-1", "to_node": "image-1"}, "_impl_disconnect", "DELETE", "/canvas/edges/prompt-1/image-1"),
@@ -573,6 +613,11 @@ class DualPathEquivalenceTests(unittest.TestCase):
             "canvas.set_ref_order": media_ref_validation("canvas.set_ref_order", {
                 "node_id": "missing-node", "order": ["missing-asset"], "role_overrides": {"missing-asset": "detail"},
             }, "NODE_NOT_FOUND"),
+            "canvas.group_create": layout_run("group_create", {"title": "Main", "node_ids": ["card-a", "card-b"]}),
+            "canvas.group_arrange": layout_run("group_arrange", {"group_id": "frame-a", "layout": "row"}),
+            "canvas.arrange_groups": layout_run("arrange_groups", {"group_ids": ["frame-a", "frame-b"], "direction": "row"}),
+            "canvas.align": layout_run("align", {"node_ids": ["card-a", "card-b"], "edge": "top"}),
+            "canvas.distribute": layout_run("distribute", {"node_ids": ["card-a", "card-b"], "axis": "x", "gap": 20}),
             "canvas.search_projects": search_run,
             "canvas.view": pair("canvas.view", {"scope": "page"}, "POST", "/canvas/view", {"scope": "page"}),
             "canvas.view_media": pair("canvas.view_media", {"node_id": "image-1"}, "POST", "/canvas/view_media", {"node_id": "image-1"}),

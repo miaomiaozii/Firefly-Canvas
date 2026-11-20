@@ -8,7 +8,18 @@ import vm from 'node:vm';
 
 const sourceUrl = new URL('../../app/agent_extensions/canvas-tools.ts', import.meta.url);
 const generated = readFileSync(new URL('../../app/agent_extensions/canvas-tools.generated.ts', import.meta.url), 'utf8');
-const defs = [...generated.matchAll(/name: "([a-z_.]+)"/g)].map((match) => ({ name: match[1] }));
+// Load the generated declarations: registration completes some schemas using their properties.
+const generatedSource = stripTypeScriptTypes(generated
+    .replace(/^import \{ Type \} from .*;\r?\n/m, '')
+    .replace('export const CANVAS_TOOL_DEFS', 'const CANVAS_TOOL_DEFS'));
+const Type = new Proxy({
+    Object: (properties, opts) => ({ type: 'object', properties, ...opts }),
+    Array: (items, opts) => ({ type: 'array', items, ...opts }),
+    Union: (anyOf, opts) => ({ anyOf, ...opts }),
+    Literal: (value, opts) => ({ const: value, ...opts }),
+    Optional: (schema) => schema,
+}, { get: (methods, name) => methods[name] ?? ((opts) => ({ type: name.toLowerCase(), ...opts })) });
+const defs = vm.runInNewContext(`${generatedSource}\nCANVAS_TOOL_DEFS;`, { Type });
 const source = stripTypeScriptTypes(readFileSync(sourceUrl, 'utf8')
     .replace(/^import \{ CANVAS_TOOL_DEFS \} from .*;\r?\n/m, '')
     .replace('export default function', 'function registerCanvasTools'));

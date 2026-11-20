@@ -352,5 +352,7 @@ def project_nodes(canvas: dict, *, group_id=None, fields=None, created_by=None) 
             "agentNodeId": ownership["agentNodeId"],
             "refFrame": group.get("refFrame") is True,
             "chatFrame": group.get("chatFrame") is True,
+            **({"layoutFrame": True} if group.get("layoutFrame") is True
+               and not group.get("chatFrame") and not group.get("refFrame") else {}),
         })
     return {"nodes": summaries, "count": len(summaries), "groups": groups}

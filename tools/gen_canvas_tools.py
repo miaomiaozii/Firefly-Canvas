@@ -46,7 +46,7 @@ def ts_str(s: str) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
 
 
-def opts_of(spec: dict, keys=("description", "minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems")) -> str:
+def opts_of(spec: dict, keys=("description", "minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems", "uniqueItems")) -> str:
     opts = {k: spec[k] for k in keys if k in spec}
     if not opts:
         return ""
@@ -65,10 +65,14 @@ def _scalar(fn: str, opts: str) -> str:
     return f"{fn}({opts})" if opts else f"{fn}()"
 
 
-def render_prop(spec: dict) -> str:
+def render_prop(spec: dict, *, union_branch=False) -> str:
     """JSON Schema 属性 → TypeBox 表达式。"""
     t = spec.get("type")
     opts = opts_of(spec)
+    if "oneOf" in spec and t is None:
+        # A7 anchor branches have disjoint types, so Union preserves oneOf.
+        variants = ", ".join(render_prop(branch, union_branch=True) for branch in spec["oneOf"])
+        return _with_opts("Type.Union", f"[{variants}]", opts)
     if "enum" in spec:
         lits = ", ".join(
             f"Type.Literal({ts_str(v)})" if isinstance(v, str) else (
@@ -89,6 +93,8 @@ def render_prop(spec: dict) -> str:
         items = render_prop(spec.get("items") or {"type": "string"})
         return _with_opts("Type.Array", items, opts)
     if t == "object":
+        if union_branch:
+            opts = opts_of(spec, ("description", "additionalProperties"))
         return _with_opts("Type.Object", render_props(spec), opts)
     raise ValueError(f"unhandled schema type: {spec!r}")
 

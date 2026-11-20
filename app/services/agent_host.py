@@ -394,6 +394,7 @@ class AgentSession:
     _retrying: bool = False
     _current_turn_id: Optional[str] = None
     _current_request_id: Optional[str] = None
+    _turn_layout_refs: set[str] = field(default_factory=set, repr=False)
     _codex_cleanup: bool = False
     _codex_abort_requested: bool = False
     _input_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -499,6 +500,16 @@ class AgentHostManager:
             return None
         session = self.sessions.get(self._session_key(project_id, agent_node_id))
         return session._current_turn_id if session else None
+
+    def layout_named_nodes(self, project_id: str, node_id: str, turn_id: str | None) -> frozenset[str]:
+        session = self.sessions.get(self._session_key(project_id, node_id))
+        if not turn_id or not session or session._current_turn_id != turn_id:
+            return frozenset()
+        return frozenset(session._turn_layout_refs)
+
+    @staticmethod
+    def _layout_ref_ids(refs):
+        return {ref["node_id"] for ref in refs or [] if isinstance(ref, dict) and isinstance(ref.get("node_id"), str)}
 
     def node_lock(self, project_id: str, node_id: str) -> asyncio.Lock:
         """Serialize settings, host/branch switches and prompt admission per node."""
@@ -1072,6 +1083,8 @@ class AgentHostManager:
     async def _start_logical_turn(self, session: AgentSession, message: str, **kwargs) -> dict:
         session._current_turn_id = str(uuid.uuid4())
         session._current_request_id = kwargs.get("request_id")
+        # Only refs supplied by the user in this logical turn can bypass an autonomous layout prompt.
+        session._turn_layout_refs = self._layout_ref_ids(kwargs.get("node_refs"))
         store = _app_main.FIREFLY_PROJECT_STORE
         if store is not None:
             from firefly_opsdb import OpsDb
@@ -1203,7 +1216,11 @@ class AgentHostManager:
                                   node_ref_context=node_ref_context, request_id=request_id,
                                   attachment_refs=attachment_refs)
         # Still pi RPC, not a new Codex queue. Do not persist rejected sends.
+        turn_id = session._current_turn_id
+        # Still pi RPC, not a new Codex queue. Do not persist rejected sends.
         await self.send_command(session, {"type": input_type, "message": self._input_text(event)})
+        if turn_id and session._current_turn_id == turn_id:
+            session._turn_layout_refs.update(self._layout_ref_ids(node_refs))
         self._persist_event(session, event)
 
     async def send_steer(self, session: AgentSession, message: str, *,

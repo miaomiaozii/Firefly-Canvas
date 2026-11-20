@@ -152,8 +152,10 @@ function finalizePendingNode(pendingNode, urls, meta, kind='image'){
     if(imgs.length > 1) pendingNode.title = kind === 'video' ? 'Videos' : kind === 'audio' ? 'Audios' : kind === 'text' ? 'Texts' : 'Group';
     else pendingNode.title = kind === 'video' ? 'Video' : kind === 'audio' ? 'Audio' : kind === 'text' ? 'Text' : kind === 'file' ? 'File' : 'Image';
     pendingNode.scale = canvasCore.mediaNodeDefaultScale(pendingNode);
-    delete pendingNode.w;
-    delete pendingNode.h;
+    if(!layoutFrameContainingNode(pendingNode.id)){
+        delete pendingNode.w;
+        delete pendingNode.h;
+    }
     const metaTarget = pendingNode._runMetaTargetId ? canvasState.nodes.find(n => n.id === pendingNode._runMetaTargetId) : pendingNode;
     if(metaTarget) canvasCore.attachRunMeta(metaTarget, meta);
     pendingNode.images = (pendingNode.images || []).map(img => canvasCore.stripImageGenerationMeta(img));
@@ -166,9 +168,8 @@ function finalizePendingNode(pendingNode, urls, meta, kind='image'){
     delete pendingNode._selectAfterRunId;
     if(canvasState.activeComposerSubject?.id && canvasState.selectedId === canvasState.activeComposerSubject.id) canvasState.lastComposerNodeId = `${canvasState.selectedId}:node`;
     canvasState.selectedImage = {nodeId:'', index:-1};
-    // pending 节点完成时，如果节点在组框内，重新整理成员并计算组框高度
     const group = canvasCore.smartGroupContainingNode(pendingNode.id);
-    if(group){
+    if(group && !isSmartLayoutFrame(group)){
         canvasCore.arrangeSmartGroupMembers(group, {skipUndo:true});
         canvasCore.scheduleSave();
     }
@@ -204,8 +205,10 @@ function finishLoopTargetPreviewState(node){
         node.title = node.images.length > 1 ? 'Group' : 'Image';
         node.scale = node.images.length > 1 ? MEDIA_GROUP_DEFAULT_SCALE : canvasCore.MEDIA_NODE_DEFAULT_SCALE;
         node.outputKind = canvasCore.mediaKindForUrls(node.images || [], (node.images || []).some(isVideoMediaItem) ? 'video' : 'image');
-        delete node.w;
-        delete node.h;
+        if(!layoutFrameContainingNode(node.id)){
+            delete node.w;
+            delete node.h;
+        }
     }
 }
 
@@ -502,11 +505,12 @@ function clearNodeRunningState(node){
 
 function pushRightSideNodes(sourceNode, delta){
     const shift = Math.ceil(Number(delta) || 0);
-    if(!sourceNode || shift <= 0) return;
+    if(!sourceNode || shift <= 0 || layoutFrameContainingNode(sourceNode.id)) return;
     const sourceRight = (Number(sourceNode.x) || 0) + canvasCore.nodeRect(sourceNode).width - shift;
     const downstreamIds = new Set(downstreamNodesForId(sourceNode.id).map(n => n.id));
     canvasState.nodes.forEach(n => {
-        if(!n || n.id === sourceNode.id) return;
+        // #397: the generation spacing heuristic must not break the saved frame layout.
+        if(!n || n.id === sourceNode.id || isSmartLayoutFrame(n) || layoutFrameContainingNode(n.id)) return;
         const r = canvasCore.nodeRect(n);
         const shouldShift = downstreamIds.has(n.id) || (Number(r.x) > sourceRight && Math.abs((Number(r.y) || 0) - (Number(sourceNode.y) || 0)) < 520);
         if(shouldShift) n.x = (Number(n.x) || 0) + shift;
@@ -555,8 +559,10 @@ function appendOutputsToNode(node, additions, kind='image', options={}){
     canvasCore.markSmartNodeComplete(node, undefined, true);
     node.outputKind = kind;
     node.title = node.images.length > 1 ? (kind === 'video' ? 'Videos' : kind === 'audio' ? 'Audios' : kind === 'text' ? 'Texts' : 'Group') : (kind === 'video' ? 'Video' : kind === 'audio' ? 'Audio' : kind === 'text' ? 'Text' : kind === 'file' ? 'File' : 'Image');
-    delete node.w;
-    delete node.h;
+    if(!layoutFrameContainingNode(node.id)){
+        delete node.w;
+        delete node.h;
+    }
     const afterRight = (Number(node.x) || 0) + canvasCore.nodeRect(node).width;
     const skipShift = options.skipShift || Boolean(canvasCore.smartLoopContext?.nodeId);
     if(!skipShift) pushRightSideNodes(node, afterRight - beforeRight + 36);

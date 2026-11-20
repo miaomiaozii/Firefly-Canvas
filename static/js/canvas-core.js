@@ -89,6 +89,15 @@ function isSmartGroupNode(node){
     return Boolean(node && node.type === NODE_TYPE_GROUP);
 }
 
+function isSmartLayoutFrame(node){
+    return isSmartGroupNode(node) && node.layoutFrame === true && !node.chatFrame && !node.refFrame;
+}
+
+function layoutFrameContainingNode(nodeId){
+    if(!nodeId) return null;
+    return canvasState.nodes.find(group => isSmartLayoutFrame(group) && Array.isArray(group.items) && group.items.includes(nodeId)) || null;
+}
+
 const MEDIA_GROUP_PREVIOUS_DEFAULT_SCALE = 1.6;
 
 const MEDIA_GROUP_DEFAULT_SCALE = 0.8;

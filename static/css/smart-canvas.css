@@ -569,6 +569,8 @@ video.node-img { object-fit:cover; background:var(--panel); }
 .image-node.selected:not(.smart-group-node) { z-index:10; }
 .image-node.dragging:not(.smart-group-node) { z-index:12; }
 .image-node.smart-group-node.dragging { z-index:3; }
+/* #397: keep ordinary edges and their hit targets above the frame, even while dragging it. */
+.image-node.smart-layout-frame-node { z-index:-1; }
 .node-resize-handle { position:absolute; right:7px; bottom:7px; width:18px; height:18px; border-radius:8px; cursor:nwse-resize; background:rgba(255,255,255,.86); border:1px solid var(--line); display:flex; align-items:center; justify-content:center; color:var(--muted); opacity:0; transition:all .18s ease; z-index:5; }
 .node-resize-handle::before { content:""; width:8px; height:8px; border-right:2px solid currentColor; border-bottom:2px solid currentColor; }
 .node-resize-handle:hover { color:var(--text); border-color:var(--muted); background:#fff; }

@@ -2704,8 +2704,10 @@ function replaceOutputsToNodeWithHistory(node, additions, kind='image', meta=nul
     node.outputKind = kind;
     node.title = cascadeOutputTitle(kind, node.images.length);
     node.scale = node.images.length > 1 ? MEDIA_GROUP_DEFAULT_SCALE : canvasCore.MEDIA_NODE_DEFAULT_SCALE;
-    delete node.w;
-    delete node.h;
+    if(!layoutFrameContainingNode(node.id)){
+        delete node.w;
+        delete node.h;
+    }
     if(meta) canvasCore.attachRunMeta(node, meta);
     const afterRight = (Number(node.x) || 0) + canvasCore.nodeRect(node).width;
     const skipShift = options.skipShift || Boolean(canvasCore.smartLoopContext?.nodeId);

@@ -39,7 +39,7 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     {
         name: "canvas.update_node",
         description: "更新节点属性并返回 prev；runSettings 只合并指定的生图字段，仅可改未被人工编辑的自有 Agent 节点的生成参数。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
-        parameters: Type.Object({ node_id: Type.String(), title: Type.Optional(Type.String({description: "新标题"})), text: Type.Optional(Type.String({description: "新正文"})), prompt: Type.Optional(Type.String({description: "新提示词"})), runSettings: Type.Optional(Type.Object({ model: Type.Optional(Type.String()), provider_id: Type.Optional(Type.String()), aspect_ratio: Type.Optional(Type.String({description: "宽高比，例如 16:9"})), count: Type.Optional(Type.Integer({minimum: 1, maximum: 8})), routingMode: Type.Optional(Type.Union([Type.Literal("auto"), Type.Literal("manual")])) })) }),
+        parameters: Type.Object({ node_id: Type.String(), title: Type.Optional(Type.String({description: "新标题"})), text: Type.Optional(Type.String({description: "新正文"})), prompt: Type.Optional(Type.String({description: "新提示词"})), x: Type.Optional(Type.Number({description: "画布 X 坐标"})), y: Type.Optional(Type.Number({description: "画布 Y 坐标"})), w: Type.Optional(Type.Number({description: "节点宽度"})), h: Type.Optional(Type.Number({description: "节点高度"})), runSettings: Type.Optional(Type.Object({ model: Type.Optional(Type.String()), provider_id: Type.Optional(Type.String()), aspect_ratio: Type.Optional(Type.String({description: "宽高比，例如 16:9"})), count: Type.Optional(Type.Integer({minimum: 1, maximum: 8})), routingMode: Type.Optional(Type.Union([Type.Literal("auto"), Type.Literal("manual")])) })) }),
     },
     {
         name: "canvas.delete_node",
@@ -70,6 +70,31 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
         name: "canvas.set_ref_order",
         description: "调整目标节点的参考图顺序、角色，或同时调整两者。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
         parameters: Type.Object({ node_id: Type.String({description: "目标节点 ID", minLength: 1}), order: Type.Optional(Type.Array(Type.String({minLength: 1}), {description: "按目标顺序列出的参考图资源 ID"})), role_overrides: Type.Optional(Type.Object({}, {description: "参考图资源 ID → 角色（product/detail/layout/scene_style/general）"})) }),
+    },
+    {
+        name: "canvas.group_create",
+        description: "新建显式排版框；组员及其连线保持独立。同标题、同 Agent 的排版框复用（不增加成员）；不转换旧分组，不收已入组节点，不允许嵌套。anchor 默认 auto（画布右侧）；也可指定 right_of_selection 或 {x,y}。默认跳过受保护节点。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        parameters: Type.Object({ title: Type.String({minLength: 1, maxLength: 200}), node_ids: Type.Optional(Type.Array(Type.String({minLength: 1, maxLength: 500}), {maxItems: 500, uniqueItems: true})), plan_section: Type.Optional(Type.String({minLength: 1, maxLength: 200})), include_user_nodes: Type.Optional(Type.Boolean({description: "仅当用户明确点名 node_ids 中的用户节点时设为 true；只有无需确认档且本轮有相应的用户节点引用可免确认。"})), anchor: Type.Optional(Type.Union([Type.Object({ x: Type.Number({minimum: -10000000, maximum: 10000000}), y: Type.Number({minimum: -10000000, maximum: 10000000}) }, {additionalProperties: false}), Type.Union([Type.Literal("right_of_selection"), Type.Literal("auto")])])) }),
+    },
+    {
+        name: "canvas.group_arrange",
+        description: "按 grid（最多三列）、row 或 column 排列新建排版框的自有组员。sort_by 默认 current（先上后下、先左后右）；受保护组员原地保留，旧分组和会话框不支持。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        parameters: Type.Object({ group_id: Type.String({minLength: 1, maxLength: 500}), layout: Type.Union([Type.Literal("grid"), Type.Literal("row"), Type.Literal("column")]), sort_by: Type.Optional(Type.Union([Type.Literal("plan_order"), Type.Literal("title"), Type.Literal("current")])), gap: Type.Optional(Type.Number({minimum: 0, maximum: 10000000})) }),
+    },
+    {
+        name: "canvas.arrange_groups",
+        description: "按传入顺序并排或竖排显式排版框；成员随框平移。跳过旧框、受保护框及含受保护成员的框。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        parameters: Type.Object({ group_ids: Type.Array(Type.String({minLength: 1, maxLength: 500}), {maxItems: 500, uniqueItems: true}), direction: Type.Union([Type.Literal("row"), Type.Literal("column")]), gap: Type.Optional(Type.Number({minimum: 0, maximum: 10000000})) }),
+    },
+    {
+        name: "canvas.align",
+        description: "将可移动卡片向首个可移动目标的指定边缘/中心对齐，默认跳过受保护节点；整组平移请用 arrange_groups。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        parameters: Type.Object({ node_ids: Type.Array(Type.String({minLength: 1, maxLength: 500}), {maxItems: 500, uniqueItems: true}), edge: Type.Union([Type.Literal("left"), Type.Literal("center_x"), Type.Literal("right"), Type.Literal("top"), Type.Literal("center_y"), Type.Literal("bottom")]), include_user_nodes: Type.Optional(Type.Boolean({description: "仅当用户明确点名 node_ids 中的用户节点时设为 true；只有无需确认档且本轮有相应的用户节点引用可免确认。"})) }),
+    },
+    {
+        name: "canvas.distribute",
+        description: "沿指定轴在最外侧卡片之间等距分布（至少三张）；指定 gap 时从首张开始定距排列（至少两张）。默认跳过受保护节点。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        parameters: Type.Object({ node_ids: Type.Array(Type.String({minLength: 1, maxLength: 500}), {maxItems: 500, uniqueItems: true}), axis: Type.Union([Type.Literal("x"), Type.Literal("y")]), gap: Type.Optional(Type.Number({minimum: 0, maximum: 10000000})), include_user_nodes: Type.Optional(Type.Boolean({description: "仅当用户明确点名 node_ids 中的用户节点时设为 true；只有无需确认档且本轮有相应的用户节点引用可免确认。"})) }),
     },
     {
         name: "canvas.search_projects",

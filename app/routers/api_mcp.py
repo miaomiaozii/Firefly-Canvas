@@ -28,6 +28,7 @@ guard (ensure_agent_same_origin) on the whole router.
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 import json
 import logging
 import sqlite3
@@ -331,7 +332,8 @@ mcp_event_recorder = McpEventRecorder()
 # freshness 测试钉住（重跑生成器 diff 必须为空）。
 # ---------------------------------------------------------------------------
 
-from app.services.agent_tools_manifest import TOOLS, WRITE_TOOLS  # noqa: E402
+from app.services import agent_layout  # noqa: E402
+from app.services.agent_tools_manifest import LAYOUT_TOOLS, TOOLS, WRITE_TOOLS  # noqa: E402
 
 TOOL_NAMES = {t["name"] for t in TOOLS}
 
@@ -356,6 +358,8 @@ async def _impl_create_node(project_id, agent_node_id, args):
     node = args.get("node")
     if not isinstance(node, dict) or not node:
         node = {k: v for k, v in args.items() if v is not None}
+    if "layoutFrame" in args:
+        node = {**node, "layoutFrame": args["layoutFrame"]}
     # Presence is rejected by the core, even for null or mixed legacy/flat args.
     # Do not erase evidence of a reserved-field override while adapting shapes.
     node = {**node, **{key: args[key] for key in ownership_fields() if key in args}}
@@ -363,6 +367,8 @@ async def _impl_create_node(project_id, agent_node_id, args):
 
 
 async def _impl_update_node(project_id, agent_node_id, args):
+    if "layoutFrame" in args:
+        raise agent_layout.invalid("layoutFrame is assigned only by canvas.group_create")
     # #356 D11：平铺字段为主；旧 `updates` 自由对象兼容一版（已弃用）。
     updates = args.get("updates")
     if not isinstance(updates, dict) or not updates:
@@ -569,6 +575,11 @@ async def _impl_ops_undo(project_id, agent_node_id, args):
     return await undo_ops_core(project_id, args)
 
 
+async def _impl_layout(project_id, agent_node_id, args, *, tool, hosted=False):
+    from app.routers.api_agent_tools import layout_tool_core
+    return await layout_tool_core(project_id, agent_node_id, tool, args, hosted=hosted)
+
+
 _MEDIA_REF_TOOL_IMPLS = {
     "canvas.place_media": _impl_place_media,
     "canvas.attach_refs": _impl_attach_refs,
@@ -586,6 +597,7 @@ TOOL_IMPLS = {
     "canvas.connect": _impl_connect,
     "canvas.disconnect": _impl_disconnect,
     **_MEDIA_REF_TOOL_IMPLS,
+    **{tool: partial(_impl_layout, tool=tool) for tool in LAYOUT_TOOLS},
     "canvas.search_projects": _impl_search_projects,
     "generate.trigger": _impl_trigger,
     "generate.status": _impl_status,
@@ -655,12 +667,11 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
     if not isinstance(params, dict):
         params = {}
     name = str(params.get("name") or "")
-    # Prefer the standard arguments field while retaining legacy args compatibility.
-    args = params.get("arguments")
-    if not isinstance(args, dict):
+    args = params.get("arguments", params.get("args", {}))
+    if name not in LAYOUT_TOOLS and not isinstance(args, dict):
         args = params.get("args")
-    if not isinstance(args, dict):
-        args = {}
+        if not isinstance(args, dict):
+            args = {}
     if name not in TOOL_IMPLS:
         # MCP clients can recover from a tool result with isError.
         mcp_event_recorder.record({"session": sid, "tool": name, "ok": False, "error": f"Unknown tool: {name}"})
@@ -675,6 +686,8 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
     slow_timeout = SLOW_TOOL_TIMEOUTS.get(name)
     turn_lease = None
     try:
+        if name in LAYOUT_TOOLS:
+            agent_layout.validate_args(name, args)
         project_id = resolve_project(str(request.query_params.get("project") or ""))
         caller = request.query_params.get("caller")
         if caller not in (None, "external", "hosted"):
@@ -718,7 +731,9 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
         try:
             with agent_ops_scope(project_id=project_id, agent_node_id=node_id or None,
                                  turn_id=turn_id, tool=name, args=args):
-                if slow_timeout is not None:
+                if name in LAYOUT_TOOLS:
+                    result = await TOOL_IMPLS[name](project_id, node_id, args, hosted=caller == 'hosted')
+                elif slow_timeout is not None:
                     result = await asyncio.wait_for(TOOL_IMPLS[name](project_id, node_id, args), slow_timeout)
                 else:
                     result = await TOOL_IMPLS[name](project_id, node_id, args)

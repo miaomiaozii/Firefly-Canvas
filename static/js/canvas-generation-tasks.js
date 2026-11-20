@@ -772,13 +772,8 @@ function finalizeSmartPendingTask(node, taskId, images, kind='image', completedC
         node.title = node.images.length > 1 ? (kind === 'video' ? 'Videos' : kind === 'audio' ? 'Audios' : kind === 'text' ? 'Texts' : 'Group') : (kind === 'video' ? 'Video' : kind === 'audio' ? 'Audio' : kind === 'text' ? 'Text' : 'Image');
         if(node.images.length > 1 && (!Number.isFinite(Number(node.scale)) || Number(node.scale) === canvasCore.MEDIA_NODE_DEFAULT_SCALE || Number(node.scale) === MEDIA_GROUP_PREVIOUS_DEFAULT_SCALE)) node.scale = MEDIA_GROUP_DEFAULT_SCALE;
         else node.scale = canvasCore.mediaNodeDefaultScale(node);
-        // 保留固化后的尺寸（占位图、写回、完成三个阶段统一），不再删除
-        // delete node.w;
-        // delete node.h;
-        // 批量生图完成时，如果节点在组框内，重新整理成员并计算组框尺寸
-        //（与 finalizePendingNode 保持一致，避免占位图→真实图切换时组框尺寸不匹配）
         const group = canvasCore.smartGroupContainingNode(node.id);
-        if(group){
+        if(group && !isSmartLayoutFrame(group)){
             canvasCore.arrangeSmartGroupMembers(group, {skipUndo:true});
             canvasCore.scheduleSave();
         }
@@ -861,7 +856,7 @@ async function resumeSmartPendingNode(node, logContext={}){
                 if(!node.pending && smartPendingTasks(node).length === 0){
                     delete node.pendingTasks;
                     node.running = false;
-                    if(!(node.images || []).length){
+                    if(!(node.images || []).length && !layoutFrameContainingNode(node.id)){
                         delete node.w;
                         delete node.h;
                     }
@@ -897,7 +892,7 @@ async function resumeSmartPendingNode(node, logContext={}){
                 if(!node.pending && smartPendingTasks(node).length === 0){
                     delete node.pendingTasks;
                     node.running = false;
-                    if(!(node.images || []).length){
+                    if(!(node.images || []).length && !layoutFrameContainingNode(node.id)){
                         delete node.w;
                         delete node.h;
                     }
@@ -939,7 +934,7 @@ async function resumeSmartPendingNode(node, logContext={}){
             if(!node.pending && smartPendingTasks(node).length === 0){
                 delete node.pendingTasks;
                 node.running = false;
-                if(!(node.images || []).length){
+                if(!(node.images || []).length && !layoutFrameContainingNode(node.id)){
                     delete node.w;
                     delete node.h;
                 }

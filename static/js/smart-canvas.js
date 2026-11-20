@@ -873,7 +873,7 @@ function isSmartConversationNode(node){
     return Boolean(node && node.type === NODE_TYPE_CONVERSATION);
 }
 function isSmartRunnableNode(node){
-    return Boolean(isSmartImageNode(node) || isSmartGroupNode(node));
+    return Boolean(isSmartImageNode(node) || (isSmartGroupNode(node) && !isSmartLayoutFrame(node)));
 }
 function smartImageMode(node){
     return 'self';
@@ -1163,14 +1163,20 @@ function smartGroupMembers(node){
     });
 }
 function smartGroupCompactMembers(node){
+    if(isSmartLayoutFrame(node)) return [];
     return smartGroupMembers(node).filter(member => member?.type === NODE_TYPE_PROMPT || member?.type === NODE_TYPE_LOOP);
 }
 function isSmartGroupCompactMember(node){
-    return Boolean(node && (node.type === NODE_TYPE_PROMPT || node.type === NODE_TYPE_LOOP) && smartGroupContainingNode(node.id));
+    return Boolean(node && (node.type === NODE_TYPE_PROMPT || node.type === NODE_TYPE_LOOP)
+        && !layoutFrameContainingNode(node.id) && smartGroupContainingNode(node.id));
 }
-// 可作为分组"画布成员节点"的类型（图片走网格吸收，prompt/loop 走成员节点，分组走合并）。其余类型（agent/conversation/local-edit/agent-task）拒绝进组。
+function isLayoutFrameOrMember(node){
+    return Boolean(isSmartLayoutFrame(node) || layoutFrameContainingNode(node?.id));
+}
+// 旧组会吸收图片、压缩成员或合并分组；这些操作不适用于排版框及其独立卡片（#397）。
 function isSmartGroupableNode(node){
-    return Boolean(node && (isSmartImageNode(node) || node.type === NODE_TYPE_PROMPT || node.type === NODE_TYPE_LOOP || isSmartGroupNode(node)));
+    return Boolean(node && !isLayoutFrameOrMember(node)
+        && (isSmartImageNode(node) || node.type === NODE_TYPE_PROMPT || node.type === NODE_TYPE_LOOP || isSmartGroupNode(node)));
 }
 // 分组当前缩放比例（1=原始）。分组就像“画布中的画布”：缩放分组时组内所有成员（含提示词）整体等比缩放+
 // 重排。缩放过程用每次手势开始时的快照实时计算（见 resize 处理），不存持久基准，避免移动成员后再缩放位置回退。
@@ -1197,7 +1203,7 @@ function absorbImageNodeIntoSmartGroup(group, child){
     return true;
 }
 function addNodeToSmartGroup(group, child){
-    if(!isSmartGroupNode(group) || !child || child.id === group.id) return false;
+    if(!isSmartGroupNode(group) || isSmartLayoutFrame(group) || !isSmartGroupableNode(child) || child.id === group.id) return false;
     const items = Array.isArray(group.items) ? group.items.slice() : [];
     const zoom = smartGroupZoom(group);
     if(isSmartGroupNode(child)){
@@ -1276,6 +1282,7 @@ function smartGroupPendingMembersExtraHeight(node){
     return extra;
 }
 function smartGroupThumbLayout(node){
+    if(isSmartLayoutFrame(node)) return null;
     const refs = smartGroupImageRefs(node).filter(ref => ref.item?.url);
     if(!refs.length) return null;
     const compactMembers = smartGroupCompactMembers(node);
@@ -1331,7 +1338,7 @@ const SMART_GROUP_ARRANGE_HEADER = 44;
 // 把分组内的成员整理成整齐的网格（先行后列保持当前阅读顺序），列数尽量接近正方形，
 // 每个成员在所属单元格内居中；最后把分组框尺寸收敛到正好包住所有成员。
 function arrangeSmartGroupMembers(group, options={}){
-    if(!isSmartGroupNode(group)) return false;
+    if(!isSmartGroupNode(group) || isSmartLayoutFrame(group)) return false;
     const hasThumbImages = smartGroupImageRefs(group).some(ref => ref.item?.url);
     if(hasThumbImages){
         const compactMembers = smartGroupCompactMembers(group);
@@ -1634,7 +1641,7 @@ function parseSizeAspect(sizeText){
 // 这类节点的 resize 手柄拖拽会被 imageLayout 静默拉回 → 不渲染手柄，避免用户误以为 bug
 function isLockedBatchGenNode(node){
     if(!node || node.type !== NODE_TYPE_IMAGE || node.smartGroupMember) return false;
-    if(node.id && smartGroupContainingNode(node.id)) return false;
+    if(node.id && smartGroupContainingNode(node.id) && !layoutFrameContainingNode(node.id)) return false;
     const count = Array.isArray(node?.images) ? node.images.length : 0;
     const pending = Number(node?.pending) > 0 || Boolean(node?.queued);
     // #149 A3：生成中（pending/queued）才锁尺寸；空节点（未生成）允许用户预设大小。
@@ -1644,14 +1651,31 @@ function isLockedBatchGenNode(node){
     const batchTotal = Math.max(0, Math.min(8, Number(node?._batchTotal) || 0));
     return batchTotal > 1 || (Number(genAspect?.w) > 0 && Number(genAspect?.h) > 0);
 }
+function savedSmartNodeSize(node){
+    const width = Number(node?.w), height = Number(node?.h);
+    return Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0 ? {width, height} : null;
+}
+function layoutFrameBatchGrid(grid, size){
+    if(!size) return {};
+    // #397: fit batch contents to the saved card, including room for the pending status bar.
+    const cellWidth = (size.width - BATCH_NODE_PAD_H - (grid.cols - 1) * BATCH_THUMB.GAP) / grid.cols;
+    const cellHeight = (size.height - BATCH_NODE_PAD_V - BATCH_STATUSBAR_H - (grid.rows - 1) * BATCH_THUMB.GAP) / grid.rows;
+    const thumb = Math.max(1, Math.floor(Math.min(BATCH_THUMB.WIDTH, cellWidth, cellHeight * BATCH_THUMB.WIDTH / BATCH_THUMB.HEIGHT)));
+    const batchThumbHeight = Math.max(1, Math.round(thumb * BATCH_THUMB.HEIGHT / BATCH_THUMB.WIDTH));
+    return {...size, thumb, batchThumbHeight, gridHeight:grid.rows * batchThumbHeight + (grid.rows - 1) * BATCH_THUMB.GAP};
+}
 function imageLayout(images, scale=1, node=null){
     if(node?.type === NODE_TYPE_GROUP){
+        const frameSize = isSmartLayoutFrame(node) ? savedSmartNodeSize(node) : null;
         const groupThumbLayout = smartGroupThumbLayout(node);
         if(groupThumbLayout) return groupThumbLayout;
-        return {cols:1, rows:1, ...smartGroupLayoutSize(node), thumb:96, single:true};
+        return {cols:1, rows:1, ...(frameSize || smartGroupLayoutSize(node)), thumb:96, single:true};
     }
+    const layoutFrame = layoutFrameContainingNode(node?.id);
+    // #397: the server lays out cards using their saved outer boxes. Keep the regular card body, not the compact group UI.
+    const frameMemberSize = layoutFrame ? savedSmartNodeSize(node) : null;
     if(isSmartConversationNode(node)) return {cols:1, rows:1, ...conversationNodeLayoutSize(node), thumb:96, single:true};
-    if(node?.type === NODE_TYPE_PROMPT) return {cols:1, rows:1, ...promptNodeLayoutSize(node), thumb:96, single:true};
+    if(node?.type === NODE_TYPE_PROMPT) return {cols:1, rows:1, ...(frameMemberSize || promptNodeLayoutSize(node)), thumb:96, single:true};
     if(node?.type === NODE_TYPE_TASK){
         const explicitW = Number(node.w);
         const explicitH = Number(node.h);
@@ -1694,6 +1718,7 @@ function imageLayout(images, scale=1, node=null){
         };
     }
     if(node?.type === NODE_TYPE_LOOP){
+        if(frameMemberSize) return {cols:1, rows:1, ...frameMemberSize, thumb:96, single:true};
         const explicitW = Number(node.w);
         const explicitH = Number(node.h);
         if(isSmartGroupCompactMember(node) && Number.isFinite(explicitW) && explicitW > 24 && Number.isFinite(explicitH) && explicitH > 24){
@@ -1711,7 +1736,7 @@ function imageLayout(images, scale=1, node=null){
         const aspect = resolveImageAspect(node);
         
         // 智能分组框内的 pending 成员：使用与组网格一致的统一尺寸，组框包住成员
-        if(node?.id && smartGroupContainingNode(node.id)){
+        if(node?.id && !layoutFrame && smartGroupContainingNode(node.id)){
             const pad = SMART_GROUP_LAYOUT.PADDING * 2;
             if(total > 1){
                 const memberGrid = getBatchThumbGridSize(total);
@@ -1743,6 +1768,7 @@ function imageLayout(images, scale=1, node=null){
                 height:grid.gridH + BATCH_NODE_PAD_V + BATCH_STATUSBAR_H,
                 thumb:BATCH_THUMB.WIDTH,
                 gridHeight:grid.gridH,
+                ...layoutFrameBatchGrid(grid, frameMemberSize),
                 pendingLock:true
             };
         }
@@ -1754,12 +1780,13 @@ function imageLayout(images, scale=1, node=null){
             rows:1,
             width:layout.boxW,
             height:layout.boxH,
+            ...frameMemberSize,
             thumb:layout.imgW,
             single:true,
             pendingLock:true
         };
     }
-    if(count === 1) return singleImageLayout(images[0], node, s);
+    if(count === 1) return {...singleImageLayout(images[0], node, s), ...frameMemberSize};
     const thumb = Math.round(MEDIA_GROUP_THUMB_BASE * s);
     const cell = thumb + 8;
     const PAD = 32; // group-node has 16px padding on each side
@@ -1792,7 +1819,7 @@ function imageLayout(images, scale=1, node=null){
         const genGrid = getBatchThumbGridSize(gridCount);
         const genBoxW = genGrid.gridW + BATCH_NODE_PAD_H;
         const genBoxH = genGrid.gridH + BATCH_NODE_PAD_V;
-        return {cols:genGrid.cols, rows:genGrid.rows, visibleRows:Math.min(SMART_GROUP_MAX_VISIBLE_ROWS, genGrid.rows), width:genBoxW, height:genBoxH, thumb:BATCH_THUMB.WIDTH, gridHeight:genGrid.gridH};
+        return {cols:genGrid.cols, rows:genGrid.rows, visibleRows:Math.min(SMART_GROUP_MAX_VISIBLE_ROWS, genGrid.rows), width:genBoxW, height:genBoxH, thumb:BATCH_THUMB.WIDTH, gridHeight:genGrid.gridH, ...layoutFrameBatchGrid(genGrid, frameMemberSize)};
     }
     const cols = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(count))));
     const rows = Math.ceil(count / cols);
@@ -7583,6 +7610,11 @@ function cloneSmartNode(node, dx=0, dy=0){
     return copy;
 }
 function rejectSmartHumanCopy(nodes){
+    if(nodes.some(isSmartLayoutFrame)){
+        // A client copy must not create a frame whose membership points to the original cards.
+        toast(tr('smart.layoutFrameCopyUnsupported'));
+        return true;
+    }
     if(!nodes.some(node => canvasCore.smartConversationPendingIntents(node).length)) return false;
     toast('包含未决执行意图的对话，暂不能复制；请等待对话完成后重试。');
     return true;
@@ -9007,6 +9039,9 @@ function smartLoopBodyHtml(node){
     </div>`;
 }
 function smartGroupBodyHtml(node){
+    if(isSmartLayoutFrame(node)){
+        return `<div class="smart-group-summary">${ico('group')}<span>${escapeHtml(node.title || tr('smart.groupTitleSmart'))}</span></div>`;
+    }
     const groupThumbLayout = smartGroupThumbLayout(node);
     const refThumbs = groupThumbLayout?.refs || [];
     const members = smartGroupMembers(node);
@@ -9401,9 +9436,10 @@ function generationPlaceholderHtml(layout, count=1, queued=false, progress={}, c
     // #89 返工：状态条不再重复「已等待 Ns」——节点右上角计时徽标（run-time-pill）已实时显示同一计时，
     // 重复展示会挤掉阶段名（2 列节点框宽仅约 295px）。
     const statusbar = `<div class="batch-statusbar" role="status" aria-label="${escapeAttr(label)}"><span class="generation-placeholder-spinner" aria-hidden="true"></span><span class="batch-statusbar-label">${escapeHtml(label)}</span><span class="batch-statusbar-stage">${generationStageProgressHtml(normalizedProgress)}</span>${cancelBtnHtml}</div>`;
-    // 网格区 = node-body 高度减去状态条（flex 布局自动分配），136×102 固定格在剩余区域居中，
-    // 与完成阶段 thumb-grid 的几何一致。
-    return `<div class="pending-batch-stack"><div class="loading-skeleton generation-placeholder-grid" style="grid-template-columns:repeat(${cols}, ${BATCH_THUMB.WIDTH}px);grid-template-rows:repeat(${rows}, ${BATCH_THUMB.HEIGHT}px);gap:${BATCH_THUMB.GAP}px;width:100%;box-sizing:border-box;justify-content:center;align-content:center">${cells}</div>${statusbar}</div>`;
+    // A frame member may use smaller cells; reuse the same geometry as the completed grid.
+    const w = layout.batchThumbHeight ? layout.thumb : BATCH_THUMB.WIDTH;
+    const h = layout.batchThumbHeight || BATCH_THUMB.HEIGHT;
+    return `<div class="pending-batch-stack"><div class="loading-skeleton generation-placeholder-grid" style="grid-template-columns:repeat(${cols}, ${w}px);grid-template-rows:repeat(${rows}, ${h}px);gap:${BATCH_THUMB.GAP}px;width:100%;box-sizing:border-box;justify-content:center;align-content:center">${cells}</div>${statusbar}</div>`;
 }
 function nodeBodyHtml(node, layout){
     if(isSmartAgentTaskNode(node)) return agentTaskNodeBodyHtml(node);
@@ -9442,8 +9478,8 @@ function nodeBodyHtml(node, layout){
         // 批量节点没有固化比例时（旧数据），按批量缩略格规范 4:3 兑底。
         const fixedAspect = node?._generationAspect || (Number(node?._batchTotal) > 1 ? {w:BATCH_THUMB.ASPECT.w, h:BATCH_THUMB.ASPECT.h} : null);
         // 批量生图节点：固定 136×102（4:3）缩略格 + 9px 间距，与占位阶段/生图历史一致
-        const isBatchSpec = Number(layout.thumb) === BATCH_THUMB.WIDTH && (fixedAspect && Number(fixedAspect.w) > 0 && Number(fixedAspect.h) > 0);
-        const fixedCellH = isBatchSpec ? BATCH_THUMB.HEIGHT : (fixedAspect && Number(fixedAspect.w) > 0 && Number(fixedAspect.h) > 0) ? Math.round(layout.thumb * Number(fixedAspect.h) / Math.max(1, Number(fixedAspect.w))) : 0;
+        const isBatchSpec = Boolean(layout.batchThumbHeight) || Number(layout.thumb) === BATCH_THUMB.WIDTH && (fixedAspect && Number(fixedAspect.w) > 0 && Number(fixedAspect.h) > 0);
+        const fixedCellH = isBatchSpec ? (layout.batchThumbHeight || BATCH_THUMB.HEIGHT) : (fixedAspect && Number(fixedAspect.w) > 0 && Number(fixedAspect.h) > 0) ? Math.round(layout.thumb * Number(fixedAspect.h) / Math.max(1, Number(fixedAspect.w))) : 0;
         const thumbItemStyleFor = img => fixedCellH > 0 ? `--thumb-w:${layout.thumb}px;--thumb-h:${fixedCellH}px` : thumbItemStyle(img, layout.thumb);
         const gridGapStyle = isBatchSpec ? `; gap:${BATCH_THUMB.GAP}px` : '';
         // #89 返工：自然比例路径列宽=实际格宽（与 imageLayout 收敛后的框宽一致），
@@ -9637,7 +9673,7 @@ function runSmartNodeToolbarAction(nodeId, action){
 // 智能分组顶部小菜单：整理排列 / 预览（整组左右切换）/ 宫格拼接 / 批量下载 / 解散分组。
 // 与多图节点的 smart-node-floating-menu 同款样式与定位（选中分组时浮在卡片上方）。
 function smartGroupToolbarHtml(node){
-    if(!isSmartGroupNode(node)) return '';
+    if(!isSmartGroupNode(node) || isSmartLayoutFrame(node)) return '';
     const hasContent = (node.images || []).some(img => img?.url) || smartGroupMembers(node).length > 0;
     const imageCount = (node.images || []).filter(img => img?.url).length;
     const actions = [
@@ -9654,7 +9690,7 @@ function smartGroupToolbarHtml(node){
 }
 function runSmartGroupToolbarAction(nodeId, action){
     const group = canvasState.nodes.find(n => n.id === nodeId);
-    if(!isSmartGroupNode(group)) return;
+    if(!isSmartGroupNode(group) || isSmartLayoutFrame(group)) return;
     canvasState.selectedId = nodeId;
     canvasState.selectedIds = [];
     canvasState.selectedImage = {nodeId:'', index:-1};
@@ -9782,6 +9818,7 @@ function render(){
         const sourceNodeId = isPrompt ? String(node.source_node_id || node.sourceNodeId || '') : '';
         const sourceMessageId = isPrompt ? String(node.source_message_id || node.sourceMessageId || '') : '';
         const isSmartGroup = node.type === NODE_TYPE_GROUP;
+        const isLayoutFrame = isSmartLayoutFrame(node);
         const isCompactMember = isSmartGroupCompactMember(node);
         const isImageNode = node.type === NODE_TYPE_IMAGE || !node.type;
         const isQueued = Boolean(node.queued && imgs.length === 0 && !node.pending);
@@ -9792,7 +9829,7 @@ function render(){
         const body = nodeBodyHtml(node, layout);
         // #149 B4: 多图节点（isGroup）也显示删除按钮（与单图一致，删整个节点）
         const deleteBtn = `<button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg></button>`;
-        const hint = isSmartGroup ? escapeHtml(tr('smart.hintGroup')) : isAgentTask ? escapeHtml(tr('smart.hintAgentTask')) : isPending ? escapeHtml(tr('smart.hintPending')) : (imgs.length > 1 ? escapeHtml(tr('smart.hintMulti')) : imgs.length ? escapeHtml(tr('smart.hintSingle')) : escapeHtml(tr('smart.hintEmpty')));
+        const hint = isLayoutFrame ? '' : isSmartGroup ? escapeHtml(tr('smart.hintGroup')) : isAgentTask ? escapeHtml(tr('smart.hintAgentTask')) : isPending ? escapeHtml(tr('smart.hintPending')) : (imgs.length > 1 ? escapeHtml(tr('smart.hintMulti')) : imgs.length ? escapeHtml(tr('smart.hintSingle')) : escapeHtml(tr('smart.hintEmpty')));
         const deletedInputCount = Array.isArray(node.deletedInputTombstones) ? node.deletedInputTombstones.length : 0;
         const deletedInputMarker = deletedInputCount
             ? `<div class="node-upstream-deleted-marker" role="status"><svg class="ico" aria-hidden="true"><use href="#i-unlink"/></svg><span>${escapeHtml(tr('canvas.upstreamMediaDeleted'))}</span></div>`
@@ -9800,7 +9837,7 @@ function render(){
         const agentCardStatus = isAgent ? agentCardStatusHtml(node.id) : '';
         const titleKind = isAgent ? '<span class="agent-title-kind">Agent</span>' : '';
         const headActions = isAgent ? agentHeadActionButtonsHtml(node) : deleteBtn;
-        const html = `<div class="image-node ${isEmpty ? 'empty-node' : ''} ${isGroup ? 'group-node' : ''} ${isHistory ? 'history-group-node' : ''} ${isPrompt ? 'prompt-smart-node' : ''} ${isLoop ? 'loop-smart-node' : ''} ${isConversation ? 'conversation-smart-node' : ''} ${isAgent ? 'agent-smart-node' : ''} ${isAgentTask ? 'agent-task-node' : ''} ${isLocalEdit ? 'local-edit-node' : ''} ${isSmartGroup ? 'smart-group-node' : ''} ${isCompactMember ? 'smart-group-member-node' : ''} ${isNodeSelected(node.id) ? 'selected' : ''} ${(dragState?.groupIds?.includes(node.id) || dragState?.id === node.id) ? 'dragging' : ''} ${node.running ? 'node-running' : ''} ${isPending ? 'node-pending' : ''}" data-id="${escapeHtml(node.id)}" data-source-node-id="${escapeHtml(sourceNodeId)}" data-source-message-id="${escapeHtml(sourceMessageId)}" style="left:${node.x || 0}px;top:${node.y || 0}px;width:${layout.width}px;height:${layout.height}px">
+        const html = `<div class="image-node ${isEmpty ? 'empty-node' : ''} ${isGroup ? 'group-node' : ''} ${isHistory ? 'history-group-node' : ''} ${isPrompt ? 'prompt-smart-node' : ''} ${isLoop ? 'loop-smart-node' : ''} ${isConversation ? 'conversation-smart-node' : ''} ${isAgent ? 'agent-smart-node' : ''} ${isAgentTask ? 'agent-task-node' : ''} ${isLocalEdit ? 'local-edit-node' : ''} ${isSmartGroup ? 'smart-group-node' : ''} ${isLayoutFrame ? 'smart-layout-frame-node' : ''} ${isCompactMember ? 'smart-group-member-node' : ''} ${isNodeSelected(node.id) ? 'selected' : ''} ${(dragState?.groupIds?.includes(node.id) || dragState?.id === node.id) ? 'dragging' : ''} ${node.running ? 'node-running' : ''} ${isPending ? 'node-pending' : ''}" data-id="${escapeHtml(node.id)}" data-source-node-id="${escapeHtml(sourceNodeId)}" data-source-message-id="${escapeHtml(sourceMessageId)}" style="left:${node.x || 0}px;top:${node.y || 0}px;width:${layout.width}px;height:${layout.height}px">
             <div class="node-head"><div class="node-title">${titleKind}${escapeHtml(title)}</div><div class="node-head-meta">${agentCardStatus}</div><div class="node-actions">${headActions}</div></div>
             ${!isAgent && !isEmpty && !isGroup ? `<div class="floating-node-actions"><button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg></button></div>` : ''}
             ${smartNodeToolbarHtml(node)}${smartGroupToolbarHtml(node)}
@@ -9809,9 +9846,9 @@ function render(){
             <div class="node-body">${body}</div>
             ${isCompactMember && (isPrompt || isLoop) ? '<div class="smart-group-member-grab" title="' + escapeHtml(tr('smart.dragToUngroup')) + '"></div>' : ''}
             <div class="node-hint">${hint}</div>
-            ${(node.type === NODE_TYPE_IMAGE || imgs.length || node.pending || isQueued || isPrompt || isLoop || isConversation || isAgent || isAgentTask || isLocalEdit || isSmartGroup) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
-            <div class="node-port port-in" data-port="in" title="input"></div>
-            <div class="node-port port-out" data-port="out" title="output"></div>
+            ${!isLayoutFrame && (node.type === NODE_TYPE_IMAGE || imgs.length || node.pending || isQueued || isPrompt || isLoop || isConversation || isAgent || isAgentTask || isLocalEdit || isSmartGroup) && !isLockedBatchGenNode(node) ? '<div class="node-resize-handle" data-resize="1"></div>' : ''}
+            ${isLayoutFrame ? '' : `<div class="node-port port-in" data-port="in" title="input"></div>
+            <div class="node-port port-out" data-port="out" title="output"></div>`}
         </div>`;
         return {node, html};
     });
@@ -11534,7 +11571,7 @@ function bindNodeEvents(){
         if(nodeForControls?.type === NODE_TYPE_LOCAL_EDIT) bindLocalEditNodeControls(el, nodeForControls);
         if(nodeForControls?.type === NODE_TYPE_PROMPT) bindPromptNodeControls(el, nodeForControls);
         if(nodeForControls?.type === NODE_TYPE_LOOP) bindLoopNodeControls(el, nodeForControls);
-        if(nodeForControls?.type === NODE_TYPE_GROUP) {
+        if(isSmartGroupNode(nodeForControls) && !isSmartLayoutFrame(nodeForControls)){
             el.ondblclick = e => {
                 e.preventDefault();
                 e.stopPropagation();
@@ -11561,7 +11598,7 @@ function bindNodeEvents(){
             }
             render();
         };
-        if(nodeForControls?.type !== NODE_TYPE_GROUP) el.ondblclick = e => e.stopPropagation();
+        if(!isSmartGroupNode(nodeForControls) || isSmartLayoutFrame(nodeForControls)) el.ondblclick = e => e.stopPropagation();
         const nodeDrop = el.querySelector('.node-drop');
         nodeDrop?.addEventListener('mousedown', e => {
             if(e.button !== 0) return;
@@ -11852,7 +11889,7 @@ function bindNodeEvents(){
             if(e.button !== 0) return;
             e.preventDefault(); e.stopPropagation();
             const node = canvasState.nodes.find(n => n.id === id);
-            if(!node) return;
+            if(!node || isSmartLayoutFrame(node)) return;
             const rect = nodeRect(node);
             resizeState = {id, startX:e.clientX, startY:e.clientY, startW:rect.width, startH:rect.height,
                 moved:false, humanEdit:beginSmartNodeHumanEdit(smartHumanGeometryTargets([id]), ['x','y','w','h','scale','_memberZoom'])};
@@ -11891,10 +11928,7 @@ function bindNodeEvents(){
                 if(copied.id !== node.id){ node = copied; altDuplicated = true; }
             }
             let dragIds = canvasState.selectedIds.includes(node.id) ? canvasState.selectedIds.slice() : [node.id];
-            if(isSmartGroupNode(node)){
-                const memberIds = smartGroupMembers(node).map(member => member.id);
-                dragIds = Array.from(new Set([...dragIds, ...memberIds]));
-            }
+            dragIds = smartNodeDragIds(node, dragIds);
             const group = dragIds.map(dragId => {
                 const n = canvasState.nodes.find(x => x.id === dragId);
                 return n ? {id:n.id, ox:Number(n.x) || 0, oy:Number(n.y) || 0} : null;
@@ -11942,9 +11976,14 @@ function bindNodeEvents(){
             e.stopPropagation();
             const payload = await resolveSmartImageDropPayload(e.dataTransfer);
             if(payload.type === 'none') return;
-            await handleSmartImageDropPayload(payload, id);
+            await handleSmartImageDropPayload(payload, id, isSmartLayoutFrame(nodeForControls) ? {point:screenToWorld(e)} : {});
         };
     });
+}
+function smartNodeDragIds(primary, ids){
+    const roots = ids.map(id => canvasState.nodes.find(n => n.id === id));
+    const groups = roots.filter(node => isSmartLayoutFrame(node) || (node === primary && isSmartGroupNode(node)));
+    return [...new Set([...ids, ...groups.flatMap(group => smartGroupMembers(group).map(member => member.id))])];
 }
 function rectOverlapNode(draggedId, x, y, w, h, excludeIds=[]){
     const cx = x + w/2, cy = y + h/2;
@@ -11968,11 +12007,10 @@ function restoreDraggedNodePosition(){
 }
 function pruneSmartGroupMembershipsForNode(node){
     if(!node || !node.id) return false;
-    // 节点拖出分组：从所有分组移除自己（保持当前尺寸，不自动放大）。
-    // 分组合并已改为“释放被拖分组、只并入其成员”，所以这里只需处理单个节点的退组。
+    // #397: moving an independent card must not silently change server-managed layout membership.
     let changed = false;
     canvasState.nodes.forEach(group => {
-        if(!isSmartGroupNode(group) || !Array.isArray(group.items) || !group.items.includes(node.id)) return;
+        if(!isSmartGroupNode(group) || isSmartLayoutFrame(group) || !Array.isArray(group.items) || !group.items.includes(node.id)) return;
         group.items = group.items.filter(id => id !== node.id);
         changed = true;
     });
@@ -13671,17 +13709,18 @@ function appendImagesToSmartNode(uploaded, targetId='', opts={}){
         undoSuppressed = false;
     }
     const previousCount = (node.images || []).length;
+    const preserveSize = Boolean(layoutFrameContainingNode(node.id));
     node.images = [...(node.images || []), ...images.map(file => ({...file, kind:file.kind || mediaKindForItem(file)}))];
     if(node.images.length > 1){
         node.title = uploadTitleForItems(node.images, 'Group');
         if(previousCount <= 1 && (!Number.isFinite(Number(node.scale)) || Number(node.scale) === MEDIA_NODE_DEFAULT_SCALE || Number(node.scale) === MEDIA_GROUP_PREVIOUS_DEFAULT_SCALE)){
             node.scale = MEDIA_GROUP_DEFAULT_SCALE;
         }
-        delete node.w;
-        delete node.h;
+    } else if(node.images.length === 1){
+        node.title = uploadTitleForItems(node.images, node.title || 'Image');
     }
-    if(node.images.length === 1){ node.title = uploadTitleForItems(node.images, node.title || 'Image'); delete node.w; delete node.h; }
-    if(targetGroup) addNodeToSmartGroup(targetGroup, node);
+    if(!preserveSize){ delete node.w; delete node.h; }
+    if(targetGroup && !isSmartLayoutFrame(targetGroup)) addNodeToSmartGroup(targetGroup, node);
     finishSmartNodeHumanEdit(action);
     canvasState.selectedId = node.id;
     render();
@@ -14772,9 +14811,9 @@ function buildPromptRequest(node, overrideDefaultImages=null, consumeDefault=fal
 
 async function runGeneration(){
     const node = selectedNode();
+    if(!node || isSmartLayoutFrame(node)) return;
     const request = buildPromptRequest(node, null, true, smartLoopContext);
     const prompt = request.prompt.trim();
-    if(!node) return;
     if(smartNodeInFlight(node) && !smartNodeAllowsOverlappingRun(node)) return;
     const refs = request.refs;
     const previousSettings = cloneSmartSettings(settings);
@@ -14837,6 +14876,7 @@ async function runGeneration(){
     if(pendingHistoryId) runLog.pendingHistoryId = pendingHistoryId;
     if(extracted) pendingNode._runMetaTargetId = extracted.id;
     if(!branchNode){
+        const frameBox = layoutFrameContainingNode(pendingNode.id) ? nodeRect(pendingNode) : null;
         // 新一轮生成开始：框内已有上一轮残留图片（且没有仍在飞行的任务）时，
         // 先把旧图归档到候选池再清空，按本轮真实并发数(1-8)重建占位框。
         // 否则旧图会占用占位格、写回的新图只能追加在旧图之后，8 并发时后半截图
@@ -14871,9 +14911,14 @@ async function runGeneration(){
             ? {w: outpaintForAspect.width, h: outpaintForAspect.height}
             : parseSizeAspect(String(sizeForRun(settings) || ''));
         pendingNode._generationAspect = aspectForRun || parseSizeAspect('1:1');
-        const pendingBox = pendingBoxSize(pendingNode.pending, {node:pendingNode, sourceNode:node, refs});
-        pendingNode.w = pendingBox.w;
-        pendingNode.h = pendingBox.h;
+        if(frameBox){
+            pendingNode.w = frameBox.width;
+            pendingNode.h = frameBox.height;
+        } else {
+            const pendingBox = pendingBoxSize(pendingNode.pending, {node:pendingNode, sourceNode:node, refs});
+            pendingNode.w = pendingBox.w;
+            pendingNode.h = pendingBox.h;
+        }
         attachRunMeta(pendingNode, pendingMeta);
     }
     if(apiConcurrentRun){
@@ -15032,7 +15077,7 @@ async function runGeneration(){
         } else {
             pendingNode.pending = remainingTasks.length ? pendingNode.pending : 0;
             pendingNode.running = false;
-            if(!(pendingNode.images || []).length){
+            if(!(pendingNode.images || []).length && !layoutFrameContainingNode(pendingNode.id)){
                 delete pendingNode.w;
                 delete pendingNode.h;
             }
@@ -15085,8 +15130,8 @@ function groupSelectedNodes(){
     if(selected.length < 1){ toast(tr('smart.groupSelectRequired')); return; }
     // #148: 过滤掉不能进组的节点类型（agent/conversation/local-edit/agent-task），并 toast 提示。
     const groupable = selected.filter(n => isSmartGroupableNode(n));
-    const rejected = selected.filter(n => !isSmartGroupableNode(n));
-    if(rejected.length > 0){ toast(tr('smart.groupUnsupportedType')); }
+    if(selected.some(isLayoutFrameOrMember)){ toast(tr('smart.layoutFrameGroupUnsupported')); }
+    if(selected.some(n => !isSmartGroupableNode(n) && !isLayoutFrameOrMember(n))){ toast(tr('smart.groupUnsupportedType')); }
     if(groupable.length < 1){ return; }
     pushUndo();
     const action = beginSmartNodeInputEdit(smartHumanRelatedTargets(groupable.map(node => node.id)), ['x','y','scale','items']);
@@ -15228,7 +15273,7 @@ function ungroupNode(groupId){
 function mergeImageNodesIntoGroup(sourceId, targetId){
     const source = canvasState.nodes.find(n => n.id === sourceId);
     const target = canvasState.nodes.find(n => n.id === targetId);
-    if(!source || !target || source.id === target.id) return false;
+    if(!source || !target || source.id === target.id || isLayoutFrameOrMember(source) || isLayoutFrameOrMember(target)) return false;
     if(!(source.images || []).length || !(target.images || []).length) return false;
     const sourceImages = (source.images || []).map(img => stripImageGenerationMeta({...img}));
     target.images = [...(target.images || []).map(img => stripImageGenerationMeta(img)), ...sourceImages];
@@ -15245,7 +15290,7 @@ function mergeImageNodesIntoGroup(sourceId, targetId){
 }
 function smartGroupTargetForDraggedNode(draggedNode){
     // 允许把一个分组拖进另一个分组（拖来的分组的成员会作为输入并入目标分组）。自身/被拖分组及其成员已在 excluded 中排除。
-    if(!draggedNode) return null;
+    if(!draggedNode || isLayoutFrameOrMember(draggedNode)) return null;
     const r = nodeRect(draggedNode);
     const excluded = new Set([draggedNode.id, ...(dragState?.groupIds || [])]);
     const cx = r.x + r.width / 2;
@@ -15256,17 +15301,17 @@ function smartGroupTargetForDraggedNode(draggedNode){
         .filter(item => cx >= item.rect.x && cx <= item.rect.x + item.rect.width && cy >= item.rect.y && cy <= item.rect.y + item.rect.height);
     if(!groups.length) return null;
     groups.sort((a, b) => (canvasState.nodes.indexOf(b.group) - canvasState.nodes.indexOf(a.group)));
-    return groups[0].group;
+    const group = groups[0].group;
+    return isSmartLayoutFrame(group) ? null : group;
 }
 // 把一个或多个被拖动的节点批量加入目标分组（支持多选拖入）。入组后只整理一次并选中目标分组。
 function addDraggedNodesToSmartGroup(draggedNodes, group){
-    if(!group || !isSmartGroupNode(group)) return false;
+    if(!isSmartGroupNode(group) || isSmartLayoutFrame(group) || (draggedNodes || []).some(isLayoutFrameOrMember)) return false;
     const list = (draggedNodes || []).filter(n => n && n.id !== group.id);
     if(!list.length) return false;
     // #148: 过滤掉不能进组的节点类型（agent/conversation/local-edit/agent-task），并 toast 提示。
     const groupable = list.filter(n => isSmartGroupableNode(n));
-    const rejected = list.filter(n => !isSmartGroupableNode(n));
-    if(rejected.length > 0){ toast(tr('smart.groupUnsupportedType')); }
+    if(list.some(n => !isSmartGroupableNode(n))){ toast(tr('smart.groupUnsupportedType')); }
     if(!groupable.length) return false;
     let added = false;
     groupable.forEach(n => {
@@ -15307,7 +15352,7 @@ function openCreateMenu(event, options={}){
     const refFrameCard = createMenu.querySelector('[data-create-type="ref-frame"]');
     if(refFrameCard){
         const refGroup = options.groupId ? canvasState.nodes.find(n => n.id === options.groupId) : null;
-        const isRefGroup = Boolean(refGroup && isSmartGroupNode(refGroup));
+        const isRefGroup = isSmartGroupNode(refGroup) && !isSmartLayoutFrame(refGroup);
         refFrameCard.hidden = !isRefGroup;
         if(isRefGroup){
             const refTitleEl = refFrameCard.querySelector('.create-card-title');

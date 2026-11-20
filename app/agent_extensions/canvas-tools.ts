@@ -207,6 +207,21 @@ const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any
     "canvas.set_ref_order": async (_toolCallId, params) =>
         textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/set_ref_order`, "POST", { ...params, agent_node_id: NODE_ID || undefined })),
 
+    "canvas.group_create": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/group_create${gateQuery()}`, "POST", params)),
+
+    "canvas.group_arrange": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/group_arrange${gateQuery()}`, "POST", params)),
+
+    "canvas.arrange_groups": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/arrange_groups${gateQuery()}`, "POST", params)),
+
+    "canvas.align": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/align${gateQuery()}`, "POST", params)),
+
+    "canvas.distribute": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/distribute${gateQuery()}`, "POST", params)),
+
     "canvas.search_projects": async (_toolCallId, params) => {
         // D13（#356）：limit 透传（此前声明了但从不拼进查询串，永远 50）。
         let url = `/api/search/projects?q=${encodeURIComponent(params.query)}`;

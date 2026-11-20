@@ -166,7 +166,7 @@ function createSmartGroupNode(x, y, options={}){
 // 与同文件其它节点操作函数同一口径。菜单文案按当前态切换（见 smart-canvas.js openCreateMenu）。
 function toggleGroupRefFrame(groupId){
     const group = canvasState.nodes.find(n => n.id === groupId);
-    if(!group || !isSmartGroupNode(group)) return false;
+    if(!isSmartGroupNode(group) || isSmartLayoutFrame(group)) return false;
     pushUndo();
     const action = canvasCore.beginSmartHumanEdit([group], {fields:['refFrame'],
         project:node => canvasCore.canvasForStorage({source:{...canvas, nodes:[node], history:[]}}).nodes[0]});
@@ -227,8 +227,8 @@ function updateNodeElementDuringResize(node){
             const batch = getBatchThumbGridSize(count);
             loadingGrid.style.width = '100%';
             loadingGrid.style.height = '100%';
-            loadingGrid.style.gridTemplateColumns = `repeat(${batch.cols}, ${BATCH_THUMB.WIDTH}px)`;
-            loadingGrid.style.gridTemplateRows = `repeat(${batch.rows}, ${BATCH_THUMB.HEIGHT}px)`;
+            loadingGrid.style.gridTemplateColumns = `repeat(${batch.cols}, ${layout.batchThumbHeight ? layout.thumb : BATCH_THUMB.WIDTH}px)`;
+            loadingGrid.style.gridTemplateRows = `repeat(${batch.rows}, ${layout.batchThumbHeight || BATCH_THUMB.HEIGHT}px)`;
         }
         const maxVisibleRows = isSmartGroupNode(node)
             ? (smartGroupCompactMembers(node).length ? Number(layout.rows || 1) : SMART_GROUP_MAX_VISIBLE_ROWS)

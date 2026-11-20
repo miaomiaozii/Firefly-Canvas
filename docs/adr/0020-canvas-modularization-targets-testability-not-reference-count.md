@@ -514,3 +514,10 @@ fast 时整门 exit 1，恢复后通过，具体证据见本次 QA 记录。
 `rerouteSmartConnections` 2→3，节点合并复用重映射逻辑；媒体接线
 `hydrateProjectMediaReferences` 7→8、`projectMediaUrl` 5→6，`NODE_TYPE_LOOP` 26→25。
 新名字中除断开接口外，其他三个进入核心主导集合。这些是词频而非运行时调用数。
+
+### #397：显式排版框
+
+相对 `e97cf6a`，核心→模块四项 **261 / 983 / 174 / 802 → 261 / 992 / 174 / 811**。
+独立批量卡按框内保存的几何渲染，复用 `BATCH_THUMB`（22→30）、
+`BATCH_NODE_PAD_H`（3→4）、`BATCH_NODE_PAD_V`（3→4）、`BATCH_STATUSBAR_H`（2→3），
+核心中直接引用 `NODE_TYPE_GROUP` 17→15。没有增加反向依赖的名字。

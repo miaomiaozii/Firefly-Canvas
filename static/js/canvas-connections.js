@@ -136,6 +136,9 @@ function renderConnections(){
     const items = [];
     const managedPairs = new Map();
     const ordinaryPairs = new Set();
+    // #397: keep card endpoints even if the other end touches a legacy group.
+    const layoutFrameEndpoints = new Set(canvasState.nodes.filter(isSmartLayoutFrame)
+        .flatMap(frame => [frame.id, ...(Array.isArray(frame.items) ? frame.items : [])]));
     conns.forEach(conn => {
         const kind = conn.kind || 'flow';
         // #85：候选池不再绘制 history 连线（数据关联保留在 canvas.connections 与 historyFor 字段，
@@ -151,8 +154,9 @@ function renderConnections(){
             items.push(item);
             return;
         }
-        const fromScope = kind === 'history' ? '' : smartGroupScopeId(conn.from);
-        const toScope = kind === 'history' ? '' : smartGroupScopeId(conn.to);
+        const keepEndpoints = layoutFrameEndpoints.has(conn.from) || layoutFrameEndpoints.has(conn.to);
+        const fromScope = keepEndpoints ? '' : smartGroupScopeId(conn.from);
+        const toScope = keepEndpoints ? '' : smartGroupScopeId(conn.to);
         // 同一分组内部的连线（成员↔成员、成员↔分组本体）属于内部关系，入组后隐藏，保持整洁。
         if(fromScope && fromScope === toScope) return;
         // 终点是某分组的成员：把同一来源连到该分组各成员的线合并成一条到分组的线。
@@ -283,7 +287,7 @@ function dragConnectTargetFor(sourceNode, point=lastMouseWorld){
 function canAutoConnectDraggedNode(sourceNode, targetNode){
     if(!sourceNode || !targetNode || sourceNode.id === targetNode.id) return false;
     if(isHistoryGroupNode(sourceNode) || isHistoryGroupNode(targetNode)) return false;
-    if(isSmartGroupNode(targetNode)) return false;
+    if(isSmartGroupNode(targetNode) || isSmartLayoutFrame(sourceNode)) return false;
     if(isSmartImageNode(sourceNode)) return isSmartImageNode(targetNode) || targetNode.type === NODE_TYPE_LOOP || targetNode.type === NODE_TYPE_PROMPT || targetNode.type === NODE_TYPE_CONVERSATION;
     if(sourceNode.type === NODE_TYPE_PROMPT) return isSmartImageNode(targetNode) || targetNode.type === NODE_TYPE_LOOP;
     if(sourceNode.type === NODE_TYPE_LOOP) return isSmartImageNode(targetNode);
@@ -481,7 +485,7 @@ function addConnection(fromId, toId, kind='flow'){
 function connectInputNode(fromId, toId){
     const from = canvasState.nodes.find(n => n.id === fromId);
     const to = canvasState.nodes.find(n => n.id === toId);
-    if(!from || !to || from.id === to.id) return false;
+    if(!from || !to || from.id === to.id || isSmartLayoutFrame(from) || isSmartLayoutFrame(to)) return false;
     // #149 C8: agent-task 是只读结果卡，不接受输入连线
     if(to.type === NODE_TYPE_TASK){
         toast(tr('smart.connectAgentTaskReadOnly'));

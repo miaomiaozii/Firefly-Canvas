@@ -34,6 +34,7 @@ from app.project_sessions import register_project_session, unregister_project_se
 from app.routers import api_mcp
 from app.routers.api_agent_tools import wait_for_task_core
 from app.services.agent_host import agent_host_manager
+from app.services.agent_tools_manifest import TOOL_NAMES
 from tests.fake_agent_host import FakeAgentProcess, install_stub_pi_cli, restore_stub_pi_cli
 
 
@@ -189,7 +190,8 @@ class McpProtocolTests(McpTestBase):
         resp = self.mcp({"jsonrpc": "2.0", "id": 7, "method": "tools/list"})
         tools = resp.json()["result"]["tools"]
         names = {t["name"] for t in tools}
-        self.assertEqual(len(tools), 30, names)
+        self.assertEqual(names, TOOL_NAMES)
+        self.assertEqual(len(tools), len(names), "tools/list must not contain duplicate names")
         # ADR 0022 已知缺口「假 canvas.get_selection」→ 摘除，不得再出现
         self.assertNotIn("canvas.get_selection", names)
         for expected in (

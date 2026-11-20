@@ -60,6 +60,46 @@ VIEW_TIMEOUT_NOTE = "慢操作独立 90s 超时契约：客户端请求超时应
 # Host settings and bindings are not image runSettings. Frame items remain server-managed.
 from app.services.agent_image_settings import RUN_SETTINGS_PROPERTIES
 
+LAYOUT_LIMIT = 10_000_000
+_LAYOUT_ID = {"type": "string", "minLength": 1, "maxLength": 500}
+_LAYOUT_IDS = {"type": "array", "items": _LAYOUT_ID, "maxItems": 500, "uniqueItems": True}
+_LAYOUT_NUMBER = {"type": "number", "minimum": -LAYOUT_LIMIT, "maximum": LAYOUT_LIMIT}
+_LAYOUT_GAP = {**_LAYOUT_NUMBER, "minimum": 0}
+_LAYOUT_INCLUDE_USER = {"type": "boolean", "description": "仅当用户明确点名 node_ids 中的用户节点时设为 true；只有无需确认档且本轮有相应的用户节点引用可免确认。"}
+
+
+def _layout_enum(*values):
+    return {"type": "string", "enum": list(values)}
+
+
+def _layout_schema(required, **properties):
+    return {"type": "object", "required": required, "properties": properties, "additionalProperties": False}
+
+
+LAYOUT_SCHEMAS = {
+    "canvas.group_create": _layout_schema(["title"], title={**_LAYOUT_ID, "maxLength": 200}, node_ids=_LAYOUT_IDS,
+        plan_section={**_LAYOUT_ID, "maxLength": 200}, include_user_nodes=_LAYOUT_INCLUDE_USER,
+        anchor={"oneOf": [_layout_schema(["x", "y"], x=_LAYOUT_NUMBER, y=_LAYOUT_NUMBER),
+                         _layout_enum("right_of_selection", "auto")]}),
+    "canvas.group_arrange": _layout_schema(["group_id", "layout"], group_id=_LAYOUT_ID,
+        layout=_layout_enum("grid", "row", "column"), sort_by=_layout_enum("plan_order", "title", "current"), gap=_LAYOUT_GAP),
+    "canvas.arrange_groups": _layout_schema(["group_ids", "direction"], group_ids=_LAYOUT_IDS,
+        direction=_layout_enum("row", "column"), gap=_LAYOUT_GAP),
+    "canvas.align": _layout_schema(["node_ids", "edge"], node_ids=_LAYOUT_IDS,
+        edge=_layout_enum("left", "center_x", "right", "top", "center_y", "bottom"), include_user_nodes=_LAYOUT_INCLUDE_USER),
+    "canvas.distribute": _layout_schema(["node_ids", "axis"], node_ids=_LAYOUT_IDS,
+        axis=_layout_enum("x", "y"), gap=_LAYOUT_GAP, include_user_nodes=_LAYOUT_INCLUDE_USER),
+}
+LAYOUT_TOOLS = frozenset(LAYOUT_SCHEMAS)
+
+_LAYOUT_DESCRIPTIONS = {
+    "canvas.group_create": "新建显式排版框；组员及其连线保持独立。同标题、同 Agent 的排版框复用（不增加成员）；不转换旧分组，不收已入组节点，不允许嵌套。anchor 默认 auto（画布右侧）；也可指定 right_of_selection 或 {x,y}。默认跳过受保护节点。",
+    "canvas.group_arrange": "按 grid（最多三列）、row 或 column 排列新建排版框的自有组员。sort_by 默认 current（先上后下、先左后右）；受保护组员原地保留，旧分组和会话框不支持。",
+    "canvas.arrange_groups": "按传入顺序并排或竖排显式排版框；成员随框平移。跳过旧框、受保护框及含受保护成员的框。",
+    "canvas.align": "将可移动卡片向首个可移动目标的指定边缘/中心对齐，默认跳过受保护节点；整组平移请用 arrange_groups。",
+    "canvas.distribute": "沿指定轴在最外侧卡片之间等距分布（至少三张）；指定 gap 时从首张开始定距排列（至少两张）。默认跳过受保护节点。",
+}
+
 UPDATABLE_NODE_FIELDS = frozenset({
     "title", "text", "prompt", "x", "y", "w", "h", "status", "runSettings",
 })
@@ -90,6 +130,10 @@ TOOLS = [
         "title": {"type": "string", "description": "新标题"},
         "text": {"type": "string", "description": "新正文"},
         "prompt": {"type": "string", "description": "新提示词"},
+        "x": {"type": "number", "description": "画布 X 坐标"},
+        "y": {"type": "number", "description": "画布 Y 坐标"},
+        "w": {"type": "number", "description": "节点宽度"},
+        "h": {"type": "number", "description": "节点高度"},
         "runSettings": {"type": "object", "properties": RUN_SETTINGS_PROPERTIES, "additionalProperties": False},
     }, "required": ["node_id"], "additionalProperties": False}},
     {"name": "canvas.delete_node", "description": "删除节点（破坏性：需画布确认门批准，阻塞最长 90s）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"], "additionalProperties": False}},
@@ -132,6 +176,8 @@ TOOLS = [
         }, "required": ["node_id"], "anyOf": [{"required": ["order"]}, {"required": ["role_overrides"]}],
         "additionalProperties": False,
     }},
+    *[{"name": name, "description": description, "inputSchema": LAYOUT_SCHEMAS[name]}
+      for name, description in _LAYOUT_DESCRIPTIONS.items()],
     {"name": "canvas.search_projects", "description": "跨项目搜索（只读，票 F/ADR-0026）：按关键词搜所有项目画布节点的标题/prompt/正文与项目名，返回按项目分组命中（node_id/kind/field/snippet）；不搜 agent 会话内容，不建索引", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 200, "description": "搜索关键词（大小写不敏感）"}, "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "命中总数上限（默认 50）"}}, "required": ["query"], "additionalProperties": False}},
     # #266 只读视图工具（ComfyArt §59.4 语义；只读不走确认门——#242 语义：写操作才需确认）
     {"name": "canvas.view", "description": f"整页/选区节点媒体导出为一张图（contact sheet，以 MCP image 内容块返回，文本块仅含元数据）喂模型（只读）。{VIEW_TIMEOUT_NOTE}；超时时先调低 max_px 或改用 selection 缩小批量，再重试", "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["page", "selection"], "description": "page=整页（所有带媒体节点）；selection=指定 node_ids"}, "node_ids": PARAM_NODE_IDS, "max_px": PARAM_MAX_PX}, "required": ["scope"], "additionalProperties": False}},
@@ -161,6 +207,7 @@ TOOL_NAMES = {t["name"] for t in TOOLS}
 # #350：写类工具集——MCP 无 &node= 时才允许回退到共享外部节点（ensure upsert）；
 # 其余只读工具绝不写画布（票面：「MCP 只读工具也 upsert 节点」）。
 WRITE_TOOLS = frozenset({
+    *LAYOUT_TOOLS,
     "canvas.attach_refs", "canvas.batch_edit", "canvas.connect", "canvas.create_node",
     "canvas.delete_node", "canvas.disconnect", "canvas.edit_crop", "canvas.edit_erase",
     "canvas.edit_flip", "canvas.edit_outpaint", "canvas.edit_rotate", "canvas.place_media",

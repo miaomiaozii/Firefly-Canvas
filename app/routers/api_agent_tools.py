@@ -26,9 +26,9 @@ import os as _os
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK, ensure_agent_same_origin
 from app.constants import NODE_TYPE_AGENT, NODE_TYPE_GROUP
-from app.services import agent_frame, agent_image_settings, agent_refs
+from app.services import agent_frame, agent_image_settings, agent_layout, agent_refs
 from app.services.agent_errors import agent_error
-from app.services.agent_tools_manifest import UPDATABLE_NODE_FIELDS as _UPDATABLE_NODE_FIELDS
+from app.services.agent_tools_manifest import LAYOUT_TOOLS, UPDATABLE_NODE_FIELDS as _UPDATABLE_NODE_FIELDS
 from app.core import AIReference, ONLINE_IMAGE_REFERENCE_MAX, PROJECT_MEDIA_ADAPTER_PROJECT, ProjectImageGenerationRequest
 from app.services.misc import RoutedOnlineImageRequest, build_online_image_result
 from firefly_generation import ImageGenerationRequest, ModelRoutingError
@@ -64,7 +64,7 @@ _LIFETIME_STOPPING = weakref.WeakSet()
 _LIFETIME_LOCK = threading.RLock()
 _JOURNALED_TOOLS = frozenset({"canvas.create_node", "canvas.update_node", "canvas.delete_node",
                               "canvas.connect", "canvas.disconnect", "canvas.place_media",
-                              "canvas.attach_refs", "canvas.set_ref_order"})
+                              "canvas.attach_refs", "canvas.set_ref_order", *LAYOUT_TOOLS})
 
 
 def _track_lifetime_task(task):
@@ -603,6 +603,25 @@ async def set_ref_order(project_id: str, request: Request):
     return await _rest_reference_tool(project_id, request, "canvas.set_ref_order", set_ref_order_core)
 
 
+def _layout_route(tool):
+    async def endpoint(project_id: str, request: Request):
+        try:
+            args = await request.json()
+        except ValueError as exc:
+            raise agent_layout.invalid("Expected a JSON object") from exc
+        agent_layout.validate_args(tool, args)
+        owner = request.query_params.get("agent_node_id", "")
+        return await _rest_agent_call(request, project_id, tool, args,
+                                      lambda: layout_tool_core(project_id, owner, tool, args,
+                                                               hosted=bool(request.headers.get("X-Agent-Project"))), owner)
+    return endpoint
+
+
+for _layout_tool in sorted(LAYOUT_TOOLS):
+    _layout_path = _layout_tool.split(".", 1)[1]
+    router.add_api_route(f"/{_layout_path}", _layout_route(_layout_tool), methods=["POST"], name=_layout_path)
+
+
 @router.patch("/nodes/{node_id}")
 async def update_node(project_id: str, node_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Update an existing node's properties."""
@@ -901,6 +920,8 @@ async def create_node_core(project_id: str, node: dict, agent_node_id: str = "")
         raise agent_error(400, "INVALID_ARGUMENT", "node must be an object",
                           "canvas.create_node 的 node 参数需是对象。")
 
+    if "layoutFrame" in node:
+        raise agent_layout.invalid("layoutFrame is assigned only by canvas.group_create")
     reserved = sorted(key for key in ownership_fields() if key in node)
     if reserved:
         raise agent_error(400, "INVALID_ARGUMENT", "Creation metadata is server-owned",
@@ -974,6 +995,70 @@ def _media_card(image, agent_node_id, *, title=None):
     return {"id": f"node-{uuid.uuid4().hex[:12]}", "type": "smart-image",
             "title": image["name"] if title is None else title, "images": [image],
             "created_at": _app_main.now_ms(), **ownership_fields(agent_node_id)}
+
+
+async def layout_tool_core(project_id: str, owner: str, tool: str, args: dict, *, hosted=False) -> dict:
+    from app.services.agent_host import agent_host_manager
+    from app.services.agent_ops_context import agent_ops_scope, current_agent_ops_context
+
+    agent_layout.validate_args(tool, args)
+    if not isinstance(owner, str) or not owner.strip():
+        raise agent_layout.invalid("Layout tools require the initiating Agent node ID")
+    _validate_project(project_id)
+    context = current_agent_ops_context()
+    if context is not None and (context.project_id, context.agent_node_id, context.tool) != (project_id, owner, tool):
+        raise agent_layout.invalid("Layout operation context does not match its project, agent and tool")
+
+    async def execute():
+        store = _app_main.FIREFLY_PROJECT_STORE
+        group_id = f"node-{uuid.uuid4().hex[:12]}" if tool == "canvas.group_create" else None
+        now = _app_main.now_ms()
+
+        def plan(canvas):
+            return agent_layout.make_plan(canvas, tool, args, owner, group_id, now)
+
+        snapshot = store.canvas(project_id)
+        preview = plan(snapshot)
+        active_turn = current_agent_ops_context().turn_id if hosted else None
+        if preview.confirm:
+            details = {"nodes": preview.confirm, "group_id": preview.result.get("group_id")}
+            names = "、".join(f"{entry['title']} ({entry['id']})" for entry in preview.confirm[:8])
+            more = f" 等 {len(preview.confirm)} 个节点" if len(preview.confirm) > 8 else ""
+            action = "加入新排版框并移动" if tool == "canvas.group_create" else "移动"
+            named_nodes = agent_host_manager.layout_named_nodes(project_id, owner, active_turn)
+            decision = await request_confirmation_core(project_id, owner, tool, details,
+                f"是否{action}以下受保护节点：{names}{more}？", AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS,
+                allow_automatic={entry['id'] for entry in preview.confirm}.issubset(named_nodes))
+            if decision.get("approved") is not True:
+                if decision.get("reason") == "rejected":
+                    raise agent_error(409, "CONFIRM_REJECTED", "User rejected the layout operation",
+                                      "不要重试相同操作；先询问用户。", retryable=False)
+                raise agent_error(409, "CONFIRM_PENDING", "Layout confirmation was not received",
+                                  "确认画布标签页已打开，再查看最新画布状态。")
+
+        def build(canvas):
+            nonlocal preview
+            if preview.confirm:
+                # Approval covers exactly this snapshot, not a replan that
+                # could introduce newly protected cards or different positions.
+                if (canvas.get("revision") != snapshot.get("revision") or
+                        (active_turn and agent_host_manager.get_current_turn_id(project_id, owner) != active_turn)):
+                    raise agent_error(409, "CANVAS_CONFLICT", "Canvas or active turn changed while layout confirmation was pending",
+                                      "重新查看画布并发起新的确认，不复用旧批准。")
+            else:
+                preview = plan(canvas)
+                if preview.confirm:
+                    raise agent_error(409, "CANVAS_CONFLICT", "Layout now requires user confirmation",
+                                      "重新查看画布并发起新的确认。")
+            return preview.mutations
+
+        await _apply_mutations_from_snapshot(project_id, build)
+        return _op_result(preview.result)
+
+    if context is None:
+        with agent_ops_scope(project_id=project_id, agent_node_id=owner, tool=tool, args=args):
+            return await execute()
+    return await execute()
 
 
 async def place_media_core(project_id: str, args: dict, agent_node_id: str = "") -> dict:
@@ -2308,6 +2393,7 @@ async def request_confirmation_core(
     params: dict,
     message: str,
     timeout_seconds: float = 60,
+    *, allow_automatic: bool = True,
 ) -> dict:
     """Confirmation gate core (Request-free; shared by HTTP + MCP, #243).
 
@@ -2326,7 +2412,7 @@ async def request_confirmation_core(
     # Check autonomy level: auto-approve destructive tools in autonomous mode
     # (except safety-floor tools which always require confirmation)
     autonomy = session.autonomy or "cautious"
-    if autonomy == "autonomous" and tool not in SAFETY_FLOOR_TOOLS:
+    if allow_automatic and autonomy == "autonomous" and tool not in SAFETY_FLOOR_TOOLS:
         return {"approved": True}
 
     # Generate a unique confirm ID
