@@ -14,6 +14,7 @@ from typing import Dict, Any, List, Optional
 from layout_engine import DeterministicLayout
 
 from app.core import ProjectNotFound, RevisionConflict
+from app.services.excel_plan_mutation import build_mutations
 
 logger = logging.getLogger(__name__)
 
@@ -63,47 +64,10 @@ async def expand_plan(request: Request, payload: ExpandPlanRequest) -> Dict[str,
     canvas = opened['canvas']
     base_revision = int(canvas.get('revision') or 0)
 
-    # 2. 使用确定性布局器生成操作
-    layout = DeterministicLayout()
-    operations = layout.generate_canvas_operations(plan, canvas)
+    operations = DeterministicLayout().generate_canvas_operations(plan, canvas)
+    mutations = build_mutations(operations)
 
-    # 3. 构建 mutations（节点 + 边）
-    mutations = []
-
-    # 创建节点
-    for op in operations:
-        if op['type'] == 'create_node':
-            mutations.append({
-                'op': 'upsert_node',
-                'node': {
-                    'id': op['node_id'],
-                    'type': op['node_type'],
-                    'title': op['label'],
-                    'x': op['x'],
-                    'y': op['y'],
-                    'w': op['width'],
-                    'h': op['height'],
-                    'excel_task_id': op.get('excel_task_id', ''),
-                    'excel_section': op.get('excel_section', ''),
-                    **op.get('extra_data', {})
-                }
-            })
-
-    # 创建边（edges）
-    for op in operations:
-        if op['type'] == 'create_edge':
-            mutations.append({
-                'op': 'upsert_edge',
-                'edge': {
-                    'id': f"{op['from']}-{op['to']}",
-                    'from': op['from'],
-                    'to': op['to'],
-                    'kind': 'flow',
-                    'label': op.get('label', '')
-                }
-            })
-
-    # 4. 原子性应用所有 mutations（版本冲突 → 409）
+    # 版本冲突 → 409
     if mutations:
         try:
             await asyncio.to_thread(

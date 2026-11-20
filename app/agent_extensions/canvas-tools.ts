@@ -306,8 +306,17 @@ const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any
         return textResult(await callApi(`/api/projects/${PROJECT_ID}/generate/tasks/${params.task_id}/wait?timeout=${timeout}`, "GET"), true);
     },
 
+    "plan.import_excel": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/plan/import_excel${gateQuery()}`, "POST", params)),
+
+    "plan.edit_preview": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/plan/edit_preview${gateQuery()}`, "POST", params)),
+
+    "plan.apply": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/plan/apply${gateQuery()}`, "POST", params)),
+
     "media.upload": async (_toolCallId, params) =>
-        textResult(await callApi(`/api/projects/${PROJECT_ID}/media/upload`, "POST", { file_path: params.file_path }), true),
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/media/upload${params.attachment_id ? gateQuery() : ""}`, "POST", params), true),
 
     "media.list": async (_toolCallId, params) =>
         textResult(await callApi(`/api/projects/${PROJECT_ID}/media/list`, "GET"), true),

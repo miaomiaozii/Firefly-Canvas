@@ -104,7 +104,22 @@ UPDATABLE_NODE_FIELDS = frozenset({
     "title", "text", "prompt", "x", "y", "w", "h", "status", "runSettings",
 })
 
+PLAN_TOOLS = frozenset({"plan.import_excel", "plan.edit_preview", "plan.apply"})
+_PLAN_ID = {"type": "string", "minLength": 1, "maxLength": 128}
+_PLAN_GENERATION = {"type": "integer", "minimum": 1, "description": "最近预览的 generation；传入时旧版本会被拒绝"}
+_ATTACHMENT_ID = {"type": "string", "minLength": 32, "maxLength": 32, "description": "已发送到当前 Agent 会话的附件 ID，不是文件路径或 asset_id"}
+
 TOOLS = [
+    {"name": "plan.import_excel", "description": "只读解析已发送到当前 Agent 会话的 XLSX 附件。每个主图/A+ 简报只建一项，不按场景数量拆分。意向图仅供描述方向，产品图由用户自行接入。返回未勾选任务、字段识别、排除项及需复核提示。能力不包括图片识别。个人路径和链接不读取。", "inputSchema": _layout_schema(
+        ["attachment_id"], attachment_id=_ATTACHMENT_ID, sheet={"type": "string", "maxLength": 200})},
+    {"name": "plan.edit_preview", "description": "只编辑预览，不写画布。每个 op 传 task_id + 恰好一个动作：select、rename、merge_into、set_section。不支持拆分或挂参考图；产品参考图由用户自行连入。", "inputSchema": _layout_schema(
+        ["plan_id", "ops"], plan_id=_PLAN_ID, generation=_PLAN_GENERATION,
+        ops={"type": "array", "minItems": 1, "maxItems": 200, "items": _layout_schema(
+            ["task_id"], task_id=_PLAN_ID, select={"type": "boolean"}, rename={"type": "string", "maxLength": 200},
+            merge_into=_PLAN_ID, set_section={"type": "string", "maxLength": 200})})},
+    {"name": "plan.apply", "description": "浏览器批准确切任务后，按板块一次提交缺失任务。提示词通过 input 边连入空生图槽，不生成、不导入或连接任何参考图。缺产品图是待用户补齐的状态。只撤销本批可用返回的 op_id；task_ids 省略时使用已勾选任务。", "inputSchema": _layout_schema(
+        ["plan_id"], plan_id=_PLAN_ID, generation=_PLAN_GENERATION, layout=_layout_enum("by_section"),
+        task_ids={"type": "array", "items": _PLAN_ID, "maxItems": 200, "uniqueItems": True})},
     {"name": "ops.list", "description": "列出当前项目的 Agent 操作日志，可按 turn_id 筛选；外部 MCP 的 turn_id 不得复用，未提供轮次时只可逐条撤销。", "inputSchema": {"type": "object", "properties": {"turn_id": {"type": "string", "minLength": 1}, "limit": {"type": "integer", "minimum": 1, "maximum": 1000}}, "required": [], "additionalProperties": False}},
     {"name": "ops.undo", "description": "按 op_id 或 turn_id 撤销（恰好提供一个）；外部 MCP 的 turn_id 不得复用，未提供轮次时不支持按轮撤销。", "inputSchema": {"type": "object", "properties": {"op_id": {"type": "string", "minLength": 1}, "turn_id": {"type": "string", "minLength": 1}}, "required": [], "additionalProperties": False}},
     {"name": "canvas.list_nodes", "description": "列出画布节点与组索引（含连边、创建来源和人工保护摘要）；可按 group_id 直接成员或 created_by 原创建来源筛选。fields 省略时返回 summary/prompt/refs/run 全部四块，[] 只返回 summary；summary 始终返回。", "inputSchema": {"type": "object", "properties": {
@@ -212,7 +227,7 @@ TOOLS = [
     {"name": "generate.trigger", "description": "按节点保存的 runSettings 和画布参考图生图，返回 task_id。参考图必须已归档到当前项目。按本次请求图片张数确认和计入会话额度（阻塞最长 90s，autonomous 自动放行）；结果写入项目历史", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"], "additionalProperties": False}},
     {"name": "generate.status", "description": "查询生成任务状态", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"], "additionalProperties": False}},
     {"name": "generate.wait", "description": "等待生成任务完成。可阻塞数分钟：timeout_seconds 1..600（默认 120）；客户端请求超时必须设为 >= 600s（ADR 0022 超时契约）", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}, "timeout_seconds": {"type": "number", "description": "1..600，默认 120", "minimum": 1, "maximum": 600}}, "required": ["task_id"], "additionalProperties": False}},
-    {"name": "media.upload", "description": "导入本机媒体文件到项目资源库（file_path 为服务器本机路径）", "inputSchema": {"type": "object", "properties": {"file_path": {"type": "string"}}, "required": ["file_path"], "additionalProperties": False}},
+    {"name": "media.upload", "description": "单独导入项目媒体：file_path 为服务器本机路径；或使用 attachment_id 将已发送的会话图片在浏览器批准后明确归档。仅传其中一项。", "inputSchema": {"type": "object", "properties": {"file_path": {"type": "string"}, "attachment_id": _ATTACHMENT_ID}, "required": [], "oneOf": [{"required": ["file_path"]}, {"required": ["attachment_id"]}], "additionalProperties": False}},
     {"name": "media.list", "description": "列出项目媒体资源", "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}},
     {"name": "media.delete", "description": "删除媒体资源（破坏性：需画布确认门批准，阻塞最长 90s）", "inputSchema": {"type": "object", "properties": {"asset_id": {"type": "string"}}, "required": ["asset_id"], "additionalProperties": False}},
     {"name": "viewport.focus", "description": "画布视口聚焦到节点（定向下发给打开该项目的标签页）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"], "additionalProperties": False}},
@@ -230,7 +245,7 @@ WRITE_TOOLS = frozenset({
     "canvas.delete_node", "canvas.disconnect", "canvas.edit_crop", "canvas.edit_erase",
     "canvas.edit_flip", "canvas.edit_outpaint", "canvas.edit_rotate", "canvas.place_media",
     "canvas.set_ref_order", "canvas.update_node",
-    "generate.trigger", "media.delete", "media.upload",
+    "generate.trigger", "media.delete", "media.upload", "plan.apply",
 })
 
 # #393：共享描述须明确限定在外部 MCP；turn_id 不进写工具的 JSON schema，Pi 由服务端归属轮次。

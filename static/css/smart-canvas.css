@@ -4042,6 +4042,7 @@ button.prompt-flow-context-image { cursor:pointer; }
 
 .agent-tui-confirm { margin:8px 0; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--surface-sunken, var(--soft)); overflow-wrap:anywhere; }
 .agent-tui-confirm-message { margin-bottom:8px; color:var(--ink, var(--text)); font-size:14px; }
+.agent-tui-confirm-plan { white-space:pre-line; overflow-wrap:anywhere; max-height:35vh; overflow-y:auto; }
 .agent-tui-confirm-buttons { display:flex; flex-wrap:wrap; gap:8px; }
 .agent-tui-confirm-btn { padding:6px 12px; border:1px solid var(--line); border-radius:6px; background:var(--surface, var(--card)); color:var(--ink, var(--text)); font-size:12px; cursor:pointer; }
 .agent-tui-confirm-approve { background:var(--ink, var(--text)); color:var(--surface, var(--card)); border-color:var(--ink, var(--text)); }

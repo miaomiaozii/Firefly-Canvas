@@ -68,7 +68,7 @@ test('#284 源码契约：五个媒体/生成工具返回值都过 normalizeMedi
     const wired = [
         ['generate.status', '/generate/tasks/${params.task_id}`'],
         ['generate.wait', '/generate/tasks/${params.task_id}/wait?timeout=${timeout}`'],
-        ['media.upload', '/media/upload`'],
+        ['media.upload', '/media/upload${params.attachment_id ? gateQuery() : ""}'],
         ['media.list', '/media/list`'],
     ];
     for (const [tool, pathSeg] of wired) {

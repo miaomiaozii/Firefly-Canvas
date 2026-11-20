@@ -87,8 +87,9 @@ class SheetData:
 class XlsxParser:
     """解析 xlsx 文件（OpenXML 格式）。"""
 
-    def __init__(self, file_path: Path | str | bytes):
+    def __init__(self, file_path: Path | str | bytes, *, literal_only: bool = False):
         self.file_path = file_path
+        self.literal_only = literal_only
 
     def parse(self) -> Dict[str, Any]:
         """解析 xlsx，返回 sheets / shared strings 结果 / 关系映射 / 单元格图片。
@@ -108,6 +109,11 @@ class XlsxParser:
         from io import BytesIO
 
         with zipfile.ZipFile(BytesIO(zip_bytes), "r") as zf:
+            if self.literal_only:
+                parts = zf.infolist()
+                if (len(parts) > 4096 or sum(info.file_size for info in parts) > 128 * 1024**2
+                        or "xl/workbook.xml" not in zf.namelist()):
+                    raise ValueError("Invalid or oversized XLSX package")
             shared_strings = self._parse_shared_strings(zf)
             workbook = self._parse_workbook(zf)
             relationships = self._parse_workbook_relationships(zf)
@@ -153,6 +159,8 @@ class XlsxParser:
         except (KeyError, ET.ParseError):
             return {}
         for rel in rels_root.findall(f".//{{{NS_PKG_REL}}}Relationship"):
+            if self.literal_only and rel.get("TargetMode", "").lower() == "external":
+                continue
             rid = rel.get("Id")
             target = rel.get("Target", "")
             if not rid or not target or target == "NULL" or target.upper() == "NULL":
@@ -240,6 +248,8 @@ class XlsxParser:
         root = ET.fromstring(content)
         relationships = {}
         for rel in root.findall(f".//{{{NS_PKG_REL}}}Relationship"):
+            if self.literal_only and rel.get("TargetMode", "").lower() == "external":
+                continue
             relationships[rel.get("Id")] = (rel.get("Target", "").replace("\\", "/"))
         return relationships
 
@@ -303,6 +313,8 @@ class XlsxParser:
                     idx = self._column_index_from_cell_ref(cell.get("r", ""))
                     if idx < 0:
                         idx = max_index + 1
+                    if self.literal_only and idx >= 1024:
+                        raise ValueError("Plan worksheet exceeds 1024 columns")
                     max_index = max(max_index, idx)
                     cells_map[idx] = self._read_cell_value(cell, shared_strings)
 
@@ -341,6 +353,9 @@ class XlsxParser:
         - t="inlineStr"：拼接所有 <t> 文本
         - v 为空且有 <f>：返回 "=" + 公式文本（C# 保留 DISPIMG 等公式供 ID_ 匹配）
         """
+        # Agent imports must not consume formulas or their cached values (#399).
+        if self.literal_only and cell.find(f"{{{NS_MAIN}}}f") is not None:
+            return ""
         t = (cell.get("t") or "").lower()
         if t == "inlinestr":
             parts = [
@@ -389,7 +404,8 @@ class XlsxParser:
             drawing_paths = [
                 self._resolve_part_path(sheet_path, rel.get("Target", ""))
                 for rel in ws_rels_root.findall(f"{{{NS_PKG_REL}}}Relationship")
-                if (rel.get("Target") or "").lower().find("drawing") >= 0
+                if "drawing" in (rel.get("Target") or "").lower()
+                and (not self.literal_only or rel.get("TargetMode", "").lower() != "external")
             ]
         except (KeyError, ET.ParseError):
             drawing_paths = []
@@ -494,24 +510,29 @@ class XlsxParser:
             h = row_heights.get(z, 0)
             return h if h > 0 else DEFAULT_ROW_HEIGHT_EMU
 
+        # Sparse heights and binary search keep a drawing with a distant anchor bounded.
+        from bisect import bisect_left
+        keys = sorted(r for r, h in row_heights.items() if r >= 0 and h > 0)
+        adjustments = [0]
+        for r in keys:
+            adjustments.append(adjustments[-1] + row_height(r) - DEFAULT_ROW_HEIGHT_EMU)
+
         def row_top(z: int) -> int:
-            top = 0
-            for r in range(z):
-                top += row_height(r)
-            return top
+            return z * DEFAULT_ROW_HEIGHT_EMU + adjustments[bisect_left(keys, z)]
 
         from_y = row_top(from_row) + max(0, from_row_off)
         to_y = row_top(to_row) + max(0, to_row_off)
-        if to_y < from_y:
-            to_y = from_y
-        center_y = from_y + ((to_y - from_y) // 2)
-        max_row = max(from_row, to_row) + 3
-        for r in range(max_row + 1):
-            top = row_top(r)
-            bottom = top + row_height(r)
-            if top <= center_y < bottom:
-                return r + 1
-        return from_row + 1
+        center_y = (from_y + max(from_y, to_y)) // 2
+        lo, hi = from_row, to_row + 4
+        if center_y >= row_top(hi):
+            return from_row + 1
+        while lo + 1 < hi:
+            mid = (lo + hi) // 2
+            if row_top(mid) <= center_y:
+                lo = mid
+            else:
+                hi = mid
+        return lo + 1
 
     def _resolve_image(
         self,
@@ -532,6 +553,8 @@ class XlsxParser:
         # C# drawingRels：StringComparer.OrdinalIgnoreCase
         rid_map: Dict[str, str] = {}
         for rel in root.findall(f".//{{{NS_PKG_REL}}}Relationship"):
+            if self.literal_only and rel.get("TargetMode", "").lower() == "external":
+                continue
             rid = rel.get("Id")
             if rid:
                 rid_map[rid.lower()] = rel.get("Target", "")

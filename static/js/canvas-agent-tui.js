@@ -1317,6 +1317,7 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
                 window.ffDialog.ask({
                     title: '确认 Agent 操作',
                     message: event.message || '请确认操作',
+                    scrollMessage: event.tool === 'plan.apply',
                     confirmText: '批准',
                     cancelText: '取消',
                     danger: true,
@@ -2441,7 +2442,7 @@ function agentNodeBodyHtml(node) {
     if (state.confirm) {
         const c = state.confirm;
         confirmHtml = `<div class="agent-tui-confirm" data-agent-confirm="${escapeAttr(nodeId)}">
-            <div class="agent-tui-confirm-message">${agentIco('triangle-alert')} ${escapeHtml(c.message || '请确认操作')}</div>
+            <div class="agent-tui-confirm-message${c.tool === 'plan.apply' ? ' agent-tui-confirm-plan' : ''}">${agentIco('triangle-alert')} ${escapeHtml(c.message || '请确认操作')}</div>
             <div class="agent-tui-confirm-buttons">
                 <button type="button" class="agent-tui-confirm-btn agent-tui-confirm-approve" data-agent-confirm-approve="${escapeAttr(nodeId)}">批准</button>
                 <button type="button" class="agent-tui-confirm-btn agent-tui-confirm-reject" data-agent-confirm-reject="${escapeAttr(nodeId)}">取消</button>

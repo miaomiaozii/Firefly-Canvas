@@ -22,9 +22,10 @@ def attachment_root(project_root: Path, project_id: str, node_id: str) -> Path:
         validate_events_identifiers(project_id, node_id)
     except InvalidEventsCursor as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
-    project = (project_root / project_id).resolve()
-    root = (project / "agent_nodes" / node_id / "sessions" / "attachments").resolve()
-    if not root.is_relative_to(project):
+    project = project_root.resolve() / project_id
+    expected = project / "agent_nodes" / node_id / "sessions" / "attachments"
+    root = expected.resolve()
+    if root != expected:
         raise HTTPException(status_code=400, detail="Invalid attachment directory")
     return root
 
@@ -71,11 +72,12 @@ def resolve_attachments(root: Path, refs: object) -> list[dict]:
             raise HTTPException(status_code=400, detail="Invalid attachment ID")
         folder = root / item
         metadata = folder / "metadata.json"
-        if not folder.resolve().is_relative_to(root.resolve()) or not metadata.is_file():
+        if folder.resolve() != folder or metadata.resolve() != metadata or not metadata.is_file():
             raise HTTPException(status_code=404, detail="Attachment not found")
         record = json.loads(metadata.read_text(encoding="utf-8"))
-        path = (folder / record["file"]).resolve()
-        if path.parent != folder.resolve() or not path.is_file():
+        expected = folder / record["file"]
+        path = expected.resolve()
+        if path != expected or path.parent != folder or not path.is_file():
             raise HTTPException(status_code=404, detail="Attachment not found")
         result.append({key: value for key, value in record.items() if key != "file"} | {"path": str(path)})
     return result

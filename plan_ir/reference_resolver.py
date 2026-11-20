@@ -62,12 +62,13 @@ def resolve_anchored_reference_files(
 def resolve_reference_files_text(
     cell_text: str,
     image_lookup: Dict[str, Dict[str, Any]],
+    *, embedded_only: bool = False,
 ) -> Iterator[Any]:
     """C# ResolveReferenceFiles:1853 — ID_ token（大小写不敏感）+ 图片路径（须存在）。"""
     text = cell_text or ""
     if image_lookup:
         # C# result 字典为 OrdinalIgnoreCase → 先归一化键再查
-        low_lookup = {k.lower(): v for k, v in image_lookup.items()}
+        low_lookup = image_lookup if embedded_only else {k.lower(): v for k, v in image_lookup.items()}
         for m in re.findall(r"ID_[A-Za-z0-9]+", text):
             value = low_lookup.get(m.lower())
             if value is not None:
@@ -75,7 +76,7 @@ def resolve_reference_files_text(
     parts = re.split(r"[\n;；]", text.replace("\r\n", "\n").replace("\r", "\n"))
     for part in parts:
         value = part.strip().strip('"')
-        if value and is_image_file_path(value) and os.path.exists(value):
+        if value and is_image_file_path(value) and (embedded_only or os.path.exists(value)):
             yield value
 
 
@@ -86,6 +87,7 @@ def resolve_reference_files(
     row_number: int,
     column_index: int,
     headers: List[str],
+    *, embedded_only: bool = False,
 ) -> Iterator[Any]:
     """C# ResolveReferenceFiles:1812 — operationRef 列范围内锚定图 + 文本引用。"""
     if image_lookup is not None:
@@ -95,7 +97,9 @@ def resolve_reference_files(
         end = min(end, column_index + 8)
         for column in range(column_index, end):
             yield from resolve_anchored_reference_files(sheet_name, row_number, column, image_lookup)
-    yield from resolve_reference_files_text(cell_text, image_lookup or {})
+    for value in resolve_reference_files_text(cell_text, image_lookup or {}, embedded_only=embedded_only):
+        if not embedded_only or isinstance(value, dict):
+            yield value
 
 
 def looks_like_machine_image_reference(text: str) -> bool:
@@ -117,6 +121,7 @@ def join_reference_text_notes(
     headers: List[str],
     col_map: Dict[str, List[int]],
     image_lookup: Dict[str, Dict[str, Any]],
+    *, embedded_only: bool = False,
 ) -> str:
     """C# JoinReferenceTextNotes:2298 — 参考列文本（非机读引用）并入需求。"""
     parts: List[str] = []
@@ -132,7 +137,7 @@ def join_reference_text_notes(
         if not cleaned or not cleaned.strip():
             continue
         # C# 调 text-only 重载（ResolveReferenceFiles:1853），非锚定全参重载
-        if any(v is not None for v in resolve_reference_files_text(cleaned, image_lookup or {})):
+        if any(resolve_reference_files_text(cleaned, image_lookup or {}, embedded_only=embedded_only)):
             continue
         source = compact_line(headers[i]) if i < len(headers) and headers[i] and headers[i].strip() else "参考"
         parts.append(f"{source}：{cleaned}")
@@ -146,6 +151,7 @@ def add_operation_references_from_mapped_cells(
     image_lookup: Dict[str, Dict[str, Any]],
     sheet_name: str,
     row_number: int,
+    *, embedded_only: bool = False,
 ) -> List[Tuple[Any, str]]:
     """C# AddOperationReferencesFromMappedCells:1785。
 
@@ -161,17 +167,17 @@ def add_operation_references_from_mapped_cells(
             continue
         source = compact_line(headers[i]) if i < len(headers) and headers[i] and headers[i].strip() else "Excel参考图"
         cell_text = row[i] if i < len(row) else ""
-        for value in resolve_reference_files(cell_text, image_lookup, sheet_name, row_number, i, headers):
+        if embedded_only and re.search(r"遮罩|蒙版|\bmask\b", source, re.IGNORECASE):
+            continue
+        for value in resolve_reference_files(cell_text, image_lookup, sheet_name, row_number, i, headers,
+                                             embedded_only=embedded_only):
             path = value.get("path") if isinstance(value, dict) else value
-            if not path:
+            if not path or not is_image_file_path(path):
                 continue
-            if not is_image_file_path(path):
-                continue
-            if isinstance(value, dict) and not os.path.exists(path):
-                # lookup 命中的图在内存中（bytes 已随 parse_result），不要求磁盘存在
-                if not value.get("data"):
+            if embedded_only:
+                if not isinstance(value, dict) or not value.get("data"):
                     continue
-            elif not os.path.exists(path):
+            elif not os.path.exists(path) and not (isinstance(value, dict) and value.get("data")):
                 continue
             if path.lower() in seen:
                 continue

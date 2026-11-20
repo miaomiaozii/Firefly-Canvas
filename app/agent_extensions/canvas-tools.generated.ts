@@ -12,6 +12,21 @@ export interface CanvasToolDef {
 
 export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     {
+        name: "plan.import_excel",
+        description: "只读解析已发送到当前 Agent 会话的 XLSX 附件。每个主图/A+ 简报只建一项，不按场景数量拆分。意向图仅供描述方向，产品图由用户自行接入。返回未勾选任务、字段识别、排除项及需复核提示。能力不包括图片识别。个人路径和链接不读取。",
+        parameters: Type.Object({ attachment_id: Type.String({description: "已发送到当前 Agent 会话的附件 ID，不是文件路径或 asset_id", minLength: 32, maxLength: 32}), sheet: Type.Optional(Type.String({maxLength: 200})) }),
+    },
+    {
+        name: "plan.edit_preview",
+        description: "只编辑预览，不写画布。每个 op 传 task_id + 恰好一个动作：select、rename、merge_into、set_section。不支持拆分或挂参考图；产品参考图由用户自行连入。",
+        parameters: Type.Object({ plan_id: Type.String({minLength: 1, maxLength: 128}), generation: Type.Optional(Type.Integer({description: "最近预览的 generation；传入时旧版本会被拒绝", minimum: 1})), ops: Type.Array(Type.Object({ task_id: Type.String({minLength: 1, maxLength: 128}), select: Type.Optional(Type.Boolean()), rename: Type.Optional(Type.String({maxLength: 200})), merge_into: Type.Optional(Type.String({minLength: 1, maxLength: 128})), set_section: Type.Optional(Type.String({maxLength: 200})) }), {minItems: 1, maxItems: 200}) }),
+    },
+    {
+        name: "plan.apply",
+        description: "浏览器批准确切任务后，按板块一次提交缺失任务。提示词通过 input 边连入空生图槽，不生成、不导入或连接任何参考图。缺产品图是待用户补齐的状态。只撤销本批可用返回的 op_id；task_ids 省略时使用已勾选任务。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        parameters: Type.Object({ plan_id: Type.String({minLength: 1, maxLength: 128}), generation: Type.Optional(Type.Integer({description: "最近预览的 generation；传入时旧版本会被拒绝", minimum: 1})), layout: Type.Optional(Type.Union([Type.Literal("by_section")])), task_ids: Type.Optional(Type.Array(Type.String({minLength: 1, maxLength: 128}), {maxItems: 200, uniqueItems: true})) }),
+    },
+    {
         name: "ops.list",
         description: "列出当前项目的 Agent 操作日志，可按 turn_id 筛选；外部 MCP 的 turn_id 不得复用，未提供轮次时只可逐条撤销。",
         parameters: Type.Object({ turn_id: Type.Optional(Type.String({minLength: 1})), limit: Type.Optional(Type.Integer({minimum: 1, maximum: 1000})) }),
@@ -163,8 +178,8 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     },
     {
         name: "media.upload",
-        description: "导入本机媒体文件到项目资源库（file_path 为服务器本机路径）。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
-        parameters: Type.Object({ file_path: Type.String() }),
+        description: "单独导入项目媒体：file_path 为服务器本机路径；或使用 attachment_id 将已发送的会话图片在浏览器批准后明确归档。仅传其中一项。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        parameters: Type.Object({ file_path: Type.Optional(Type.String()), attachment_id: Type.Optional(Type.String({description: "已发送到当前 Agent 会话的附件 ID，不是文件路径或 asset_id", minLength: 32, maxLength: 32})) }),
     },
     {
         name: "media.list",

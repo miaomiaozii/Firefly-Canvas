@@ -391,6 +391,7 @@ class AgentSession:
     effort_effective: Optional[str] = None
     _effort_source: Optional[str] = None
     _generation: int = 0
+    input_epoch: str = field(default_factory=lambda: uuid.uuid4().hex, repr=False)
     _response_finishing: bool = False
     _retrying: bool = False
     _current_turn_id: Optional[str] = None
@@ -441,6 +442,10 @@ class AgentSession:
     @property
     def generation(self) -> int:
         return self._generation
+
+    @property
+    def input_branch(self) -> str:
+        return (self.ext_session_id if self.agent_cli == "codex" else self.session_file) or ""
 
     @property
     def effort_state(self) -> dict:
@@ -494,6 +499,9 @@ class AgentHostManager:
 
     def _session_key(self, project_id: str, node_id: str) -> str:
         return f"{project_id}:{node_id}"
+
+    def conversation_session(self, project_id: str, node_id: str) -> Optional[AgentSession]:
+        return self.sessions.get(self._session_key(project_id, node_id))
 
     def get_current_turn_id(self, project_id: str, agent_node_id: str) -> Optional[str]:
         """Return the active logical turn for the exact project/node session, if any."""
@@ -1125,7 +1133,7 @@ class AgentHostManager:
         if session.agent_cli == "codex":
             await self._codex_turn(session, inject_text,
                                    ref_paths=[r["path"] for r in ref_images])
-            self._persist_event(session, user_payload)
+            self._persist_event(session, user_payload, accepted_input=True)
             return user_payload
         command = {"type": "prompt", "message": inject_text}
         rpc_images = list(images or [])
@@ -1139,7 +1147,7 @@ class AgentHostManager:
         # Record acceptance only after a successful host send (no false history on
         # broken stdin/spawn). No await between pi send and persist, so the reader
         # cannot overtake this user_prompt round boundary on the event loop.
-        self._persist_event(session, user_payload)
+        self._persist_event(session, user_payload, accepted_input=True)
         session.status = "busy"
         return user_payload
 
@@ -1216,13 +1224,12 @@ class AgentHostManager:
         event = self._input_event(input_type, message, node_refs=node_refs,
                                   node_ref_context=node_ref_context, request_id=request_id,
                                   attachment_refs=attachment_refs)
-        # Still pi RPC, not a new Codex queue. Do not persist rejected sends.
         turn_id = session._current_turn_id
-        # Still pi RPC, not a new Codex queue. Do not persist rejected sends.
+        # Still Pi RPC, not a new Codex queue. Rejected sends cannot authorize attachments.
         await self.send_command(session, {"type": input_type, "message": self._input_text(event)})
         if turn_id and session._current_turn_id == turn_id:
             session._turn_layout_refs.update(self._layout_ref_ids(node_refs))
-        self._persist_event(session, event)
+        self._persist_event(session, event, accepted_input=True)
 
     async def send_steer(self, session: AgentSession, message: str, *,
                          node_refs=None, node_ref_context: str = "", request_id=None, attachment_refs=None) -> None:
@@ -1569,6 +1576,10 @@ class AgentHostManager:
                     if thread_id and thread_id != session.ext_session_id:
                         session.ext_session_id = thread_id
                         self._persist_ext_session_id(session, host=host)
+                        # A fresh Codex thread can be named after the server admitted the input.
+                        if session._current_turn_id:
+                            self._persist_event(session, {"type": "input_branch_bound"}, host=host,
+                                                generation=generation, input_binding=True)
                 if raw.get("type") == "turn.completed":
                     saw_turn_completed = True
                     session._turn_open = False  # 轮已逻辑结束：新 prompt 可排队下一轮
@@ -2179,7 +2190,7 @@ class AgentHostManager:
 
     def _persist_event(self, session: AgentSession, event: dict, *,
                        host: Optional[str] = None, generation: Optional[int] = None,
-                       recovery: bool = False) -> bool:
+                       recovery: bool = False, accepted_input: bool = False, input_binding: bool = False) -> bool:
         """Append a current-generation event; stamp live metadata even without disk."""
         host = session.agent_cli if host is None else host
         generation = session.generation if generation is None else generation
@@ -2207,6 +2218,15 @@ class AgentHostManager:
                 "node_id": session.node_id,
                 "event": event,
             }
+            # A native host event may look like user_prompt; only the server input
+            # path can stamp acceptance on the outer journal record (#399).
+            if accepted_input and event.get("attachments"):
+                record["accepted_input"] = True
+            if input_binding or record.get("accepted_input"):
+                record["input_branch"] = session.input_branch
+                record["input_epoch"] = session.input_epoch
+                if input_binding:
+                    record["input_binding"] = True
             os.makedirs(os.path.dirname(path), exist_ok=True)
             data = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
             with open(path, "a+b") as f:

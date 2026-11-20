@@ -47,6 +47,7 @@ from app.services.agent_errors import (
     translate_detail,
 )
 from app.project_sessions import open_project_ids
+from app.routers.api_agent_plan import plan_core
 from app.routers.api_agent_tools import (
     _app_main,
     _find_node,
@@ -74,7 +75,7 @@ from app.routers.api_agent_tools import (
     set_zoom_core,
     trigger_generation_core,
     update_node_core,
-    upload_media_core,
+    upload_media_args,
     view_media_core,
     wait_for_task_core,
 )
@@ -333,7 +334,7 @@ mcp_event_recorder = McpEventRecorder()
 # ---------------------------------------------------------------------------
 
 from app.services import agent_layout  # noqa: E402
-from app.services.agent_tools_manifest import LAYOUT_TOOLS, TOOLS, WRITE_TOOLS  # noqa: E402
+from app.services.agent_tools_manifest import LAYOUT_TOOLS, PLAN_TOOLS, TOOLS, WRITE_TOOLS  # noqa: E402
 
 TOOL_NAMES = {t["name"] for t in TOOLS}
 
@@ -464,7 +465,7 @@ async def _impl_wait(project_id, agent_node_id, args):
 
 
 async def _impl_media_upload(project_id, agent_node_id, args):
-    return await upload_media_core(project_id, str(args.get("file_path") or ""))
+    return await upload_media_args(project_id, args)
 
 
 async def _impl_media_list(project_id, agent_node_id, args):
@@ -631,6 +632,8 @@ TOOL_IMPLS = {
     "canvas.batch_edit": _impl_batch_edit,
 }
 
+TOOL_IMPLS.update({name: partial(plan_core, tool=name) for name in PLAN_TOOLS})
+
 
 # ---------------------------------------------------------------------------
 # HTTP endpoint (streamable-HTTP subset, pure JSON)
@@ -681,7 +684,7 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
         params = {}
     name = str(params.get("name") or "")
     args = params.get("arguments", params.get("args", {}))
-    if name not in LAYOUT_TOOLS | {"canvas.batch_prompt_edit"} and not isinstance(args, dict):
+    if name not in LAYOUT_TOOLS | PLAN_TOOLS | {"canvas.batch_prompt_edit"} and not isinstance(args, dict):
         args = params.get("args")
         if not isinstance(args, dict):
             args = {}
@@ -705,6 +708,17 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
             writes = isinstance(parse(args), str)
         if name in LAYOUT_TOOLS:
             agent_layout.validate_args(name, args)
+        attachment_archive = name == "media.upload" and "attachment_id" in args
+        if (name in PLAN_TOOLS or attachment_archive) and not (
+            request.query_params.get("project") and request.query_params.get("node")
+        ):
+            from app.services.agent_plan import file_not_allowed, stale
+            raise file_not_allowed() if name == "plan.import_excel" or attachment_archive else stale()
+        if name in PLAN_TOOLS and not isinstance(args, dict):
+            from app.services.agent_plan import file_not_allowed
+            if name == "plan.import_excel":
+                raise file_not_allowed()
+            raise ValueError("Expected a JSON object")
         project_id = resolve_project(str(request.query_params.get("project") or ""))
         caller = request.query_params.get("caller")
         if caller not in (None, "external", "hosted"):
@@ -756,6 +770,9 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
                     result = await TOOL_IMPLS[name](project_id, node_id, args, hosted=caller == 'hosted')
                 elif name == "canvas.batch_prompt_edit":
                     binding = ("agent", node_param) if node_param else ("mcp", sid)
+                    result = await TOOL_IMPLS[name](project_id, node_id, args, binding=binding)
+                elif name in PLAN_TOOLS:
+                    binding = "hosted" if caller == "hosted" else ("mcp", sid)
                     result = await TOOL_IMPLS[name](project_id, node_id, args, binding=binding)
                 elif slow_timeout is not None:
                     result = await asyncio.wait_for(TOOL_IMPLS[name](project_id, node_id, args), slow_timeout)

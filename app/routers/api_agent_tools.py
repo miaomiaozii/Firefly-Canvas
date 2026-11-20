@@ -75,7 +75,7 @@ _LIFETIME_STOPPING = weakref.WeakSet()
 _LIFETIME_LOCK = threading.RLock()
 _JOURNALED_TOOLS = frozenset({"canvas.create_node", "canvas.update_node", "canvas.delete_node",
                               "canvas.connect", "canvas.disconnect", "canvas.place_media",
-                              "canvas.attach_refs", "canvas.set_ref_order", "canvas.batch_prompt_edit", *LAYOUT_TOOLS})
+                              "canvas.attach_refs", "canvas.set_ref_order", "canvas.batch_prompt_edit", "plan.apply", *LAYOUT_TOOLS})
 
 
 def _track_lifetime_task(task):
@@ -407,7 +407,7 @@ async def _apply_mutations(project_id: str, mutations: list, *, trusted_agent_bi
 
 async def _apply_mutations_from_snapshot(
     project_id: str, build_mutations: Callable[[dict], list], *, source: str = "agent",
-    trusted_agent_bindings: bool = False, deletion=None,
+    trusted_agent_bindings: bool = False, deletion=None, recheck_before_cas=None,
 ):
     """Build against one snapshot; announce before applying its CAS mutation."""
     from firefly_projects import RevisionConflict
@@ -442,6 +442,11 @@ async def _apply_mutations_from_snapshot(
                     await _broadcast_canvas_updated(project_id, source=source, updated_at=updated_at,
                                                     op_id=context.op_id, touched_node_ids=intended, phase='start')
                     try:
+                        if recheck_before_cas is not None:
+                            with store._lock:
+                                recheck_before_cas(store.canvas(project_id))
+                                return _apply_journaled(store, project_id, mutations, revision, trusted_agent_bindings,
+                                                        context, deletion, persisted)
                         return _apply_journaled(store, project_id, mutations, revision, trusted_agent_bindings,
                                                 context, deletion, persisted)
                     except RevisionConflict as exc:
@@ -2043,7 +2048,17 @@ async def upload_media(project_id: str, request: Request, x_agent_project: str =
     """Upload a media file to the project library."""
     body = await request.json()
     return await _rest_agent_call(request, project_id, "media.upload", body,
-                                  lambda: upload_media_core(project_id, body.get("file_path")))
+                                  lambda: upload_media_args(project_id, body))
+
+
+async def upload_media_args(project_id, args):
+    if "attachment_id" in args:
+        from app.routers.api_agent_plan import archive_attachment
+        from app.services.agent_refs import require_object
+        require_object(args, "media.upload", required=("attachment_id",))
+        context = _media_context(project_id)
+        return await archive_attachment(project_id, context.agent_node_id if context else "", args["attachment_id"])
+    return await upload_media_core(project_id, args.get("file_path"))
 
 
 async def upload_media_core(project_id: str, file_path: str) -> dict:

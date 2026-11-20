@@ -465,6 +465,19 @@ class DualPathEquivalenceTests(unittest.TestCase):
                     self.assertEqual(self._canvas_state(store, pid), before)
             return run
 
+        def plan_validation(name, args, expected_code):
+            def run():
+                client, store, pid_a, pid_b = self._fixture()
+                before = [store.canvas(pid) for pid in (pid_a, pid_b)]
+                a = self._mcp_call(client, pid_a, f"plan.{name}", args)
+                b = self._rest(client, "POST", f"/api/projects/{pid_b}/plan/{name}?agent_node_id={self.ACTOR}",
+                               args, {"X-Agent-Project": pid_b})
+                self._assert_pair(a, b, f"plan.{name}")
+                self.assertFalse(a["ok"], a)
+                self.assertEqual(a["error"]["code"], expected_code)
+                self.assertEqual([store.canvas(pid) for pid in (pid_a, pid_b)], before)
+            return run
+
         def gated(name, args, method, url_path, *, expected_error=None):
             def run():
                 client, store, pid_a, pid_b = self._fixture()
@@ -656,6 +669,9 @@ class DualPathEquivalenceTests(unittest.TestCase):
             "canvas.batch_prompt_edit": media_ref_validation("canvas.batch_prompt_edit", {
                 "apply": False, "edits": [{"node_id": "missing-node", "append": "detail"}],
             }, "NODE_NOT_FOUND"),
+            "plan.import_excel": plan_validation("import_excel", {"file_path": "not-an-attachment.xlsx"}, "FILE_NOT_ALLOWED"),
+            "plan.edit_preview": plan_validation("edit_preview", {"plan_id": "missing", "ops": []}, "PLAN_STALE"),
+            "plan.apply": plan_validation("apply", {"plan_id": "missing"}, "PLAN_STALE"),
             "canvas.batch_edit": gated("canvas.batch_edit", {"node_ids": ["image-1"], "prompt": "p"}, "POST", "/canvas/batch_edit"),
             "canvas.edit_rotate": gated("canvas.edit_rotate", {"node_id": "image-1", "angle": 90}, "POST", "/canvas/edit_rotate", expected_error="ASSET_NOT_FOUND"),
             "canvas.edit_flip": gated("canvas.edit_flip", {"node_id": "image-1", "direction": "horizontal"}, "POST", "/canvas/edit_flip", expected_error="ASSET_NOT_FOUND"),

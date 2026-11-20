@@ -98,6 +98,11 @@
     var message = document.createElement("p");
     message.className = "ff-dialog-message";
     message.textContent = String(opts.message || ""); // textContent：内容可能含用户输入/文件名
+    if (opts.scrollMessage) {
+      message.style.maxHeight = '55vh';
+      message.style.overflowY = 'auto';
+      message.tabIndex = 0;
+    }
     if (message.textContent) card.appendChild(message);
 
     var input = null;

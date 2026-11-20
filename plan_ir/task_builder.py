@@ -152,7 +152,7 @@ def join_mapped(row: List[str], col_map: Dict[str, List[int]], key: str) -> str:
 # ─── 回退需求 / 显示编号 / 主图关联（C# :2346/:2430/:2438/:2444/:2478）────────
 
 
-def build_fallback_requirements(row: List[str], col_map: Optional[Dict[str, List[int]]]) -> str:
+def build_fallback_requirements(row: List[str], col_map: Optional[Dict[str, List[int]]], *, embedded_only=False) -> str:
     """C# BuildFallbackRequirements:2346 — 排除已映射列，取未映射非空单元格（净化去重）。"""
     skip: set = set()
     if col_map:
@@ -167,7 +167,7 @@ def build_fallback_requirements(row: List[str], col_map: Optional[Dict[str, List
             values.append(cleaned)
     if values:
         return "\r\n".join(values)
-    return sanitize_prompt_field(join_row(row))
+    return "" if embedded_only else sanitize_prompt_field(join_row(row))
 
 
 def detect_same_as_main(task: PlanTask) -> bool:
@@ -365,14 +365,9 @@ def add_tasks_from_plan_blocks(
     sheet_name: str,
     counters: Dict[str, int],
     sort_index: int,
+    *, split_blocks: bool = True,
 ) -> int:
-    """C# AddTasksFromPlanBlocks:1921 — 块式方案块（无表头第一级兜底）。返回 sort_index。
-
-    忠实移植注意：
-    - Name 不做 clean_task_name（C# 块路径就是 baseName/count 拼接）；
-    - 不挂 operation_references / cell_image（C# 该路径没有）；
-    - C# for 循环内 `i = Math.Max(i, end - 1)` 后还有 i++ → python while 等价 `+ 1`。
-    """
+    """Legacy Excel expands counted blocks; Agent import keeps one brief/one output (#399)."""
     section = infer_section(sheet_name, "")
     i = 0
     while i < len(rows):
@@ -390,7 +385,7 @@ def add_tasks_from_plan_blocks(
             i += 1
             continue
 
-        count = extract_image_count(block_text)
+        count = extract_image_count(block_text) if split_blocks else 1
         next_index = counters[section] + 1 if section in counters else 1
         base_name = first_non_empty(
             compact_line(row_text),
@@ -438,17 +433,14 @@ def add_tasks_from_rows(
     counters: Dict[str, int],
     sort_index: int,
     image_lookup: Dict[str, Dict[str, Any]],
+    *, embedded_only=False, row_numbers=None, split_blocks=True,
 ) -> int:
-    """C# AddTasksFromRows:1615 — 表头路径（image_lookup 为 None 时退化为无锚定图）。
-
-    无表头分支为两级兜底（C# :1618-1623）：先 AddTasksFromPlanBlocks（块式方案块），
-    仅其 0 产出时才 AddTasksFromUnmappedRows。返回 sort_index（既有 `return len(tasks)`
-    会丢 sort_index、多 sheet 时 task_id 重复，顺手修复）。
-    """
+    """Preserve the legacy block fallback and cross-sheet IDs; Agent count expansion is opt-out."""
     header_row = find_header_row(rows)
     if header_row < 0:
         before = len(tasks)
-        sort_index = add_tasks_from_plan_blocks(tasks, rows, sheet_name, counters, sort_index)
+        sort_index = add_tasks_from_plan_blocks(tasks, rows, sheet_name, counters, sort_index,
+                                               split_blocks=split_blocks)
         if len(tasks) == before:
             sort_index = add_tasks_from_unmapped_rows(tasks, rows, sheet_name, counters, sort_index)
         return sort_index
@@ -497,15 +489,17 @@ def add_tasks_from_rows(
         requirements = mapped_requirements
         copy_text = join_mapped(row, col_map, "copy")
         if not requirements or not requirements.strip():
-            requirements = build_fallback_requirements(row, col_map)
+            requirements = build_fallback_requirements(row, col_map, embedded_only=embedded_only)
         requirements = join_distinct_lines(
             requirements,
-            join_reference_text_notes(row, headers, col_map, image_lookup),
+            join_reference_text_notes(row, headers, col_map, image_lookup, embedded_only=embedded_only),
         )
 
-        row_number = i + 1  # 1-based（C# 行索引 +1 = SourceRow）
+        # Keep legacy source-row indexing; Agent uses the physical row to match drawings.
+        row_number = i + 1
         refs = add_operation_references_from_mapped_cells(
-            row, headers, col_map, image_lookup, sheet_name, row_number
+            row, headers, col_map, image_lookup, sheet_name, (row_numbers[i] if row_numbers else row_number),
+            embedded_only=embedded_only,
         )
 
         source_aspect = first_mapped(row, col_map, "aspect")
