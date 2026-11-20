@@ -23,6 +23,14 @@ class NodeModulesGuardTests(unittest.TestCase):
         with assert_node_modules_unchanged(self, self.root):
             pass
 
+    def test_nested_workspace_dependencies_are_outside_the_root_guard(self):
+        self.modules.mkdir()
+        (self.modules / "existing").write_bytes(b"safe")
+        nested = self.root / "nested-worktree" / "node_modules"
+        with assert_node_modules_unchanged(self, self.root):
+            nested.mkdir(parents=True)
+            (nested / "typescript").write_bytes(b"installed in nested worktree")
+
     def test_creation_addition_removal_and_same_size_mutation(self):
         with self.assertRaises(AssertionError):
             with assert_node_modules_unchanged(self, self.root):
