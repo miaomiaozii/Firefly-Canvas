@@ -16,6 +16,7 @@ import sys
 import tempfile
 import time
 import urllib.request
+import uuid
 import zipfile
 from pathlib import Path
 
@@ -29,10 +30,50 @@ def log(name: str, ok: bool, detail: str = '') -> None:
         raise SystemExit(1)
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(('127.0.0.1', 0))
-        return s.getsockname()[1]
+def _offline_port() -> int:
+    for port in range(3100, 3200):
+        with socket.socket() as probe:
+            if os.name == 'nt':
+                probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+            try:
+                probe.bind(('127.0.0.1', port))
+            except OSError:
+                continue
+            return port
+    raise OSError('3100–3199 无可用端口')
+
+
+def _offline_env(work: Path) -> dict[str, str]:
+    # 不继承用户的 pip 配置、Python 搜索路径、CLI 家目录、代理及服务商密钥。
+    keep = {'SYSTEMROOT', 'WINDIR', 'SYSTEMDRIVE', 'COMSPEC', 'PATHEXT'}
+    env = {key: value for key, value in os.environ.items() if key.upper() in keep}
+    system_root = env.get('SYSTEMROOT') or env.get('SystemRoot')
+    env['PATH'] = os.pathsep.join([str(Path(system_root) / 'System32'), system_root]) if system_root else os.defpath
+    for key, folder in {
+        'HOME': 'home', 'USERPROFILE': 'home', 'APPDATA': 'home/roaming', 'LOCALAPPDATA': 'home/local',
+        'TMP': 'tmp', 'TEMP': 'tmp', 'TMPDIR': 'tmp',
+        'FIREFLY_RUNTIME_ROOT': 'runtime', 'FIREFLY_PROJECTS_ROOT': 'projects',
+    }.items():
+        path = work / folder
+        path.mkdir(parents=True, exist_ok=True)
+        env[key] = str(path)
+    env.update(PYTHONUTF8='1', PIP_CONFIG_FILE=os.devnull, PIP_NO_INDEX='1',
+               PIP_NO_CACHE_DIR='1', PIP_DISABLE_PIP_VERSION_CHECK='1')
+    return env
+
+
+_OFFLINE_SERVER = '''
+import os
+import uvicorn
+from main import app
+
+@app.get('/offline-ready/' + os.environ['FIREFLY_OFFLINE_NONCE'])
+async def ready():
+    return {'nonce': os.environ['FIREFLY_OFFLINE_NONCE']}
+
+uvicorn.run(app, host='127.0.0.1', port=int(os.environ['FIREFLY_PORT']),
+            ws_ping_interval=None, ws_ping_timeout=None)
+'''
 
 
 def offline_install_rehearsal(wheel_dir: Path, keep: bool) -> None:
@@ -53,51 +94,65 @@ def offline_install_rehearsal(wheel_dir: Path, keep: bool) -> None:
         log('wheel 目录覆盖 requirements.lock', False, f'{len(problems)} 项不匹配，首条：{problems[0]}')
     log(f'wheel 目录覆盖 requirements.lock（{len(parse_lock())} 项）', True, str(wheel_dir))
 
-    work = Path(tempfile.mkdtemp(prefix='ff-offline-rehearsal-'))
+    work = Path(tempfile.mkdtemp(prefix='ff-offline-rehearsal-')).resolve()
     venv = work / 'venv'
     try:
-        r = subprocess.run([sys.executable, '-m', 'venv', str(venv)], capture_output=True, text=True)
-        log('建干净 venv', r.returncode == 0, r.stderr.strip()[:200])
+        env = _offline_env(work)
+        r = subprocess.run([sys.executable, '-I', '-m', 'venv', str(venv)], env=env,
+                           capture_output=True, encoding='utf-8', errors='replace', timeout=90)
+        log('建干净 venv', r.returncode == 0, r.stderr.strip()[-300:])
         venv_py = venv / 'Scripts' / 'python.exe'
 
         r = subprocess.run([str(venv_py), '-m', 'pip', 'install', '--quiet', '--no-index',
-                            f'--find-links={wheel_dir}', '-r', str(REPO / 'requirements.lock')],
-                           capture_output=True, text=True, timeout=900)
-        log('断网安装（--no-index -r requirements.lock）', r.returncode == 0,
-            (r.stderr or r.stdout).strip()[-300:])
+                            '--only-binary=:all:', f'--find-links={wheel_dir}',
+                            '-r', str(REPO / 'requirements.lock')], env=env,
+                           capture_output=True, encoding='utf-8', errors='replace', timeout=900)
+        log('本地 wheel 安装（--no-index -r requirements.lock）', r.returncode == 0,
+            (r.stderr or r.stdout).strip()[-800:])
 
+        r = subprocess.run([str(venv_py), '-m', 'pip', 'check'], env=env,
+                           capture_output=True, encoding='utf-8', errors='replace', timeout=30)
+        log('锁定依赖彼此兼容', r.returncode == 0, (r.stdout or r.stderr).strip()[-800:])
         r = subprocess.run([str(venv_py), str(REPO / 'tools' / 'check_dependencies.py')],
-                           capture_output=True, text=True, encoding='utf-8', errors='replace', cwd=str(REPO))
-        log('新环境依赖自检', r.returncode == 0, (r.stdout or '').strip().splitlines()[-1:][0] if r.stdout else '')
+                           env=env, capture_output=True, encoding='utf-8', errors='replace', cwd=REPO,
+                           timeout=90)
+        log('新环境依赖自检', r.returncode == 0, (r.stdout or r.stderr).strip()[-800:])
 
-        # 服务真起来：隔离 runtime + 隔离 projects + 空闲端口（不碰用户在跑的 3000）
-        port = _free_port()
-        env = dict(os.environ,
-                   FIREFLY_RUNTIME_ROOT=str(work / 'runtime'),
-                   FIREFLY_PROJECTS_ROOT=str(work / 'projects'),
-                   FIREFLY_PORT=str(port), PYTHONUTF8='1', PYTHONIOENCODING='utf-8')
-        job = ProcessJob(name='offline-rehearsal')
-        proc = job.spawn([str(venv_py), 'main.py'], env=env, cwd=str(REPO))
+        # 端口检查与绑定之间仍有竞争；只有本次进程能回答随机就绪路径。
+        port = _offline_port()
+        nonce = uuid.uuid4().hex
+        base = f'http://127.0.0.1:{port}'
+        env.update(FIREFLY_PORT=str(port), FIREFLY_AGENT_API_BASE=base, FIREFLY_OFFLINE_NONCE=nonce)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         started, status = False, 0
-        try:
-            deadline = time.time() + 90
-            while time.time() < deadline:
-                try:
-                    with urllib.request.urlopen(f'http://127.0.0.1:{port}/', timeout=4) as resp:
-                        status = resp.status
-                        started = status == 200
+        with (work / 'server.log').open('wb') as output, ProcessJob(name='offline-rehearsal') as job:
+            proc = job.spawn([str(venv_py), '-c', _OFFLINE_SERVER], env=env, cwd=REPO,
+                             stdout=output, stderr=subprocess.STDOUT)
+            try:
+                deadline = time.monotonic() + 90
+                while proc.poll() is None and time.monotonic() < deadline:
+                    try:
+                        with opener.open(base + '/offline-ready/' + nonce, timeout=2) as resp:
+                            if json.load(resp) != {'nonce': nonce}:
+                                continue
+                        with opener.open(base + '/', timeout=4) as resp:
+                            status = resp.status
+                            started = status == 200 and resp.geturl().startswith(base + '/')
                         break
-                except Exception:
-                    time.sleep(2)
-        finally:
-            kill_process_tree(proc, grace=8)
-            job.close()
-            leftover = descendant_pids(proc.pid)
+                    except (OSError, ValueError):
+                        time.sleep(.25)
+            finally:
+                kill_process_tree(proc, grace=8)
+                leftover = descendant_pids(proc.pid)
+        if not started:
+            print((work / 'server.log').read_text(encoding='utf-8', errors='replace')[-2000:], flush=True)
         log('离线装出来的服务能启动并响应', started, f'GET / -> {status} port={port}')
-        log('服务进程树收干净', not leftover, f'残留={leftover}')
+        log('服务进程树收干净', proc.poll() is not None and not leftover, f'残留={leftover}')
     finally:
-        if not keep:
-            shutil.rmtree(work, ignore_errors=True)
+        if keep:
+            print(f'保留演练目录：{work}', flush=True)
+        else:
+            shutil.rmtree(work)
     print('OFFLINE REHEARSAL PASS', flush=True)
 
 

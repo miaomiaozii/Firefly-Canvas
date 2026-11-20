@@ -7,16 +7,20 @@
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 
+import build_portable as bp  # noqa: E402
 import offline_packages as op  # noqa: E402
+import verify_portable as vp  # noqa: E402
 
 
 def _touch_wheel(directory: Path, filename: str) -> None:
@@ -233,12 +237,39 @@ class LauncherTextTests(unittest.TestCase):
             self.assertEqual(lone_lf, 0, f"{name} 有 {lone_lf} 个裸 LF，cmd 会撕碎它")
 
 
-class BuildPortableLockTests(unittest.TestCase):
-    """便携包构建也要按锁文件装，不然同一份代码今天和下个月构出来的包不一样。"""
+class PortableOfflineTests(unittest.TestCase):
+    def test_build_rejects_missing_lock_even_with_unlocked_requirements(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(bp.subprocess, 'run') as run:
+            root = Path(tmp)
+            (root / 'requirements.txt').write_text('fastapi\n', encoding='utf-8')
+            with patch.object(bp, 'REPO', root), self.assertRaisesRegex(SystemExit, 'requirements.lock'):
+                bp.install_deps(root / 'env')
+            run.assert_not_called()
 
-    def test_build_prefers_lock_file(self):
-        text = (ROOT / "tools" / "build_portable.py").read_text(encoding="utf-8")
-        self.assertIn("requirements.lock", text)
+    def test_rehearsal_does_not_inherit_user_overrides(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {
+            'PIP_EXTRA_INDEX_URL': 'unused', 'PYTHONPATH': 'unused', 'HTTPS_PROXY': 'unused',
+            'CODEX_HOME': 'unused', 'API_PROVIDER_MOSS_KEY': 'unused',
+            'FIREFLY_RUNTIME_ROOT': 'unused', 'FIREFLY_PROJECTS_ROOT': 'unused',
+        }):
+            work = Path(tmp)
+            env = vp._offline_env(work)
+            self.assertEqual(env['PIP_CONFIG_FILE'], os.devnull)
+            self.assertEqual(env['PIP_NO_INDEX'], '1')
+            self.assertEqual(env['PIP_NO_CACHE_DIR'], '1')
+            self.assertEqual(Path(env['FIREFLY_RUNTIME_ROOT']), work / 'runtime')
+            self.assertEqual(Path(env['FIREFLY_PROJECTS_ROOT']), work / 'projects')
+            self.assertEqual(Path(env['USERPROFILE']), work / 'home')
+            for name in ('PIP_EXTRA_INDEX_URL', 'PYTHONPATH', 'HTTPS_PROXY', 'CODEX_HOME', 'API_PROVIDER_MOSS_KEY'):
+                self.assertNotIn(name, env)
+
+    def test_rehearsal_tries_next_31xx_port_when_busy(self):
+        with patch.object(vp.socket, 'socket') as create_socket:
+            probe = create_socket.return_value.__enter__.return_value
+            probe.bind.side_effect = [OSError('busy'), None]
+            self.assertEqual(vp._offline_port(), 3101)
+            self.assertEqual([call.args[0] for call in probe.bind.call_args_list],
+                             [('127.0.0.1', 3100), ('127.0.0.1', 3101)])
 
 
 if __name__ == "__main__":
