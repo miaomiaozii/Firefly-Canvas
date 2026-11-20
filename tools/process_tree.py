@@ -210,19 +210,14 @@ class ProcessJob:
             except OSError as error:  # 父作业不允许 breakaway：进程还没起，可以换方式重起
                 self.failures.append(f"breakaway 启动失败，改普通启动：{error}")
             else:
-                if self.attach(process):
-                    _stamp_start_time(process)
-                    return process
-                self.failures.append(
-                    f"pid {process.pid} 挂不上作业（GetLastError={self.last_error}），回收退到主动杀树"
-                )
-                _stamp_start_time(process)
+                if not self.attach(process):
+                    self.failures.append(
+                        f"pid {process.pid} 挂不上作业（GetLastError={self.last_error}），回收退到主动杀树"
+                    )
                 return process
         attempt = dict(kwargs)
         attempt["creationflags"] = flags
-        process = subprocess.Popen(command, **attempt)
-        _stamp_start_time(process)
-        return process
+        return subprocess.Popen(command, **attempt)
 
     def status(self) -> str:
         """给质量门横幅用的一句话。"""
@@ -516,27 +511,6 @@ def descendant_pids(root_pid: int) -> list[int]:
     return found
 
 
-_START_STAMP = "_firefly_started_at"
-
-
-def _stamp_start_time(process) -> None:
-    """记下进程起来的那一刻，回收孤儿时拿它当判据。
-
-    PID 会被复用：一个早就退出的根，它的 pid 可能已经是陌生人的了——光看 ppid 数字会把
-    那个陌生人当成「家长留下的孩子」杀掉。有了根的启动时间，就能要求孤儿不能比家长先出生。
-    """
-    try:
-        setattr(process, _START_STAMP, time.time())
-    except (AttributeError, TypeError):
-        pass
-
-
-def root_start_time(process) -> float | None:
-    """``ProcessJob.spawn`` 记下的启动时间；不是经它起的进程就返回 ``None``。"""
-    value = getattr(process, _START_STAMP, None)
-    return float(value) if value else None
-
-
 def process_creation_time(pid: int) -> float | None:
     """进程创建时间（epoch 秒）。Windows 走 ``GetProcessTimes``，读不到返回 ``None``。"""
     if not _nt():
@@ -545,15 +519,17 @@ def process_creation_time(pid: int) -> float | None:
     handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
     if not handle:
         return None
+    try:
+        started, _ = _process_lifetime(handle)
+        return started
+    finally:
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+
+
+def _process_lifetime(handle: int) -> tuple[float | None, float | None]:
+    kernel32 = _kernel32()
+    kernel32.GetProcessTimes.argtypes = [ctypes.c_void_p, *([ctypes.POINTER(ctypes.c_uint64)] * 4)]
     creation = ctypes.c_uint64()
-    for name in ("GetProcessTimes",):
-        getattr(kernel32, name).argtypes = [
-            ctypes.c_void_p,
-            ctypes.POINTER(ctypes.c_uint64),
-            ctypes.POINTER(ctypes.c_uint64),
-            ctypes.POINTER(ctypes.c_uint64),
-            ctypes.POINTER(ctypes.c_uint64),
-        ]
     exited = ctypes.c_uint64()
     kernel_time = ctypes.c_uint64()
     user_time = ctypes.c_uint64()
@@ -566,48 +542,43 @@ def process_creation_time(pid: int) -> float | None:
             ctypes.byref(user_time),
         )
     )
-    kernel32.CloseHandle(ctypes.c_void_p(handle))
     if not ok or not creation.value:
-        return None
-    # FILETIME：1601-01-01 起的 100ns 计数，换成 epoch 秒。
-    return creation.value / 10_000_000.0 - 11_644_473_600.0
+        return None, None
+
+    def seconds(timestamp: int) -> float:
+        # 将 FILETIME 的 100ns 计数换算为 Unix 时间。
+        return (timestamp - 116_444_736_000_000_000) / 10_000_000
+
+    return seconds(creation.value), seconds(exited.value) if exited.value else None
 
 
-def select_orphan_children(children, root_started_at: float | None) -> list[int]:
-    """从「ppid 等于已退出根」的候选里挑出真正的孤儿（纯函数，喂记录就能测）。
-
-    ``children`` 是 ``(pid, created_at)`` 序列。判据一条：**孤儿的创建时间不能早于根的启动时间**
-    ——孩子不可能比家长先出生。比根还早的是那个 pid 被复用之后的陌生进程；创建时间读不到的
-    也不动（宁漏不误杀）。没有 ``root_started_at`` 就一个都不选。
-    """
-    if root_started_at is None:
+def select_orphan_children(
+    children, root_started_at: float | None, root_exited_at: float | None,
+) -> list[int]:
+    """只接受根存活期间创建的候选；缺少任一时间时宁可不回收。"""
+    if root_started_at is None or root_exited_at is None:
         return []
-    selected: list[int] = []
-    for pid, created_at in children:
-        if created_at is None:
+    # GetProcessTimes 用同一时钟，不能以容差接纳生存窗口以外的 PID。
+    return [int(pid) for pid, created_at in children
+            if created_at is not None and root_started_at <= created_at <= root_exited_at]
+
+
+def _reap_orphan_children(root_pid: int, root_started_at: float, root_exited_at: float) -> None:
+    """仅回收有身份依据的直接子进程，后代交给 taskkill /T。"""
+    kernel32 = _kernel32()
+    for pid, parent in process_parent_map().items():
+        if parent != root_pid or pid in (0, 4, root_pid):
             continue
-        if float(created_at) < float(root_started_at) - 1.0:  # 1s 容差：计时源精度差异
+        handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
             continue
-        selected.append(int(pid))
-    return selected
-
-
-def _orphan_children(root_pid: int, root_started_at: float | None) -> list[int]:
-    """已经退出的 ``root_pid`` 的直接孩子里，创建时间对得上的那批（只取一层）。
-
-    只取一层：这些孤儿的子树还能被 ``taskkill /T`` 数到，逐个后代杀只会把时间花在重复的
-    taskkill 上（chrome 那种三十个子进程的夹具实测多花约 40s）。
-    """
-    if root_started_at is None:
-        return []  # 没判据就一个都不动：凭 ppid 数字杀进程等于赌「PID 没被复用」
-    pairs = process_parent_map()
-    root = int(root_pid)
-    candidates = [
-        (pid, process_creation_time(pid))
-        for pid, parent in pairs.items()
-        if parent == root and pid not in (0, 4)
-    ]
-    return [pid for pid in select_orphan_children(candidates, root_started_at) if process_alive(pid)]
+        try:
+            created_at, exited_at = _process_lifetime(handle)
+            if exited_at is None and select_orphan_children([(pid, created_at)], root_started_at, root_exited_at):
+                # 持有进程对象的引用，避免核对后到 taskkill 前被复用 PID。
+                _kill_one(pid, process=None)
+        finally:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
 
 
 def remove_execution_workspace(root) -> list[str]:
@@ -643,7 +614,7 @@ def kill_process_tree(process, grace: float = 2.0) -> None:
     **先杀后代，再杀根——但只在根已经死了的时候。** ``taskkill /T`` 的树是从**活着的**根往下
     数的：根还活着时一条 ``taskkill /PID 根 /T /F`` 就把整树带走（不要一个个杀，
     那是每个后代一条 taskkill，chrome 那种三十个子进程的夹具会把几分钟耗在杀进程上）。
-    根已经退出时 ``/T`` 什倒都数不到，而「父进程先退、node/chrome 留在原地钉着临时目录」
+    根已经退出时 ``/T`` 数不到，而「父进程先退、node/chrome 留在原地钉着临时目录」
     正是 2026-11-14 泄漏的形状——这种情形才用 :func:`process_parent_map` 自己数一遍：
     ppid 是建进程时记下的，不随家长退出改写，所以只需要杀掉家长的**直接孩子**，
     它们的子树交给 ``/T``。
@@ -651,11 +622,8 @@ def kill_process_tree(process, grace: float = 2.0) -> None:
     非 Windows 走进程组 ``killpg``（调用方须用 ``start_new_session=True`` 起进程），
     拿不到进程组就退回 ``Popen.kill()``。
 
-    **不能拿 PID 复用去赌。** 根的生死：传 ``Popen`` 就用 ``poll()``（句柄在自己手上，不会被
-    复用骗到），只有裸传 pid 时才退回「进程在不在」。根已退且 ``ProcessJob.spawn`` 记过启动
-    时间时，孤儿要额外满足「创建时间不早于根的启动时间」（:func:`select_orphan_children`）；
-    没记启动时间就一个孤儿都不动——那个 pid 可能已经是用户浏览器或编辑器了，taskkill /T 下去
-    连整棵无关的树都没了，比漏杀严重。
+    **不能拿 PID 复用去赌。** Windows 上已退出的 ``Popen`` 用原始句柄读取生存窗口，
+    只回收在此期间创建且父 PID 匹配的进程。没有进程身份依据时不扫描孤儿。
 
     ``grace`` 是等根进程真正消失的秒数：``taskkill /F`` 返回时句柄可能还没释放完，
     紧接着删临时目录会撞 WinError 32（目录还被死进程的工作目录钉着）。
@@ -669,21 +637,17 @@ def kill_process_tree(process, grace: float = 2.0) -> None:
     else:
         # 裸 pid：只能按 PID 判断。调用方（门内的泄漏守卫）已经核对过命令行与身份。
         root_alive = process_alive(pid)
-    started_at = root_start_time(process)
-
-    if root_alive:
-        _kill_one(pid, process=process)
-    elif poll is not None:
-        # 根确认已退出：这个 pid 随时可能已被复用，绝不能再对它发 taskkill。
-        # 后代靠 ppid + 创建时间找回来（见 :func:`select_orphan_children`）。
-        for orphan in _orphan_children(pid, started_at):
-            _kill_one(orphan, process=None)
-        return
-    else:
-        _kill_one(pid, process=process)
 
     if not root_alive:
+        # 不对已退出根的 PID 发 taskkill，也不按可能复用的 PID 重新打开根。
+        handle = getattr(process, "_handle", None)
+        if _nt() and isinstance(process, subprocess.Popen) and handle is not None:
+            started_at, exited_at = _process_lifetime(int(handle))
+            if started_at is not None and exited_at is not None:
+                _reap_orphan_children(pid, started_at, exited_at)
         return
+
+    _kill_one(pid, process=process)
     deadline = time.monotonic() + max(grace, 0.0)
     waiter = getattr(process, "wait", None)
     if waiter is not None:

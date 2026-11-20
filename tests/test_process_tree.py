@@ -13,10 +13,13 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from tools.browser_process import browser_popen
 from tools.process_tree import (
     ProcessJob,
     _epoch_from_cim,
+    _reap_orphan_children,
     descendant_pids,
     kill_process_tree,
     process_alive,
@@ -303,7 +306,7 @@ class OrphanedTreeTests(unittest.TestCase):
     ``taskkill /PID 家长 /T`` 这时没用——树是从**活着的**根往下数的。所以
     :func:`kill_process_tree` 自己拿 Toolhelp32 快照按 ppid 数一遍（ppid 是建进程时记下的，
     家长退了也不会改写）。但 ppid 对得上不等于那孩子就是根留下的：PID 会被复用，所以还
-    要「孤儿的创建时间不早于根的启动时间」（见 :func:`select_orphan_children`）。
+    要求孤儿在原根的生存窗口内创建。
     """
 
     def _spawn_parent(self, job):
@@ -325,7 +328,7 @@ class OrphanedTreeTests(unittest.TestCase):
             self.assertFalse(process_alive(parent.pid), "家长应该已经退了")
             self.assertTrue(process_alive(orphan_pid), "家长退了，孩子应该还活着（测试前提）")
 
-            kill_process_tree(parent)  # 起进程时记了启动时间，孤儿按创建时间能认出来
+            kill_process_tree(parent)
 
             deadline = time.monotonic() + 15
             while time.monotonic() < deadline and process_alive(orphan_pid):
@@ -338,6 +341,38 @@ class OrphanedTreeTests(unittest.TestCase):
             parent.stdout.close()
             if process_alive(orphan_pid):
                 kill_process_tree(orphan_pid)
+
+    @unittest.skipUnless(os.name == "nt", "需要 Windows 的孤儿进程快照")
+    def test_browser_launch_cleanup_reaches_child_after_parent_exits(self):
+        # 用短命的 Python 夹具模拟浏览器启动器，不启动服务或使用真实浏览器配置。
+        parent = browser_popen(
+            [sys.executable, "-c", ORPHAN_PARENT_CODE.replace("sleep(120)", "sleep(10)")],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+        )
+        child_pid = 0
+        try:
+            # 子进程延续了 stdout 句柄；不能对已退出的父进程等到管道 EOF。
+            parent.wait(timeout=5)
+            self.assertEqual(parent.returncode, 0)
+            child_pid = int(parent.stdout.readline())
+            self.assertTrue(process_alive(child_pid), "夹具子进程必须在父进程退出后仍存活")
+
+            kill_process_tree(parent)
+
+            deadline = time.monotonic() + 2
+            while process_alive(child_pid) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            self.assertFalse(process_alive(child_pid), "浏览器启动器已退出，测试子进程仍残留")
+        finally:
+            parent.stdout.close()
+            if parent.poll() is None:
+                parent.kill()
+                parent.wait(timeout=5)
+            if child_pid and process_alive(child_pid):
+                kill_process_tree(child_pid)
 
     def test_bare_pid_without_start_time_leaves_orphans_alone(self):
         """裸 pid 没有启动时间就当判据不足：宁可漏，不能凭 ppid 数字杀陌生进程树。
@@ -412,33 +447,47 @@ class OrphanSelectionTests(unittest.TestCase):
     """
 
     ROOT_STARTED = 1_800_000_000.0
+    ROOT_EXITED = ROOT_STARTED + 10.0
 
-    def test_child_predating_the_root_is_not_an_orphan(self):
-        # 同一个 pid 被复用之后的进程：比「根」还早出生，不是根的孩子。
-        children = [(4242, self.ROOT_STARTED - 3600.0)]
-        self.assertEqual(select_orphan_children(children, self.ROOT_STARTED), [])
-
-    def test_child_born_after_the_root_is_an_orphan(self):
-        children = [(4243, self.ROOT_STARTED + 5.0)]
-        self.assertEqual(select_orphan_children(children, self.ROOT_STARTED), [4243])
-
-    def test_unreadable_creation_time_is_left_alone(self):
-        children = [(4244, None)]
-        self.assertEqual(select_orphan_children(children, self.ROOT_STARTED), [])
-
-    def test_without_a_recorded_start_time_nothing_is_reaped(self):
-        # 没判据就一个都不动：宁漏不误杀。
+    def test_without_a_complete_parent_lifetime_nothing_is_reaped(self):
         children = [(4245, self.ROOT_STARTED + 5.0)]
-        self.assertEqual(select_orphan_children(children, None), [])
+        self.assertEqual(select_orphan_children(children, None, self.ROOT_EXITED), [])
+        self.assertEqual(select_orphan_children(children, self.ROOT_STARTED, None), [])
 
-    def test_mixed_snapshot_keeps_only_the_young_ones(self):
+    def test_mixed_snapshot_keeps_only_children_born_while_the_parent_lived(self):
         children = [
-            (10, self.ROOT_STARTED - 1.0),   # 容差内：计时精度差异，当作孩子
-            (11, self.ROOT_STARTED - 60.0),  # 明显早于根：PID 复用，不动
+            (10, self.ROOT_STARTED - 0.5),
+            (11, self.ROOT_STARTED),
             (12, self.ROOT_STARTED + 1.0),
-            (13, None),
+            (13, self.ROOT_EXITED),
+            (14, self.ROOT_EXITED + 0.5),
+            (15, None),
         ]
-        self.assertEqual(select_orphan_children(children, self.ROOT_STARTED), [10, 12])
+        self.assertEqual(select_orphan_children(children, self.ROOT_STARTED, self.ROOT_EXITED), [11, 12, 13])
+
+    def test_reaping_keeps_candidate_handle_open_and_leaves_other_processes_alone(self):
+        lifetime = {
+            120: (self.ROOT_STARTED + 1.0, None),
+            130: (self.ROOT_EXITED + 0.5, None),
+            140: (self.ROOT_STARTED + 1.0, self.ROOT_EXITED + 1.0),
+        }
+        kernel = mock.Mock()
+        kernel.OpenProcess.side_effect = lambda _access, _inherit, pid: pid * 10 if pid != 15 else None
+
+        def check_handle_is_open(pid, *, process):
+            self.assertEqual(pid, 12)
+            self.assertIsNone(process)
+            kernel.CloseHandle.assert_not_called()
+
+        with (
+            mock.patch("tools.process_tree._kernel32", return_value=kernel),
+            mock.patch("tools.process_tree.process_parent_map", return_value={12: 11, 13: 11, 14: 11, 15: 11, 16: 99}),
+            mock.patch("tools.process_tree._process_lifetime", side_effect=lifetime.__getitem__),
+            mock.patch("tools.process_tree._kill_one", side_effect=check_handle_is_open) as kill,
+        ):
+            _reap_orphan_children(11, self.ROOT_STARTED, self.ROOT_EXITED)
+        kill.assert_called_once_with(12, process=None)
+        self.assertEqual([call.args[0].value for call in kernel.CloseHandle.call_args_list], [120, 130, 140])
 
     def test_process_creation_time_reads_a_live_process(self):
         created = process_creation_time(os.getpid())

@@ -69,6 +69,7 @@
 - #370 起：门不再在首个失败处 `break`（顺序步与并行组都是）——一个模式里的所有步骤都跑完并进 `report["steps"]`，逐步结果也打到 stderr（`[failed] 步骤名`）；退出码按最严重累积：`EXIT_CODE_SEVERITY`:496、`merge_gate_exit_code`:499、`step_exit_code`:506（超时 124 > 前置不成立 2 > 步骤红 1）。
 - 提交前 hook（#370）：`tools/hooks/pre-commit`（跑 `python tools/quality_gate.py fast`，模式是位置参数不是 `--mode`），一次性绕过 `FIREFLY_SKIP_PRECOMMIT=1 git commit ...`；安装/检查：`python tools/install_git_hooks.py`（= `git config core.hooksPath tools/hooks`，`--check` / `--uninstall`）。hook 文件跟着代码走，不要往 `.git/hooks/` 拷副本。
 - 最相关测试（#370）：`tests/test_quality_gate.py::test_fast_mode_keeps_running_later_steps_after_an_early_failure`、`::test_fast_mode_reports_every_failing_step_not_just_the_first`、`ContinueOnFailureExitCodeTests`；`tests/test_pre_commit_hook.py`（真 `git commit` 被红门拦住 / 绿门放行 / 幂等安装 / 缺 hook 文件时拒绝安装）。
+- Windows 进程回收（#361）：`tools/process_tree.py` 的 `ProcessJob` 负责门级兜底；`kill_process_tree` 在启动器先退出时从原始进程句柄取得生存窗口，`select_orphan_children(children, root_started_at, root_exited_at)` 筛选该窗口内创建的候选。回收证据不足的进程会有误杀风险，因此不做猜测。
 - 不变量：证据目录必须在仓库外；任何 guard 阻断事件或 retry 证据事件即判失败；首次失败永久保留不被重试覆盖；预算超限 exit 124 且不能靠超时/跳过/重试制造绿色；dirty worktree 保留并在报告记录。
 
 ### 结构化诊断日志（T17 #37）
