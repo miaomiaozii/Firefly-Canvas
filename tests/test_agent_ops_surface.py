@@ -43,6 +43,9 @@ class SurfaceTests(unittest.TestCase):
             'params': {'name': name, 'arguments': args}})
         return response.json()['result']
 
+    def rest_undo(self, args):
+        return self.client.post(self.base + '/undo', json=args, headers={'X-Agent-Project': self.pid})
+
     def create_op(self):
         with self.journal.mutation(self.pid) as operation:
             before = self.store.open_project(self.pid)['canvas']
@@ -77,8 +80,16 @@ class SurfaceTests(unittest.TestCase):
         self.assertFalse(OpsDb(self.store.root).has_db(self.pid))
 
     def test_selectors_and_conflict_are_failures_on_both_transports(self):
-        for args in ({}, {'op_id': 'a', 'turn_id': 'b'}, {'op_id': ''}, {'op_id': None}, {'other': 'x'}):
-            self.assertEqual(self.client.post(self.base + '/undo', json=args).status_code, 400)
+        for args, message in (
+            ({}, '必须且只能提供 op_id 或 turn_id'),
+            ({'op_id': 'a', 'turn_id': 'b'}, '必须且只能提供 op_id 或 turn_id'),
+            ({'op_id': ''}, 'op_id 必须是非空字符串'),
+            ({'op_id': None}, 'op_id 必须是非空字符串'),
+            ({'other': 'x'}, '参数必须是仅包含允许字段的对象'),
+        ):
+            rest = self.rest_undo(args)
+            self.assertEqual(rest.status_code, 400, rest.text)
+            self.assertEqual(rest.json()['detail']['message'], message)
             self.assertTrue(self.mcp('ops.undo', args)['isError'])
         unsupported = self.mcp('ops.undo', {'turn_id': None})
         self.assertIn('不支持', unsupported['structuredContent']['message'])
@@ -89,8 +100,8 @@ class SurfaceTests(unittest.TestCase):
         canvas = self.store.open_project(self.pid)['canvas']
         self.store.apply_mutations(self.pid, [{'op': 'upsert_node', 'node': {
             'id': 'n', 'type': 'text', 'title': 'human'}}], base_revision=canvas['revision'])
-        rest = self.client.post(self.base + '/undo', json={'op_id': 'op'})
-        self.assertEqual(rest.status_code, 409)
+        rest = self.rest_undo({'op_id': 'op'})
+        self.assertEqual(rest.status_code, 409, rest.text)
         mcp = self.mcp('ops.undo', {'op_id': 'op'})
         self.assertTrue(mcp['isError'])
         self.assertEqual(rest.json()['detail'], mcp['structuredContent'])
@@ -99,7 +110,7 @@ class SurfaceTests(unittest.TestCase):
     def test_success_undo_broadcast_and_repeat(self):
         self.create_op()
         with patch.object(main.manager, 'broadcast_canvas_updated', new_callable=AsyncMock) as broadcast:
-            result = self.client.post(self.base + '/undo', json={'op_id': 'op'})
+            result = self.rest_undo({'op_id': 'op'})
             self.assertEqual(result.status_code, 200, result.text)
             self.assertEqual(result.json()['reverted'], ['op'])
             args, kwargs = broadcast.await_args

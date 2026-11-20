@@ -315,7 +315,7 @@
   },
   "image_models": {
   "comfyui-h3-image":     {
-      "display_name": "MiniMax H3 Image（本地 ComfyUI）",
+      "display_name": "MiniMax H3 Image（本地）",
       "api_type": "comfyui_h3_images",
       "supports_vision": true,
       "async_mode": false,

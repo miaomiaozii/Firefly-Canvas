@@ -144,6 +144,13 @@ test('effort option applies directly; target capability failure returns to retry
     let picker = h.state.modelPicker;
     picker.keydown({ key: 'ArrowUp', preventDefault() {}, stopPropagation() {} });
     assert.equal(h.ctx.document.activeElement.getAttribute('data-agent-picker-option'), '1');
+    for (const flags of [{ isComposing: true, keyCode: 13 }, { isComposing: false, keyCode: 229 }]) {
+        picker.keydown({ key: 'Enter', ...flags,
+            preventDefault() { assert.fail('IME Enter must not cancel composition'); },
+            stopPropagation() { assert.fail('IME Enter must not stop propagation'); } });
+        assert.equal(h.state.modelPicker, picker);
+        assert.equal(h.calls.length, 1, 'IME Enter must not send a settings change');
+    }
     picker.keydown({ key: 'Enter', preventDefault() {}, stopPropagation() {} });
     assert.equal(h.state.modelPicker, null);
     assert.deepEqual(JSON.parse(h.calls[1].opts.body), { host: 'pi', model: 'native/a', effort: 'low', user_edit: true });

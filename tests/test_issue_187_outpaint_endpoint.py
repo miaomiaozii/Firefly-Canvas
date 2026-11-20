@@ -149,6 +149,7 @@ class OutpaintEndpointRoutingTests(unittest.TestCase):
         call = fake_generate.await_args
         # The provider call carries the user's resolution and the outpaint ratio,
         # with no fabricated size/width/height (size stays empty end to end).
+        # #330 (384439c): omitted output_format is forwarded as the adapter-default sentinel.
         self.assertEqual(call.args[1], "")
         self.assertEqual(call.kwargs["image_parameters"], {
             "width": None,
@@ -156,6 +157,7 @@ class OutpaintEndpointRoutingTests(unittest.TestCase):
             "aspect_ratio": "21:9",
             "resolution": "4k",
             "media_type": "image",
+            "output_format": "",
         })
 
 

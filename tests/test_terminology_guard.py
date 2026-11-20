@@ -179,7 +179,6 @@ WHITELIST = [
     ("app/services/generation.py", "logs (as history field)", "fal queue status response field (upstream contract)"),
     ("tests/test_fal_queue_image_mode.py", "logs (as history field)", "fal queue ERRORED status fixture mirroring upstream field"),
     # File-level whitelists for terms with few hits
-    ("static/js/smart-canvas.js", "ComfyUI", "Comment about removed ComfyUI integration"),
     ("app/services/projects.py", "默认项目", "Docstring: core product no longer creates default projects"),
     ("tests/test_project_store.py", "外链", "Project name '历史外链' (History External Link)"),
     ("tests/history_drawer_browser.py", "删除原图", "Test prompt: imported assets cannot delete original"),
@@ -200,10 +199,151 @@ WHITELIST = [
 ]
 
 
-def is_whitelisted(rel_path_str, term):
+LOGS_PATTERN = "logs (as history field)"
+REMOVED_RUNTIME_MARKER = "// Local ComfyUI generation execution was removed."
+
+# Exact path + term + stripped source line. Neither a whole adapter file nor
+# every use of a spelling is exempt: new text in the same file still gets scanned.
+SCOPED_EXCEPTIONS = {
+    # #331 (ff7bcfb, ADR 0025): the actual provider, not a synonym for online generation.
+    ("app/core.py", "ComfyUI"): {
+        "# ---- #331 本地 ComfyUI（MiniMax-H3-Image GGUF）----",
+        "# 画布直接把本地 ComfyUI 当生图后端：POST /prompt → GET /history/{id} → GET /view。",
+        "# #331：ComfyUI 的请求形状（/prompt 图 + /history 轮询）是协议内生的，不允许逐模型改协议。",
+        "# #331：本地 ComfyUI 不需要 API Key，Base URL 缺省指向本机 8188。",
+        "# #331：本地 ComfyUI 的工作流是固定的，给一个能直接命中的模型名，省得用户先猜。",
+    },
+    # Registry provenance only; #373 does not decide whether display_name may show the provider.
+    ("app/data/model_specs.json", "ComfyUI"): {
+        '"source": "本地 ComfyUI 实测（ComfyUI 0.45.2 + ComfyUI-GGUF，MiniMax-H3-Image Pruned Q4_K_M，RTX 4070 Ti SUPER），见 issue #331"',
+    },
+    # The probe implementation is distinct from message copy rendered in settings (#373).
+    ("app/routers/api_providers.py", "ComfyUI"): {
+        '"""ComfyUI 没有 /v1/models，改探 /system_stats + 关键节点是否存在。"""',
+    },
+    # d040452: provenance of the upstream edit template and prompt expansion.
+    ("app/services/comfyui_pe_prompts.py", "ComfyUI"): {
+        "逐字取自 ComfyUI 官方模板 `templates/image_minimax_h3_image_edit.json` 的",
+    },
+    ("app/services/comfyui_workflows.py", "ComfyUI"): {
+        '"""本地 ComfyUI（MiniMax-H3-Image GGUF）工作流模板与尺寸映射。',
+        "#331：画布把本地 ComfyUI 当成一个生图服务商协议 `comfyui`：提交 API 格式的图、",
+        "图结构取自实测可用的 9 节点模板（ComfyUI 0.45.2 + ComfyUI-GGUF）：",
+        "# 实测跑成 3 token/s、单张能耗掉 15~23 分钟（ComfyUI 日志：8196 上限跑到 43% 就 19 分钟）。",
+        '"""把画布的比例 + 面积档换算成 ComfyUI 要的 width/height（8 的倍数）。',
+        "ComfyUI 内部的 latent 对齐是 16，官方模板多对齐到 32 是为了让 VAE 每边张量能被",
+    },
+    # Adapter implementation and task errors naming the actual execution service.
+    # ADR 0025/#331 (ff7bcfb, 2174d4d, cec4f0b) keeps these provider-specific diagnoses.
+    ("app/services/generation.py", "ComfyUI"): {
+        '"""ComfyUI 根地址。它是会话式多端点接口（/prompt、/history、/view、/upload/image、/queue），',
+        '"""参考图 → ComfyUI 上传载荷。返回 (payload, (w, h))；payload 为 None 时 w/h 为 (0, 0)。"""',
+        '"""把还没开始跑的任务从 ComfyUI 队列里撤掉。',
+        "只删队列不跑 `/interrupt`：ComfyUI 是单队列，interrupt 会打断**正在跑的**那一张（可能是用户别的任务），",
+        '"""ComfyUI 显存不足。这不是参数错，也不是随机失败：调用方释放显存后可以且应该重跑一次。"""',
+        '"""让 ComfyUI 卸载模型并释放缓存显存（POST /free）。失败无所谓，只是尽力。"""',
+        "f'ComfyUI 生图超时（已等 {int(now - started)} 秒，prompt_id={prompt_id}），已从队列撤单。'",
+        "'若产物已落盘，可在 ComfyUI 的 output/MiniMax-H3-Image/ 目录里找到；本适配器不自动重提。'",
+        "raise HTTPException(status_code=502, detail=f'查询 ComfyUI 任务状态失败：{exc}') from exc",
+        "f'ComfyUI 执行失败：{raw_error}'",
+        "'（显存不够：已让 ComfyUI 卸载模型腾出显存重跑一次仍失败，'",
+        "raise HTTPException(status_code=502, detail=f'ComfyUI 执行失败：{raw_error}')",
+        "\"\"\"把画布参考图送进 ComfyUI 的 input 目录，返回 (名字, 缩放后尺寸)。解析不到返回 ('', (0, 0))。\"\"\"",
+        "raise HTTPException(status_code=502, detail=f'ComfyUI 参考图上传失败（{upload.status_code}）：{upload.text[:200]}')",
+        "raise HTTPException(status_code=502, detail=f'ComfyUI 参考图上传未返回文件名：{str(raw)[:200]}')",
+        '"""本地 ComfyUI（MiniMax-H3-Image GGUF）文生图 / 图生图。',
+        "一次画布任务 = 一张 ComfyUI 图：POST /prompt → 轮询 /history → GET /view。",
+        "'参考图无法交给本地 ComfyUI：只支持项目媒体、应用本地图片、data URL 与公网 http(s) 链接。'",
+        "raise HTTPException(status_code=503, detail=f'连不上本地 ComfyUI（{root}）：请确认 ComfyUI 已启动，或修改该服务商的 Base URL。') from exc",
+        "raise HTTPException(status_code=504, detail=f'提交 ComfyUI 任务超时（{root}），任务可能已入队，请先到 ComfyUI 队列确认再重试。') from exc",
+        "raise HTTPException(status_code=502, detail=f'ComfyUI 拒绝该工作流：{detail}')",
+        "raise HTTPException(status_code=502, detail=f'ComfyUI 未返回 prompt_id：{str(submitted)[:300]}')",
+        "# 让 ComfyUI 卸掉模型、释放缓存，然后同图重跑一次——只重试这一次，第二次还不行就把错抛出去。",
+        "# ComfyUI 的 ResolutionSelector 会把边长对齐到它自己的步长（实测 16:9/1k 要 2728 实际出 2720），",
+        "raise HTTPException(status_code=502, detail=f'从 ComfyUI 取图失败（{view.status_code}）：{image.get(\"filename\")}')",
+        "raise HTTPException(status_code=502, detail='ComfyUI 返回了空图片。')",
+        "# #331：本地 ComfyUI 直接吃画布的 aspect_ratio + resolution 档；显式尺寸走适配器内的 8 倍数换算。",
+    },
+    ("firefly_generation.py", "ComfyUI"): {
+        "# #331: 本地 ComfyUI 是工作流图接口，同理不允许被改成 REST 协议。",
+    },
+    # ADR 0004 preserves removal of the embedded runtime; #454 (eb5ab71) still uses the slice marker.
+    ("static/js/smart-canvas.js", "ComfyUI"): {REMOVED_RUNTIME_MARKER},
+    ("tests/canvas_module_units/test-canvas-generation-tasks.mjs", "ComfyUI"): {
+        f"const end = source.indexOf('{REMOVED_RUNTIME_MARKER}', start);",
+        f"const end = smart.indexOf('{REMOVED_RUNTIME_MARKER}', start);",
+    },
+    # Fixtures and assertions refer to the named service and its provider contract.
+    ("tests/fixtures/provider_contracts/supported-image-request-families.json", "ComfyUI"): {
+        '"ComfyUI /prompt, /history/{prompt_id}, /view, /upload/image and /queue HTTP routes"',
+        '"request_shape": "ComfyUI API-format graph POSTed to /prompt, polled via /history/{prompt_id}, image fetched from /view; local references uploaded first to /upload/image",',
+        '"auth_header": "none (ComfyUI runs on 127.0.0.1)",',
+    },
+    # 69111cf: named fake provider for the canvas size-payload contract.
+    ("tests/test_comfyui_canvas_payload.py", "ComfyUI"): {
+        '"""端到端（假 ComfyUI）：画布各种 payload 变体都要落到节点 4 的正确尺寸。"""',
+        "'id': PROVIDER_ID, 'name': 'ComfyUI（本地）', 'base_url': 'http://127.0.0.1:8188',",
+    },
+    ("tests/test_comfyui_h3_image.py", "ComfyUI"): {
+        '"""#331 本地 ComfyUI（MiniMax-H3-Image GGUF）接入 TDD。',
+        "事实来源：维护者本地 ComfyUI 0.45.2 + ComfyUI-GGUF 实测（2026-11-14），见 issue #331。",
+        "'name': 'ComfyUI（本地）',",
+        '"""最小可用的 ComfyUI 假服务器：/prompt、/history/{id}、/view、/upload/image、/queue。"""',
+        "# 8MP 档默认 -> 1K 档 2048²；宽高以 ComfyUI 产物元数据为准（节点会对齐到自己的步长）",
+        "self.assertIn('ComfyUI', ctx.exception.detail)",
+        "self.assertEqual(len(fake.requests_to('/free', 'POST')), 1, 'OOM 之后必须先让 ComfyUI 卸模型释放显存')",
+        "self.assertIn('参考图无法交给本地 ComfyUI', ctx.exception.detail)",
+        '"""超时/取消必须撤单：ComfyUI 是单队列，一张卡死的图会堵住用户后面所有任务。"""',
+        "self.assertEqual(len(deletes), 1, '超时后必须把任务从 ComfyUI 队列里删掉')",
+    },
+    ("tests/test_global_settings.py", "ComfyUI"): {
+        "# 设置页协议下拉里的 `comfyui（本地）` 是故意保留的——用户实际在用自己的 ComfyUI",
+    },
+    # #364 (4408690): identifies the upstream generating the diagnostic traffic.
+    ("tests/test_server_logging.py", "ComfyUI"): {
+        "约 10 小时 1.37MB 里大半是轮询 ComfyUI ``/queue`` 的 httpx INFO，中文全是 GBK 乱码。",
+    },
+    # 2174d4d (#331): these are remote URLs, explicitly not project media originals.
+    ("app/services/generation.py", "外链"): {
+        "现在全部走 store / 本地媒体解析，只有真正的外部 http(s) 外链才允许下网。",
+        "# 本地解析不到的才考虑外部外链。本地回环地址一律不走网：那是没解析成功的项目媒体句柄，",
+    },
+    # #360 (00352b9): status text for two local fake-provider fixtures, not product UI.
+    ("tools/e2e/scenario_delete_undo.sh", "本地生成"): {
+        "return {skip: 'KNOWN-GAP: 无本地生成失败夹具；未发送生成请求，未验证占位卡终态写回'};",
+        "return {skip: 'KNOWN-GAP: 无本地生成成功夹具；未发送生成请求，未验证成功写回'};",
+    },
+    # #421 (d111f625), #364 (23310c5) and #458 (2f0d553): actual log directories, not history keys.
+    ("app/services/agent_model_capabilities.py", LOGS_PATTERN): {
+        '"sqlite_home=" + _toml_value(str(folder / "sqlite")), "log_dir=" + _toml_value(str(folder / "logs"))]',
+    },
+    ("tests/test_server_logging.py", LOGS_PATTERN): {
+        'self.assertEqual(directory, Path(tmp) / "logs")',
+        'self.assertTrue(str(directory).endswith(os.path.join("logs")))',
+    },
+    ("tools/firefly-boot-logs.ps1", LOGS_PATTERN): {
+        "return [IO.Path]::GetFullPath((Join-Path $runtimeRoot.Trim() 'logs'))",
+    },
+    ("tools/refresh_cache.py", LOGS_PATTERN): {
+        '_SKIP_DIRS = {"node_modules", "data", "assets", "output", "logs", "tmp", "venv", "browser-profiles"}',
+    },
+}
+
+# #373 (ae997cb, ADR 0004 revision): remove only the exact option inside the
+# protocol selector for the ComfyUI check, not the other options or surrounding copy.
+COMFYUI_PROTOCOL_OPTION = re.compile(
+    r'(<select data-field="protocol">\s*(?:<option\b[^>]*>[^<]*</option>\s*)*?)'
+    r'<option value="comfyui">ComfyUI（本地）</option>'
+    r'(?=\s*(?:<option\b[^>]*>[^<]*</option>\s*)*</select>)'
+)
+
+
+def is_whitelisted(rel_path_str, term, line):
     """Check if a term in a file is whitelisted."""
     # Normalize path separators for cross-platform matching
     normalized_path = rel_path_str.replace("\\", "/")
+    if line.strip() in SCOPED_EXCEPTIONS.get((normalized_path, term), ()):
+        return True
     for file_prefix, whitelist_term, _reason in WHITELIST:
         if file_prefix == "*" or normalized_path.startswith(file_prefix):
             if term == whitelist_term:
@@ -229,24 +369,24 @@ def scan_file(file_path, rel_path):
         # Binary file or read error, skip
         return violations
 
-    lines = content.splitlines()
-    for i, line in enumerate(lines, 1):
-        # Check Chinese terms
+    path = rel_path.as_posix()
+    for i, line in enumerate(content.splitlines(), 1):
         for term in FORBIDDEN_TERMS:
-            if term in line:
-                if not is_whitelisted(str(rel_path), term):
-                    violations.append((rel_path, i, term, line.strip()[:80]))
+            if term not in line or is_whitelisted(path, term, line):
+                continue
+            if term == "ComfyUI" and path == "static/js/global-settings.js":
+                if term not in COMFYUI_PROTOCOL_OPTION.sub(r"\1", line, count=1):
+                    continue
+            violations.append((rel_path, i, term, line.strip()[:80]))
 
-        # Check English patterns
         for pattern_name, pattern in FORBIDDEN_PATTERNS.items():
-            if re.search(pattern, line):
-                if not is_whitelisted(str(rel_path), pattern_name):
-                    violations.append((rel_path, i, pattern_name, line.strip()[:80]))
+            if re.search(pattern, line) and not is_whitelisted(path, pattern_name, line):
+                violations.append((rel_path, i, pattern_name, line.strip()[:80]))
 
     return violations
 
 
-def scan_codebase():
+def scan_codebase(root=ROOT):
     """Scan the codebase for forbidden terms and patterns.
 
     Returns:
@@ -283,20 +423,20 @@ def scan_codebase():
 
     # Scan directories
     for scan_dir in scan_dirs:
-        dir_path = ROOT / scan_dir
+        dir_path = root / scan_dir
         if not dir_path.exists():
             continue
         for file_path in sorted(dir_path.rglob("*")):
             if not file_path.is_file():
                 continue
-            rel_path = file_path.relative_to(ROOT)
+            rel_path = file_path.relative_to(root)
             if should_exclude(rel_path):
                 continue
             violations.extend(scan_file(file_path, rel_path))
 
     # Scan root .py files
     for py_file in root_py_files:
-        file_path = ROOT / py_file
+        file_path = root / py_file
         if file_path.exists():
             violations.extend(scan_file(file_path, Path(py_file)))
 
@@ -355,20 +495,50 @@ class TerminologyGuardTests(unittest.TestCase):
             self.assertIn("log_id", terms_found)
             self.assertIn("logs (as history field)", terms_found)
 
+    def test_exact_exceptions_do_not_hide_new_uses_in_same_file(self):
+        cases = [
+            ("app/services/generation.py", "ComfyUI", "f'ComfyUI 执行失败：{raw_error}'", 'label = "ComfyUI 生图模式"'),
+            ("app/services/generation.py", "外链", "现在全部走 store / 本地媒体解析，只有真正的外部 http(s) 外链才允许下网。", 'label = "项目媒体原件：外链"'),
+            ("tests/test_server_logging.py", LOGS_PATTERN, 'self.assertEqual(directory, Path(tmp) / "logs")', 'history = data["logs"]'),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / "source.txt"
+            for path, term, allowed, forbidden in cases:
+                with self.subTest(path=path, term=term):
+                    test_file.write_text(f"{allowed}\n{forbidden}\n{allowed} # {forbidden}\n", encoding="utf-8")
+                    hits = scan_file(test_file, Path(path))
+                    self.assertEqual([(line, name) for _, line, name, _ in hits], [(2, term), (3, term)])
+                    other_hits = scan_file(test_file, Path(f"other/{path}"))
+                    self.assertEqual([(line, name) for _, line, name, _ in other_hits], [(1, term), (2, term), (3, term)])
+
+    def test_protocol_option_does_not_hide_other_settings_copy(self):
+        option = '<option value="comfyui">ComfyUI（本地）</option>'
+        picker = f'<select data-field="protocol">{option}</select>'
+        with tempfile.TemporaryDirectory() as tmpdir:
+            test_file = Path(tmpdir) / "settings.js"
+            test_file.write_text("\n".join([
+                picker,
+                f"{picker}<label>ComfyUI 生图模式</label>",
+                f'<select data-field="engine">{option}</select>',
+                f'<select data-field="protocol">{option}<option value="other">ComfyUI</option></select>',
+                f"{picker}<label>普通画布</label>",
+                f'<select data-field="protocol">{option}{option}</select>',
+            ]), encoding="utf-8")
+            hits = scan_file(test_file, Path("static/js/global-settings.js"))
+            self.assertEqual([(line, name) for _, line, name, _ in hits], [
+                (2, "ComfyUI"), (3, "ComfyUI"), (4, "ComfyUI"), (5, "普通画布"), (6, "ComfyUI"),
+            ])
+
     def test_guard_end_to_end_negative(self):
-        """End-to-end negative test: write a file with a forbidden term, scan, verify violation."""
-        import os
-        app_dir = ROOT / "app"
-        test_file = app_dir / "tmp_guard_e2e_test.py"
-        try:
-            test_file.write_text("# 生成日志\nx = '生成日志'\n", encoding="utf-8")
-            violations = scan_file(test_file, Path("app/tmp_guard_e2e_test.py"))
-            terms_found = [v[2] for v in violations]
-            self.assertIn("生成日志", terms_found,
-                          f"Expected '生成日志' in violations, got: {terms_found}")
-        finally:
-            if test_file.exists():
-                test_file.unlink()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            path = Path("app/tmp_guard_e2e_test.py")
+            (root / path.parent).mkdir()
+            (root / path).write_text("# 生成日志\nx = '生成日志'\n", encoding="utf-8")
+            violations = scan_codebase(root)
+            self.assertEqual([(rel, line, term) for rel, line, term, _ in violations], [
+                (path, 1, "生成日志"), (path, 2, "生成日志"),
+            ])
 
 
 if __name__ == "__main__":

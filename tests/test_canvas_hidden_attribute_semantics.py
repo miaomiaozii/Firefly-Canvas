@@ -24,12 +24,23 @@ SHARED_STYLESHEET = CSS_DIR / "studio-foundation.css"
 PAGES = ("static/smart-canvas.html", "static/project-list.html", "static/global-settings.html")
 
 GLOBAL_HIDDEN_RULE = re.compile(r"\[hidden\]\s*\{\s*display:\s*none\s*!important\s*;?\s*\}")
-COMPONENT_HIDDEN_PATCH = re.compile(r"[^\r\n{}]*\[hidden\][^\r\n{}]*\{[^}]*\}", re.S)
+HIDDEN_SELECTOR = re.compile(r"(?:^|(?<=[{}]))\s*(?P<selector>[^{}]*\[hidden\][^{}]*)\{")
+VISIBLE_COMPONENT = re.compile(r"\.[\w-]+:not\(\s*\[hidden\]\s*\)")
 CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 
 
 def css_without_comments(name: Path) -> str:
     return CSS_COMMENT.sub("", name.read_text(encoding="utf-8"))
+
+
+def component_hidden_patches(source: str):
+    for match in HIDDEN_SELECTOR.finditer(source):
+        selector = " ".join(match["selector"].split())
+        # #448/#449 (0f766868c952): :not([hidden]) on the component itself
+        # styles the visible state; it cannot match a hidden box. Check the
+        # entire selector so lists and ancestor negations cannot hide patches.
+        if selector != "[hidden]" and not VISIBLE_COMPONENT.fullmatch(selector):
+            yield match.start("selector"), selector
 
 
 class HiddenAttributeSemanticsTests(unittest.TestCase):
@@ -58,21 +69,34 @@ class HiddenAttributeSemanticsTests(unittest.TestCase):
         offenders: list[str] = []
         for stylesheet in sorted(CSS_DIR.glob("*.css")):
             source = css_without_comments(stylesheet)
-            for match in COMPONENT_HIDDEN_PATCH.finditer(source):
-                selector = " ".join(match.group(0).split("{")[0].split())
-                if selector == "[hidden]":
-                    # 全局规则本身——它就是被允许的那一条。
-                    continue
-                lineno = source.count("\n", 0, match.start()) + 1
-                offenders.append(
-                    f"static/css/{stylesheet.name}:{lineno} "
-                    + " ".join(match.group(0).split())[:120]
-                )
+            for offset, selector in component_hidden_patches(source):
+                lineno = source.count("\n", 0, offset) + 1
+                offenders.append(f"static/css/{stylesheet.name}:{lineno} {selector}")
         self.assertEqual(
             offenders,
             [],
             "又开始逐组件打 `[hidden]{display:none}` 补丁了（#346 已用全局规则统一接住）：\n"
             + "\n".join(offenders),
+        )
+
+    def test_visible_only_layout_does_not_mask_hidden_patches(self):
+        source = """
+            [hidden] { display:none !important }
+            .notice:not([hidden]) { display:flex }
+            .notice[hidden] { display:none }
+            .notice[hidden],
+            .notice:not([hidden]) { display:none }
+            .parent:not([hidden]) > .notice { display:none }
+            .notice:not(:not([hidden])) { display:none }
+        """
+        self.assertEqual(
+            [selector for _, selector in component_hidden_patches(source)],
+            [
+                ".notice[hidden]",
+                ".notice[hidden], .notice:not([hidden])",
+                ".parent:not([hidden]) > .notice",
+                ".notice:not(:not([hidden]))",
+            ],
         )
 
     def test_every_page_loads_the_shared_stylesheet(self):

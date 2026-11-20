@@ -3,7 +3,7 @@
 覆盖票面三点与两条回归（issue #343）：
 1. 含 shell 元字符的 node_id / model / 会话 id：创建入口 400、set_model 400、
    spawn 前拒绝（不 Popen、last_error 点名）；codex 会话 validate 即 crashed。
-2. spawn argv 不经 cmd.exe：npm .cmd shim 解成 node.exe+脚本（钉真实 pi.cmd）；
+2. spawn argv 不经 cmd.exe：npm .cmd shim 解成 node.exe+脚本（隔离 pi 转发器夹具）；
    非规范包装器拒绝启动（finalize_spawn_argv 抛 ValueError，不发 Popen）。
 3. canvas.create_node（REST 工具面 + MCP 面）：调用方传任何 id 一律 400，
    服务端自建 id 正常。
@@ -82,15 +82,25 @@ class ValidateSpawnArgTests(unittest.TestCase):
 class ResolveNpmCmdWrapperTests(unittest.TestCase):
     """npm shim 解析：规范模板成功；非模板/缺脚本回 None。"""
 
-    def test_real_pi_wrapper_on_disk(self):
-        """本机真实 pi.cmd（npm 形态）能解成 node.exe + dist/index.js。"""
-        wrapper = Path(r"C:\Users\Administrator\AppData\Roaming\npm\pi.cmd")
-        if not wrapper.is_file():
-            self.skipTest("real pi.cmd not installed")
-        base = resolve_npm_cmd_wrapper(str(wrapper))
-        self.assertIsNotNone(base)
-        self.assertTrue(base[0].lower().endswith("node.exe"))
-        self.assertTrue(base[1].endswith(".js"))
+    def test_pi_forwarder_resolves_npm_wrapper_on_disk(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            wrapper = root / "pi.cmd"
+            wrapper.write_text('CALL "%~dp0pi-stable.cmd" %*\n', encoding="utf-8")
+            (root / "pi-stable.cmd").write_text(
+                r'"%_prog%"  "%dp0%\pi-pkg\dist\index.js" %*' + "\n", encoding="utf-8",
+            )
+            node = root / "node.exe"
+            node.touch()
+            script = root / "pi-pkg" / "dist" / "index.js"
+            script.parent.mkdir(parents=True)
+            script.touch()
+
+            base = resolve_npm_cmd_wrapper(str(wrapper))
+            self.assertIsNotNone(base)
+            self.assertTrue(base[0].lower().endswith("node.exe"))
+            self.assertTrue(base[1].endswith(".js"))
+            self.assertEqual([Path(part) for part in base], [node, script])
 
     def test_non_npm_stub_returns_none(self):
         stub = Path(__file__).resolve().parent / "stubs" / "pi_cli_stub.cmd"
@@ -112,6 +122,7 @@ class SpawnGuardIntegrationTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory(prefix="firefly-343-")
         self.addCleanup(self.temp_dir.cleanup)
         self.store = ProjectStore(Path(self.temp_dir.name) / "projects", snapshot_delay=0)
+        self.addCleanup(self.store.close)
         self._prev = getattr(main, "FIREFLY_PROJECT_STORE", None)
         self.addCleanup(lambda: setattr(main, "FIREFLY_PROJECT_STORE", self._prev))
         main.FIREFLY_PROJECT_STORE = self.store
@@ -138,7 +149,8 @@ class SpawnGuardIntegrationTests(unittest.TestCase):
         session = self._run(self.manager.get_or_create_session(self.project_id, "node-1"))
         session.agent_cli = "codex"
         session.model = "m;whoami"
-        self.assertFalse(self._run(self.manager.spawn_session(session)))
+        with mock.patch.object(agent_host.shutil, "which", return_value="codex.exe"):
+            self.assertFalse(self._run(self.manager.spawn_session(session)))
         self.assertEqual(session.status, "crashed")
         self.assertIn("model", session.last_error)
 
@@ -170,32 +182,18 @@ class SpawnGuardIntegrationTests(unittest.TestCase):
             script.parent.mkdir(parents=True, exist_ok=True)
             script.write_text("// fake", encoding="utf-8")
 
-            captured = {}
-            fake = mock.MagicMock()
-            fake.poll.return_value = None
-            fake.stdin = mock.MagicMock()
-            fake.stdout = mock.MagicMock()
-            fake.stdout.readline.return_value = ""
-            fake.stderr = mock.MagicMock()
-            fake.stderr.read.return_value = ""
-
-            def _popen(cmd, **kw):
-                captured["cmd"] = list(cmd)
-                return fake
-
-            prev = agent_host.shutil.which
-            try:
-                agent_host.shutil.which = lambda name, *a, **k: (
-                    str(base / "codex.cmd") if name == "codex" else prev(name, *a, **k)
-                )
-                with mock.patch.object(agent_host.subprocess, "Popen", side_effect=_popen):
+            (base / "node.exe").touch()
+            # Stop at the real launch boundary; no CLI or reader task should run.
+            with (
+                mock.patch.dict(os.environ, {"CODEX_HOME": str(base / "codex-home")}),
+                mock.patch.object(agent_host.shutil, "which", return_value=str(base / "codex.cmd")),
+                mock.patch.object(agent_host.subprocess, "Popen", side_effect=OSError("fixture launch stopped")) as popen,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "fixture launch stopped"):
                     self._run(self.manager._codex_turn(session, "hi", allow_resume=False))
-            except Exception as _e:
-                captured["exc"] = repr(_e)  # 假进程无事件流，reader 失败不影响 argv 断言
-            finally:
-                agent_host.shutil.which = prev
-        cmd = captured.get("cmd") or []
-        self.assertTrue(cmd, f"Popen 未被调用；turn 异常：{captured.get('exc')}")
+            self.assertEqual(popen.call_count, 1)
+            cmd = popen.call_args.args[0]
+        self.assertTrue(cmd)
         self.assertNotEqual(cmd[0], "cmd")
         self.assertTrue(cmd[0].lower().endswith("node.exe"))
         self.assertEqual(os.path.normcase(os.path.normpath(cmd[1])), os.path.normcase(os.path.normpath(str(script))))
@@ -213,14 +211,24 @@ class ApiValidation343Tests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory(prefix="firefly-343-api-")
         self.addCleanup(self.temp_dir.cleanup)
         self.store = ProjectStore(Path(self.temp_dir.name) / "projects", snapshot_delay=0)
-        self._prev = main.FIREFLY_PROJECT_STORE
+        self.addCleanup(self.store.close)
+        self.addCleanup(setattr, main, "FIREFLY_PROJECT_STORE", main.FIREFLY_PROJECT_STORE)
         main.FIREFLY_PROJECT_STORE = self.store
         self.client = TestClient(main.app, base_url="http://127.0.0.1:8125",
                                  headers={"origin": "http://127.0.0.1:8125"})
+        self.addCleanup(self.client.close)
         self.pid = self.store.create_project("Guard 343 API")["id"]
 
-    def tearDown(self):
-        main.FIREFLY_PROJECT_STORE = self._prev
+    def create_canvas_node(self, node):
+        actor = "tool-actor"
+        self.store.apply_mutations(self.pid, [
+            {"op": "upsert_node", "node": {"id": actor, "type": "smart-agent"}},
+        ], base_revision=0)
+        return self.client.post(
+            f"/api/projects/{self.pid}/canvas/nodes",
+            headers={"X-Agent-Project": self.pid},
+            json={"node": node, "agent_node_id": actor},
+        )
 
     def test_create_agent_node_rejects_metachar_id_and_model(self):
         r = self.client.post(
@@ -249,19 +257,13 @@ class ApiValidation343Tests(unittest.TestCase):
         self.assertIn("model", r.text)
 
     def test_create_node_rejects_any_caller_id(self):
-        r = self.client.post(
-            f"/api/projects/{self.pid}/canvas/nodes",
-            json={"node": {"id": "whatever-1", "type": "smart-prompt"}},
-        )
-        self.assertEqual(r.status_code, 400)
-        self.assertIn("caller-specified", r.text)  # #391：detail 形状化，旧 "#343" 文案改按语义断言
+        r = self.create_canvas_node({"id": "whatever-1", "type": "smart-prompt"})
+        self.assertEqual(r.status_code, 400, r.text)
+        self.assertIn("caller-specified", r.json()["detail"]["message"])
 
     def test_create_node_server_generates_id(self):
-        r = self.client.post(
-            f"/api/projects/{self.pid}/canvas/nodes",
-            json={"node": {"type": "smart-prompt", "title": "T"}},
-        )
-        self.assertEqual(r.status_code, 200)
+        r = self.create_canvas_node({"type": "smart-prompt", "title": "T"})
+        self.assertEqual(r.status_code, 200, r.text)
         self.assertTrue(r.json()["node_id"].startswith("node-"))
 
     def test_mcp_create_node_rejects_caller_id(self):

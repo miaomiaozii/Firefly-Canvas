@@ -9,6 +9,15 @@ TUI = (ROOT / "static" / "js" / "canvas-agent-tui.js").read_text(encoding="utf-8
 # 注意：条件内正则只追到第一个 ")"，imeComposing(event) 的尾括号会落在 cond 外，
 # 所以守卫形式匹配用前缀（"imeComposing("）而不是带尾括号的全串。
 GUARD_FORMS = ("imeComposing(", "!event.isComposing && event.keyCode !== 229")
+ENTER_LINE = re.compile(r"^.*event\.key === 'Enter'.*$", re.M)
+# #409 (17f57fecfa68): the input's reference menu returns before handling
+# any key, so Enter in this callback does not need a second IME check.
+REFERENCE_MENU_GUARD = re.compile(
+    r"^        input\.addEventListener\('keydown', event => \{\n"
+    r"            if \(event\.isComposing \|\| event\.keyCode === 229 \|\| state\.composing \|\| !refs\.menu\) return;\n"
+    r"(?P<body>(?:^ {12}[^\n]*\n|^\n)*)^        \}, true\);",
+    re.M,
+)
 
 
 class ImeMarkdownContractTests(unittest.TestCase):
@@ -36,11 +45,16 @@ class ImeMarkdownContractTests(unittest.TestCase):
     def test_other_files_enter_guarded(self):
         for name in ("canvas-agent-tui.js", "canvas-image-editor.js", "canvas-media-history.js"):
             text = (ROOT / "static" / "js" / name).read_text(encoding="utf-8")
-            enter_lines = [ln for ln in text.splitlines() if "event.key === 'Enter'" in ln and "addEventListener" not in ln]
+            early_guard = REFERENCE_MENU_GUARD.search(text) if name == "canvas-agent-tui.js" else None
+            enter_lines = [match for match in ENTER_LINE.finditer(text) if "addEventListener" not in match[0]]
             self.assertTrue(enter_lines, f"no Enter handlers found in {name}")
-            for line in enter_lines:
-                ok = any(form in line for form in GUARD_FORMS)
-                self.assertTrue(ok, f"{name}: unguarded Enter line: {line.strip()[:80]}")
+            for match in enter_lines:
+                inline_guarded = any(form in match[0] for form in GUARD_FORMS)
+                early_guarded = early_guard and early_guard.start("body") <= match.start() < early_guard.end("body")
+                self.assertTrue(
+                    inline_guarded or early_guarded,
+                    f"{name}: unguarded Enter line: {match[0].strip()[:80]}",
+                )
 
     def test_markdown_fence_placeholder_flow(self):
         self.assertIn("mdBlocks.push", TUI)

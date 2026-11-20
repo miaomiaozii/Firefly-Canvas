@@ -431,20 +431,20 @@ async def comfyui_test_connection(payload):
     """ComfyUI 没有 /v1/models，改探 /system_stats + 关键节点是否存在。"""
     base_url = str(payload.base_url or COMFYUI_DEFAULT_BASE_URL or '').strip().rstrip('/')
     if not base_url:
-        raise HTTPException(status_code=400, detail='请先填写 ComfyUI 请求地址')
+        raise HTTPException(status_code=400, detail='请先填写服务商请求地址')
     if not re.match('^https?://', base_url):
         raise HTTPException(status_code=400, detail='请求地址必须以 http:// 或 https:// 开头')
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             stats = await client.get(f'{base_url}/system_stats')
             if stats.status_code >= 400:
-                return {'ok': False, 'status': stats.status_code, 'message': f'ComfyUI /system_stats 返回 {stats.status_code}：{stats.text[:200]}'}
+                return {'ok': False, 'status': stats.status_code, 'message': f'服务商 /system_stats 返回 {stats.status_code}：{stats.text[:200]}'}
             nodes = await client.get(f'{base_url}/object_info/MiniMaxH3ImageConditioning')
     except httpx.HTTPError as e:
-        return {'ok': False, 'status': 0, 'message': f'连不上 ComfyUI（{base_url}）：{str(e)[:200]}'}
+        return {'ok': False, 'status': 0, 'message': f'连不上服务商（{base_url}）：{str(e)[:200]}'}
     if nodes.status_code != 200:
-        return {'ok': True, 'status': 200, 'protocol': 'comfyui', 'model_count': 0, 'message': f'ComfyUI 服务可用，但没找到 MiniMaxH3ImageConditioning 节点（{base_url}）：需要安装 MiniMax-H3-Image 自定义节点，否则生图会直接失败。'}
-    return {'ok': True, 'status': 200, 'protocol': 'comfyui', 'model_count': 0, 'message': 'ComfyUI 服务可用，已检测到 MiniMaxH3ImageConditioning 节点。'}
+        return {'ok': True, 'status': 200, 'protocol': 'comfyui', 'model_count': 0, 'message': f'服务可用，但没找到 MiniMaxH3ImageConditioning 节点（{base_url}）：需要安装 MiniMax-H3-Image 自定义节点，否则生图会直接失败。'}
+    return {'ok': True, 'status': 200, 'protocol': 'comfyui', 'model_count': 0, 'message': '服务可用，已检测到 MiniMaxH3ImageConditioning 节点。'}
 
 
 @router.post('/api/providers/test-connection')

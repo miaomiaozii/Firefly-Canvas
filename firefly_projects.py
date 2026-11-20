@@ -3562,7 +3562,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                 # Otherwise changing type twice could launder forged bindings
                 # through the unrestricted non-Agent upsert path.
                 if existing_type in agent_node_types and incoming_type not in agent_node_types:
-                    raise InvalidMutation("Agent 节点类型不能通过普通画布保存更改")
+                    raise InvalidMutation("保存画布时不能更改 Agent 节点的类型")
                 try:
                     node = protect_agent_bindings(node, existing if existing_type in agent_node_types else None)
                 except ValueError as exc:

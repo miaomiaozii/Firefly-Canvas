@@ -21,6 +21,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -29,6 +30,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import main
+from app.routers import api_agent_nodes
+from app.services.agent_host import AgentHostManager
 from firefly_projects import ProjectStore
 
 LOOPBACK_BASE = "http://127.0.0.1:8765"
@@ -96,26 +99,20 @@ class AgentStreamOriginRegressionTests(unittest.TestCase):
     """#342：stream 的守卫来自路由级依赖（#240），证伪「accept 前零校验」并钉成回归。"""
 
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="firefly-342r-")
-        self.root = Path(self.temp.name) / "projects"
-        self.store = ProjectStore(self.root, snapshot_delay=0)
-        self.previous_store = main.FIREFLY_PROJECT_STORE
-        main.FIREFLY_PROJECT_STORE = self.store
+        temp = self.enterContext(tempfile.TemporaryDirectory(prefix="firefly-342r-"))
+        self.store = ProjectStore(Path(temp) / "projects", snapshot_delay=0)
+        self.addCleanup(self.store.close)
+        self.enterContext(patch.object(main, "FIREFLY_PROJECT_STORE", self.store))
+        self.manager = AgentHostManager()
+        self.enterContext(patch.object(api_agent_nodes, "agent_host_manager", self.manager))
         self.project_id = self.store.create_project("票342r-stream")["id"]
         self.client = TestClient(main.app, base_url=LOOPBACK_BASE,
                                  headers={"origin": LOOPBACK_BASE})
-
-    def tearDown(self):
-        # 关掉 REST 创建时拉起的宿主会话，否则残留 pi 子进程会拖住解释器退出
-        # （实测：不退时 pytest 跑完打完全行后挂 5 分钟）。
-        try:
-            self.client.delete(f"/api/projects/{self.project_id}/agent-nodes/live-node")
-        except Exception:
-            pass
-        self.client.close()
-        self.store.close()
-        main.FIREFLY_PROJECT_STORE = self.previous_store
-        self.temp.cleanup()
+        self.addCleanup(self.client.close)
+        # #466：不把 CLI 和 stdout 生命周期带进握手测试。短生命周期 TestClient
+        # 会在 REST 返回前关事件循环，等待仍阻塞在 readline 的线程。
+        self.spawn = self.enterContext(patch.object(
+            self.manager, "spawn_session", side_effect=AssertionError("unexpected host startup")))
 
     def _ws_stream(self, origin=None):
         return ws_handshake_probe(
@@ -130,13 +127,17 @@ class AgentStreamOriginRegressionTests(unittest.TestCase):
         self.assertEqual(self._ws_stream("null"), "CLOSED:403")
 
     def test_stream_same_origin_connects(self):
-        # 真节点存在时同域放行（accept 后才进会话管理）——证明守卫不误伤前端。
-        created = self.client.post(
-            f"/api/projects/{self.project_id}/agent-nodes",
-            json={"node_id": "live-node"},
-        )
-        self.assertEqual(created.status_code, 200, created.text)
+        with patch.object(self.manager, "spawn_session", return_value=True) as start:
+            created = self.client.post(
+                f"/api/projects/{self.project_id}/agent-nodes",
+                json={"node_id": "live-node"},
+            )
+            self.assertEqual(created.status_code, 200, created.text)
+            start.assert_awaited_once()
+        self.assertIn("live-node", {node["id"] for node in self.store.canvas(self.project_id)["nodes"]})
         self.assertEqual(self._ws_stream(LOOPBACK_BASE), "CONNECTED")
+        self.spawn.assert_not_awaited()
+        self.assertEqual(self.manager.sessions[f"{self.project_id}:live-node"].event_handlers, [])
 
 
 class WriteRouteOriginMatrixTests(unittest.TestCase):

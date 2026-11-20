@@ -50,7 +50,21 @@ class CreativeHistoryExperienceTests(unittest.TestCase):
         self.assertNotIn("updateUndoRedoButtons", SCRIPT)
         restore = re.search(r"async function restoreSmartProjectOriginal\([^)]*\)\{(?P<body>.*?)\n\}", SCRIPT, re.S)
         self.assertIsNotNone(restore)
-        self.assertIn("syncUndoRedoButtons();", restore.group("body"))
+        # #427 (215f68d691ca): the current canvas refreshes both controls via
+        # the token cleanup helper, including when no matching token is left.
+        self.assertRegex(
+            restore.group("body"),
+            r"await restoreSmartProjectOriginalUndo\(\{projectOriginalDelete:token\}\);\s*"
+            r"if\(projectId !== smartProjectId\(\) \|\| canvas\?\.id !== activeCanvasId\) return;\s*"
+            r"removeProjectOriginalUndoTokens\(normalizedAssetId, token\.deletionId, projectId\);",
+        )
+        cleanup = re.search(r"^function removeProjectOriginalUndoTokens\([^)]*\)\{(?P<body>.*?)^\}", SCRIPT, re.M | re.S)
+        self.assertIsNotNone(cleanup)
+        self.assertIn("\n    syncUndoRedoButtons();\n", cleanup.group("body"))
+        sync = re.search(r"^function syncUndoRedoButtons\(\)\{(?P<body>.*?)^\}", SCRIPT, re.M | re.S)
+        self.assertIsNotNone(sync)
+        self.assertIn("smartUndoButton.disabled = !undoStack.length;", sync.group("body"))
+        self.assertIn("smartRedoButton.disabled = !redoStack.length;", sync.group("body"))
 
     def test_history_heading_and_prompt_are_two_pixels_larger(self):
         self.assertRegex(CANVAS_CSS, r"\.log-title\s*\{[^}]*font-size:16px[^}]*color:var\(--designer-accent-strong\)")
@@ -171,8 +185,18 @@ class CreativeHistoryExperienceTests(unittest.TestCase):
         self.assertIn("history_id:historyId", SCRIPT)
         self.assertIn("output_id:outputId", SCRIPT)
         self.assertIn("deletion_id:snapshot.projectOriginalDelete.deletionId", SCRIPT)
-        self.assertIn("const deletionId = String(data.deleted?.deletion_id || '')", SCRIPT)
-        self.assertIn("projectOriginalDelete:{assetId, outputId, deletionId, historyId, projectId}", SCRIPT)
+        delete = re.search(r"^async function deleteSmartProjectOriginal\([^)]*\)\{(?P<body>.*?)^\}", SCRIPT, re.M | re.S)
+        self.assertIsNotNone(delete)
+        body = delete.group("body")
+        self.assertIn("const deletionId = String(data.deleted?.deletion_id || '')", body)
+        # #392 (611bf55acf02): the optional local edit delta augments the same
+        # occurrence token; it must not replace any of the five identity fields.
+        self.assertRegex(
+            body,
+            r"const undoSnapshot = \{projectOriginalDelete:\{assetId, outputId, deletionId, historyId, projectId,\s*"
+            r"\.\.\.\(options\.localActionDelta \? \{localActionDelta:options\.localActionDelta\} : \{\}\)\}\};",
+        )
+        self.assertIn("pushUndo(undoSnapshot);", body)
         self.assertIn("historySelectedOutputId:String(historyOutput?.output_id || '')", SCRIPT)
         self.assertIn("detailSelectedOutputId:String(detailOutput?.output_id || '')", SCRIPT)
         self.assertIn("canvasSelectedOutputId:String(selectedCanvasItem?.output_id || '')", SCRIPT)

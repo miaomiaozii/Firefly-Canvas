@@ -1927,7 +1927,8 @@ function openAgentModelPicker(nodeId, projectId, kind = 'model', anchor = null) 
     picker.outside = event => { if (!menu.contains(event.target) && event.target !== anchor) closeAgentModelPicker(state); };
     picker.keydown = event => {
         if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeAgentModelPicker(state); anchor?.focus(); return; }
-        if (event.key === 'Enter' && menu.contains(document.activeElement) && document.activeElement !== menu) {
+        if (event.key === 'Enter' && !event.isComposing && event.keyCode !== 229
+            && menu.contains(document.activeElement) && document.activeElement !== menu) {
             event.preventDefault(); event.stopPropagation(); document.activeElement.click(); return;
         }
         if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;

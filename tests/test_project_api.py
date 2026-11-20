@@ -1,5 +1,7 @@
+import ast
 import asyncio
 import copy
+import os
 import tempfile
 import sys
 import unittest
@@ -9,8 +11,9 @@ import hashlib
 import threading
 import time
 import zipfile
+from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -42,6 +45,18 @@ class ProjectApiContractTests(unittest.TestCase):
         self.store.close()
         main.FIREFLY_PROJECT_STORE = self.previous_store
         self.temp_dir.cleanup()
+
+    @contextmanager
+    def canvas_session(self, project_id, client_id):
+        # #342: TestClient uses ws://testserver for relative WS URLs, not its HTTP base URL.
+        with self.client.websocket_connect(
+            f"ws://127.0.0.1/ws/stats?client_id={client_id}&project_id={project_id}"
+        ) as socket:
+            self.assertEqual(socket.receive_json()["type"], "stats")
+            # Endpoint registers the project after the initial stats message.
+            socket.send_text("ping")
+            self.assertEqual(socket.receive_json(), {"type": "pong"})
+            yield
 
     def test_startup_entry_is_project_list_and_empty_library_has_no_default(self):
         response = self.client.get("/")
@@ -855,10 +870,7 @@ class ProjectApiContractTests(unittest.TestCase):
         }
         endpoint = f"/api/project-library/{project['id']}/cleanup-execute"
 
-        with self.client.websocket_connect(
-            f"/ws/stats?client_id=canvas_execute&project_id={project['id']}"
-        ) as socket:
-            socket.receive_json()
+        with self.canvas_session(project["id"], "canvas_execute"):
             blocked = self.client.post(endpoint, json=payload)
             self.assertEqual(blocked.status_code, 409, blocked.text)
             self.assertIn("仍在打开", blocked.json()["detail"])
@@ -915,10 +927,7 @@ class ProjectApiContractTests(unittest.TestCase):
     def test_project_library_marks_cleanup_available_only_after_canvas_session_closes(self):
         project = self.store.create_project("项目列表关闭状态")
 
-        with self.client.websocket_connect(
-            f"/ws/stats?client_id=canvas_list&project_id={project['id']}"
-        ) as socket:
-            socket.receive_json()
+        with self.canvas_session(project["id"], "canvas_list"):
             opened = self.client.get("/api/project-library").json()["projects"]
             opened_project = next(item for item in opened if item["id"] == project["id"])
             self.assertFalse(opened_project["cleanup_preview_available"])
@@ -931,10 +940,7 @@ class ProjectApiContractTests(unittest.TestCase):
         project = self.store.create_project("打开中的项目")
         endpoint = f"/api/project-library/{project['id']}/cleanup-preview"
 
-        with self.client.websocket_connect(
-            f"/ws/stats?client_id=canvas_cleanup&project_id={project['id']}"
-        ) as socket:
-            socket.receive_json()
+        with self.canvas_session(project["id"], "canvas_cleanup"):
             blocked = self.client.get(endpoint)
             self.assertEqual(blocked.status_code, 409, blocked.text)
             self.assertIn("仍在打开", blocked.json()["detail"])
@@ -1594,7 +1600,33 @@ class ProjectApiContractTests(unittest.TestCase):
 
         forged_host = {"host": "hostile.example", "origin": "http://hostile.example"}
         self.assertEqual(self.client.get("/api/project-library", headers=forged_host).status_code, 403)
-        self.assertIn('uvicorn.run(app, host="127.0.0.1"', Path(main.__file__).read_text(encoding="utf-8"))
+
+    def test_console_and_desktop_launchers_pass_loopback_to_uvicorn(self):
+        source = Path(main.__file__)
+        # Run the launch block only, to avoid reinitializing shared app services.
+        entry = ast.parse(source.read_text(encoding="utf-8"), filename=str(source)).body[-1]
+        launch = compile(ast.Module(body=[entry], type_ignores=[]), str(source), "exec")
+        context = {"__name__": "__main__", "app": main.app, "_os_boot": os, "sys": sys,
+                   "_route_uvicorn_to_file": False}
+        desktop = Mock()
+        with (
+            patch.dict(os.environ, {"FIREFLY_PORT": "8126", "FIREFLY_DESKTOP_READY_FILE": "unused"}),
+            patch("uvicorn.run") as serve,
+            patch("runpy.run_path", return_value={"DesktopServer": desktop}),
+        ):
+            with patch.object(sys, "argv", [str(source)]):
+                exec(launch, context.copy())
+            serve.assert_called_once()
+            self.assertEqual(serve.call_args.kwargs["host"], "127.0.0.1")
+            desktop.assert_not_called()
+            serve.reset_mock()
+
+            with patch.object(sys, "argv", [str(source), "--desktop"]):
+                exec(launch, context.copy())
+            serve.assert_not_called()
+            desktop.assert_called_once()
+            self.assertEqual(desktop.call_args.args[0].host, "127.0.0.1")
+            desktop.return_value.run.assert_called_once_with()
 
     def test_fly_upload_is_limited_before_and_during_multipart_spooling(self):
         missing_content_type = self.client.post("/api/project-library/import", content=b"not-multipart")
@@ -2118,19 +2150,27 @@ class AgentBindingProjectApiTests(unittest.TestCase):
         fields = agent_binding_node()
         for key in ("id", "createdBy", "agentNodeId", "userTouchedAt", "promptEditedByUser"):
             fields.pop(key)
-        response = self.client.post(f"/api/projects/{self.pid}/canvas/nodes", json={
-            "node": fields, "trusted_agent_bindings": True, "source": "mcp",
+        actor = "tool-actor"
+        self.save({"id": actor, "type": "smart-agent"})
+        headers = {"X-Agent-Project": self.pid}
+        endpoint = f"/api/projects/{self.pid}/canvas/nodes"
+        response = self.client.post(endpoint, headers=headers, json={
+            "agent_node_id": actor, "node": fields, "trusted_agent_bindings": True, "source": "mcp",
         })
         self.assertEqual(response.status_code, 200, response.text)
         node_id = response.json()["node_id"]
         self.assert_unbound(self.nodes()[node_id])
         before = self.nodes()[node_id]
-        rejected = self.client.patch(f"/api/projects/{self.pid}/canvas/nodes/{node_id}", json={
+        query = {"agent_node_id": actor}
+        rejected = self.client.patch(f"{endpoint}/{node_id}", headers=headers, params=query, json={
             "mcp_session": "forged", "trusted_agent_bindings": True,
         })
         self.assertEqual(rejected.status_code, 400, rejected.text)
+        self.assertEqual(rejected.json()["detail"]["details"]["rejected_keys"],
+                         ["mcp_session", "trusted_agent_bindings"])
         self.assertEqual(self.nodes()[node_id], before)
-        legal = self.client.patch(f"/api/projects/{self.pid}/canvas/nodes/{node_id}", json={"title": "ordinary tool edit"})
+        legal = self.client.patch(f"{endpoint}/{node_id}", headers=headers, params=query,
+                                  json={"title": "ordinary tool edit"})
         self.assertEqual(legal.status_code, 200, legal.text)
         self.assertEqual(self.nodes()[node_id], {**before, "title": "ordinary tool edit", "updated_at": self.nodes()[node_id]["updated_at"]})
 
