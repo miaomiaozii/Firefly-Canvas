@@ -96,6 +96,11 @@ app.mount("/static", FireflyStaticFiles(directory=STATIC_DIR), name="static")
 
 app.add_exception_handler(RequestValidationError, request_validation_exception_handler)
 
+
+@app.exception_handler(firefly_json_io.CorruptJSONFile)
+async def corrupt_config_response(_request: Request, exc: firefly_json_io.CorruptJSONFile):
+    return JSONResponse(status_code=503, content={"code": "config_recovery_required", "detail": str(exc)})
+
 DIAGNOSTICS_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'canvas-diagnostics.log')
 
 @app.post('/api/canvas-diagnostics')
@@ -463,6 +468,10 @@ async def shutdown_event():
 
 @asynccontextmanager
 async def lifespan_context(_app):
+    if STORAGE_RECOVERY_ERROR is not None:
+        # #345：不要启动会迁移文件、回收任务或写项目的后台工作。
+        yield
+        return
     await startup_event()
     yield
     await shutdown_event()
@@ -471,11 +480,13 @@ async def lifespan_context(_app):
 app.router.lifespan_context = lifespan_context
 
 def load_storage_settings():
-    # #345：读坏了不能再当成“从没配过”——read_json 会先把坏文件改名 .corrupt-<UTC> 保住字节
-    # 并记一条诊断（界面会提示），然后才用默认目录继续跑。
-    raw = firefly_json_io.read_json(STORAGE_SETTINGS_FILE, default={}, encoding="utf-8-sig")
-    if not isinstance(raw, dict):
-        raw = {}
+    # #345：保留原件，使损坏状态跨重启持续，直到用户恢复配置。
+    raw = firefly_json_io.read_json(
+        STORAGE_SETTINGS_FILE, default={}, encoding="utf-8-sig", quarantine=False,
+        raise_on_corrupt=True, validate=lambda value: isinstance(value, dict) and all(
+            isinstance(value[key], str) for key in DEFAULT_STORAGE_DIRS if key in value
+        ),
+    )
     dirs = {}
     for key, fallback in DEFAULT_STORAGE_DIRS.items():
         dirs[key] = _storage_abs_path((raw or {}).get(key), fallback)
@@ -729,6 +740,40 @@ def _drop_content_length(headers):
 app.add_middleware(ShapeAgentToolErrorsMiddleware)
 
 
+class StorageRecoveryMiddleware:
+    """#345：允许显式列出的恢复入口；普通 GET 也可能创建默认库或生成缓存。"""
+
+    read_paths = frozenset({
+        "/", "/api/healthz", "/api/app-info", "/api/global-settings",
+        "/api/global-settings/preferences", "/api/config/data-diagnostics",
+    })
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if STORAGE_RECOVERY_ERROR is not None:
+            if scope["type"] == "websocket":
+                await send({"type": "websocket.close", "code": 1013})
+                return
+            if scope["type"] == "http":
+                path = scope["path"].rstrip("/") or "/"
+                if scope["method"] not in {"GET", "HEAD"} or not (path in self.read_paths or path.startswith("/static/")):
+                    response = JSONResponse(status_code=503, content={
+                        "code": "storage_recovery_required", "detail": storage_recovery_message(),
+                    })
+                    await response(scope, receive, send)
+                    return
+        await self.app(scope, receive, send)
+
+
+def storage_recovery_message():
+    return f"{STORAGE_RECOVERY_ERROR}。存储操作已停用；请恢复原路径下的有效配置，再重启 Firefly。"
+
+
+app.add_middleware(StorageRecoveryMiddleware)
+
+
 def api_guard_covers(path: str) -> bool:
     """#342 同源守卫的覆盖谓词（tests/test_api_same_origin_guard.py 路由表遍历验证）。"""
     normalized = path.rstrip("/")
@@ -761,15 +806,11 @@ async def protect_api_origin(request: Request, call_next):
 
 
 def load_asset_library():
-    if not os.path.exists(ASSET_LIBRARY_PATH):
+    lib = firefly_json_io.read_global_json(ASSET_LIBRARY_PATH, dict)
+    if lib is None:
         lib = default_asset_library()
         save_asset_library(lib)
         return lib
-    # #345：以前 except → default_asset_library()，下一次保存就把空库写回磁盘——用户整个
-    # 资源库消失且没有任何痕迹。现在坏文件先改名 .corrupt-<UTC> 保住，再走默认值。
-    lib = firefly_json_io.read_json(ASSET_LIBRARY_PATH, default=None)
-    if not isinstance(lib, dict):
-        lib = default_asset_library()
     # #212: 默认库历史名一次性迁移后回写一次磁盘，使存量数据与界面收敛
     migrated = any(isinstance(l, dict) and str(l.get('id')) == 'default' and str(l.get('name')) in DEFAULT_LIBRARY_LEGACY_NAMES for l in lib.get('libraries') or [])
     lib = normalize_asset_library(lib)
@@ -782,6 +823,7 @@ def load_asset_library():
 
 def save_asset_library(lib):
     with CANVAS_LOCK:
+        firefly_json_io.read_global_json(ASSET_LIBRARY_PATH, dict)
         lib = normalize_asset_library(lib)
         sort_asset_library_items(lib)
         lib["updated_at"] = now_ms()
@@ -1279,16 +1321,20 @@ DEFAULT_STORAGE_DIRS = {
     "local": LOCAL_UPLOAD_DIR,
 }
 
-apply_storage_settings()
+STORAGE_RECOVERY_ERROR = None
+try:
+    apply_storage_settings()
+except firefly_json_io.CorruptJSONFile as exc:
+    STORAGE_RECOVERY_ERROR = exc
+    logger.error(storage_recovery_message())
 
-ensure_runtime_config_files()
-
-load_env_file()
-
-# #290: bailian 凭据存在 → 生产 local-edit adapter；否则保留离线 fake（须晚于 API_ENV_FILE 定义与 load_env_file）
-wire_local_edit_adapter(sys.modules[__name__])
-
-FIREFLY_PROJECT_STORE = ProjectStore()
+FIREFLY_PROJECT_STORE = None
+if STORAGE_RECOVERY_ERROR is None:
+    ensure_runtime_config_files()
+    load_env_file()
+    # #290：本地编辑适配器需要先加载 API/.env。
+    wire_local_edit_adapter(sys.modules[__name__])
+    FIREFLY_PROJECT_STORE = ProjectStore()
 
 AI_BASE_URL = os.getenv("COMFLY_BASE_URL", "https://ai.comfly.chat").rstrip("/")
 
@@ -1318,25 +1364,12 @@ VIDEO_MODELS = model_list("VIDEO_MODELS", "veo3-fast", [
     "doubao-seedance-1-0-lite-i2v-250428",
 ])
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-os.makedirs(ASSETS_DIR, exist_ok=True)
-
-os.makedirs(OUTPUT_INPUT_DIR, exist_ok=True)
-
-os.makedirs(OUTPUT_OUTPUT_DIR, exist_ok=True)
-
-os.makedirs(ASSET_LIBRARY_DIR, exist_ok=True)
-
-os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
-
-os.makedirs(CONVERSATION_DIR, exist_ok=True)
-
-os.makedirs(CANVAS_DIR, exist_ok=True)
-
-app.mount("/output", StaticFiles(directory=OUTPUT_DIR), name="output")
-
-app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
+if STORAGE_RECOVERY_ERROR is None:
+    for directory in (OUTPUT_DIR, ASSETS_DIR, OUTPUT_INPUT_DIR, OUTPUT_OUTPUT_DIR,
+                      ASSET_LIBRARY_DIR, LOCAL_UPLOAD_DIR, CONVERSATION_DIR, CANVAS_DIR):
+        os.makedirs(directory, exist_ok=True)
+    app.mount("/output", StaticFiles(directory=OUTPUT_DIR), name="output")
+    app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 
 PROJECTS_PATH = os.path.join(DATA_DIR, "projects.json")
 
@@ -1496,7 +1529,7 @@ from app.routers.api_runninghub import RunningHubSubmitRequest, RunningHubUpload
 from app.routers.api_shared_folders import SharedFolderImport, SharedFolderRegister, get_shared_folder_file, get_shared_folder_tree, import_shared_folder_files, list_shared_folders, register_shared_folder, scan_shared_tree, shared_child_abs, shared_folder_abs, shared_folder_by_id, shared_folders_load, shared_folders_save, shared_resolve_register, unregister_shared_folder  # noqa: F401
 from app.routers.api_smart_canvas import SmartCanvasGroupExportItem, SmartCanvasGroupExportRequest, export_smart_canvas_group, smart_canvas_prompt_templates, smart_group_export_folder  # noqa: F401
 from app.routers.api_storage_files import delete_storage_files, get_storage_file, list_storage_files, storage_file_item  # noqa: F401
-from app.routers.api_storage_settings import _storage_abs_path, apply_storage_settings, get_storage_settings, load_storage_settings, save_storage_settings, update_storage_settings  # noqa: F401
+from app.routers.api_storage_settings import get_storage_settings, save_storage_settings, update_storage_settings  # noqa: F401
 from app.routers.api_temp_sh import TempShUploadRequest, temp_sh_upload  # noqa: F401
 from app.routers.api_view import view_image  # noqa: F401
 from app.routers.root import index  # noqa: F401

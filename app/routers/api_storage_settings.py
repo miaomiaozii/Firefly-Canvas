@@ -32,17 +32,10 @@ def _storage_abs_path(value, fallback):
     return os.path.abspath(text)
 
 def load_storage_settings():
-    # #345：存储目录配坏过一次，下次启动会静默回到默认目录，看起来像“资源丢了”。
-    # read_json 会先把坏文件改名 .corrupt-<UTC> 保住字节并记诊断（界面会提示）。
-    raw = firefly_json_io.read_json(STORAGE_SETTINGS_FILE, default={}, encoding='utf-8-sig')
-    if not isinstance(raw, dict):
-        raw = {}
-    dirs = {}
-    for key, fallback in DEFAULT_STORAGE_DIRS.items():
-        dirs[key] = _storage_abs_path((raw or {}).get(key), fallback)
-    return {'dirs': dirs}
+    return _app_main.load_storage_settings()
 
 def save_storage_settings(payload):
+    load_storage_settings()
     dirs = {}
     for key, fallback in DEFAULT_STORAGE_DIRS.items():
         dirs[key] = _storage_abs_path((payload or {}).get(key), fallback)
@@ -50,15 +43,8 @@ def save_storage_settings(payload):
         os.makedirs(path, exist_ok=True)
     # #345：以前 open("w") 先截断再 dump，中途死掉就是一个 0 字节的存储设置。
     firefly_json_io.write_json_atomic(STORAGE_SETTINGS_FILE, dirs)
-    apply_storage_settings(dirs)
+    _app_main.apply_storage_settings(dirs)
     return {'dirs': dirs}
-
-def apply_storage_settings(dirs=None):
-    global OUTPUT_INPUT_DIR, OUTPUT_OUTPUT_DIR, LOCAL_UPLOAD_DIR
-    dirs = dirs or load_storage_settings().get('dirs') or {}
-    _app_main.OUTPUT_INPUT_DIR = dirs.get('upload') or _app_main.OUTPUT_INPUT_DIR
-    _app_main.OUTPUT_OUTPUT_DIR = dirs.get('generated') or _app_main.OUTPUT_OUTPUT_DIR
-    _app_main.LOCAL_UPLOAD_DIR = dirs.get('local') or _app_main.LOCAL_UPLOAD_DIR
 
 @router.get('/api/storage-settings')
 async def get_storage_settings():

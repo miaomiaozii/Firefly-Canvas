@@ -457,15 +457,7 @@ async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str=
     return {'total': len(ids), 'image_models': grouped['image'], 'chat_models': grouped['chat'], 'video_models': grouped['video'], 'recommended_models': recommend_upstream_models(grouped), 'all': ids, 'image_request_mode': detect_image_request_mode(base_url, ids) or normalize_image_request_mode(image_request_mode)}
 
 def save_storage_settings(payload):
-    dirs = {}
-    for key, fallback in _svc._main('DEFAULT_STORAGE_DIRS').items():
-        dirs[key] = _storage_abs_path((payload or {}).get(key), fallback)
-    for path in dirs.values():
-        os.makedirs(path, exist_ok=True)
-    # #345：存储目录配坏过一次，下次启动会静默回到默认目录，看起来像“资源丢了”。
-    firefly_json_io.write_json_atomic(_svc._main('STORAGE_SETTINGS_FILE'), dirs)
-    _svc._main('apply_storage_settings')(dirs)
-    return {'dirs': dirs}
+    return _svc._main('save_storage_settings')(payload)
 
 def provider_endpoint_url(provider, key, default_path):
     base_url = str((provider or {}).get('base_url') or _svc._main('AI_BASE_URL')).strip().rstrip('/')
@@ -483,23 +475,13 @@ def provider_endpoint_url(provider, key, default_path):
     return f'{base_url}{default_path}'
 
 def load_api_providers():
+    raw = firefly_json_io.read_global_json(_svc._main('API_PROVIDERS_FILE'), list)
     defaults = default_api_providers()
-    if not os.path.exists(_svc._main('API_PROVIDERS_FILE')):
-        return merge_default_api_providers(defaults)
-    # #345：api_providers.json 里是加密后的 API Key。以前解析失败只留一行 warning，返回
-    # 默认平台，下一次保存就把默认值写回去——用户的 Key 从此消失，现场也没了。
-    # 现在坏文件先改名 .corrupt-<UTC> 保住（加密内容还能拿回来恢复），并记诊断给界面提示。
-    raw = firefly_json_io.read_json(_svc._main('API_PROVIDERS_FILE'), default=None)
     if raw is None:
-        return defaults
-    try:
-        providers = [normalize_provider(item) for item in raw if isinstance(item, dict)]
-        providers = [_decrypt_provider_secrets(item) for item in providers]
-        providers = [item for item in providers if item.get('id') not in REMOVED_PROVIDER_IDS]
-        return merge_default_api_providers(providers or defaults, inject_missing=not bool(providers))
-    except Exception as e:
-        logger.exception(f'解析 API 平台配置失败（文件已保留，不会用默认值覆盖）: {e}')
-        return defaults
+        return merge_default_api_providers(defaults)
+    providers = [_decrypt_provider_secrets(normalize_provider(item)) for item in raw if isinstance(item, dict)]
+    providers = [item for item in providers if item.get('id') not in REMOVED_PROVIDER_IDS]
+    return merge_default_api_providers(providers or defaults, inject_missing=not bool(providers))
 
 def _decrypt_provider_secrets(provider):
     provider = dict(provider or {})
@@ -511,8 +493,8 @@ def _decrypt_provider_secrets(provider):
 def save_api_providers(providers):
     providers_file = _svc._main('API_PROVIDERS_FILE')
     write_guard.ensure_writable_config(providers_file)
-    # #345：open("w") 在打开那一刻就把真 Key 截成 0 字节，dump 中途死掉就什么都没有。
     with GLOBAL_CONFIG_LOCK:
+        firefly_json_io.read_global_json(providers_file, list)
         firefly_json_io.write_json_atomic(providers_file, [_encrypt_provider_secrets(item) for item in providers])
 
 def _encrypt_provider_secrets(provider):
@@ -600,7 +582,7 @@ def _public_global_preferences(raw):
 
 def load_global_preferences():
     with _GLOBAL_PREFERENCES_LOCK:
-        raw = firefly_json_io.read_json(_svc._main('GLOBAL_SETTINGS_FILE'), default=None, encoding='utf-8-sig')
+        raw = firefly_json_io.read_global_json(_svc._main('GLOBAL_SETTINGS_FILE'), dict, encoding='utf-8-sig')
         return _public_global_preferences(raw)
 
 
@@ -608,7 +590,7 @@ def save_global_preferences(theme: str, language: str, autosave_interval_minutes
     # #365：保留旧客户端的 language 参数，但始终写入中文。
     with _GLOBAL_PREFERENCES_LOCK:
         path = _svc._main('GLOBAL_SETTINGS_FILE')
-        raw = firefly_json_io.read_json(path, default=None, encoding='utf-8-sig', raise_on_corrupt=True)
+        raw = firefly_json_io.read_global_json(path, dict, encoding='utf-8-sig')
         preferences = dict(raw) if isinstance(raw, dict) else {}
         preferences.update({'theme': theme if theme in ('light', 'dark') else 'dark',
                             'language': 'zh', 'agent_file_access': 'read-only'})

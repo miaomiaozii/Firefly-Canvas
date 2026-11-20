@@ -93,6 +93,9 @@ async def global_settings(request: Request):
     # #342：本 GET fan-out 到 codex/gemini status（最多 spawn 4 个 CLI 子进程），
     # 属副作用 GET，要求显式同源头（Origin/Referer）；内部 fan-out 走 *_core 不受影响。
     ensure_same_origin_request(request)
+    if _app_main.STORAGE_RECOVERY_ERROR is not None:
+        # 设置页属于恢复入口，不启动 CLI，不打开项目库。
+        return {'storage_recovery': {'message': _app_main.storage_recovery_message()}}
     statuses = await asyncio.gather(_app_main.codex_status_core(), _app_main.gemini_cli_status_core(), return_exceptions=True)
 
     def safe_cli_status(label, value):

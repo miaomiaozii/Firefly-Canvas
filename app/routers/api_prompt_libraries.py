@@ -105,14 +105,9 @@ def normalize_prompt_libraries(data):
     return {'active_library_id': active, 'libraries': libraries, 'updated_at': int(data.get('updated_at') or _app_main.now_ms())}
 
 def load_prompt_libraries():
-    if not os.path.exists(PROMPT_LIBRARY_PATH):
-        data = default_prompt_libraries()
-        return save_prompt_libraries(data)
-    # #345：提示词库读坏了以前直接换成内置模板，紧接着就被保存回磁盘，用户自己写的库全没。
-    # 现在坏文件先改名 .corrupt-<UTC> 保住并记诊断，后面的默认值不会覆盖它。
-    data = firefly_json_io.read_json(PROMPT_LIBRARY_PATH, default=None)
-    if not isinstance(data, dict):
-        data = default_prompt_libraries()
+    data = firefly_json_io.read_global_json(PROMPT_LIBRARY_PATH, dict)
+    if data is None:
+        return save_prompt_libraries(default_prompt_libraries())
     normalized = normalize_prompt_libraries(data)
     if normalized.get('active_library_id') != data.get('active_library_id') or normalized.get('libraries') != data.get('libraries'):
         return save_prompt_libraries(normalized)
@@ -121,7 +116,7 @@ def load_prompt_libraries():
 def save_prompt_libraries(data):
     data = normalize_prompt_libraries(data)
     data['updated_at'] = _app_main.now_ms()
-    # #345：同一个文件先被截断再写，dump 中途死掉就是个 0 字节的提示词库。
+    firefly_json_io.read_global_json(PROMPT_LIBRARY_PATH, dict)
     firefly_json_io.write_json_atomic(PROMPT_LIBRARY_PATH, data)
     return data
 

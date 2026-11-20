@@ -12,8 +12,8 @@
 两条规矩：
 1. 写：先写同目录隐藏临时文件 → flush + fsync → ``os.replace`` 一次替换。中途失败只留临时
    文件（finally 清掉），原文件保持完整。
-2. 读：文件读不动或解不开 → **先把坏文件改名 ``.corrupt-<UTC>`` 保住字节**，记一条诊断给
-   界面提示，再返回默认值。默认值永远不会覆盖坏文件，因为坏文件已经被挪开了。
+2. 全局配置严格读：失败时保留原始字节并报错；仅首次缺文件才允许初始化。项目恢复等旧调用
+   可继续使用默认读策略，其隔离和备份规则不变。
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ class CorruptJSONFile(RuntimeError):
         self.path = path
         self.reason = reason
         self.quarantine = quarantine
-        where = f"（坏文件已改名保在 {quarantine.name}）" if quarantine else "（坏文件改名失败，仍在原地）"
+        where = f"（坏文件已改名保在 {quarantine.name}）" if quarantine else "（原文件保留）"
         super().__init__(f"{path.name} 读取失败：{reason}{where}")
 
 
@@ -194,6 +194,7 @@ def read_json(
     encoding: str = "utf-8",
     quarantine: bool = True,
     raise_on_corrupt: bool = False,
+    validate: Optional[Callable[[Any], bool]] = None,
 ) -> Any:
     """读一个 JSON 文件。
 
@@ -206,15 +207,38 @@ def read_json(
     target = Path(path)
     try:
         with target.open("r", encoding=encoding) as handle:
-            return json.load(handle)
+            value = json.load(handle)
+        if validate is not None and not validate(value):
+            raise ValueError("JSON 结构不符合预期")
+        return value
     except FileNotFoundError:
+        if raise_on_corrupt:
+            # 一次隔离不能让下一次读取把损坏当成首次运行。
+            prefix = target.name + CORRUPT_MARK
+            try:
+                candidates = [item for item in target.parent.iterdir() if item.name.startswith(prefix)]
+            except FileNotFoundError:
+                candidates = []
+            if candidates:
+                previous = max(candidates, key=lambda item: item.name)
+                reason = "缺少原路径下的有效配置，请先恢复隔离文件"
+                record_data_diagnostic(DIAGNOSTIC_KIND_CORRUPT, target, detail=f"{reason}；{previous.name}")
+                raise CorruptJSONFile(target, reason, previous)
         return default
     except (OSError, ValueError) as exc:  # ValueError 覆盖 json.JSONDecodeError / UnicodeDecodeError
-        reason = str(exc)
-        moved = quarantine_corrupt_json(target) if quarantine else None
-        detail = f"{reason}；已改名 {moved.name}" if moved else f"{reason}；改名失败，文件仍在原地"
+        # 不将任意解码异常中的用户数据（例如凭据）暴露给 UI。
+        reason = f"JSON 无法解析（第 {exc.lineno} 行第 {exc.colno} 列）" if isinstance(exc, json.JSONDecodeError) else type(exc).__name__
+        moved = quarantine_corrupt_json(target) if quarantine and isinstance(exc, ValueError) else None
+        detail = f"{reason}；已改名 {moved.name}" if moved else f"{reason}；原文件保留"
         record_data_diagnostic(DIAGNOSTIC_KIND_CORRUPT, target, detail=detail)
-        logger.error(f"读取 {target} 失败，按默认值继续：{detail}")
+        logger.error("读取 %s 失败，%s：%s", target, "要求恢复" if raise_on_corrupt else "按默认值继续", detail)
         if raise_on_corrupt:
             raise CorruptJSONFile(target, reason, moved) from exc
         return default
+
+
+def read_global_json(path: PathLike, expected_type: type, *, default: Any = None,
+                     encoding: str = "utf-8") -> Any:
+    """全局配置损坏不能伪装成缺文件；直接保存前也用同一规则检查。"""
+    return read_json(path, default=default, encoding=encoding, raise_on_corrupt=True,
+                     validate=lambda value: isinstance(value, expected_type))
