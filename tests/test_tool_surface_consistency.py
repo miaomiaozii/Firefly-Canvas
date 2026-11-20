@@ -406,7 +406,7 @@ class DualPathEquivalenceTests(unittest.TestCase):
                 self.assertNotEqual(original, self._canon_payload({"ok": False, "error": {**detail, key: value}}))
 
     def _cases(self):
-        def pair(name, args, method, url_path, body=None):
+        def pair(name, args, method, url_path, body=None, *, expected_error=None):
             """通用形状：A 走 MCP tools/call，B 走 REST 孪生；比返回值 + 画布终态。"""
             def run():
                 client, store, pid_a, pid_b = self._fixture()
@@ -426,7 +426,10 @@ class DualPathEquivalenceTests(unittest.TestCase):
                     self.assertEqual(client.get(state_url).json(), before)
                 a = self._mcp_call(client, pid_a, name, args)
                 b = self._rest(client, method, url, rest_body, headers)
-                if journaled:
+                if expected_error:
+                    self.assertFalse(a['ok'], a)
+                    self.assertEqual(a['error']['code'], expected_error)
+                elif journaled:
                     for pid, result in ((pid_a, a), (pid_b, b)):
                         payload = self._assert_receipt(client, pid, result)
                         if name == "canvas.create_node":
@@ -679,6 +682,8 @@ class DualPathEquivalenceTests(unittest.TestCase):
             "canvas.edit_outpaint": gated("canvas.edit_outpaint", {"node_id": "image-1", "outpaint_size": {"width": 40, "height": 40}}, "POST", "/canvas/edit_outpaint", expected_error="ASSET_NOT_FOUND"),
             "canvas.edit_erase": edit_erase_pin_only,
             "generate.trigger": gated("generate.trigger", {"node_id": "prompt-1"}, "POST", "/generate/trigger"),
+            "generate.retry": pair("generate.retry", {"task_id": "nope"}, "POST", "/generate/retry",
+                                   {"task_id": "nope"}, expected_error="TASK_NOT_FOUND"),
             "generate.status": pair("generate.status", {"task_id": "nope"}, "GET", "/generate/tasks/nope"),
             "generate.wait": pair("generate.wait", {"task_id": "nope", "timeout_seconds": 5}, "GET", "/generate/tasks/nope/wait?timeout=5"),
             **{f"generate.{name}": pair(f"generate.{name}", {}, "POST",

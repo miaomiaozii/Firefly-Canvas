@@ -167,13 +167,18 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
         parameters: Type.Object({ node_id: Type.String() }),
     },
     {
+        name: "generate.retry",
+        description: "在同一项目和 Agent 作用域内，按 task_id 或 node_id 重试失败且无产物的生图（恰传一个）；默认使用服务端快照。每次均须用户重新确认并计入生成额度，最多两次；可指定已经批准的 model。不支持重放已撤回或自动归档的历史参考图。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        parameters: Type.Object({ task_id: Type.Optional(Type.String()), node_id: Type.Optional(Type.String()), model: Type.Optional(Type.String()), use_snapshot: Type.Optional(Type.Boolean()) }),
+    },
+    {
         name: "generate.preflight",
         description: "只读预检生图：提供 node_ids 或 group_id（恰一），查看最终提示词、参考图、模型、张数与阻断原因，不归档参考图",
         parameters: Type.Object({ node_ids: Type.Optional(Type.Array(Type.String(), {minItems: 1, maxItems: 200})), group_id: Type.Optional(Type.String()) }),
     },
     {
         name: "generate.request_batch",
-        description: "请求整批生图批准；立即返回 batch_id，不等待浏览器确认（90 秒有效）。同一 preflight_id 只提交一次。MCP 请沿用同一个 Mcp-Session-Id 并选用已存在的 Agent 节点。备选模型和重试次数只供批准，本版本不会重试",
+        description: "请求整批生图批准；立即返回 batch_id，不等待浏览器确认（90 秒有效）。同一 preflight_id 只提交一次。MCP 请沿用同一个 Mcp-Session-Id 并选用已存在的 Agent 节点。仅在已批准的模型范围内换模型，自动重试最多两次；额度用尽会暂停剩余项",
         parameters: Type.Object({ preflight_id: Type.String(), fallback_models: Type.Optional(Type.Array(Type.String(), {maxItems: 20})), max_retries: Type.Optional(Type.Integer({minimum: 0})) }),
     },
     {

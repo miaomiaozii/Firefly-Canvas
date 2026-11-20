@@ -1328,6 +1328,22 @@ async def trigger_generation(project_id: str, request: Request, x_agent_project:
                                   lambda: trigger_generation_core(project_id, node_id, agent_node_id=agent, plan=plan), agent)
 
 
+@generate_router.post('/retry', dependencies=_AGENT_WRITE)
+async def retry_generation(project_id: str, request: Request):
+    from app.services import agent_batch, agent_generation_retry
+
+    actor = _paid_rest_actor(request)
+    if request.headers['X-Agent-Project'] != project_id:
+        raise agent_error(403, 'PROJECT_MISMATCH', 'Agent context does not match the project')
+    try:
+        args = agent_generation_retry.arguments(await request.json())
+    except ValueError as exc:
+        raise agent_refs.invalid('Expected a JSON object') from exc
+    caller = agent_batch.Caller(project_id, actor)
+    return await _rest_agent_call(request, project_id, 'generate.retry', args,
+                                  lambda: agent_generation_retry.execute(caller, args), actor)
+
+
 @generate_router.post('/preflight', dependencies=_AGENT_WRITE)
 @generate_router.post('/request_batch', dependencies=_AGENT_WRITE)
 @generate_router.post('/batch_status', dependencies=_AGENT_WRITE)
@@ -1549,6 +1565,7 @@ class _PreparedGeneration:
     final_prompt: str = ''
     reference_roles: tuple = ()
     reference_files: tuple = ()
+    provider: dict | None = None
 
 
 def _node_prompt_fields(node):
@@ -1594,7 +1611,7 @@ def resolve_generation(project_id, node_id, canvas, catalog, *, saved=None, prom
     files = ()
     if owned := [asset for _, asset, _ in positions if asset]:
         try:
-            files = store.check_image_reference_files(project_id, owned, fingerprint=preflight)
+            files = store.check_image_reference_files(project_id, owned, fingerprint=True)
         except ProjectStoreError as exc:
             raise agent_error(400, 'ASSET_NOT_FOUND', str(exc),
                               '参考图资产不可用；请先导入或归档，再重新挂图。') from exc
@@ -1630,11 +1647,13 @@ def resolve_generation(project_id, node_id, canvas, catalog, *, saved=None, prom
         raise agent_image_settings.invalid(str(exc)) from exc
     return _PreparedGeneration(request, wire, route, str(node.get("type", "")), _node_prompt_fields(node),
                                tuple(images.values()), selection['displayPrompt'], final_prompt,
-                               tuple(role for _, role in refs), files)
+                               tuple(role for _, role in refs), files,
+                               next((p for p in providers if p.get('id') == route.provider_id), None))
 
 
 async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: str = "", *, plan=None,
-                                  validate_start=None, approved_provider=None) -> dict:
+                                  validate_start=None, approved_provider=None, retry_caller=None,
+                                  retry_parent=None, retry_models=(), retry_batch_id=None) -> dict:
     if plan is None:
         plan = await prepare_generation(project_id, node_id)
     creation = ownership_fields(agent_node_id)
@@ -1675,12 +1694,13 @@ async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: 
     context = current_agent_ops_context()
     batch = _BATCH_GENERATION.get()
     if not (context and context.project_id == project_id and context.agent_node_id
-            and (context.tool == 'generate.trigger' or
+            and (context.tool in {'generate.trigger', 'generate.retry'} or
                  (context.tool in {'canvas.batch_edit', 'generate.request_batch'} and batch is not None))):
         context = None
     hooks = _AgentImageLifecycle(project_id, task_id, node_id, result_node_id, context, build_result,
                                  legacy_images=plan.legacy_images, validate_start=validate_start,
-                                 approved_provider=approved_provider)
+                                 approved_provider=approved_provider, plan=plan, retry_caller=retry_caller,
+                                 retry_parent=retry_parent, retry_models=retry_models, retry_batch_id=retry_batch_id)
     payload = plan.payload.model_copy(update={'result_node_id': result_node_id, 'idempotency_key': task_id})
     await create_project_image_task_core(project_id, payload, prepared=(plan.request, plan.route), hooks=hooks)
     if context:
@@ -1730,7 +1750,12 @@ class _AgentImageLifecycle:
     """A3 adapter for the project image task; owns attribution, not generation."""
 
     def __init__(self, project_id, task_id, node_id, result_id, context, build_result, *, legacy_images=(),
-                 validate_start=None, approved_provider=None):
+                 validate_start=None, approved_provider=None, plan=None, retry_caller=None,
+                 retry_parent=None, retry_models=(), retry_batch_id=None):
+        self.failure_policy = bool(context and context.tool != 'canvas.batch_edit')
+        self.plan, self.retry_caller = plan, retry_caller
+        self.retry_parent, self.retry_models, self.retry_batch_id = retry_parent, retry_models, retry_batch_id
+        self.source_at_start = self.result_at_start = self.group_at_start = None
         self.project_id, self.task_id, self.result_id = project_id, task_id, result_id
         self.validate_start = validate_start
         self.approved_provider = approved_provider
@@ -1759,11 +1784,10 @@ class _AgentImageLifecycle:
             return self.store.apply_mutations(self.project_id, self.build_result(canvas), base_revision=canvas['revision'])
 
         def register():
-            if self.validate_start is not None:
-                with self.store._lock:
+            with self.store._lock:
+                if self.validate_start is not None:
                     self.validate_start(self.task_id, self.result_id)
-                    return register_with_refs()
-            return register_with_refs()
+                return register_with_refs()
 
         def register_with_refs():
             if not self.legacy_images:
@@ -1779,6 +1803,8 @@ class _AgentImageLifecycle:
                 return register_result()
 
         def register_result():
+            if self.failure_policy:
+                self.register_lineage(task_record)
             self.registration_started = True
             batch = _BATCH_GENERATION.get()
             if self.context:
@@ -1798,11 +1824,109 @@ class _AgentImageLifecycle:
                 with self.store._lock:
                     create_result()
             with self.store._lock:
+                if self.failure_policy:
+                    canvas = self.store.canvas(self.project_id)
+                    self.result_at_start = _snapshot_node(canvas, self.result_id)
+                    self.group_at_start = next((n['id'] for n in canvas['nodes']
+                                                if n.get('type') == NODE_TYPE_GROUP and self.result_id in n.get('items', [])), None)
                 self.registered = self.write('begin_image_generation', self.project_id, self.result_id,
                                              task_record, base_revision=self.store.canvas(self.project_id)['revision'])
             return self.registered
 
         return await run_blocking_to_completion(register)
+
+    def register_lineage(self, task_record):
+        from app.services import agent_batch, agent_generation_retry as retry
+
+        canvas = self.store.canvas(self.project_id)
+        self.source_at_start = _snapshot_node(canvas, self.metadata['source_node_id'])
+        caller = self.retry_caller or agent_batch.Caller(self.project_id, self.context.agent_node_id)
+        if not any(n.get('id') == caller.actor and n.get('type') == NODE_TYPE_AGENT for n in canvas['nodes']):
+            return
+        scope = retry.scope_key(caller, canvas)
+        retry.claim(self.store, self.project_id, self.task_id, parent=self.retry_parent)
+        self.metadata.update(retry_scope=scope, retry_source=retry.source_identity(self.source_at_start),
+                             retry_root_id=self.retry_parent[0] if self.retry_parent else self.task_id,
+                             retry_parent_id=self.retry_parent[1] if self.retry_parent else None,
+                             retry_index=self.retry_parent[2] + 1 if self.retry_parent else 0,
+                             retry_models=list(self.retry_models), retry_batch_id=self.retry_batch_id,
+                             retry_refs=retry.ref_stamp(self.plan.reference_files),
+                             retry_provider=agent_batch._digest(self.plan.provider))
+        task_record.update(self.metadata)
+
+    def failure_secrets(self, prompt):
+        from app.services.generation_failures import sensitive_provider_values
+        return (prompt, *sensitive_provider_values(self.approved_provider or self.plan.provider))
+
+    def reconcile_projection(self, opened, durable):
+        from app.services.agent_generation_retry import source_identity
+        from app.services.generation_failures import describe_failure
+        if not self.failure_policy or not durable or not self.source_at_start:
+            return opened
+        record = durable.get('history_record') or {}
+        success = durable['status'] == 'succeeded'
+        failed = durable['status'] in {'failed', 'timeout'}
+        if not (failed or success):
+            return opened
+        store, project = self.store, self.project_id
+
+        def projection():
+            current = store.canvas(project)
+            by_id = {n['id']: n for n in current['nodes']}
+            mutations = []
+            source = by_id.get(self.source_at_start['id'])
+            if (source and source_identity(source) == source_identity(self.source_at_start)
+                    and _node_prompt_fields(source) == _node_prompt_fields(self.source_at_start)
+                    and source.get('runSettings') == self.source_at_start.get('runSettings')
+                    and all(source.get(k) == self.source_at_start.get(k) for k in ('agentStatus', 'lastFailure'))):
+                update = {**source, 'agentStatus': 'succeeded' if success else 'failed'}
+                if success:
+                    update.pop('lastFailure', None)
+                else:
+                    update['lastFailure'] = record.get('failure') or describe_failure(None, '')['failure']
+                if update != source:
+                    mutations.append({'op': 'upsert_node', 'node': update})
+            if failed and not record.get('outputs'):
+                mutations.extend(self.empty_result_cleanup(current, by_id))
+            if mutations:
+                store.apply_mutations(project, mutations, base_revision=current['revision'])
+            return {'canvas': store.canvas(project)}
+
+        return _generation_child(store, project, self.context, self.task_id, self.guarded, projection)
+
+    def empty_result_cleanup(self, canvas, by_id):
+        result = by_id.get(self.result_id)
+        if not result or not self.result_at_start or result.get('pendingTasks') or self.archived:
+            return []
+        # Compare the whole card, except fields written by begin/end_image_generation.
+        task_fields = {'pending', 'running'}
+        if ({k: v for k, v in result.items() if k not in task_fields}
+                != {k: v for k, v in self.result_at_start.items() if k not in task_fields}):
+            return []
+
+        def references(value):
+            if isinstance(value, dict):
+                return any(references(v) for v in value.values())
+            if isinstance(value, list):
+                return any(references(v) for v in value)
+            return value == self.result_id
+
+        mutations = []
+        for node in by_id.values():
+            if node is result:
+                continue
+            if (node['id'] == self.group_at_start and node.get('type') == NODE_TYPE_GROUP
+                    and (node.get('items') or []).count(self.result_id) == 1):
+                node = {**node, 'items': [i for i in node['items'] if i != self.result_id]}
+                mutations.append({'op': 'upsert_node', 'node': node})
+            if references(node):
+                return []
+        if references(canvas.get('connections', [])) or any(
+            references(record) for record in canvas.get('history', [])
+            if isinstance(record, dict) and record.get('task_id') != self.task_id
+        ):
+            return []
+        return mutations + [{'op': 'remove_node', 'node_id': self.result_id}]
 
     def write(self, method, *args, **kwargs):
         def apply():
@@ -1858,14 +1982,18 @@ class _AgentImageLifecycle:
         elif cancelled:
             reason, detail = 'cancelled', '任务已取消'
         else:
-            reason, detail = 'failure_commit_unknown', str(error or 'Generation terminal not persisted')
+            reason = 'failure_commit_unknown'
+            detail = '生成结果未能确认。' if self.failure_policy else str(error or 'Generation terminal not persisted')
+        if registration and self.failure_policy:
+            detail = '任务注册未完成，未调用在线模型。'
 
         def reconcile():
             self.store.flush(self.project_id)
-            return recover_project_image_task(self.project_id, self.task_id, write=self.write,
-                                              terminal_status='cancelled' if cancelled else 'failed',
-                                              terminal_record=self.failure_record if not cancelled else None,
-                                              outputs=self.archived, termination_reason=reason, termination_error=detail)
+            opened, durable = recover_project_image_task(self.project_id, self.task_id, write=self.write,
+                                                         terminal_status='cancelled' if cancelled else 'failed',
+                                                         terminal_record=self.failure_record if not cancelled else None,
+                                                         outputs=self.archived, termination_reason=reason, termination_error=detail)
+            return self.reconcile_projection(opened, durable), durable
 
         opened, durable = await run_blocking_to_completion(reconcile)
         if self.context:
@@ -1878,7 +2006,8 @@ class _AgentImageLifecycle:
             with CANVAS_TASK_LOCK:
                 current = (CANVAS_TASKS.get(self.task_id) or {}).get('result')
                 if current and current.get('history_record', {}).get('status') == durable['status']:
-                    result = current
+                    result = {**current, 'final_node': result['final_node'], 'project_revision': result['project_revision'],
+                              **({'history_record': result['history_record']} if self.failure_policy else {})}
             self.update(status=durable['status'], error=durable['error'], result=result, agent_settled=True)
         elif registration:
             with CANVAS_TASK_LOCK:
@@ -1983,7 +2112,7 @@ def recovered_generation_writer(project_id, durable):
         except (OSError, sqlite3.Error):
             return None
         root = next((record for record in family if record['op_id'] == op_id and not record['undone']), None)
-        if root is None or root['tool'] not in {'generate.trigger', 'canvas.batch_edit', 'generate.request_batch'}:
+        if root is None or root['tool'] not in {'generate.trigger', 'generate.retry', 'canvas.batch_edit', 'generate.request_batch'}:
             return None
         if not any(change['id'] == result_id and change['path'] == ['pendingTasks']
                    and any(item.get('taskId') == task_id for item in change['after'].get('value', []))
@@ -2064,9 +2193,14 @@ async def get_task_status(project_id: str, task_id: str, x_agent_project: str = 
                           'provider_name': history.get('actual_provider_name') or result.get('provider_name'),
                           'params': {key: params.get(key) for key in ('provider_id', 'model', 'size', 'quality', 'n')},
                           'project_asset_ids': [item['asset_id'] for item in result['image_items']]}
+        record = (result or {}).get('history_record') or {}
+        failure = record.get('failure')
+        if shared and 'details' in record:
+            result = {**result, 'history_record': {k: v for k, v in record.items() if k != 'details'}}
         return {
             "task_id": task_id,
             "status": status,
+            **({'failure': failure} if failure else {}),
             "type": 'agent-image' if shared else task.get("type", ""),
             "error": task.get("error", ""),
             "result": result,

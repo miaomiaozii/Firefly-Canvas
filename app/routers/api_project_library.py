@@ -28,6 +28,7 @@ from app.services.agent_errors import agent_error
 from app.services.agent_refs import with_role_prefix
 from app.services.canvas_image_selection import require_canvas_image_provider, route_canvas_image
 from app.services.misc import run_routed_image_candidate
+from app.services.generation_failures import AGENT_IMAGE_ACCEPTED, AGENT_IMAGE_ATTEMPT, describe_failure
 from app.core import is_registered_conversation_user_message
 from app.project_activity import (
     ProjectCleanupActive,
@@ -708,6 +709,9 @@ def project_image_executed_prompt(payload):
 async def run_project_image_task(task_id: str, project_id: str, payload: ProjectImageGenerationRequest, request_snapshot: ImageGenerationRequest, route, registered_revision: int, *, hooks=None):
     mutate = hooks.mutate if hooks else functools.partial(asyncio.to_thread, _app_main.project_store_call)
     metadata = hooks.metadata if hooks else {}
+    classify = hooks and hooks.failure_policy
+    provider_errors = {}
+    received_output = False
     started_at = _app_main.now_ms()
     generated_items = []
     preexisting_asset_ids = set()
@@ -760,12 +764,27 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                 candidate_start = _app_main.now_ms()
                 raise_if_project_image_task_cancelled(task_id)
                 await set_candidate_phase(candidate_index, 'uploading' if references else 'provider_generating')
-                image_data, raw = await run_routed_image_candidate(
-                    route.provider_id, route.model, executed_prompt, payload.size, payload.quality,
-                    references, image_parameters, progress_callback=progress_callback,
-                    **({'approved_provider': hooks.approved_provider}
-                       if hooks and getattr(hooks, 'approved_provider', None) is not None else {}),
-                )
+                nonlocal received_output
+                token = AGENT_IMAGE_ATTEMPT.set(bool(classify))
+                accepted_token = AGENT_IMAGE_ACCEPTED.set(False)
+                try:
+                    image_data, raw = await run_routed_image_candidate(
+                        route.provider_id, route.model, executed_prompt, payload.size, payload.quality,
+                        references, image_parameters, progress_callback=progress_callback,
+                        **({'approved_provider': hooks.approved_provider}
+                           if hooks and getattr(hooks, 'approved_provider', None) is not None else {}),
+                    )
+                    received_output = True
+                except Exception as exc:
+                    if classify:
+                        provider_errors[exc] = describe_failure(
+                            exc, route.provider_id,
+                            no_replay=AGENT_IMAGE_ACCEPTED.get() or bool(getattr(exc, 'upstream_task_id', '')),
+                            sensitive=hooks.failure_secrets(executed_prompt))
+                    raise
+                finally:
+                    AGENT_IMAGE_ACCEPTED.reset(accepted_token)
+                    AGENT_IMAGE_ATTEMPT.reset(token)
                 raise_if_project_image_task_cancelled(task_id)
                 try:
                     candidates = extract_images(raw) if isinstance(raw, dict) else []
@@ -831,9 +850,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                 )
             except (TimeoutError, asyncio.TimeoutError):
                 raise ImageGenerationTaskTimeout(f'生成任务执行超时（{timeout_seconds:g}s），已终止') from None
-            # 候选级隔离：个别候选失败不再拖垮整批。只对写回失败（下载/归档）补偿重试，
-            # provider 生成失败不补偿（退避重试已在适配器内做完），避免把测试/上游的
-            # 一次性失败（fail_then_succeed）错误地“救活”成成功。
+            # Browser write-back compensation is not safe for Agent tasks: it would submit another paid request.
             candidate_failures = [(index, result) for index, result in enumerate(candidate_results) if isinstance(result, BaseException)]
             hard_failures = [(index, failure) for index, failure in candidate_failures if not isinstance(failure, _CandidateWriteFailure)]
             retryable = [(index, failure) for index, failure in candidate_failures if isinstance(failure, _CandidateWriteFailure)]
@@ -850,9 +867,14 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                     if isinstance(result, BaseException):
                         hard_failures.append((index, result))
             candidate_failures = hard_failures
-            if candidate_failures and (not hooks or not generated_items):
+            if candidate_failures and (classify or not hooks or not generated_items):
                 def _unwrap(failure):
                     return failure.cause if isinstance(failure, _CandidateWriteFailure) else failure
+                if classify:
+                    causes = [_unwrap(failure) for _, failure in candidate_failures]
+                    # Quota exhaustion pauses later items even if a sibling candidate produced output.
+                    raise next((cause for cause in causes if provider_errors.get(cause, {}).get('failure', {}).get('code')
+                                == 'QUOTA_EXHAUSTED'), causes[0])
                 if not generated_items:
                     raise _unwrap(candidate_failures[0][1])
                 failure_text = '；'.join(dict.fromkeys(str(getattr(_unwrap(failure), 'detail', None) or _unwrap(failure) or '未知错误')[:160] for _, failure in candidate_failures))
@@ -907,8 +929,9 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                 orphan_ids.update((item.get('asset_id') for item in generated_items if item.get('asset_id') and item.get('asset_id') not in preexisting_asset_ids))
             await cleanup_project_generation_orphans(project_id)
     except Exception as exc:
-        import traceback
-        traceback.print_exc()
+        if not classify:
+            import traceback
+            traceback.print_exc()
         if project_image_task_cancel_requested(task_id):
             with CANVAS_TASK_LOCK:
                 orphan_ids = PROJECT_IMAGE_GENERATION_ORPHANS.setdefault(project_id, set())
@@ -919,7 +942,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
         # #234 手动取回：上游任务 id 随失败终态持久化（内存注册表 + canvas history），
         # 失败/重启后 GET 端点凭它主动重查上游成品。
         upstream_task_id = str(getattr(exc, 'upstream_task_id', '') or '')
-        if not upstream_task_id:
+        if not upstream_task_id and not classify:
             upstream_task_id = extract_task_id_from_text(str(detail))
         failure_time = _app_main.now_ms()
         fail_project_image_task_progress(task_id)
@@ -932,6 +955,18 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
         failed_outputs = _history_output_entries(hooks.archived if hooks else generated_items, 'image')
         failure_record = {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': resolved_status, 'prompt': payload.prompt, 'executed_prompt': project_image_executed_prompt(payload), 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': failure_time, 'runMs': max(0, failure_time - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'progress': failure_progress, 'outputs': failed_outputs, 'result_node_id': payload.result_node_id, 'error': str(detail), 'upstream_task_id': upstream_task_id}
         failure_record.update(metadata)
+        if classify:
+            policy = provider_errors.get(exc) or describe_failure(None, route.provider_id)
+            if received_output or failed_outputs or upstream_task_id or len(provider_errors) != payload.n or any(
+                not outcome['replay_safe'] or outcome['failure']['code'] != policy['failure']['code']
+                for outcome in provider_errors.values()
+            ):
+                policy = {**policy, 'replay_safe': False, 'automatic_retry': False}
+            if policy['failure']['code'] == 'RATE_LIMITED':
+                policy['retry_after_seconds'] = max(outcome.get('retry_after_seconds', 0)
+                                                    for outcome in provider_errors.values())
+            detail = policy['failure']['message']
+            failure_record.update(policy, error=detail)
         try:
             failed_canvas = await mutate(
                 'fail_image_generation',

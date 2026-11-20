@@ -3107,7 +3107,8 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                         trusted = trusted_by_id.get(item_id) or trusted_by_task.get(task_id)
                         if trusted is not None:
                             incoming.append(trusted)
-                        elif task_id and task_id in active_generation_task_ids:
+                        elif task_id and (task_id.startswith('agent_img_') or task_id in active_generation_task_ids):
+                            # A browser history save cannot mint a paid Agent replay snapshot.
                             continue
                         else:
                             item.pop(AUTO_ARCHIVED_REFS, None)

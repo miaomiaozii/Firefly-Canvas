@@ -296,6 +296,9 @@ const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any
     "generate.trigger": async (_toolCallId, params) =>
         textResult(await callApi(`/api/projects/${PROJECT_ID}/generate/trigger${gateQuery()}`, "POST", { node_id: params.node_id })),
 
+    "generate.retry": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/generate/retry${gateQuery()}`, "POST", params)),
+
     "generate.preflight": async (_toolCallId, params) =>
         textResult(await callApi(`/api/projects/${PROJECT_ID}/generate/preflight${gateQuery()}`, "POST", params), true),
 

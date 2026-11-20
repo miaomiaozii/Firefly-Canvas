@@ -11,6 +11,7 @@ from app.core import _local_upload_kind_ext, banana_model_family, clamp_size_to_
 from .comfyui_workflows import COMFYUI_MAX_REFERENCES, COMFYUI_REFERENCE_JPEG_QUALITY, comfyui_edit_target_size, comfyui_h3_resolution, comfyui_h3_workflow, comfyui_pe_enabled, comfyui_ratio_is_auto, comfyui_resolution_tier  # noqa: E402
 from firefly_diagnostics import emit as _diag_emit
 from firefly_generation import is_soon_openrouter_video_model, soon_gemini_native_model
+from .generation_failures import AGENT_IMAGE_ATTEMPT, UpstreamImageFailure, mark_accepted, response_failure
 import logging
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,8 @@ async def wait_for_image_task(client, task_id, provider=None):
         if status in IMAGE_TASK_SUCCESS_STATUSES:
             return last_payload
         if status in IMAGE_TASK_FAILED_STATUSES:
+            if AGENT_IMAGE_ATTEMPT.get():
+                raise UpstreamImageFailure(image_task_fail_reason(last_payload), uncertain=True)
             raise HTTPException(status_code=502, detail=f'生图任务失败：{image_task_fail_reason(last_payload)}')
         if status in IMAGE_TASK_UNKNOWN_STATUSES:
             # #235：连续 N 次 provider 明确返回未知/不存在 → 终态 fail（文案显式带 task ID），
@@ -166,12 +169,18 @@ async def generate_modelscope_provider_image(prompt, size, model, reference_imag
                 return (extract_image(raw), raw)
             except HTTPException:
                 raise HTTPException(status_code=502, detail=f'ModelScope 未返回 task_id：{raw}')
+        mark_accepted()
         deadline = time.monotonic() + AI_REQUEST_TIMEOUT
         last_payload = raw
         while time.monotonic() < deadline:
             await asyncio.sleep(IMAGE_POLL_INTERVAL)
-            result = await client.get(f'{api_root}/tasks/{task_id}', headers={**headers, 'X-ModelScope-Task-Type': 'image_generation'})
-            result.raise_for_status()
+            try:
+                result = await client.get(f'{api_root}/tasks/{task_id}', headers={**headers, 'X-ModelScope-Task-Type': 'image_generation'})
+                result.raise_for_status()
+            except httpx.HTTPError as exc:
+                if AGENT_IMAGE_ATTEMPT.get():
+                    exc.upstream_task_id = task_id
+                raise
             data = result.json()
             last_payload = data
             status = str(data.get('task_status') or '').upper()
@@ -560,7 +569,14 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
         reference_size = (0, 0)
         for index, ref in enumerate(refs, start=1):
             report('uploading', bytes_done=index - 1, bytes_total=len(refs))
-            name, ref_size = await comfyui_upload_reference(client, root, ref, resolution)
+            try:
+                name, ref_size = await comfyui_upload_reference(client, root, ref, resolution)
+            except (HTTPException, httpx.HTTPError) as exc:
+                if AGENT_IMAGE_ATTEMPT.get():
+                    raise UpstreamImageFailure(f'参考图 {index} 上传失败', code='ref_upload_failed') from exc
+                raise
+            if not name and AGENT_IMAGE_ATTEMPT.get():
+                raise UpstreamImageFailure(f'参考图 {index} 上传失败', code='ref_upload_failed')
             if name:
                 names.append(name)
                 if index == 1:
@@ -601,10 +617,16 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
             try:
                 submit = await client.post(f'{root}/prompt', json={'prompt': graph, 'client_id': f'canvas-{uuid.uuid4().hex[:12]}'})
             except httpx.ConnectError as exc:
+                if AGENT_IMAGE_ATTEMPT.get():
+                    raise
                 raise HTTPException(status_code=503, detail=f'连不上本地 ComfyUI（{root}）：请确认 ComfyUI 已启动，或修改该服务商的 Base URL。') from exc
             except httpx.TimeoutException as exc:
+                if AGENT_IMAGE_ATTEMPT.get():
+                    raise
                 raise HTTPException(status_code=504, detail=f'提交 ComfyUI 任务超时（{root}），任务可能已入队，请先到 ComfyUI 队列确认再重试。') from exc
             if submit.status_code != 200:
+                if AGENT_IMAGE_ATTEMPT.get():
+                    raise response_failure(submit)
                 try:
                     error_raw = submit.json() or {}
                 except Exception:
@@ -622,6 +644,7 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
 
         async def run_once():
             submitted_id = await submit_graph()
+            mark_accepted()
             result = await comfyui_wait_for_images(
                 client, root, submitted_id, started, report, width=width, height=height, references=len(names),
             )
@@ -630,6 +653,8 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
         try:
             prompt_id, (images, queue_position) = await run_once()
         except ComfyuiOutOfMemoryError:
+            if AGENT_IMAGE_ATTEMPT.get():
+                raise
             # 显存不够多半是前面的任务把缓存吃成碎片，不是这张图本身跑不动。
             # 让 ComfyUI 卸掉模型、释放缓存，然后同图重跑一次——只重试这一次，第二次还不行就把错抛出去。
             await comfyui_free_memory(client, root)
@@ -786,12 +811,15 @@ async def generate_runninghub_entry_image(prompt, size, model, reference_images,
         submit_url = runninghub_endpoint_url(provider, '/task/openapi/ai-app/run')
         body = {'apiKey': api_key, 'webappId': entry_id, 'nodeInfoList': node_info_list}
         response = await client.post(submit_url, headers=_svc.runninghub_app_headers(True, use_wallet), json=body)
+        if AGENT_IMAGE_ATTEMPT.get():
+            response.raise_for_status()
         raw = response.json()
         if not (isinstance(raw, dict) and raw.get('code') in (0, '0')):
             raise HTTPException(status_code=502, detail=(raw.get('msg') if isinstance(raw, dict) else '') or f'RunningHub 提交失败：{raw}')
         task_id = raw.get('data', {}).get('taskId') if isinstance(raw.get('data'), dict) else ''
         if not task_id:
             raise HTTPException(status_code=502, detail=f'RunningHub 未返回 taskId：{raw}')
+        mark_accepted()
         query_url = runninghub_endpoint_url(provider, '/task/openapi/outputs')
         deadline = time.monotonic() + 1800
         last_payload = None
@@ -865,6 +893,7 @@ async def generate_runninghub_provider_image(prompt, size, model, reference_imag
             task_id = runninghub_extract_task_id(raw)
             if not task_id:
                 raise HTTPException(status_code=502, detail=f'RunningHub 未返回 taskId 或图片结果：{raw}')
+        mark_accepted()
         result = await wait_for_runninghub_image_task(client, provider, task_id)
         return (runninghub_extract_image(result), result)
 
@@ -1720,11 +1749,15 @@ async def generate_minimax_provider_image(prompt, size, model, reference_images=
         try:
             response = await client.post(endpoint, headers=_svc._main('api_headers')(provider=provider, model=model), json=body)
         except httpx.TimeoutException as exc:
+            if AGENT_IMAGE_ATTEMPT.get():
+                raise UpstreamImageFailure('请求超时', uncertain=True) from exc
             # 非幂等：超时 ≠ 取消——上游可能仍在生成并计费，严禁自动重发。
             raise HTTPException(status_code=504, detail=f'{provider_name} 图片接口超时（等待 {int(MINIMAX_IMAGE_READ_TIMEOUT)} 秒）。该接口非幂等：请求超时后上游仍可能完成生成并计费，重试前请先确认账号用量，避免重复扣费。') from exc
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            if AGENT_IMAGE_ATTEMPT.get():
+                raise response_failure(response, uncertain=True) from exc
             # 非幂等：失败请求直接报错（429 只做文案提示，不退避重发）。
             raise HTTPException(status_code=exc.response.status_code, detail=_minimax_http_error_detail(provider_name, exc.response)) from exc
         try:
@@ -1961,7 +1994,7 @@ async def run_provider_generation_with_backoff(provider_id: str, generate_callab
     """
     semaphore = _provider_generation_semaphore(str(provider_id or 'default'))
     # A10 approves image slots, not additional submissions; keep legacy 429 backoff unchanged.
-    if kwargs.get('approved_provider') is not None or _provider_generation_no_retry(str(provider_id or '')):
+    if AGENT_IMAGE_ATTEMPT.get() or kwargs.get('approved_provider') is not None or _provider_generation_no_retry(str(provider_id or '')):
         async with semaphore:
             return await generate_callable(*args, **kwargs)
     try:
@@ -2124,6 +2157,8 @@ async def generate_fal_queue_image(client, base_url, provider, model, image_refs
         try:
             image_url = await _svc.fal_reference_public_url(ref)
         except HTTPException as exc:
+            if AGENT_IMAGE_ATTEMPT.get():
+                raise UpstreamImageFailure('参考图公网 URL 上传失败', code='ref_upload_failed') from exc
             relay_error = str(exc.detail)
             continue
         if image_url:
@@ -2136,6 +2171,8 @@ async def generate_fal_queue_image(client, base_url, provider, model, image_refs
     headers = _svc._main('api_headers')(provider=provider, model=model)
     response = await client.post(paths, headers=headers, json=body)
     if response.status_code >= 400:
+        if AGENT_IMAGE_ATTEMPT.get():
+            raise response_failure(response)
         provider_name = provider.get('name') or provider['id']
         raise HTTPException(status_code=response.status_code, detail=fal_error_detail(provider_name, '任务提交', response))
     try:
@@ -2148,6 +2185,7 @@ async def generate_fal_queue_image(client, base_url, provider, model, image_refs
         if extract_image_flexible(submitted):
             return _FalQueueResponse(submitted)
         raise HTTPException(status_code=502, detail=f"fal 任务提交未返回 request_id：{json.dumps(submitted, ensure_ascii=False)[:400]}")
+    mark_accepted()
     request_urls = fal_request_urls(base_url, model, request_id, submitted, prefix)
     status_url = request_urls['status']
     deadline = time.monotonic() + RESPONSES_POLL_MAX_SECONDS
@@ -2156,6 +2194,8 @@ async def generate_fal_queue_image(client, base_url, provider, model, image_refs
     while time.monotonic() < deadline:
         status_response = await client.get(status_url, headers=headers)
         if status_response.status_code >= 400:
+            if AGENT_IMAGE_ATTEMPT.get():
+                raise response_failure(status_response, uncertain=True)
             provider_name = provider.get('name') or provider['id']
             raise HTTPException(status_code=status_response.status_code, detail=fal_error_detail(provider_name, '任务状态查询', status_response))
         try:
@@ -2381,7 +2421,7 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
             else:
                 if refs_for_proxy:
                     body['images'] = [await _svc.openai_video_proxy_public_reference_url(ref) for ref in refs_for_proxy]
-                response = await httpx_request_with_transient_retries(client, 'POST', video_url, attempts=2, headers=_svc._main('api_headers')(provider=provider, model=model), json=body)
+                response = await httpx_request_with_transient_retries(client, 'POST', video_url, attempts=1 if AGENT_IMAGE_ATTEMPT.get() else 2, headers=_svc._main('api_headers')(provider=provider, model=model), json=body)
         elif image_request_mode == 'openai-responses':
             tool = {'type': 'image_generation'}
             tool['action'] = 'edit' if image_refs else 'generate'
@@ -2487,10 +2527,14 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
                 try:
                     response = await post_openai_edits(tracked_files)
                     if response.status_code >= 400:
+                        if AGENT_IMAGE_ATTEMPT.get():
+                            raise response_failure(response)
                         edit_failed_status = response.status_code
                         edit_failed_text = response.text[:500]
                         response = None
                 except httpx.HTTPError as e:
+                    if AGENT_IMAGE_ATTEMPT.get():
+                        raise
                     edit_failed_status = -1
                     edit_failed_text = str(e)
                     response = None
@@ -2523,11 +2567,13 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
             if quality and not is_comfly_provider and 'quality' not in routed_omit:
                 body['quality'] = quality
             response = await client.post(gen_url, headers=_svc._main('api_headers')(provider=provider, model=model), json=body)
-            if response.status_code >= 400 and images_api_unsupported(response):
+            if response.status_code >= 400 and not AGENT_IMAGE_ATTEMPT.get() and images_api_unsupported(response):
                 response = await post_openai_edits()
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
+            if AGENT_IMAGE_ATTEMPT.get():
+                raise response_failure(response) from exc
             resp_text = (exc.response.text or '')[:800]
             provider_name = provider.get('name') or provider['id']
             raise HTTPException(status_code=exc.response.status_code, detail=f'{provider_name} 图片接口错误（HTTP {exc.response.status_code}）：{resp_text or exc.response.reason_phrase}') from exc
@@ -2553,12 +2599,16 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
                 raise HTTPException(status_code=502, detail=responses_no_image_detail(raw) or exc.detail)
             task_id = extract_task_id(raw)
             if not task_id:
+                if AGENT_IMAGE_ATTEMPT.get() and isinstance(raw, dict) and raw.get('error'):
+                    raise response_failure(response) from exc
                 raise
+        mark_accepted()
         try:
             task_result = await wait_for_image_task(client, task_id, provider)
             return (extract_image(task_result), task_result)
-        except HTTPException as exc:
-            setattr(exc, 'upstream_task_id', task_id)
+        except Exception as exc:
+            if isinstance(exc, HTTPException) or AGENT_IMAGE_ATTEMPT.get():
+                setattr(exc, 'upstream_task_id', task_id)
             raise
 
 _GENERATION_DOWNLOAD_MAX_BYTES = 1024 * 1024 * 1024

@@ -283,7 +283,8 @@ def test_other_references_conflict_with_zero_writes(project, reference, target):
         project.store.flush(project.pid)
         project.store = ProjectStore(project.store.root, snapshot_delay=0)
     operations = list_operations(OpsDb(project.store.root), project.pid)
-    child = next(op for op in operations if op.get('parent_op_id') == result['op_id'] and op['touched_node_ids'])
+    child = next(op for op in operations if op.get('parent_op_id') == result['op_id']
+                 and any(change['path'] == ['pendingTasks'] and change['before'].get('value') for change in op['before']))
     selector = {'family': {'op_id': result['op_id']}, 'turn': {'turn_id': 'turn'}, 'child': {'op_id': child['op_id']}}[target]
     before = disk(project)
     opened = project.store.canvas(project.pid)
@@ -327,7 +328,7 @@ def test_real_backup_recovery_without_marker_rejects_retry_before_billing(projec
     monkeypatch.setattr(main, 'FIREFLY_PROJECT_STORE', reopened)
     canvas = reopened.open_project(project.pid)['canvas']
     assert canvas['_recovery']['restored_from'] == 'canvas.json.bak'
-    assert result['result_node_id'] in {n['id'] for n in canvas['nodes']}
+    assert result['result_node_id'] not in {n['id'] for n in canvas['nodes']}
     assert WITHDRAWN_REFS not in canvas
     history, = canvas['history']
     assert history[AUTO_ARCHIVED_REFS] == history['request_payload']['reference_asset_ids'] == [project.asset]
@@ -337,11 +338,17 @@ def test_real_backup_recovery_without_marker_rejects_retry_before_billing(projec
     monkeypatch.setattr(agent, 'enforce_generation_limit', forbidden)
     monkeypatch.setattr(library, 'reserve_project_image_task', forbidden)
     monkeypatch.setattr(main, 'load_api_providers', forbidden)
+    monkeypatch.setattr(agent, 'request_confirmation_core', forbidden)
     project.calls.reset_mock()
     before = disk(project)
     response = retry(project, task_id)
     assert response.status_code == 409, response.text
     assert response.json()['detail'] == REATTACH_HINT
+    response = TestClient(main.app, base_url='http://localhost').post(
+        f'/api/projects/{project.pid}/generate/retry?agent_node_id=actor', json={'task_id': task_id},
+        headers={'origin': 'http://localhost', 'X-Agent-Project': project.pid},
+    )
+    assert response.status_code == 409 and response.json()['detail']['hint'] == REATTACH_HINT
     forbidden.assert_not_called()
     project.calls.assert_not_called()
     assert disk(project) == before

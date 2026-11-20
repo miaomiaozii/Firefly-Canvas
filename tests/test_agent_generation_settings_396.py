@@ -330,7 +330,8 @@ def test_shared_agent_terminal_retains_history_and_guards(run, monkeypatch, canc
         expected = 'cancelled' if cancel else 'failed'
         assert status['status'] == expected, status
         assert client.get(browser_url).json()['status'] == expected
-        assert not store.find_canvas_node(pid, result_id).get('pendingTasks')
+        result_node = store.find_canvas_node(pid, result_id)
+        assert result_node is None if not cancel else not result_node.get('pendingTasks')
         undone = undo_ops(store, pid, op_id=op_id)
         assert undone['status'] == 'reverted', undone
         assert undone['irreversible_effects']

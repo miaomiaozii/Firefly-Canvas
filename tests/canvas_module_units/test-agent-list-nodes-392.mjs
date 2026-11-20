@@ -148,6 +148,19 @@ test('#400 Pi batch calls forward scope and options once, with no client-side co
     assert.equal(runner.calls.length, 4);
 });
 
+test('#401 Pi retry forwards the selector, options and actor to the server gate once', async () => {
+    const runner = loadExecutors({ payload: { task_id: 'new-task' } });
+    const args = { task_id: 'old-task', use_snapshot: false, model: 'approved-model' };
+    await runner.execute('generate.retry', args);
+    assert.equal(runner.calls.length, 1);
+    const [call] = runner.calls;
+    assert.equal(call.url.pathname, `/api/projects/${PROJECT}/generate/retry`);
+    assert.equal(call.url.searchParams.get('agent_node_id'), AGENT);
+    assert.equal(call.options.headers['X-Agent-Project'], PROJECT);
+    assert.equal(call.options.method, 'POST');
+    assert.deepEqual(JSON.parse(call.options.body), args);
+});
+
 test('#392 list surfaces the shared structured server error without [object Object]', async () => {
     const runner = loadExecutors({ ok: false, payload: { detail: {
         code: 'INVALID_ARGUMENT', message: 'invalid fields', hint: 'use summary', retryable: false,

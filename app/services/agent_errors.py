@@ -62,6 +62,13 @@ AGENT_ERROR_CODES = (
     "BATCH_STOPPED",
     "NO_PROMPT",
     "NO_ROUTE",
+    # A11 generation replay
+    "REF_REATTACH_REQUIRED",
+    "RETRY_LIMIT",
+    "RETRY_STALE",
+    "RETRY_UNSAFE",
+    "RETRY_BUSY",
+    "MODEL_NOT_APPROVED",
     # 兜底翻译器专用（status→通用码，见 translate_detail）
     "NOT_FOUND",
     "CONFLICT",

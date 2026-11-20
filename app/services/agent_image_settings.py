@@ -76,7 +76,7 @@ def _ratio_log(ratio):
     return math.log(a) - math.log(b)
 
 
-def _align(ratio, allowed):
+def nearest_aspect_ratio(ratio, allowed):
     if not allowed or ratio in allowed:
         return ratio
     candidates = [item for item in _RATIOS if item in allowed]
@@ -87,7 +87,7 @@ def _align(ratio, allowed):
     return min(candidates, key=score) if candidates else ratio
 
 
-def _size(ratio, key, resolution, settings):
+def size_for_ratio(ratio, key, resolution, settings):
     if resolution == "custom":
         return str(settings.get("customSize") or "").strip() or "1024x1024"
     if key in ("custom", "source") and ratio:
@@ -106,6 +106,12 @@ def node_image_provider_id(node):
     # Canvas defaults can supply parameters, but cannot bind a node to a provider.
     settings = node.get('runSettings')
     return str(settings.get('provider_id') or '').strip() if isinstance(settings, dict) else ''
+
+
+def allowed_aspect_ratios(provider, model, model_spec_for):
+    capabilities = (provider.get('image_model_capabilities') or {}).get(model)
+    return (capabilities or {}).get('aspect_ratios') or (
+        (model_spec_for(model) or {}).get('parameters', {}).get('aspect_ratio', {}).get('options'))
 
 
 def image_settings(node, canvas, providers, model_spec_for):
@@ -129,18 +135,17 @@ def image_settings(node, canvas, providers, model_spec_for):
     provider = next((p for p in providers if p.get("id") == provider_id.lower()), {})
     parameter_model = checked_image_model(provider, model)
     capabilities = (provider.get("image_model_capabilities") or {}).get(parameter_model)
-    allowed = (capabilities or {}).get("aspect_ratios") or (
-        (model_spec_for(parameter_model) or {}).get("parameters", {}).get("aspect_ratio", {}).get("options"))
+    allowed = allowed_aspect_ratios(provider, parameter_model, model_spec_for)
     ratio = outpaint or saved_ratio(settings)
     key = "custom" if outpaint else settings.get("ratio")
     if key not in ("custom", "source"):
-        ratio = _align(ratio, allowed) if ratio in _RATIOS else ratio or "1:1"
+        ratio = nearest_aspect_ratio(ratio, allowed) if ratio in _RATIOS else ratio or "1:1"
         key = _RATIO_KEY.get(ratio, "custom")
     explicit = capabilities is None or capabilities.get("arbitrary_resolution") is True or bool(capabilities.get("resolutions"))
     compact_model = re.sub(r"[^a-z0-9]", "", parameter_model.lower())
     default_resolution = "4k" if compact_model.startswith("gptimage2") or compact_model.endswith("gptimage2") else "1k"
     resolution = str(settings.get("resolution") or "")
-    size = _size(ratio, key, resolution or default_resolution, settings) if explicit and not outpaint else ""
+    size = size_for_ratio(ratio, key, resolution or default_resolution, settings) if explicit and not outpaint else ""
     if explicit and not outpaint and (resolution == "auto" or not re.fullmatch(r"\d+\s*[xX*]\s*\d+", size)):
         raise invalid("Saved image size cannot be submitted as a project image task")
     if not ratio and key in ("custom", "source") and size:

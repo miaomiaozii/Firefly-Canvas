@@ -151,6 +151,13 @@ OPS_MIGRATIONS: List[Tuple[str, List[str]]] = [
             PRIMARY KEY (project_id, turn_id)
         )"""],
     ),
+    (
+        "image_task_retry_001",
+        ["""CREATE TABLE IF NOT EXISTS image_task_retry_lineage (
+            root_id TEXT PRIMARY KEY, tip_id TEXT NOT NULL, retries INTEGER NOT NULL
+            CHECK (retries BETWEEN 0 AND 2)
+        )"""],
+    ),
 ]
 
 

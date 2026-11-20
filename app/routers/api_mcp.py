@@ -439,7 +439,7 @@ async def _prepare_trigger(project_id, args):
     return await prepare_generation(project_id, args["node_id"])
 
 
-async def _impl_trigger(project_id, agent_node_id, args, *, plan=None):
+async def _impl_trigger(project_id, agent_node_id, args, *, plan=None, retry_caller=None):
     from app.routers.api_agent_tools import enforce_generation_limit
     if plan is None:
         plan = await _prepare_trigger(project_id, args)
@@ -448,7 +448,13 @@ async def _impl_trigger(project_id, agent_node_id, args, *, plan=None):
     await _confirm_gate(project_id, agent_node_id, "generate.trigger", {"node_id": node_id, "n": count},
                         f"节点 {node_id} 生成 {count} 张图片（消耗外部生成额度）")
     enforce_generation_limit(project_id, agent_node_id, count=count)
-    return await trigger_generation_core(project_id, node_id, agent_node_id=agent_node_id or "", plan=plan)
+    return await trigger_generation_core(project_id, node_id, agent_node_id=agent_node_id or "", plan=plan,
+                                         retry_caller=retry_caller)
+
+
+async def _impl_retry(caller, args):
+    from app.services.agent_generation_retry import execute
+    return await execute(caller, args)
 
 
 async def _impl_status(project_id, agent_node_id, args):
@@ -614,6 +620,7 @@ TOOL_IMPLS = {
     **{tool: partial(_impl_layout, tool=tool) for tool in LAYOUT_TOOLS},
     "canvas.search_projects": _impl_search_projects,
     "generate.trigger": _impl_trigger,
+    "generate.retry": _impl_retry,
     "generate.status": _impl_status,
     "generate.wait": _impl_wait,
     "media.upload": _impl_media_upload,
@@ -747,6 +754,14 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
                        agent_batch.external_caller(project_id, node_param, request.headers.get(SESSION_HEADER)))
             result = await TOOL_IMPLS[name](binding, args)
             return _rpc_response(200, msg_id, sid, result={'content': _tool_result_content_blocks(result), 'isError': False})
+        retry_caller = None
+        if name == 'generate.retry':
+            from app.services import agent_generation_retry
+            if not request.query_params.get('project') or not node_param:
+                raise agent_generation_retry.agent_refs.invalid('Retry requires an explicit project and existing Agent node')
+            retry_caller = (agent_batch.Caller(project_id, node_param) if caller == 'hosted' else
+                            agent_batch.external_caller(project_id, node_param, request.headers.get(SESSION_HEADER)))
+            await asyncio.to_thread(agent_generation_retry.prepare, retry_caller, agent_generation_retry.arguments(args))
         # Reject unowned input before even creating an external carrier or reserving a turn (#454).
         trigger_plan = await _prepare_trigger(project_id, args) if name == 'generate.trigger' else None
         # #350: explicit node binds attribution; reads must not materialize external nodes.
@@ -773,7 +788,10 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
             with agent_ops_scope(project_id=project_id, agent_node_id=node_id or None,
                                  turn_id=turn_id, tool=name, args=args):
                 if trigger_plan is not None:
-                    result = await TOOL_IMPLS[name](project_id, node_id, args, plan=trigger_plan)
+                    binding = agent_batch.Caller(project_id, node_id, '' if caller == 'hosted' else sid)
+                    result = await TOOL_IMPLS[name](project_id, node_id, args, plan=trigger_plan, retry_caller=binding)
+                elif retry_caller is not None:
+                    result = await TOOL_IMPLS[name](retry_caller, args)
                 elif name in LAYOUT_TOOLS:
                     result = await TOOL_IMPLS[name](project_id, node_id, args, hosted=caller == 'hosted')
                 elif name == "canvas.batch_prompt_edit":

@@ -144,7 +144,7 @@ def test_read_only_preview_matches_executed_provider_and_journals_after_turn(fx)
     event = fx.events.get(timeout=2)
     assert event['type'] == 'confirm' and event['params'] == {
         'batch_id': batch, 'fallback_models': ['alternate', 'last'], 'max_retries': 3, 'total_images': 2}
-    assert 'alternate' in event['message'] and '3' in event['message']
+    assert 'alternate' in event['message'] and event['message'].endswith('2')
     assert tree(fx) == before and set(main.CANVAS_TASKS) == tasks and fx.calls.empty()
     assert not agent._GENERATION_COUNTS.get((fx.pid, 'actor'))
     assert rest(fx, 'trigger', {'node_id': 'a', 'batch_id': batch})[0] == 400
@@ -303,7 +303,7 @@ def test_stop_preserves_in_flight_and_shared_approved_budget(fx, monkeypatch):
     assert fx.store.find_canvas_node(fx.pid, final['items'][0]['result_node_id'])['images'] and fx.calls.empty()
 
 
-def test_batch_429_never_resubmits_even_if_retry_options_were_approved(fx, monkeypatch):
+def test_batch_429_with_no_approved_retries_does_not_use_legacy_backoff(fx, monkeypatch):
     async def offline_429(*args, **kwargs):
         fx.calls.put(args[3])
         request = httpx.Request('POST', 'https://example.invalid/v1/images/generations')
@@ -313,7 +313,7 @@ def test_batch_429_never_resubmits_even_if_retry_options_were_approved(fx, monke
     monkeypatch.setenv('FIREFLY_PROVIDER_429_RETRY_ATTEMPTS', '3')
     monkeypatch.setenv('FIREFLY_PROVIDER_429_BACKOFF_SECONDS', '.001')
     pre = rest(fx, 'preflight', {'node_ids': ['b']})[1]['preflight_id']
-    batch = rest(fx, 'request_batch', {'preflight_id': pre, 'fallback_models': ['other'], 'max_retries': 2})[1]['batch_id']
+    batch = rest(fx, 'request_batch', {'preflight_id': pre, 'fallback_models': ['other'], 'max_retries': 0})[1]['batch_id']
     confirm(fx, fx.events.get(timeout=2))
     final = status_until(fx, batch, lambda d: d['status'] == 'done')
     assert final['items'][0]['status'] == 'failed' and final['items'][0]['attempts'] == 1

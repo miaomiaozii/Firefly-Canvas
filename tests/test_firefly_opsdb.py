@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -20,7 +21,9 @@ import firefly_opsdb
 from firefly_opsdb import OpsDb
 
 
-EXPECTED_MIGRATIONS = ["versions_001", "usage_001", "undo_001", "anno_001", "agent_ops_001", "agent_ops_002"]
+EXPECTED_MIGRATIONS = [
+    "versions_001", "usage_001", "undo_001", "anno_001", "agent_ops_001", "agent_ops_002", "image_task_retry_001",
+]
 
 
 class OpsDbTests(unittest.TestCase):
@@ -50,6 +53,7 @@ class OpsDbTests(unittest.TestCase):
             self.assertIn("agent_ops_operations", tables)
             self.assertIn("agent_ops_pruned_turns", tables)
             self.assertIn("agent_ops_turns", tables)
+            self.assertIn("image_task_retry_lineage", tables)
             columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_ops_operations)")}
             self.assertIn("parent_op_id", columns)
             foreign_keys = list(conn.execute("PRAGMA foreign_key_list(agent_ops_operations)"))
@@ -64,11 +68,18 @@ class OpsDbTests(unittest.TestCase):
             self.assertEqual(applied, EXPECTED_MIGRATIONS)
 
     def test_migration_runs_once_across_instances(self):
-        with self.make_ops().connect("p1"):
-            pass
-        with self.make_ops().connect("p1") as conn:
-            applied = [row[0] for row in conn.execute("SELECT key FROM ops_migrations ORDER BY rowid")]
-            self.assertEqual(applied, EXPECTED_MIGRATIONS)
+        old_migrations = [item for item in firefly_opsdb.OPS_MIGRATIONS if item[0] != "image_task_retry_001"]
+        with patch.object(firefly_opsdb, "OPS_MIGRATIONS", old_migrations):
+            with self.make_ops().connect("p1") as conn:
+                conn.execute("INSERT INTO usage_turns (project_id, provider, created_at) VALUES (?, ?, ?)",
+                             ("p1", "existing", "2026-11-20"))
+                conn.commit()
+        for _ in range(2):
+            with self.make_ops().connect("p1") as conn:
+                applied = [row[0] for row in conn.execute("SELECT key FROM ops_migrations ORDER BY rowid")]
+                self.assertEqual(applied, EXPECTED_MIGRATIONS)
+                self.assertEqual(conn.execute("SELECT provider FROM usage_turns").fetchone()[0], "existing")
+                self.assertEqual(conn.execute("SELECT count(*) FROM image_task_retry_lineage").fetchone()[0], 0)
 
     def test_wal_and_fk_pragmas(self):
         with self.make_ops().connect("p1") as conn:

@@ -99,12 +99,19 @@ class GenerationJournalTests(unittest.IsolatedAsyncioTestCase):
         source = {**canvas['nodes'][0], 'x': 100, 'y': 200, 'w': 450}
         self.store.apply_mutations(self.pid, [{'op': 'upsert_node', 'node': source}],
                                    base_revision=canvas['revision'])
-        provider = AsyncMock(side_effect=RuntimeError('mock provider failed'))
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def provider(_):
+            started.set()
+            await release.wait()
+            raise RuntimeError('mock provider failed')
+
         with patch_candidate(provider):
             first = await self.start()
-            await asyncio.wait_for(self.workers[-1], 5)
+            await asyncio.wait_for(started.wait(), 5)
             second = await self.start()
-            await asyncio.wait_for(self.workers[-1], 5)
+            release.set()
+            await asyncio.wait_for(asyncio.gather(*self.workers[-2:]), 5)
         self.assertEqual(first['y'], source['y'])
         self.assertEqual(second['y'], source['y'])
         self.assertGreater(first['x'], source['x'] + source['w'])

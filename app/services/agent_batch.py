@@ -162,7 +162,8 @@ def _resolve(project, node, canvas, catalog, providers, graph, presets):
         role == 'product' and asset for _, asset, role in graph.image_positions(selection))
     plan = _api().resolve_generation(project, node, canvas, catalog, saved=canvas, providers=providers,
                                     preflight=True, graph=graph, selection=selection)
-    stamp = _digest((source, [upstream['id'] for upstream in incoming], selection,
+    source_inputs = {k: v for k, v in source.items() if k not in {'lastFailure', 'agentStatus'}}
+    stamp = _digest((source_inputs, [upstream['id'] for upstream in incoming], selection,
                      plan.payload.model_dump(exclude={'base_revision'}), plan.final_prompt,
                      plan.route.to_dict(), plan.reference_files, product_missing))
     return Item(node, plan, stamp), product_missing
@@ -228,7 +229,14 @@ def _evict(now):
 
 
 def _settled(batch):
-    return batch.status in TERMINAL and not any(row['status'] == 'running' for row in batch.rows)
+    return (batch.status in TERMINAL or batch.status == 'paused') and not any(
+        row['status'] == 'running' for row in batch.rows)
+
+
+def is_running(project, batch_id):
+    with _LOCK:
+        batch = _BATCHES.get(batch_id)
+        return bool(batch and batch.preview.caller.project == project and not _settled(batch))
 
 
 def shutdown(loop):
@@ -458,7 +466,7 @@ async def _confirm(batch, project, actor, options, count):
             project, actor, 'generate.request_batch', {**options, 'total_images': count},
             f'批准整批生成 {count} 张图片（消耗外部额度）\n'
             f'备选模型：{json.dumps(options["fallback_models"], ensure_ascii=False)}\n'
-            f'允许重试次数：{batch.max_retries}（本版本不会自动重试）',
+            f'允许自动重试次数：{min(batch.max_retries, 2)}',
             max(0, batch.deadline - time.monotonic()), allow_automatic=False,
             transient_session=session, cancel_event=batch.cancelled)
         if host.conversation_session(project, actor) is not session or session._stopping:
@@ -505,14 +513,14 @@ async def _run(batch):
             token = api._BATCH_GENERATION.set(journal_batch)
             try:
                 for item, row in zip(preview.items, batch.rows):
-                    if batch.cancelled.is_set():
+                    if batch.cancelled.is_set() or batch.status == 'paused':
                         break
                     await _run_item(batch, row, item, actor, providers)
             finally:
                 api.release_batch_journal(store, project, op.op_id, journal_batch, journal_batch['ids'])
                 api._BATCH_GENERATION.reset(token)
         with _LOCK:
-            if not batch.cancelled.is_set():
+            if not batch.cancelled.is_set() and batch.status != 'paused':
                 batch.status = 'done'
             batch.signal()
     except asyncio.CancelledError:
@@ -531,44 +539,131 @@ async def _run_item(batch, row, item, actor, providers):
     api = _api()
     project = batch.preview.caller.project
 
-    def admit(task_id, result_id):
-        _fresh(batch.preview, item)
-        with _LOCK:
-            if batch.status != 'running' or _BATCHES.get(batch.id) is not batch:
-                raise agent_error(409, 'BATCH_STOPPED', 'Batch stopped before this item started')
-            row.update(status='running', attempts=1, task_id=task_id, result_node_id=result_id)
-            batch.spent += item.plan.request.count
+    from app.services import agent_generation_retry as retry
+    from firefly_generation import ModelRoutingError
 
-    failure = 'GENERATION_FAILED'
-    try:
-        await api.trigger_generation_core(
-            project, item.node, actor, plan=item.plan, validate_start=admit,
-            approved_provider=deepcopy(next(p for p in providers if p['id'] == item.plan.route.provider_id)))
-    except HTTPException as exc:
-        if isinstance(exc.detail, dict):
-            failure = exc.detail.get('code', failure)
-    except Exception:
-        _LOG.exception('Agent batch item %s admission did not return normally', item.node)
+    store = api._app_main.FIREFLY_PROJECT_STORE
+    plan, parent = item.plan, None
+    tried = {plan.route.model}
+    ref_retried, aspect_retried = False, False
 
-    # A start broadcast/receipt can fail after durable admission. Do not advance
-    # until that task has settled, even if trigger never returned a receipt.
-    if task_id := row['task_id']:
-        with _LOCK:
-            batch.signal()
-        while True:
+    for attempt in range(min(batch.max_retries, 2) + 1):
+        submitted = None
+
+        def admit(task_id, result_id):
+            nonlocal submitted
+            if parent:
+                canvas = store.open_project(project)['canvas']
+                retry.guard_withdrawal(canvas, parent[1], item.plan.payload.reference_asset_ids)
+                retry.check_tip(store, project, *parent)
+            _fresh(batch.preview, item)
+            with _LOCK:
+                if batch.status != 'running' or _BATCHES.get(batch.id) is not batch:
+                    raise agent_error(409, 'BATCH_STOPPED', 'Batch stopped before this item started')
+                submitted = task_id
+                row.update(status='running', attempts=attempt + 1, task_id=task_id,
+                           result_node_id=result_id, model=plan.route.model)
+                if attempt == 0:
+                    batch.spent += item.plan.request.count
+                batch.signal()
+
+        failure = {'code': 'GENERATION_FAILED', 'message': '生成未能启动', 'hint': '请检查任务状态。'}
+        try:
+            await api.trigger_generation_core(project, item.node, actor, plan=plan, validate_start=admit,
+                                              approved_provider=deepcopy(plan.provider),
+                                              retry_caller=batch.preview.caller, retry_parent=parent,
+                                              retry_models=batch.models, retry_batch_id=batch.id)
+        except HTTPException as exc:
+            if isinstance(exc.detail, dict):
+                failure = exc.detail
+        except Exception:
+            _LOG.exception('Agent batch item %s admission did not return normally', item.node)
+
+        # A lost receipt is not a failed submission. Wait for durable settlement.
+        status = None
+        while submitted:
             try:
-                status = await api.get_task_status(project, task_id)
+                current = await api.get_task_status(project, submitted)
             except HTTPException as exc:
                 if exc.status_code == 404:
                     break
                 raise
-            if status['status'] in ('succeeded', 'failed', 'timeout', 'cancelled'):
-                with _LOCK:
-                    row.update(status=status['status'], failure=status['error'] or None)
-                    batch.signal()
-                return
+            if current['status'] in ('succeeded', 'failed', 'timeout', 'cancelled'):
+                status = current
+                break
             await asyncio.sleep(0.1)
-    with _LOCK:
-        if row['status'] != 'stopped':
-            row.update(status='failed', failure=failure)
-        batch.signal()
+        with _LOCK:
+            if not status:
+                row.update(status='stopped' if batch.cancelled.is_set() else 'failed', failure=failure)
+                batch.signal()
+                return
+            failure = status.get('failure')
+            row.update(status=status['status'], failure=failure)
+            batch.signal()
+            code = (failure or {}).get('code')
+            if batch.cancelled.is_set():
+                return
+            if code == 'QUOTA_EXHAUSTED':
+                batch.status, batch.reason = 'paused', code
+                row.update(status='paused', failure={**failure, 'hint':
+                           f'已暂停剩余 {batch.approved_count - batch.spent} 张；请充值或更换服务商。'})
+                batch.signal()
+                return
+        record = (status.get('result') or {}).get('history_record') or {}
+        if (attempt >= min(batch.max_retries, 2) or status['status'] != 'failed'
+                or not record.get('automatic_retry') or not record.get('retry_root_id')):
+            return
+        parent = (record['retry_root_id'], submitted, record['retry_index'])
+        try:
+            canvas = await asyncio.to_thread(store.canvas, project)
+            retry.guard_withdrawal(canvas, submitted, item.plan.payload.reference_asset_ids)
+        except HTTPException as exc:
+            with _LOCK:
+                row.update(failure=exc.detail, last_failure=failure)
+                batch.signal()
+            return
+        if batch.cancelled.is_set():
+            return
+        delay = 0
+        if code == 'MODEL_UNAVAILABLE':
+            for model in batch.models:
+                if model in tried:
+                    continue
+                tried.add(model)
+                try:
+                    plan = retry.model_plan(plan, providers, model)
+                    break
+                except (ModelRoutingError, HTTPException):
+                    continue
+            else:
+                return
+        elif code == 'TRANSIENT':
+            delay = (5, 20)[attempt]
+        elif code == 'RATE_LIMITED':
+            delay = record['retry_after_seconds']
+        elif code == 'REF_UPLOAD_FAILED' and not ref_retried:
+            ref_retried = True
+        elif code == 'INVALID_PARAMS' and record.get('adjust_aspect') and not aspect_retried:
+            aspect_retried = True
+            try:
+                aligned = retry.aligned_plan(plan, providers)
+            except (ModelRoutingError, HTTPException, ValueError):
+                return
+            if aligned is None:
+                return
+            plan = aligned
+        else:
+            return
+        with _LOCK:
+            row.update(status='running', last_failure=failure)
+            batch.signal()
+        if delay:
+            try:
+                await asyncio.wait_for(batch.cancelled.wait(), timeout=delay)
+            except TimeoutError:
+                pass
+        if batch.cancelled.is_set():
+            with _LOCK:
+                row['status'] = 'stopped'
+                batch.signal()
+            return
