@@ -198,8 +198,8 @@ class McpProtocolTests(McpTestBase):
             "canvas.list_nodes", "canvas.get_node", "canvas.create_node",
             "canvas.update_node", "canvas.delete_node", "canvas.connect", "canvas.search_projects",
             "canvas.disconnect", "canvas.view", "canvas.view_media", "canvas.edit_crop", "canvas.batch_edit", "canvas.edit_rotate", "canvas.edit_flip", "canvas.edit_outpaint", "canvas.edit_erase",
-            "generate.trigger", "generate.status",
-            "generate.wait", "media.upload", "media.list", "media.delete",
+            "generate.trigger", "generate.status", "generate.wait", "generate.preflight",
+            "generate.request_batch", "generate.batch_status", "generate.stop_batch", "media.upload", "media.list", "media.delete",
             "viewport.focus", "viewport.zoom", "viewport.state", "ops.list", "ops.undo",
         ):
             self.assertIn(expected, names)

@@ -1845,7 +1845,7 @@ def _provider_diagnostic_sensitive_values(prompt, provider_id, preserve_model=Fa
     return values
 
 
-async def generate_ai_image(prompt, size, quality, model, reference_images=None, provider_id='', *, preserve_model=False, image_parameters=None, progress_callback=None, lock_model=False):
+async def generate_ai_image(prompt, size, quality, model, reference_images=None, provider_id='', *, preserve_model=False, image_parameters=None, progress_callback=None, lock_model=False, approved_provider=None):
     """Provider-boundary diagnostics span around the image generation pipeline.
 
     Emits one provider.request event and exactly one terminal event
@@ -1861,6 +1861,7 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
             prompt, size, quality, model, reference_images, provider_id=provider_id,
             preserve_model=preserve_model, image_parameters=image_parameters,
             progress_callback=progress_callback, lock_model=lock_model,
+            **({'approved_provider': approved_provider} if approved_provider is not None else {}),
         )
     except Exception:
         _diag_emit(
@@ -1959,7 +1960,8 @@ async def run_provider_generation_with_backoff(provider_id: str, generate_callab
     429 退避重试之外——只执行一次，429 直接上抛由错误文案提示。
     """
     semaphore = _provider_generation_semaphore(str(provider_id or 'default'))
-    if _provider_generation_no_retry(str(provider_id or '')):
+    # A10 approves image slots, not additional submissions; keep legacy 429 backoff unchanged.
+    if kwargs.get('approved_provider') is not None or _provider_generation_no_retry(str(provider_id or '')):
         async with semaphore:
             return await generate_callable(*args, **kwargs)
     try:
@@ -2212,7 +2214,7 @@ class _FalQueueResponse:
         return self._payload
 
 
-async def _generate_ai_image_impl(prompt, size, quality, model, reference_images=None, provider_id='', *, preserve_model=False, image_parameters=None, progress_callback=None, lock_model=False):
+async def _generate_ai_image_impl(prompt, size, quality, model, reference_images=None, provider_id='', *, preserve_model=False, image_parameters=None, progress_callback=None, lock_model=False, approved_provider=None):
     def report_progress(phase, **details):
         if not callable(progress_callback):
             return
@@ -2224,7 +2226,8 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
     require_project_media_values_scope([str((ref.get('url') if isinstance(ref, dict) else getattr(ref, 'url', '')) or '').strip() for ref in reference_images or [] if str((ref.get('url') if isinstance(ref, dict) else getattr(ref, 'url', '')) or '').strip()])
     # #381（接 #349）：不保模型这条路以前走 get_api_provider——存着已删的平台时会静默换成主服务商，
     # 用户看到的图其实是另一家出的。preserve_model 那条一直是 exact（空值也拒），保持不动。
-    provider = _svc._main('get_api_provider_exact')(provider_id) if preserve_model else _svc._main('get_api_provider_required')(provider_id)
+    provider = approved_provider if approved_provider is not None else (
+        _svc._main('get_api_provider_exact')(provider_id) if preserve_model else _svc._main('get_api_provider_required')(provider_id))
     if provider['id'] == 'modelscope':
         return await generate_modelscope_provider_image(prompt, size, model, reference_images, provider)
     if is_codex_provider(provider):

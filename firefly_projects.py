@@ -1344,13 +1344,14 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                     }
             return copy.deepcopy(canvas), catalog
 
-    def check_image_reference_files(self, project_id: str, asset_ids) -> None:
-        """Validate only selected owned assets, without reading media bytes or rewriting the index."""
+    def check_image_reference_files(self, project_id: str, asset_ids, *, fingerprint=False):
+        """Validate selected owned assets without rewriting the index."""
+        files = []
         with self._lock:
             directory = self._project_directory(project_id)
             media_root = self._safe_project_path(directory, 'media')
             items = self._load_media_index(project_id)['items']
-            for asset_id in set(asset_ids):
+            for asset_id in sorted(set(asset_ids)):
                 record = items.get(asset_id)
                 if not isinstance(record, dict):
                     raise ProjectNotFound('项目媒体不存在')
@@ -1359,6 +1360,11 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                     raise ProjectNotFound('项目媒体不存在')
                 if (record.get('kind') or self._media_kind(record.get('mime_type') or '', path.name)) != 'image':
                     raise ProjectStoreError('参考图不是项目图片')
+                if fingerprint:
+                    stat = path.stat()
+                    files.append((asset_id, str(path), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns,
+                                  record.get('name'), record.get('mime_type')))
+        return tuple(files) if fingerprint else None
 
     def import_media(
         self,

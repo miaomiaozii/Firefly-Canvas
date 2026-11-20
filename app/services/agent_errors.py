@@ -51,6 +51,17 @@ AGENT_ERROR_CODES = (
     "PLAN_STALE",
     "PLAN_NOT_CONFIRMED",
     "REF_NOT_ALLOWED",
+    # A10 generation batches
+    "AGENT_NOT_FOUND",
+    "PROJECT_MISMATCH",
+    "PREFLIGHT_LIMIT",
+    "PREFLIGHT_NOT_FOUND",
+    "PREFLIGHT_BLOCKED",
+    "PREFLIGHT_STALE",
+    "BATCH_NOT_FOUND",
+    "BATCH_STOPPED",
+    "NO_PROMPT",
+    "NO_ROUTE",
     # 兜底翻译器专用（status→通用码，见 translate_detail）
     "NOT_FOUND",
     "CONFLICT",

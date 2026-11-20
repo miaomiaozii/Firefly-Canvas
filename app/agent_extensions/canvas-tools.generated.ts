@@ -167,6 +167,26 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
         parameters: Type.Object({ node_id: Type.String() }),
     },
     {
+        name: "generate.preflight",
+        description: "只读预检生图：提供 node_ids 或 group_id（恰一），查看最终提示词、参考图、模型、张数与阻断原因，不归档参考图",
+        parameters: Type.Object({ node_ids: Type.Optional(Type.Array(Type.String(), {minItems: 1, maxItems: 200})), group_id: Type.Optional(Type.String()) }),
+    },
+    {
+        name: "generate.request_batch",
+        description: "请求整批生图批准；立即返回 batch_id，不等待浏览器确认（90 秒有效）。同一 preflight_id 只提交一次。MCP 请沿用同一个 Mcp-Session-Id 并选用已存在的 Agent 节点。备选模型和重试次数只供批准，本版本不会重试",
+        parameters: Type.Object({ preflight_id: Type.String(), fallback_models: Type.Optional(Type.Array(Type.String(), {maxItems: 20})), max_retries: Type.Optional(Type.Integer({minimum: 0})) }),
+    },
+    {
+        name: "generate.batch_status",
+        description: "查询批次项状态、批准张数和已启动张数。可等待下一次变化，wait_seconds 0..600（默认 0）",
+        parameters: Type.Object({ batch_id: Type.String(), wait_seconds: Type.Optional(Type.Number({minimum: 0, maximum: 600})) }),
+    },
+    {
+        name: "generate.stop_batch",
+        description: "取消未批准的批次或阻止已批准批次启动更多任务；已经启动的任务和结果保留",
+        parameters: Type.Object({ batch_id: Type.String() }),
+    },
+    {
         name: "generate.status",
         description: "查询生成任务状态",
         parameters: Type.Object({ task_id: Type.String() }),

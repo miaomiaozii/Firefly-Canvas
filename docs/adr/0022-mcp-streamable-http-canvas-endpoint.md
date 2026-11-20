@@ -32,7 +32,7 @@ MCP 端点对外暴露，外部会话具现为画布上的 Agent 节点。关联
 - **确认门阻塞语义**：烧钱/破坏性工具的确认门为「阻塞等待」——MCP 工具调用阻塞
   直到用户在画布上点击确认/拒绝（`request_confirmation` 带超时阻塞等待用户决策，
   `app/routers/api_agent_tools.py:579-580`，默认 60 秒 `:530`）；不设 fire-and-forget
-  变体。因外部会话具现为 Agent 节点，「向谁要确认」永远是画布上确定的 tab。
+  变体（仅 `generate.request_batch` 的 #400 窄例外见下）。因外部会话具现为 Agent 节点，「向谁要确认」永远是画布上确定的 tab。
 - **会话→项目绑定**：现 spawn-time env 绑定（`FIREFLY_AGENT_API_BASE` /
   `FIREFLY_AGENT_PROJECT_ID` / `FIREFLY_AGENT_NODE_ID`，spawn 时注入 pi 子进程，
   `app/services/agent_host.py:164-166`）只适用于应用内 pi 会话，不适用于外部连接。
@@ -94,3 +94,10 @@ MCP 端点对外暴露，外部会话具现为画布上的 Agent 节点。关联
   批量提示词工具只在应用差异时要求该头，预览仍只读。
 - 浏览器的用户写入走 `/api/project-library/`，宿主控制走 `/agent-nodes/`；这些路径、
   只读工具和 MCP 不改。`/agent/confirm` 是确认请求接口，不执行画布工具写入。
+
+## 修订（#400 / A10）：仅新生成批次异步确认
+
+- `generate.request_batch` 立即返回 `batch_id` 和 `awaiting_confirmation`（已获批的重复请求返回 `approved`）。同一预检只登记一次；`generate.batch_status` 可等待下一次状态变化（上限 600 秒），`generate.stop_batch` 不取消已开始项。
+- 复用现有 Agent 浏览器整批确认（90 秒），展示总张数、备选模型与重试次数；批准前不写画布、历史、用量或会话确认日志，也不调用服务商。外部 MCP 用同一有界 `Mcp-Session-Id`，确认选择已存在的 Agent 节点；不为预检或待决批次创建、重绑节点。
+- 批准时核对预检快照与配置，合计张数原子计入会话额度。逐个启动已批准项，每次只运行一个既有持久化生图任务，本版本不重试或切换模型。批次自身仅驻内存，不提供重启续跑、长期待决或逐项确认。A12 / D6 另交付。
+- `canvas.batch_edit` 仍一次同步整批确认，保持原响应与原子改词行为，不迁入新工具。其他确认档位与默认值不变。

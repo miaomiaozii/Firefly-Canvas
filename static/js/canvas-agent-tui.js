@@ -1317,7 +1317,7 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
                 window.ffDialog.ask({
                     title: '确认 Agent 操作',
                     message: event.message || '请确认操作',
-                    scrollMessage: event.tool === 'plan.apply',
+                    scrollMessage: event.tool === 'plan.apply' || event.tool === 'generate.request_batch',
                     confirmText: '批准',
                     cancelText: '取消',
                     danger: true,

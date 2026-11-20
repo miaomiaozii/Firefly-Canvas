@@ -763,6 +763,8 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                 image_data, raw = await run_routed_image_candidate(
                     route.provider_id, route.model, executed_prompt, payload.size, payload.quality,
                     references, image_parameters, progress_callback=progress_callback,
+                    **({'approved_provider': hooks.approved_provider}
+                       if hooks and getattr(hooks, 'approved_provider', None) is not None else {}),
                 )
                 raise_if_project_image_task_cancelled(task_id)
                 try:

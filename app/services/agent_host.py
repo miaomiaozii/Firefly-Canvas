@@ -420,6 +420,7 @@ class AgentSession:
     # 退出收尾未完成的窗口内，新 prompt 必须可接（E2E 实抓竞态）。
     _turn_open: bool = False
     # #318 票 C：事件回放日志 seq 计数（-1=未初始化，首用时从文件尾恢复）
+    _history_recovery_pending: bool = False
     _event_seq: int = -1
     _events_log_count: int = 0
     _respawn_count: int = 0  # 连续自动 respawn 次数（spawn 就绪后清零）
@@ -525,13 +526,15 @@ class AgentHostManager:
         key = self._session_key(project_id, node_id)
         return self._node_locks.setdefault(key, asyncio.Lock())
 
-    async def get_or_create_session(self, project_id: str, node_id: str, model: str = "", autonomy: str = "cautious") -> AgentSession:
+    async def get_or_create_session(self, project_id: str, node_id: str, model: str = "", autonomy: str = "cautious",
+                                    *, recover_history: bool = True) -> AgentSession:
         """Get existing session or create a new one."""
         key = self._session_key(project_id, node_id)
         async with self._lock:
             session = self.sessions.get(key)
-            if session and session.is_running:
-                return session
+            if session and recover_history and session._history_recovery_pending:
+                self._recover_pending_history(session)
+                session._history_recovery_pending = False
             if session:
                 # #317：空闲对象复用不替换——否则 stream 连接（不拉起）与后续 /prompt spawn 各自拿到
                 # 不同对象，WS 监听器挂在旧对象上会永久丢事件；复用后同对象晚 spawn 也能广播。
@@ -539,7 +542,10 @@ class AgentHostManager:
 
             # Create new session
             session = AgentSession(project_id=project_id, node_id=node_id, model=model, autonomy=autonomy)
-            self._recover_pending_history(session)
+            if recover_history:
+                self._recover_pending_history(session)
+            else:
+                session._history_recovery_pending = True
             self.sessions[key] = session
             return session
 
@@ -2638,6 +2644,8 @@ class AgentHostManager:
         Kills all running pi subprocesses for the project and removes their
         session records from the manager. Safe to call multiple times (idempotent).
         """
+        from app.routers.api_agent_tools import reset_generation_counts
+        reset_generation_counts(project_id)
         key_prefix = f"{project_id}:"
         async with self._lock:
             # Collect sessions to stop and their keys
@@ -2663,6 +2671,8 @@ class AgentHostManager:
         幂等；与 cleanup_project（项目级）同族。返回是否确有会话被摘除。
         注：busy 挂死的 idle reap 不走这里（那条保留 respawn 自愈语义）。
         """
+        from app.services.agent_batch import invalidate
+        invalidate(project_id, node_id)
         key = f"{project_id}:{node_id}"
         async with self._lock:
             session = self.sessions.pop(key, None)

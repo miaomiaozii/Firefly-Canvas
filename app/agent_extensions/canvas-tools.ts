@@ -296,6 +296,18 @@ const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any
     "generate.trigger": async (_toolCallId, params) =>
         textResult(await callApi(`/api/projects/${PROJECT_ID}/generate/trigger${gateQuery()}`, "POST", { node_id: params.node_id })),
 
+    "generate.preflight": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/generate/preflight${gateQuery()}`, "POST", params), true),
+
+    "generate.request_batch": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/generate/request_batch${gateQuery()}`, "POST", params)),
+
+    "generate.batch_status": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/generate/batch_status${gateQuery()}`, "POST", params)),
+
+    "generate.stop_batch": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/generate/stop_batch${gateQuery()}`, "POST", params)),
+
     "generate.status": async (_toolCallId, params) =>
         textResult(await callApi(`/api/projects/${PROJECT_ID}/generate/tasks/${params.task_id}`, "GET"), true),
 

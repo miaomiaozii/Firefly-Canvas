@@ -415,7 +415,8 @@ class DualPathEquivalenceTests(unittest.TestCase):
                 viewport_write = name in {"viewport.focus", "viewport.zoom"}
                 path = f"{url_path}?agent_node_id={self.ACTOR}" if journaled else url_path
                 url = f"/api/projects/{pid_b}{path}"
-                headers = {"X-Agent-Project": pid_b} if journaled or viewport_write else None
+                scoped_batch = name in {"generate.preflight", "generate.request_batch", "generate.batch_status", "generate.stop_batch"}
+                headers = {"X-Agent-Project": pid_b} if journaled or viewport_write or scoped_batch else None
                 if viewport_write:
                     state_url = f"/api/projects/{pid_b}/viewport/state"
                     before = client.get(state_url).json()
@@ -680,6 +681,9 @@ class DualPathEquivalenceTests(unittest.TestCase):
             "generate.trigger": gated("generate.trigger", {"node_id": "prompt-1"}, "POST", "/generate/trigger"),
             "generate.status": pair("generate.status", {"task_id": "nope"}, "GET", "/generate/tasks/nope"),
             "generate.wait": pair("generate.wait", {"task_id": "nope", "timeout_seconds": 5}, "GET", "/generate/tasks/nope/wait?timeout=5"),
+            **{f"generate.{name}": pair(f"generate.{name}", {}, "POST",
+                                          f"/generate/{name}?agent_node_id={self.ACTOR}", {})
+               for name in ("preflight", "request_batch", "batch_status", "stop_batch")},
             "media.upload": tmp_upload_run,
             "media.list": pair("media.list", {}, "GET", "/media/list"),
             "media.delete": media_delete_run,

@@ -128,6 +128,26 @@ test('#392 list payload is not media-normalized and existing generation gate ide
     assert.deepEqual(JSON.parse(runner.calls[2].options.body), { node_ids: ['source-392'], prompt: 'new prompt' });
 });
 
+test('#400 Pi batch calls forward scope and options once, with no client-side confirmation', async () => {
+    const runner = loadExecutors({ payload: { status: 'awaiting_confirmation' } });
+    const cases = {
+        preflight: { group_id: 'frame-400' },
+        request_batch: { preflight_id: 'p', fallback_models: ['model-2'], max_retries: 0 },
+        batch_status: { batch_id: 'b', wait_seconds: 0.5 },
+        stop_batch: { batch_id: 'b' },
+    };
+    for (const [name, args] of Object.entries(cases)) {
+        await runner.execute(`generate.${name}`, args);
+        const call = runner.calls.at(-1);
+        assert.equal(call.url.pathname, `/api/projects/${PROJECT}/generate/${name}`);
+        assert.equal(call.url.searchParams.get('agent_node_id'), AGENT);
+        assert.equal(call.options.headers['X-Agent-Project'], PROJECT);
+        assert.equal(call.options.method, 'POST');
+        assert.deepEqual(JSON.parse(call.options.body), args);
+    }
+    assert.equal(runner.calls.length, 4);
+});
+
 test('#392 list surfaces the shared structured server error without [object Object]', async () => {
     const runner = loadExecutors({ ok: false, payload: { detail: {
         code: 'INVALID_ARGUMENT', message: 'invalid fields', hint: 'use summary', retryable: false,

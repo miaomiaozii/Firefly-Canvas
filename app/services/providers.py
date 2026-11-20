@@ -474,8 +474,16 @@ def provider_endpoint_url(provider, key, default_path):
             return f'{base_url}{default_path[len(prefix):]}'
     return f'{base_url}{default_path}'
 
-def load_api_providers():
-    raw = firefly_json_io.read_global_json(_svc._main('API_PROVIDERS_FILE'), list)
+def load_api_providers(*, read_only=False):
+    path = _svc._main('API_PROVIDERS_FILE')
+    if read_only and os.path.exists(path):
+        # Preflight cannot quarantine configuration; ordinary reads retain the global write guard (#345/#400).
+        with open(path, encoding='utf-8') as handle:
+            raw = json.load(handle)
+        if not isinstance(raw, list):
+            raise ValueError('Provider configuration must be an array')
+    else:
+        raw = None if read_only else firefly_json_io.read_global_json(path, list)
     defaults = default_api_providers()
     if raw is None:
         return merge_default_api_providers(defaults)

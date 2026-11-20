@@ -263,6 +263,8 @@ async def stop_agent_node(
     x_agent_project: str = Header(default=""),
 ):
     """Stop an agent node session."""
+    from app.services.agent_batch import invalidate
+    invalidate(project_id, node_id)
     session = await agent_host_manager.get_or_create_session(project_id, node_id)
     if session.is_running:
         await agent_host_manager.stop_session(session)
@@ -616,7 +618,9 @@ async def post_agent_node_confirm(
     confirm_id = str(body.get("confirm_id", ""))
     approved = bool(body.get("approved", False))
 
-    session = await agent_host_manager.get_or_create_session(project_id, node_id)
+    # A transient batch decision must not trigger history recovery.
+    session = (agent_host_manager.conversation_session(project_id, node_id) or
+               await agent_host_manager.get_or_create_session(project_id, node_id))
     # Same state machine as the WS path: dispatch to every confirm handler
     # (each handler checks its own confirm_id and no-ops on mismatch).
     for handler in session.confirm_handlers:

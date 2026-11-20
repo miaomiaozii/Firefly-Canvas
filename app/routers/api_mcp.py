@@ -79,6 +79,7 @@ from app.routers.api_agent_tools import (
     view_media_core,
     wait_for_task_core,
 )
+from app.services import agent_batch
 from app.services.agent_node_state import ownership_fields
 from app.services.agent_ops_context import agent_ops_scope
 from app.services.canvas_view import VIEW_SLOW_TIMEOUT_S
@@ -633,6 +634,7 @@ TOOL_IMPLS = {
 }
 
 TOOL_IMPLS.update({name: partial(plan_core, tool=name) for name in PLAN_TOOLS})
+TOOL_IMPLS.update({name: partial(agent_batch.call, name) for name in agent_batch.TOOLS})
 
 
 # ---------------------------------------------------------------------------
@@ -684,7 +686,7 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
         params = {}
     name = str(params.get("name") or "")
     args = params.get("arguments", params.get("args", {}))
-    if name not in LAYOUT_TOOLS | PLAN_TOOLS | {"canvas.batch_prompt_edit"} and not isinstance(args, dict):
+    if name not in LAYOUT_TOOLS | PLAN_TOOLS | agent_batch.TOOLS | {"canvas.batch_prompt_edit"} and not isinstance(args, dict):
         args = params.get("args")
         if not isinstance(args, dict):
             args = {}
@@ -739,6 +741,12 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
                 turn_id = agent_host_manager.get_current_turn_id(project_id, node_param)
                 if not turn_id:
                     raise ValueError("hosted write requires an active turn")
+        if name in agent_batch.TOOLS:
+            # A10 cannot create/rebind a carrier or reserve an external turn before approval.
+            binding = (agent_batch.Caller(project_id, node_param) if caller == 'hosted' else
+                       agent_batch.external_caller(project_id, node_param, request.headers.get(SESSION_HEADER)))
+            result = await TOOL_IMPLS[name](binding, args)
+            return _rpc_response(200, msg_id, sid, result={'content': _tool_result_content_blocks(result), 'isError': False})
         # Reject unowned input before even creating an external carrier or reserving a turn (#454).
         trigger_plan = await _prepare_trigger(project_id, args) if name == 'generate.trigger' else None
         # #350: explicit node binds attribution; reads must not materialize external nodes.

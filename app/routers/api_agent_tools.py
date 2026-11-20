@@ -100,6 +100,8 @@ async def shutdown_agent_ops_lifetime():
     with _LIFETIME_LOCK:
         _LIFETIME_STOPPING.add(loop)
     from app.core import logger
+    from app.services.agent_batch import shutdown
+    shutdown(loop)
     failures = []
     while True:
         with _LIFETIME_LOCK:
@@ -1285,7 +1287,7 @@ async def create_edge_core(project_id: str, edge: dict) -> dict:
 
 # #351: session quota is in requested images, not task count.
 # 内存计数，键 (project_id, agent_node_id)；节点删除/会话 drop 时清理。
-GENERATION_SESSION_LIMIT = int(os.environ.get("FIREFLY_AGENT_GENERATION_LIMIT", "20"))
+GENERATION_SESSION_LIMIT = int(os.environ.get("FIREFLY_AGENT_GENERATION_LIMIT", "200"))
 _GENERATION_COUNTS: dict = {}
 
 
@@ -1304,9 +1306,8 @@ def enforce_generation_limit(project_id: str, agent_node_id: str, count: int = 1
 
 
 def reset_generation_counts(project_id: str, agent_node_id: str = "") -> None:
-    """#351：会话/节点销毁时清计数（canvas delete_node_core 与 agent-nodes
-    DELETE stop_agent_node 两处调用；本模块注释曾称 drop_node_session 也调——
-    与调用点不符，已改实）。"""
+    from app.services import agent_batch
+    agent_batch.invalidate(project_id, agent_node_id)
     with CANVAS_TASK_LOCK:
         for key in [k for k in _GENERATION_COUNTS
                     if k[0] == project_id and (not agent_node_id or k[1] == agent_node_id)]:
@@ -1325,6 +1326,24 @@ async def trigger_generation(project_id: str, request: Request, x_agent_project:
     enforce_generation_limit(project_id, agent, count=count)
     return await _rest_agent_call(request, project_id, "generate.trigger", body,
                                   lambda: trigger_generation_core(project_id, node_id, agent_node_id=agent, plan=plan), agent)
+
+
+@generate_router.post('/preflight', dependencies=_AGENT_WRITE)
+@generate_router.post('/request_batch', dependencies=_AGENT_WRITE)
+@generate_router.post('/batch_status', dependencies=_AGENT_WRITE)
+@generate_router.post('/stop_batch', dependencies=_AGENT_WRITE)
+async def generation_batch_tool(project_id: str, request: Request):
+    from app.services import agent_batch
+
+    actor = _paid_rest_actor(request)
+    if request.headers['X-Agent-Project'] != project_id:
+        raise agent_error(403, 'PROJECT_MISMATCH', 'Agent context does not match the project')
+    try:
+        args = await request.json()
+    except ValueError as exc:
+        raise agent_refs.invalid('Expected a JSON object') from exc
+    tool = 'generate.' + request.url.path.rsplit('/', 1)[1]
+    return await agent_batch.call(tool, agent_batch.Caller(project_id, actor), args)
 
 
 def _paid_rest_actor(request):
@@ -1526,6 +1545,10 @@ class _PreparedGeneration:
     node_type: str
     original_prompt: tuple
     legacy_images: tuple[LegacyImage, ...] = ()
+    user_prompt: str = ''
+    final_prompt: str = ''
+    reference_roles: tuple = ()
+    reference_files: tuple = ()
 
 
 def _node_prompt_fields(node):
@@ -1534,10 +1557,6 @@ def _node_prompt_fields(node):
 
 
 async def prepare_generation(project_id, node_id, *, canvas=None, prompt_override=None):
-    from app.routers.api_project_library import project_image_executed_prompt, project_image_request
-    from app.services.canvas_image_refs import ReferenceGraph
-    from app.services.canvas_image_selection import require_canvas_image_provider, route_canvas_image
-
     agent_refs.identifier(node_id, "node_id")
     store = _app_main.FIREFLY_PROJECT_STORE
     if store is None:
@@ -1548,27 +1567,40 @@ async def prepare_generation(project_id, node_id, *, canvas=None, prompt_overrid
         raise agent_error(404, 'PROJECT_NOT_FOUND', f'Project not found: {project_id}') from exc
     except ProjectStoreError as exc:
         raise agent_error(400, 'INVALID_ARGUMENT', str(exc), '请先在浏览器中打开画布。') from exc
-    if canvas is None:
-        canvas = saved
+    return await asyncio.to_thread(resolve_generation, project_id, node_id, saved if canvas is None else canvas,
+                                   catalog, saved=saved, prompt_override=prompt_override)
+
+
+def resolve_generation(project_id, node_id, canvas, catalog, *, saved=None, prompt_override=None,
+                       providers=None, preflight=False, graph=None, selection=None):
+    from app.routers.api_project_library import project_image_executed_prompt, project_image_request
+    from app.services.canvas_image_refs import ReferenceGraph
+    from app.services.canvas_image_selection import require_canvas_image_provider, route_canvas_image
+
+    store = _app_main.FIREFLY_PROJECT_STORE
     node = _snapshot_node(canvas, node_id)
-    graph = ReferenceGraph(canvas, project_id, catalog)
-    selection = graph.resolve(node_id, prompt_override=prompt_override, track_saved_mentions=saved is not None)
+    graph = graph or ReferenceGraph(canvas, project_id, catalog)
+    if selection is None:
+        selection = graph.resolve(node_id, prompt_override=prompt_override, track_saved_mentions=saved is not None)
     positions = list(graph.image_positions(selection))
+    prompt = selection['prompt']
+    if preflight and not prompt:
+        raise agent_error(400, 'NO_PROMPT', f'Node {node_id} has no prompt')
     legacy = [position for position, asset, _ in positions if not asset]
     if legacy and (saved is None or not set(legacy) <= selection['saved_mention_positions']):
         raise unavailable()
     if len(positions) > ONLINE_IMAGE_REFERENCE_MAX:
         raise agent_image_settings.invalid('Selected reference images exceed the application safety limit')
+    files = ()
     if owned := [asset for _, asset, _ in positions if asset]:
         try:
-            await asyncio.to_thread(store.check_image_reference_files, project_id, owned)
+            files = store.check_image_reference_files(project_id, owned, fingerprint=preflight)
         except ProjectStoreError as exc:
             raise agent_error(400, 'ASSET_NOT_FOUND', str(exc),
                               '参考图资产不可用；请先导入或归档，再重新挂图。') from exc
     selected_urls = {position: selection['refs'][position]['url'] for position in legacy}
-    images = await asyncio.to_thread(inspect_legacy_images, _app_main, store, saved, selected_urls.values()) if legacy else {}
+    images = inspect_legacy_images(_app_main, store, saved, selected_urls.values()) if legacy else {}
     refs = [(asset or images[selected_urls[position]].asset_id, role) for position, asset, role in positions]
-    prompt = selection['prompt']
     if not prompt:
         raise agent_error(400, "NODE_NOT_GENERATABLE", f"Node {node_id} has no prompt",
                           "先给节点写 prompt，再触发生成。")
@@ -1577,7 +1609,8 @@ async def prepare_generation(project_id, node_id, *, canvas=None, prompt_overrid
         require_canvas_image_provider(agent_image_settings.node_image_provider_id(node))
     except ModelRoutingError as exc:
         raise agent_error(400, 'INVALID_ARGUMENT', exc.message, details={'routing': exc.to_dict()}) from exc
-    providers = _app_main.load_api_providers()
+    if providers is None:
+        providers = _app_main.load_api_providers()
     try:
         wire = ProjectImageGenerationRequest(
             **agent_image_settings.image_settings(node, canvas, providers, _app_main.model_spec_for),
@@ -1588,18 +1621,20 @@ async def prepare_generation(project_id, node_id, *, canvas=None, prompt_overrid
         )
         request = project_image_request(wire)
         route = route_canvas_image(request, wire, providers, _app_main.route_image_generation)
-        project_image_executed_prompt(wire)
+        final_prompt = project_image_executed_prompt(wire)
     except ModelRoutingError as exc:
-        raise agent_error(400, "INVALID_ARGUMENT", exc.to_dict()["message"],
+        raise agent_error(400, 'NO_ROUTE' if preflight else 'INVALID_ARGUMENT', exc.to_dict()["message"],
                           "换一个可用的 provider/model 或调整参数后重试。",
                           details={"routing": exc.to_dict()}) from exc
     except ValueError as exc:
         raise agent_image_settings.invalid(str(exc)) from exc
     return _PreparedGeneration(request, wire, route, str(node.get("type", "")), _node_prompt_fields(node),
-                               tuple(images.values()))
+                               tuple(images.values()), selection['displayPrompt'], final_prompt,
+                               tuple(role for _, role in refs), files)
 
 
-async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: str = "", *, plan=None) -> dict:
+async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: str = "", *, plan=None,
+                                  validate_start=None, approved_provider=None) -> dict:
     if plan is None:
         plan = await prepare_generation(project_id, node_id)
     creation = ownership_fields(agent_node_id)
@@ -1641,10 +1676,11 @@ async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: 
     batch = _BATCH_GENERATION.get()
     if not (context and context.project_id == project_id and context.agent_node_id
             and (context.tool == 'generate.trigger' or
-                 (context.tool == 'canvas.batch_edit' and batch is not None))):
+                 (context.tool in {'canvas.batch_edit', 'generate.request_batch'} and batch is not None))):
         context = None
     hooks = _AgentImageLifecycle(project_id, task_id, node_id, result_node_id, context, build_result,
-                                 legacy_images=plan.legacy_images)
+                                 legacy_images=plan.legacy_images, validate_start=validate_start,
+                                 approved_provider=approved_provider)
     payload = plan.payload.model_copy(update={'result_node_id': result_node_id, 'idempotency_key': task_id})
     await create_project_image_task_core(project_id, payload, prepared=(plan.request, plan.route), hooks=hooks)
     if context:
@@ -1693,8 +1729,11 @@ async def wait_for_task_core(project_id: str, task_id: str, timeout: int = 120) 
 class _AgentImageLifecycle:
     """A3 adapter for the project image task; owns attribution, not generation."""
 
-    def __init__(self, project_id, task_id, node_id, result_id, context, build_result, *, legacy_images=()):
+    def __init__(self, project_id, task_id, node_id, result_id, context, build_result, *, legacy_images=(),
+                 validate_start=None, approved_provider=None):
         self.project_id, self.task_id, self.result_id = project_id, task_id, result_id
+        self.validate_start = validate_start
+        self.approved_provider = approved_provider
         self.legacy_images = legacy_images
         self.store = _app_main.FIREFLY_PROJECT_STORE
         self.context, self.build_result = context, build_result
@@ -1720,6 +1759,13 @@ class _AgentImageLifecycle:
             return self.store.apply_mutations(self.project_id, self.build_result(canvas), base_revision=canvas['revision'])
 
         def register():
+            if self.validate_start is not None:
+                with self.store._lock:
+                    self.validate_start(self.task_id, self.result_id)
+                    return register_with_refs()
+            return register_with_refs()
+
+        def register_with_refs():
             if not self.legacy_images:
                 return register_result()
             with self.store._lock:
@@ -1937,7 +1983,7 @@ def recovered_generation_writer(project_id, durable):
         except (OSError, sqlite3.Error):
             return None
         root = next((record for record in family if record['op_id'] == op_id and not record['undone']), None)
-        if root is None or root['tool'] not in {'generate.trigger', 'canvas.batch_edit'}:
+        if root is None or root['tool'] not in {'generate.trigger', 'canvas.batch_edit', 'generate.request_batch'}:
             return None
         if not any(change['id'] == result_id and change['path'] == ['pendingTasks']
                    and any(item.get('taskId') == task_id for item in change['after'].get('value', []))
@@ -2377,7 +2423,7 @@ async def request_confirmation_core(
     params: dict,
     message: str,
     timeout_seconds: float = 60,
-    *, allow_automatic: bool = True,
+    *, allow_automatic: bool = True, transient_session=None, cancel_event=None,
 ) -> dict:
     """Confirmation gate core (Request-free; shared by HTTP + MCP, #243).
 
@@ -2390,8 +2436,7 @@ async def request_confirmation_core(
 
     from app.services.agent_host import agent_host_manager, SAFETY_FLOOR_TOOLS
 
-    # Get the agent session
-    session = await agent_host_manager.get_or_create_session(project_id, node_id)
+    session = transient_session or await agent_host_manager.get_or_create_session(project_id, node_id)
 
     # Check autonomy level: auto-approve destructive tools in autonomous mode
     # (except safety-floor tools which always require confirmation)
@@ -2403,43 +2448,70 @@ async def request_confirmation_core(
     confirm_id = f"confirm-{uuid.uuid4().hex[:12]}"
 
     # Create a completion event and result holder
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
+    expires_at = loop.time() + float(timeout_seconds)
+    transient_metadata = ({'host': session.agent_cli, 'generation': session.generation}
+                          if transient_session is not None else {})
     done_event = asyncio.Event()
     result = {"approved": False, "reason": "timeout"}
 
     # Register a temporary confirm handler
     async def handle_confirm_response(cid, approved):
-        if cid == confirm_id:
+        if cid == confirm_id and (cancel_event is None or (
+                type(approved) is bool and loop.time() < expires_at
+                and not (cancel_event.is_set() or done_event.is_set()))):
             result["approved"] = approved
             result["reason"] = "rejected" if not approved else None
             done_event.set()
 
+    async def publish(event):
+        # #389: persist before fan-out so live and replay share the same sequence.
+        # #400 has no durable pending approval; do not create an event log for it.
+        if transient_session is None:
+            agent_host_manager._persist_event(session, event)
+        for handler in session.event_handlers:
+            try:
+                await handler(session, event)
+            except Exception:
+                pass
+
     agent_host_manager.on_confirm(session, handle_confirm_response)
 
     try:
-        # Send the confirm event to the frontend via the session's event handlers
         confirm_event = {
             "type": "confirm",
             "confirm_id": confirm_id,
             "tool": tool,
             "params": params,
             "message": message,
+            **transient_metadata,
         }
-        # #389：先写入回放日志（就地注入 seq，live WS 与回放同一 payload，同 #318 票 C
-        # 单一 fan-out 口径）——确认挂起期间刷新页面才能从 events 回放重建待决确认卡。
-        agent_host_manager._persist_event(session, confirm_event)
-        for handler in session.event_handlers:
+        if transient_session is None:
+            await publish(confirm_event)
+        else:
             try:
-                await handler(session, confirm_event)
-            except Exception:
-                pass
+                await asyncio.wait_for(publish(confirm_event), max(0, expires_at - loop.time()))
+            except TimeoutError:
+                pass  # A slow browser transport cannot extend this approval's lifetime.
 
-        # Wait for the user's decision (with timeout)
-        try:
-            await asyncio.wait_for(done_event.wait(), timeout=float(timeout_seconds))
-        except asyncio.TimeoutError:
-            result["approved"] = False
-            result["reason"] = "timeout"
+        if cancel_event is None:
+            try:
+                await asyncio.wait_for(done_event.wait(), timeout=float(timeout_seconds))
+            except asyncio.TimeoutError:
+                result.update(approved=False, reason='timeout')
+        else:
+            decision = asyncio.create_task(done_event.wait())
+            cancelled = asyncio.create_task(cancel_event.wait())
+            try:
+                completed, _ = await asyncio.wait((decision, cancelled), timeout=max(0, expires_at - loop.time()),
+                                                  return_when=asyncio.FIRST_COMPLETED)
+                if cancel_event.is_set():
+                    result.update(approved=False, reason='stopped')
+                elif not completed:
+                    result.update(approved=False, reason='timeout')
+            finally:
+                decision.cancel()
+                cancelled.cancel()
 
         # #389：门结束（批准/拒绝/超时）落终态记录并 live 广播：回放时前端据此关闭
         # 已决确认卡（「确认结束后不再重放」），live 端同步关掉挂着的 ffDialog。
@@ -2449,17 +2521,18 @@ async def request_confirmation_core(
             "tool": tool,
             "approved": bool(result["approved"]),
             "reason": result["reason"],
+            **transient_metadata,
         }
-        agent_host_manager._persist_event(session, resolved_event)
-        for handler in session.event_handlers:
+        if transient_session is None:
+            await publish(resolved_event)
+        else:
             try:
-                await handler(session, resolved_event)
-            except Exception:
+                await asyncio.wait_for(publish(resolved_event), 1)
+            except TimeoutError:
                 pass
 
         return {"approved": result["approved"], "reason": result["reason"]}
     finally:
-        # Clean up the temporary handler
         if handle_confirm_response in session.confirm_handlers:
             session.confirm_handlers.remove(handle_confirm_response)
 
@@ -2964,32 +3037,39 @@ async def batch_edit_core(project_id: str, node_ids, prompt, agent_node_id: str 
             raise HTTPException(status_code=status, detail=detail) from exc
         raise
     finally:
-        if context and not _generation_release(store, project_id, context.op_id, guarded):
-            from app.services.agent_ops_context import create_agent_ops_task
-            from app.core import logger as _logger
-
-            journal = _journal_for(store)
-
-            def retry_registration():
-                with store._lock:
-                    for op_id, (record, delta) in list(batch['unregistered'].items()):
-                        _batch_register_reserved(journal, project_id, record, delta)
-                        batch['unregistered'].pop(op_id)
-                        store._agent_generation_unregistered.discard((project_id, op_id))
-                    store.flush(project_id)
-
-            async def recover_batch_journal():
-                while True:
-                    try:
-                        await run_blocking_to_completion(retry_registration)
-                        if _generation_release(store, project_id, context.op_id, guarded):
-                            return
-                    except (OSError, sqlite3.Error) as exc:
-                        _logger.warning("batch journal retry op=%s: %s", context.op_id, exc)
-                    await asyncio.sleep(1)
-
-            _track_lifetime_task(create_agent_ops_task(recover_batch_journal()))
+        if context:
+            release_batch_journal(store, project_id, context.op_id, batch, guarded)
         _BATCH_GENERATION.reset(token)
+
+
+def release_batch_journal(store, project_id, root, batch, guarded):
+    if _generation_release(store, project_id, root, guarded):
+        return
+    from app.services.agent_ops_async import run_blocking_to_completion
+    from app.services.agent_ops_context import create_agent_ops_task
+    from app.core import logger
+
+    journal = _journal_for(store)
+
+    def retry_registration():
+        with store._lock:
+            for op_id, (record, delta) in list(batch['unregistered'].items()):
+                _batch_register_reserved(journal, project_id, record, delta)
+                batch['unregistered'].pop(op_id)
+                store._agent_generation_unregistered.discard((project_id, op_id))
+            store.flush(project_id)
+
+    async def recover():
+        while True:
+            try:
+                await run_blocking_to_completion(retry_registration)
+                if _generation_release(store, project_id, root, guarded):
+                    return
+            except (OSError, sqlite3.Error) as exc:
+                logger.warning('batch journal retry op=%s: %s', root, exc)
+            await asyncio.sleep(1)
+
+    _track_lifetime_task(create_agent_ops_task(recover()))
 
 
 def _node_image_for_edit(node: dict, node_id: str) -> dict:
