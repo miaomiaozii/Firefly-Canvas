@@ -13,6 +13,7 @@
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $uri = 'http://127.0.0.1:3000/'
+. (Join-Path $PSScriptRoot 'firefly-boot-logs.ps1')
 
 function Resolve-Python {
     if ($PythonPath -and (Test-Path -LiteralPath $PythonPath)) { return $PythonPath }
@@ -78,14 +79,14 @@ function Start-FireflyServer {
     # issue #364：不再重定向到 data\ 下的 server.*.log（固定名、下次启动直接盖掉）。
     # 每次启动一对带 UTC 时间戳的 boot 日志；服务日志走 logs\server.log（UTF-8、追加、
     # 7 天 / 100MB 轮转，见 firefly_server_log.py）。
-    $logDir = Join-Path $root 'logs'
-    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-    $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')
-    $stdout = Join-Path $logDir ("boot-$stamp.stdout.log")
-    $stderr = Join-Path $logDir ("boot-$stamp.stderr.log")
+    $logDir = Get-FireflyLogDir -RepoRoot $root
+    $boot = New-FireflyBootLogPaths -LogDir $logDir
+    $stdout = $boot.Stdout
+    $stderr = $boot.Stderr
     # 不设 UTF-8，Windows 子进程按 GBK 码页写，中文日志全成乱码。
     $env:PYTHONUTF8 = '1'
     $env:PYTHONIOENCODING = 'utf-8'
+    $env:FIREFLY_BOOT_REDIRECT = '1'
     # Same entrypoint as run.bat -> launch-firefly.ps1.
     Start-Process -FilePath $py `
         -ArgumentList @('tools\run-server.py') `
@@ -102,9 +103,8 @@ Clean-PythonCaches
 Start-FireflyServer
 
 # Reuse the existing wait + open-browser helper.
-$waitScript = Join-Path $root 'tools\wait-for-local-server.ps1'
 Start-Process -FilePath 'powershell.exe' `
-    -ArgumentList @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $waitScript) `
+    -ArgumentList @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', 'tools\wait-for-local-server.ps1') `
     -WorkingDirectory $root `
     -WindowStyle Hidden | Out-Null
 

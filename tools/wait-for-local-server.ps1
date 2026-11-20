@@ -17,7 +17,10 @@ param(
 
 $ErrorActionPreference = 'SilentlyContinue'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-if (-not $LogDir) { $LogDir = Join-Path $root 'logs' }
+if (-not $LogDir) {
+    . (Join-Path $PSScriptRoot 'firefly-boot-logs.ps1')
+    $LogDir = Get-FireflyLogDir -RepoRoot $root
+}
 
 $helper = Join-Path $PSScriptRoot 'show-firefly-failure.ps1'
 if (Test-Path -LiteralPath $helper) {

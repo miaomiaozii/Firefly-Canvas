@@ -1,5 +1,6 @@
 """Firefly Canvas server - app assembly (auto-split from monolith)."""
 import logging
+import os as _os_boot
 import sys
 
 logging.basicConfig(
@@ -16,7 +17,14 @@ logging.basicConfig(
 if __name__ == "__main__":
     import firefly_server_log
 
-    firefly_server_log.configure_server_logging()
+    _server_log = firefly_server_log.configure_server_logging()
+    # Detached launchers keep stderr for startup failures; steady-state INFO goes to
+    # the rotating file, not to a second, unrotatable copy in the boot log.
+    _route_uvicorn_to_file = _server_log is not None and _os_boot.environ.get("FIREFLY_BOOT_REDIRECT") == "1"
+    if _route_uvicorn_to_file:
+        for _handler in logging.getLogger().handlers:
+            if _handler is not _server_log:
+                _handler.setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +41,6 @@ import app.core as _core_runtime
 from app.static_pages import FireflyStaticFiles
 import firefly_json_io
 
-import os as _os_boot
 import sys as _sys_boot
 _os_boot.environ.setdefault("FIREFLY_MAIN_MODULE", __name__)
 
@@ -1507,4 +1514,5 @@ if __name__ == "__main__":
     # 默认 20s ping/20s 超时会把这些连接每隔一会儿就踢掉造成"频繁断连"。
     # 客户端有自己的应用层心跳 + 断线重连兜底，这里禁用协议 ping 更稳。
     uvicorn.run(app, host="127.0.0.1", port=int(_os_boot.environ.get("FIREFLY_PORT", "3000")),
-                ws_ping_interval=None, ws_ping_timeout=None)
+                ws_ping_interval=None, ws_ping_timeout=None,
+                **({"log_config": None} if _route_uvicorn_to_file else {}))

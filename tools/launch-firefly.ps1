@@ -11,7 +11,8 @@ $uri = "http://127.0.0.1:$Port/"
 $env:FIREFLY_PORT = [string]$Port
 $server = $null
 $stderr = ''
-$logDir = Join-Path $root 'logs'
+. (Join-Path $PSScriptRoot 'firefly-boot-logs.ps1')
+$logDir = Get-FireflyLogDir -RepoRoot $root
 
 $failureHelper = Join-Path $PSScriptRoot 'show-firefly-failure.ps1'
 if (Test-Path -LiteralPath $failureHelper) {
@@ -66,7 +67,7 @@ if (-not (Test-FireflyServer)) {
         }
         $lines += '处理办法：双击「安装依赖.bat」，装完再双击 run.bat。'
         $lines += "也可以在命令行里执行：python -m pip install -r requirements.txt"
-        $lines += "完整日志：$root\logs\server.log"
+        $lines += "日志目录：$logDir"
         if (Test-Path -LiteralPath $failureHelper) {
             Show-FireflyFailure -Message ($lines -join [Environment]::NewLine) -NoPopup:$NoPopup
         } else {
@@ -81,12 +82,12 @@ if (-not (Test-FireflyServer)) {
     # 服务自己的日志走 logs\server.log，UTF-8、追加写、7 天 / 100MB 轮转，见 firefly_server_log.py；
     # 这对 boot 日志超过 7 天由服务启动时自己清（prune_boot_logs）。
     try {
-        New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-        $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')
-        $stdout = Join-Path $logDir ("boot-$stamp.stdout.log")
-        $stderr = Join-Path $logDir ("boot-$stamp.stderr.log")
+        $boot = New-FireflyBootLogPaths -LogDir $logDir
+        $stdout = $boot.Stdout
+        $stderr = $boot.Stderr
         $env:PYTHONUTF8 = '1'
         $env:PYTHONIOENCODING = 'utf-8'
+        $env:FIREFLY_BOOT_REDIRECT = '1'
         # The Python helper executes runpy.run_path('main.py', run_name='__main__').
         $server = Start-Process -FilePath $PythonPath `
             -ArgumentList @('tools\run-server.py') `

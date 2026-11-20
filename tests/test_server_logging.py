@@ -103,6 +103,22 @@ class ServerLogHandlerTests(unittest.TestCase):
         self.assertTrue(self.path.exists(), "活动文件要接着写")
         self.assertLess(self.path.stat().st_size, 400 * 4)
 
+    def test_a_continuously_written_log_rolls_over_by_age(self):
+        started = time.time() - 8 * 86400
+        original = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started))
+        self.path.write_text(f"{original},000 INFO probe: 第一条\n", encoding="utf-8")
+        # The log was written recently too, so checking its mtime would not rotate it.
+        handler = firefly_server_log.ServerLogHandler(self.path)
+        try:
+            _write_line(handler, "新一轮")
+        finally:
+            handler.close()
+        archives = list(self.directory.glob(firefly_server_log.ARCHIVE_GLOB))
+        self.assertEqual(len(archives), 1)
+        self.assertIn("第一条", archives[0].read_text(encoding="utf-8"))
+        self.assertIn("新一轮", self.path.read_text(encoding="utf-8"))
+        self.assertNotIn("第一条", self.path.read_text(encoding="utf-8"))
+
     def test_archives_older_than_seven_days_are_purged(self):
         stale = self.directory / "server-20260101-000000.log"
         stale.write_text("过期归档\n", encoding="utf-8")
@@ -264,8 +280,11 @@ class LauncherTests(unittest.TestCase):
                     f"{relative}：固定文件名会被下一次启动覆盖（票面：崩溃前的日志就丢了）",
                 )
                 self.assertNotIn("server.stderr.log", text)
-                self.assertIn("boot-", text, f"{relative}：要用带时间戳的 boot 日志")
-                self.assertIn("logs", text)
+                self.assertIn("New-FireflyBootLogPaths", text, relative)
+                self.assertIn("Get-FireflyLogDir", text, relative)
+        boot_helper = self._text("tools/firefly-boot-logs.ps1")
+        self.assertIn("boot-$stamp", boot_helper)
+        self.assertIn("[Guid]::NewGuid()", boot_helper)
 
     def test_run_bat_points_at_the_new_log_location(self):
         text = (self.root / "run.bat").read_text(encoding="utf-8")

@@ -76,10 +76,8 @@ class ServerLogHandler(logging.Handler):
         self.max_age_days = int(max_age_days)
         self._stream = None
         self._bytes_written = 0
-        # 单次会话可能跑很多天（uvicorn 的 access 行全打在启动器的 boot 日志里，
-        # 那份不会自己轮转），所以写日志时顺手隔一段时间清一次 boot 日志，不用等下次启动。
-        self._boot_prune_interval = 300.0
-        self._next_boot_prune = 0.0
+        self._opened_at = 0.0
+        self._next_prune = 0.0
         self._open()
 
     # --- 打开 / 关闭 ---------------------------------------------------------
@@ -88,7 +86,18 @@ class ServerLogHandler(logging.Handler):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # 追加：下一次启动接着写，不盖掉上一次的日志（票面验收①）。
         self._stream = open(self.path, "a", encoding="utf-8", errors="replace", newline="\n")
-        self._bytes_written = self.path.stat().st_size
+        stat = self.path.stat()
+        self._bytes_written = stat.st_size
+        self._opened_at = time.time()
+        if stat.st_size:
+            # mtime tracks the newest record, not the age of an active file that
+            # keeps growing across restarts. Read only the first timestamp.
+            self._opened_at = stat.st_mtime
+            try:
+                with self.path.open("r", encoding="utf-8", errors="replace") as existing:
+                    self._opened_at = time.mktime(time.strptime(existing.read(19), "%Y-%m-%d %H:%M:%S"))
+            except (OSError, OverflowError, ValueError):
+                pass
 
     def flush(self) -> None:
         with self.lock:
@@ -157,16 +166,18 @@ class ServerLogHandler(logging.Handler):
             try:
                 if self._stream is None:
                     self._open()
+                now = time.time()
+                if self._bytes_written and now - self._opened_at >= self.max_age_days * 86400:
+                    self._rollover()
                 payload = message + "\n"
                 self._stream.write(payload)
-                self._bytes_written += len(payload.encode("utf-8"))
+                self._bytes_written += len(payload.encode("utf-8", errors="replace"))
                 if self._bytes_written >= self.max_bytes:
                     self._rollover()
-                self._purge_age()
-                now = time.time()
-                if now >= self._next_boot_prune:
-                    self._next_boot_prune = now + self._boot_prune_interval
-                    prune_boot_logs(self.path.parent, max_age_days=self.max_age_days)
+                if now >= self._next_prune:
+                    self._next_prune = now + 300
+                    self._purge_age(now)
+                    prune_boot_logs(self.path.parent, max_age_days=self.max_age_days, now=now)
                 self._stream.flush()
             except Exception:
                 self.handleError(record)
@@ -232,6 +243,8 @@ def configure_server_logging(
     建不出来也不能让服务起不来。
     """
     target = logger if logger is not None else logging.getLogger()
+    # 外部请求出错由调用方记录；不要为每次 ComfyUI /queue 正常轮询写 INFO。
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     for existing in target.handlers:
         if isinstance(existing, ServerLogHandler):
             return existing
@@ -245,8 +258,5 @@ def configure_server_logging(
     except OSError:
         return None
     target.addHandler(handler)
-    # 每轮询一次 ComfyUI /queue 就一行 INFO：10 小时 1.37MB 里大半是它（票面）。
-    # 请求真出错时 httpx 自己会升 WARNING/ERROR，静音掉 INFO 不丢诊断信息。
-    logging.getLogger("httpx").setLevel(logging.WARNING)
-    prune_boot_logs()
+    prune_boot_logs(handler.path.parent)
     return handler
