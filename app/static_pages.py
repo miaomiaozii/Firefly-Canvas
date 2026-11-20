@@ -1,10 +1,12 @@
-"""Serve a fresh asset URL namespace per Firefly server process (#452)."""
+"""为每次服务启动和显式刷新生成不同的前端资源版本（#452、#458）。"""
 import re
 from pathlib import Path
 from uuid import uuid4
 
 from starlette.responses import Response
 from starlette.staticfiles import StaticFiles
+
+from app.asset_cache import read_refresh_stamp
 
 # Keep the checked-in ?v= as a fallback for consumers that read HTML directly.
 # Only replace the version value; scoped revisions, other parameters and fragments
@@ -14,7 +16,8 @@ _RUNTIME_VERSION = str(uuid4().int).encode("ascii")
 
 
 def html_response(path, *, head: bool = False, status_code: int = 200) -> Response:
-    body = _ASSET_VERSION.sub(rb"\g<1>" + _RUNTIME_VERSION, Path(path).read_bytes())
+    stamp = _RUNTIME_VERSION + read_refresh_stamp()
+    body = _ASSET_VERSION.sub(rb"\g<1>" + stamp, Path(path).read_bytes())
     # A file-mtime validator could return 304 after a restart even though the
     # rendered page has a new version. Re-fetch the HTML, not the old cached body.
     return Response(

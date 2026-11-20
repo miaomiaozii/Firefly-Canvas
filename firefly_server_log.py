@@ -90,8 +90,8 @@ class ServerLogHandler(logging.Handler):
         self._bytes_written = stat.st_size
         self._opened_at = time.time()
         if stat.st_size:
-            # mtime tracks the newest record, not the age of an active file that
-            # keeps growing across restarts. Read only the first timestamp.
+            # 活动日志跨重启持续追加，mtime 只反映最近写入，不能用来判断文件年龄。
+            # 读取首条记录时间即可，不必扫描日志全文。
             self._opened_at = stat.st_mtime
             try:
                 with self.path.open("r", encoding="utf-8", errors="replace") as existing:

@@ -119,16 +119,12 @@ class HtmlStampScopeTests(unittest.TestCase):
 
 
 class AssetRefreshLauncherTests(unittest.TestCase):
-    def test_both_launchers_delegate_cache_busting_to_the_server(self):
-        # Never execute launchers here: their production stop logic targets the live service.
-        for script in ("restart-firefly.ps1", "refresh-cache.ps1"):
-            with self.subTest(script=script):
-                source = (ROOT / "tools" / script).read_text(encoding="utf-8-sig")
-                self.assertIn("-ArgumentList @('tools\\run-server.py')", source)
-                self.assertRegex(source, r"(?m)^Start-FireflyServer$")
-                self.assertNotRegex(source, r"(?i)(\.html|\?v=|WriteAllText)")
-                if script == "refresh-cache.ps1":
-                    self.assertRegex(source, r"(?m)^Clean-PythonCaches\nStart-FireflyServer$")
+    def test_restart_delegates_cache_busting_to_the_server(self):
+        # 不执行真实重启脚本：它的停服务逻辑会针对正在运行的实例。
+        source = (ROOT / "tools/restart-firefly.ps1").read_text(encoding="utf-8-sig")
+        self.assertIn("-ArgumentList @('tools\\run-server.py')", source)
+        self.assertRegex(source, r"(?m)^Start-FireflyServer$")
+        self.assertNotRegex(source, r"(?i)(\.html|\?v=|WriteAllText)")
 
 
 if __name__ == "__main__":

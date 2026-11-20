@@ -18,8 +18,8 @@ if __name__ == "__main__":
     import firefly_server_log
 
     _server_log = firefly_server_log.configure_server_logging()
-    # Detached launchers keep stderr for startup failures; steady-state INFO goes to
-    # the rotating file, not to a second, unrotatable copy in the boot log.
+    # 分离启动器的 stderr 保留启动故障；常态 INFO 只进轮转日志，
+    # 不在无法轮转的启动日志中再存一份。
     _route_uvicorn_to_file = _server_log is not None and _os_boot.environ.get("FIREFLY_BOOT_REDIRECT") == "1"
     if _route_uvicorn_to_file:
         for _handler in logging.getLogger().handlers:

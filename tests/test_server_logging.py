@@ -244,16 +244,10 @@ class BootLogPruningTests(unittest.TestCase):
 class LauncherTests(unittest.TestCase):
     """启动器：不再覆盖上一次的日志，并给子进程 UTF-8。
 
-    三条启动路径都要钉：run.bat → tools/launch-firefly.ps1（双击启动）、
-    tools/restart-firefly.ps1（开发重启）、tools/refresh-cache.ps1（刷缓存后重启）。
-    只修一条，其余两条照样覆盖。
+    双击启动和开发重启是两条独立路径；缓存刷新不再启动服务（#458）。
     """
 
-    LAUNCHERS = (
-        "tools/launch-firefly.ps1",
-        "tools/restart-firefly.ps1",
-        "tools/refresh-cache.ps1",
-    )
+    LAUNCHERS = ("tools/launch-firefly.ps1", "tools/restart-firefly.ps1")
 
     def setUp(self):
         self.root = Path(firefly_server_log.__file__).resolve().parent

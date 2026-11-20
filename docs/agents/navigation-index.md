@@ -86,6 +86,7 @@
 ### 启动失败可见性（#363）
 
 - 稳定符号：`tools/check_dependencies.py`（`REQUIRED` 依赖表、`--names-only`、`--probe`、`--extra-modules`、退出码 0/1）；`tools/show-firefly-failure.ps1`（`Get-FireflyBootLogTail`、`Show-FireflyFailure`）；调用点 `run.bat`、`tools/launch-firefly.ps1`、`tools/wait-for-local-server.ps1`。
+- 不停机刷新（#458）：`tools/refresh-cache.ps1` 调用 `tools/refresh_cache.py` 清理源码目录的字节码、在 `app/asset_cache.py` 发布运行时版本；`app/static_pages.py` 在下次 HTML 响应中读取。失败通过 `[REFRESH] RESULT` 和非零退出码报告，不启动或终止服务。
 - 最相关测试：`tests/test_dependency_preflight.py`（缺依赖逐个点名、给 PowerShell 的名单纯 ASCII、可选项缺失不算致命、真跑一遍 run.bat 与 安装依赖.bat 的失败路径、带中文的 .ps1 必须 BOM、run.bat 必须 CRLF 且除文件名外全 ASCII）。
 - 不变量：PowerShell 5.1 按 OEM（本机 GBK）码页解码子进程输出，所以**给它的名单只能 ASCII**；中文文案只能由 Python 子进程（`PYTHONUTF8=1`）或带 BOM 的 .ps1 字面量出。`run.bat` 与 `安装依赖.bat` 保持 CRLF 行尾（LF 会被 cmd 砸成碎片）且自身全 ASCII；`安装依赖.bat` 要显示中文缺项清单得先 `chcp 65001`。体检用 stdlib `importlib.util.find_spec`，不用 `pkg_resources`（便携包的 `python310._pth` 下它连 `__file__` 都没有）；`--extra-modules` 的可选依赖缺失不阻断启动。
 
