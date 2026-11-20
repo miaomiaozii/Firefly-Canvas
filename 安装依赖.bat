@@ -81,12 +81,19 @@ pause
 exit /b 1
 
 :done
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\install-firefly-shortcuts.ps1"
+if not "%errorlevel%"=="0" goto :shortcuts_failed
 echo.
 echo ============================================
-echo   Done. Run run.bat to start the app.
+echo   Done. Open Firefly Canvas from the desktop or Start menu.
 echo ============================================
 pause
 exit /b 0
+
+:shortcuts_failed
+echo [ERROR] Dependencies installed, but the shortcuts could not be created.
+pause
+exit /b 1
 
 :python_missing
 echo.

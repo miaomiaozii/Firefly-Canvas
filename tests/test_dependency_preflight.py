@@ -210,6 +210,10 @@ class InstallBatVerifyTests(unittest.TestCase):
             f"sys.exit({check_exit})\n",
             encoding="utf-8",
         )
+        # Keep this batch control-flow test away from the actual Desktop and Start menu.
+        (stub.parent / "install-firefly-shortcuts.ps1").write_text(
+            "Write-Output '[stub] shortcut installer'\nexit 0\n", encoding="utf-8"
+        )
         # 把 pip 摁在本地：不联网，只仍向空 packages 目录（装空 requirements 秒过）。
         env = dict(
             os.environ,
@@ -240,7 +244,8 @@ class InstallBatVerifyTests(unittest.TestCase):
             self.assertIn("[verify] Checking dependencies", text, "装完必须自己体检一遍")
             self.assertIn("[缺少依赖] pillow", text, "缺项清单要在屏幕上看得见")
             self.assertIn("[MISSING]", text)
-            self.assertNotIn("Done. Run run.bat", text, "还缺依赖不能报 Done")
+            self.assertNotIn("[stub] shortcut installer", text, "缺依赖时不能装快捷方式")
+            self.assertNotIn("Done. Open Firefly Canvas", text, "还缺依赖不能报 Done")
 
     @unittest.skipUnless(IS_WINDOWS, "安装依赖.bat 只在 Windows 上跑")
     @unittest.skipUnless(shutil.which("python") or shutil.which("python.exe"), "本机没有 python")
@@ -250,7 +255,9 @@ class InstallBatVerifyTests(unittest.TestCase):
             result = self._run(workdir, env)
             text = _decode(result.stdout) + _decode(result.stderr)
             self.assertIn("[verify] Checking dependencies", text)
-            self.assertIn("Done. Run run.bat", text, "依赖齐时不能假报缺）")
+            self.assertEqual(result.returncode, 0, text)
+            self.assertIn("[stub] shortcut installer", text)
+            self.assertIn("Done. Open Firefly Canvas", text)
 
     def test_install_bat_verify_block_is_parse_safe(self):
         raw = self.INSTALL_BAT.read_bytes()

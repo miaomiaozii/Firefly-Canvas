@@ -1509,10 +1509,22 @@ from app.routers.ws_stats import websocket_endpoint  # noqa: F401
 _svc._bind_main(sys.modules[__name__])
 
 if __name__ == "__main__":
+    import runpy
+
     import uvicorn
     # 关闭服务端协议级 WebSocket ping：部分客户端（如 PS UXP 面板）不会自动回 pong，
     # 默认 20s ping/20s 超时会把这些连接每隔一会儿就踢掉造成"频繁断连"。
     # 客户端有自己的应用层心跳 + 断线重连兜底，这里禁用协议 ping 更稳。
-    uvicorn.run(app, host="127.0.0.1", port=int(_os_boot.environ.get("FIREFLY_PORT", "3000")),
-                ws_ping_interval=None, ws_ping_timeout=None,
-                **({"log_config": None} if _route_uvicorn_to_file else {}))
+    server_options = {
+        "host": "127.0.0.1",
+        "port": int(_os_boot.environ.get("FIREFLY_PORT", "3000")),
+        "ws_ping_interval": None,
+        "ws_ping_timeout": None,
+    }
+    if _route_uvicorn_to_file:
+        server_options["log_config"] = None
+    if sys.argv[1:] == ["--desktop"] and _os_boot.environ.get("FIREFLY_DESKTOP_READY_FILE"):
+        desktop = runpy.run_path("tools/desktop-server.py")
+        desktop["DesktopServer"](uvicorn.Config(app, **server_options)).run()
+    else:
+        uvicorn.run(app, **server_options)
