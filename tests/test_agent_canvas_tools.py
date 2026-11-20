@@ -1,8 +1,10 @@
 """Tests for agent canvas tools API endpoints (issue #119)."""
+import asyncio
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -12,6 +14,8 @@ if str(ROOT) not in sys.path:
 
 import main
 from firefly_projects import ProjectStore
+from app.routers import api_agent_tools
+from app.services import agent_host
 
 
 class AgentCanvasToolsTests(unittest.TestCase):
@@ -24,9 +28,11 @@ class AgentCanvasToolsTests(unittest.TestCase):
         main.FIREFLY_PROJECT_STORE = self.store
         self.client = TestClient(main.app, base_url="http://127.0.0.1", headers={"origin": "http://127.0.0.1"})
 
-        # Create a test project with some nodes
         self.project = self.store.create_project("Canvas Tools Test")
         self.project_id = self.project["id"]
+        self.actor_id = "agent-1"
+        self.agent_headers = {"X-Agent-Project": self.project_id}
+        self.actor_query = {"agent_node_id": self.actor_id}
         self.store.apply_mutations(
             self.project_id,
             [
@@ -42,6 +48,13 @@ class AgentCanvasToolsTests(unittest.TestCase):
         self.store.close()
         main.FIREFLY_PROJECT_STORE = self.previous_store
         self.temp_dir.cleanup()
+
+    def _add_actor(self, autonomy="cautious"):
+        # Keep the two-node read fixture unchanged; only tool writes need an actor.
+        self.store.apply_mutations(self.project_id, [
+            {"op": "upsert_node", "node": {"id": self.actor_id, "type": "smart-agent",
+                                          "title": "Agent", "autonomy": autonomy}},
+        ], base_revision=1)
 
     def test_list_nodes(self):
         """canvas.list_nodes returns node summaries."""
@@ -102,6 +115,7 @@ class AgentCanvasToolsTests(unittest.TestCase):
 
     def test_create_node(self):
         """canvas.create_node creates a new node.（#343 升位：id 服务端生成，不再接受调用方 id）"""
+        self._add_actor()
         new_node = {
             "type": "smart-video",
             "title": "Test Video",
@@ -110,7 +124,8 @@ class AgentCanvasToolsTests(unittest.TestCase):
         }
         response = self.client.post(
             f"/api/projects/{self.project_id}/canvas/nodes",
-            json={"node": new_node},
+            json={"node": new_node, "agent_node_id": self.actor_id},
+            headers=self.agent_headers,
         )
         self.assertEqual(response.status_code, 200)
         data = response.json()
@@ -125,13 +140,15 @@ class AgentCanvasToolsTests(unittest.TestCase):
 
     def test_create_node_generates_id(self):
         """canvas.create_node generates an ID if not provided."""
+        self._add_actor()
         new_node = {
             "type": "smart-prompt",
             "title": "Auto ID",
         }
         response = self.client.post(
             f"/api/projects/{self.project_id}/canvas/nodes",
-            json={"node": new_node},
+            json={"node": new_node, "agent_node_id": self.actor_id},
+            headers=self.agent_headers,
         )
         self.assertEqual(response.status_code, 200)
         data = response.json()
@@ -140,9 +157,12 @@ class AgentCanvasToolsTests(unittest.TestCase):
 
     def test_update_node(self):
         """canvas.update_node updates node properties."""
+        self._add_actor()
         response = self.client.patch(
             f"/api/projects/{self.project_id}/canvas/nodes/prompt-1",
             json={"title": "Updated Title", "text": "Updated text"},
+            headers=self.agent_headers,
+            params=self.actor_query,
         )
         self.assertEqual(response.status_code, 200)
         data = response.json()
@@ -155,7 +175,13 @@ class AgentCanvasToolsTests(unittest.TestCase):
 
     def test_delete_node(self):
         """canvas.delete_node deletes a node."""
-        response = self.client.delete(f"/api/projects/{self.project_id}/canvas/nodes/prompt-1")
+        self._add_actor()
+        with patch.object(api_agent_tools, "request_confirmation_core", return_value={"approved": True}):
+            response = self.client.delete(
+                f"/api/projects/{self.project_id}/canvas/nodes/prompt-1",
+                headers=self.agent_headers,
+                params=self.actor_query,
+            )
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertTrue(data["success"])
@@ -166,12 +192,8 @@ class AgentCanvasToolsTests(unittest.TestCase):
 
     def test_create_edge(self):
         """canvas.connect creates a connection."""
-        # Create a new node to connect to
-        self.client.post(
-            f"/api/projects/{self.project_id}/canvas/nodes",
-            json={"node": {"id": "agent-1", "type": "smart-agent", "title": "Agent"}},
-        )
-
+        # Seed the fixed edge target directly; create_node only accepts server-generated IDs.
+        self._add_actor()
         edge = {
             "id": "edge-2",
             "from": "prompt-1",
@@ -181,6 +203,8 @@ class AgentCanvasToolsTests(unittest.TestCase):
         response = self.client.post(
             f"/api/projects/{self.project_id}/canvas/edges",
             json={"edge": edge},
+            headers=self.agent_headers,
+            params=self.actor_query,
         )
         self.assertEqual(response.status_code, 200)
         data = response.json()
@@ -194,9 +218,13 @@ class AgentCanvasToolsTests(unittest.TestCase):
 
     def test_delete_edge(self):
         """canvas.disconnect removes a connection."""
-        response = self.client.delete(
-            f"/api/projects/{self.project_id}/canvas/edges/prompt-1/image-1"
-        )
+        self._add_actor()
+        with patch.object(api_agent_tools, "request_confirmation_core", return_value={"approved": True}):
+            response = self.client.delete(
+                f"/api/projects/{self.project_id}/canvas/edges/prompt-1/image-1",
+                headers=self.agent_headers,
+                params=self.actor_query,
+            )
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertTrue(data["success"])
@@ -208,9 +236,16 @@ class AgentCanvasToolsTests(unittest.TestCase):
 
     def test_delete_edge_not_found(self):
         """canvas.disconnect returns 404 for missing edge."""
-        response = self.client.delete(
-            f"/api/projects/{self.project_id}/canvas/edges/nonexistent/nonexistent"
-        )
+        self._add_actor(autonomy="autonomous")
+        # Real auto-approval lets the request reach the missing-edge check without mocking the gate.
+        host = agent_host.AgentHostManager()
+        asyncio.run(host.get_or_create_session(self.project_id, self.actor_id, autonomy="autonomous"))
+        with patch.object(agent_host, "agent_host_manager", host):
+            response = self.client.delete(
+                f"/api/projects/{self.project_id}/canvas/edges/nonexistent/nonexistent",
+                headers=self.agent_headers,
+                params=self.actor_query,
+            )
         self.assertEqual(response.status_code, 404)
 
     def test_project_not_found(self):

@@ -7,6 +7,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -16,6 +17,7 @@ if str(ROOT) not in sys.path:
 
 import main
 from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK
+from app.routers import api_agent_tools
 from firefly_projects import ProjectStore
 
 # Issue #175: the quality gate builds its isolated execution workspace from
@@ -43,50 +45,57 @@ class AgentGenerateToolsTests(unittest.TestCase):
     """Test the generate/media/viewport tools API endpoints used by the Pi agent."""
 
     def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory(prefix="firefly-generate-tools-tests-")
-        self.store = ProjectStore(Path(self.temp_dir.name) / "projects", snapshot_delay=0)
-        self.previous_store = main.FIREFLY_PROJECT_STORE
-        main.FIREFLY_PROJECT_STORE = self.store
-        # #175: pin the platform config to a fixture inside the temp dir so the
-        # batch is independent of the machine's data/api_providers.json.
-        self.previous_api_providers_file = main.API_PROVIDERS_FILE
-        providers_file = Path(self.temp_dir.name) / "api_providers.json"
+        temp_dir = Path(self.enterContext(tempfile.TemporaryDirectory(prefix="firefly-generate-tools-tests-")))
+        self.store = ProjectStore(temp_dir / "projects", snapshot_delay=0)
+        self.addCleanup(self.store.close)
+        self.enterContext(patch.object(main, "FIREFLY_PROJECT_STORE", self.store))
+        # #175: keep routing independent of the machine's data/api_providers.json.
+        providers_file = temp_dir / "api_providers.json"
         providers_file.write_text(json.dumps(FIXTURE_PROVIDERS), encoding="utf-8")
-        main.API_PROVIDERS_FILE = str(providers_file)
-        self.client = TestClient(main.app, base_url="http://127.0.0.1", headers={"origin": "http://127.0.0.1"})
+        self.enterContext(patch.object(main, "API_PROVIDERS_FILE", str(providers_file)))
+        self.confirm = self.enterContext(patch.object(
+            api_agent_tools, "request_confirmation_core", return_value={"approved": True},
+        ))
 
-        # Create a test project with nodes
-        self.project = self.store.create_project("Generate Tools Test")
-        self.project_id = self.project["id"]
+        self.project_id = self.store.create_project("Generate Tools Test")["id"]
+        self.actor_id = "agent-1"
         self.store.apply_mutations(
             self.project_id,
             [
                 {"op": "upsert_node", "node": {"id": "prompt-1", "type": "smart-prompt", "title": "Test Prompt", "text": "A glowing firefly", "x": 100, "y": 100}},
                 {"op": "upsert_node", "node": {"id": "image-1", "type": "smart-image", "title": "Test Image", "prompt": "A beautiful landscape", "x": 300, "y": 100}},
                 {"op": "upsert_edge", "edge": {"id": "edge-1", "from": "prompt-1", "to": "image-1", "kind": "flow"}},
+                {"op": "upsert_node", "node": {"id": self.actor_id, "type": "smart-agent"}},
             ],
             base_revision=0,
         )
 
-    def tearDown(self):
-        # Clean up any tasks created during tests
+        self.addCleanup(self._clean_project_state)
+        # Keep the request loop alive for generation and drain it before removing the store.
+        self.client = self.enterContext(TestClient(main.app, base_url="http://127.0.0.1"))
+
+    def _clean_project_state(self):
         with CANVAS_TASK_LOCK:
-            for task_id in list(CANVAS_TASKS.keys()):
+            for task_id in list(CANVAS_TASKS):
                 if CANVAS_TASKS[task_id].get("project_id") == self.project_id:
                     del CANVAS_TASKS[task_id]
-        self.client.close()
-        self.store.close()
-        main.FIREFLY_PROJECT_STORE = self.previous_store
-        main.API_PROVIDERS_FILE = self.previous_api_providers_file
-        self.temp_dir.cleanup()
+        api_agent_tools.reset_generation_counts(self.project_id)
+        api_agent_tools.VIEWPORT_STATE.pop(self.project_id, None)
+
+    def _post_tool(self, route, payload):
+        return self.client.post(
+            f"/api/projects/{self.project_id}/{route}",
+            headers={"X-Agent-Project": self.project_id},
+            params={"agent_node_id": self.actor_id},
+            json=payload,
+        )
 
     def test_trigger_generation(self):
         """generate.trigger starts generation and returns task ID."""
-        response = self.client.post(
-            f"/api/projects/{self.project_id}/generate/trigger",
-            json={"node_id": "image-1"},
-        )
-        self.assertEqual(response.status_code, 200)
+        response = self._post_tool("generate/trigger", {"node_id": "image-1"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.confirm.assert_awaited_once()
+        self.assertEqual(self.confirm.await_args.args[:3], (self.project_id, self.actor_id, "generate.trigger"))
         data = response.json()
         self.assertIn("task_id", data)
         self.assertTrue(data["task_id"].startswith("agent_img_"))
@@ -95,8 +104,6 @@ class AgentGenerateToolsTests(unittest.TestCase):
 
     def test_trigger_generation_uses_model_routing(self):
         """#134: generate.trigger routes through model routing (ADR 0006), not a hardcoded provider/size."""
-        from unittest import mock
-        import main as main_mod
         from firefly_generation import GenerationRoute
 
         captured = {}
@@ -123,12 +130,9 @@ class AgentGenerateToolsTests(unittest.TestCase):
             base_revision=revision,
         )
 
-        with mock.patch.object(main_mod, 'route_image_generation', side_effect=fake_route):
-            response = self.client.post(
-                f"/api/projects/{self.project_id}/generate/trigger",
-                json={"node_id": "img-routed"},
-            )
-        self.assertEqual(response.status_code, 200)
+        with patch.object(main, 'route_image_generation', side_effect=fake_route):
+            response = self._post_tool("generate/trigger", {"node_id": "img-routed"})
+        self.assertEqual(response.status_code, 200, response.text)
 
         # Auto routing: no pinned provider/model.
         self.assertEqual(captured['provider_id'], "")
@@ -142,41 +146,40 @@ class AgentGenerateToolsTests(unittest.TestCase):
 
     def test_trigger_generation_no_prompt(self):
         """generate.trigger returns 400 if node has no prompt."""
-        # Create a node with no prompt or text
         self.store.apply_mutations(
             self.project_id,
             [{"op": "upsert_node", "node": {"id": "empty-1", "type": "smart-image", "x": 0, "y": 0}}],
             base_revision=1,
         )
-        response = self.client.post(
-            f"/api/projects/{self.project_id}/generate/trigger",
-            json={"node_id": "empty-1"},
-        )
-        self.assertEqual(response.status_code, 400)
+        response = self._post_tool("generate/trigger", {"node_id": "empty-1"})
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(response.json()["detail"]["code"], "NODE_NOT_GENERATABLE")
 
     def test_trigger_generation_node_not_found(self):
         """generate.trigger returns 404 for missing node."""
-        response = self.client.post(
-            f"/api/projects/{self.project_id}/generate/trigger",
-            json={"node_id": "nonexistent"},
-        )
-        self.assertEqual(response.status_code, 404)
+        response = self._post_tool("generate/trigger", {"node_id": "nonexistent"})
+        self.assertEqual(response.status_code, 404, response.text)
+        self.assertEqual(response.json()["detail"]["code"], "NODE_NOT_FOUND")
 
     def test_get_task_status(self):
         """generate.status returns task status."""
-        # First trigger a generation
-        response = self.client.post(
-            f"/api/projects/{self.project_id}/generate/trigger",
-            json={"node_id": "image-1"},
-        )
+        response = self._post_tool("generate/trigger", {"node_id": "image-1"})
+        self.assertEqual(response.status_code, 200, response.text)
         task_id = response.json()["task_id"]
 
-        # Query the status
-        response = self.client.get(f"/api/projects/{self.project_id}/generate/tasks/{task_id}")
-        self.assertEqual(response.status_code, 200)
+        task_url = f"/api/projects/{self.project_id}/generate/tasks/{task_id}"
+        response = self.client.get(task_url)
+        self.assertEqual(response.status_code, 200, response.text)
         data = response.json()
         self.assertEqual(data["task_id"], task_id)
         self.assertIn("status", data)
+        if data["status"] == "cleanup_pending":
+            # A fast provider failure can be visible before its journal settles.
+            wait = self.client.get(f"{task_url}/wait?timeout=5")
+            self.assertEqual(wait.status_code, 200, wait.text)
+            response = self.client.get(task_url)
+            self.assertEqual(response.status_code, 200, response.text)
+            data = response.json()
         self.assertIn(data["status"], ["queued", "running", "succeeded", "failed"])
 
     def test_get_task_status_not_found(self):
@@ -186,11 +189,8 @@ class AgentGenerateToolsTests(unittest.TestCase):
 
     def test_wait_for_task(self):
         """generate.wait waits for task completion or timeout."""
-        # First trigger a generation
-        response = self.client.post(
-            f"/api/projects/{self.project_id}/generate/trigger",
-            json={"node_id": "image-1"},
-        )
+        response = self._post_tool("generate/trigger", {"node_id": "image-1"})
+        self.assertEqual(response.status_code, 200, response.text)
         task_id = response.json()["task_id"]
 
         # Wait with a short timeout
@@ -230,32 +230,23 @@ class AgentGenerateToolsTests(unittest.TestCase):
 
     def test_media_upload(self):
         """media.upload uploads a media file."""
-        # Create a temporary image file
-        import os
-        # #355（01:08 收口）：只允许读当前项目目录（store.root/<pid>）/用户选定目录——测试图落本项目目录下。
-        proj_dir = os.path.join(str(self.store.root), self.project_id)
-        os.makedirs(proj_dir, exist_ok=True)
-        temp_image = os.path.join(proj_dir, "test_image.png")
-        with open(temp_image, "wb") as f:
-            # Write a minimal valid PNG
-            f.write(b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01')
+        from PIL import Image
 
-        response = self.client.post(
-            f"/api/projects/{self.project_id}/media/upload",
-            json={"file_path": temp_image},
-        )
-        self.assertEqual(response.status_code, 200)
+        # #355: media.upload only reads from the project or user-selected directories.
+        temp_image = self.store.root / self.project_id / "test_image.png"
+        Image.new("RGB", (1, 1)).save(temp_image)
+
+        response = self._post_tool("media/upload", {"file_path": str(temp_image)})
+        self.assertEqual(response.status_code, 200, response.text)
         data = response.json()
         self.assertTrue(data["success"])
         self.assertIn("asset_id", data)
 
     def test_media_upload_file_not_found(self):
         """media.upload returns 404 for missing file."""
-        response = self.client.post(
-            f"/api/projects/{self.project_id}/media/upload",
-            json={"file_path": "/nonexistent/file.png"},
-        )
-        self.assertEqual(response.status_code, 404)
+        missing_image = self.store.root / self.project_id / "missing.png"
+        response = self._post_tool("media/upload", {"file_path": str(missing_image)})
+        self.assertEqual(response.status_code, 404, response.text)
 
     def test_media_list(self):
         """media.list lists project media."""
@@ -266,47 +257,32 @@ class AgentGenerateToolsTests(unittest.TestCase):
 
     def test_viewport_focus(self):
         """viewport.focus focuses on a node."""
-        response = self.client.post(
-            f"/api/projects/{self.project_id}/viewport/focus",
-            json={"node_id": "image-1"},
-        )
-        self.assertEqual(response.status_code, 200)
+        response = self._post_tool("viewport/focus", {"node_id": "image-1"})
+        self.assertEqual(response.status_code, 200, response.text)
         data = response.json()
         self.assertTrue(data["success"])
         self.assertEqual(data["node_id"], "image-1")
 
     def test_viewport_focus_not_found(self):
         """viewport.focus returns 404 for missing node."""
-        response = self.client.post(
-            f"/api/projects/{self.project_id}/viewport/focus",
-            json={"node_id": "nonexistent"},
-        )
-        self.assertEqual(response.status_code, 404)
+        response = self._post_tool("viewport/focus", {"node_id": "nonexistent"})
+        self.assertEqual(response.status_code, 404, response.text)
 
     def test_viewport_zoom(self):
         """viewport.zoom sets zoom level."""
-        response = self.client.post(
-            f"/api/projects/{self.project_id}/viewport/zoom",
-            json={"level": 1.5},
-        )
-        self.assertEqual(response.status_code, 200)
+        response = self._post_tool("viewport/zoom", {"level": 1.5})
+        self.assertEqual(response.status_code, 200, response.text)
         data = response.json()
         self.assertTrue(data["success"])
         self.assertEqual(data["level"], 1.5)
 
     def test_viewport_state(self):
         """viewport.state returns current viewport state."""
-        # First set some state
-        self.client.post(
-            f"/api/projects/{self.project_id}/viewport/focus",
-            json={"node_id": "image-1"},
-        )
-        self.client.post(
-            f"/api/projects/{self.project_id}/viewport/zoom",
-            json={"level": 2.0},
-        )
+        focus = self._post_tool("viewport/focus", {"node_id": "image-1"})
+        self.assertEqual(focus.status_code, 200, focus.text)
+        zoom = self._post_tool("viewport/zoom", {"level": 2.0})
+        self.assertEqual(zoom.status_code, 200, zoom.text)
 
-        # Get the state
         response = self.client.get(f"/api/projects/{self.project_id}/viewport/state")
         self.assertEqual(response.status_code, 200)
         data = response.json()

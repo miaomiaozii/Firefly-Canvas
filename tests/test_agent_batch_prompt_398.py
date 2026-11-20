@@ -102,7 +102,10 @@ def test_batch_confirm_cancel_and_undo(canvas, mcp, approved):
     assert result['applied'] == ['a', 'b']
     assert after['a']['text'] == 'green apple' and after['a']['promptEditedByUser'] is True
     assert after['b']['text'] == 'blue berry jam'
-    undone = client.post(f'/api/projects/{project}/ops/undo', json={'op_id': result['op_id']}).json()
+    response = client.post(f'/api/projects/{project}/ops/undo', json={'op_id': result['op_id']},
+                           headers={'X-Agent-Project': project})
+    assert response.status_code == 200, response.text
+    undone = response.json()
     assert undone['reverted'] == [result['op_id']], undone
     assert store.canvas(project)['nodes'] == before['nodes']
 
@@ -131,14 +134,16 @@ def test_stale_preview_never_partially_applies(canvas, during_confirmation):
     assert nodes['b']['text'] == 'blue berry'
 
 
-def test_legacy_rest_cannot_skip_confirmation_by_omitting_agent_header(canvas):
+def test_legacy_rest_requires_agent_project_header(canvas):
     client, store, project, host = canvas
     before = store.canvas(project)
     seen = confirmation(client, host, project, True)
     response = client.post(f'/api/projects/{project}/canvas/batch_edit?agent_node_id=actor',
                            json={'node_ids': ['a', 'b'], 'prompt': 'replacement'})
     assert response.status_code == 400, response.text
-    assert response.json()['detail']['code'] == 'INVALID_ARGUMENT'
+    detail = response.json()['detail']
+    assert detail['code'] == 'INVALID_ARGUMENT'
+    assert 'X-Agent-Project' in detail['message']
     assert not seen and store.canvas(project) == before
 
 
@@ -167,6 +172,9 @@ def test_legacy_batch_uses_same_confirmation_before_any_write_or_task(canvas, mc
     assert after['a']['text'] == after['b']['text'] == 'replacement'
     assert after['a']['promptEditedByUser'] is True
     assert set(result['touched_node_ids']) == {'a', 'b'}
-    undone = client.post(f'/api/projects/{project}/ops/undo', json={'op_id': result['op_id']}).json()
+    response = client.post(f'/api/projects/{project}/ops/undo', json={'op_id': result['op_id']},
+                           headers={'X-Agent-Project': project})
+    assert response.status_code == 200, response.text
+    undone = response.json()
     assert undone['status'] == 'reverted' and result['op_id'] in undone['reverted'], undone
     assert store.canvas(project)['nodes'] == before['nodes']

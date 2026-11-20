@@ -1,7 +1,6 @@
 """Tests for agent viewport tools API endpoints (issue #124)."""
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
@@ -12,6 +11,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import main
+from app.routers import api_agent_tools
 from firefly_projects import ProjectStore
 
 
@@ -25,9 +25,7 @@ class AgentViewportToolsTests(unittest.TestCase):
         main.FIREFLY_PROJECT_STORE = self.store
         self.client = TestClient(main.app, base_url="http://127.0.0.1", headers={"origin": "http://127.0.0.1"})
 
-        # Create a test project with a node
-        self.project = self.store.create_project("Viewport Tools Test")
-        self.project_id = self.project["id"]
+        self.project_id = self.store.create_project("Viewport Tools Test")["id"]
         self.store.apply_mutations(
             self.project_id,
             [
@@ -37,37 +35,36 @@ class AgentViewportToolsTests(unittest.TestCase):
         )
 
     def tearDown(self):
+        api_agent_tools.VIEWPORT_STATE.pop(self.project_id, None)
         self.client.close()
         self.store.close()
         main.FIREFLY_PROJECT_STORE = self.previous_store
         self.temp_dir.cleanup()
 
+    def _post_viewport(self, action, payload):
+        return self.client.post(
+            f"/api/projects/{self.project_id}/viewport/{action}",
+            headers={"X-Agent-Project": self.project_id},
+            json=payload,
+        )
+
     def test_focus_node(self):
         """viewport.focus scrolls to a node."""
-        response = self.client.post(
-            f"/api/projects/{self.project_id}/viewport/focus",
-            json={"node_id": "node-1"},
-        )
-        self.assertEqual(response.status_code, 200)
+        response = self._post_viewport("focus", {"node_id": "node-1"})
+        self.assertEqual(response.status_code, 200, response.text)
         data = response.json()
         self.assertEqual(data["success"], True)
         self.assertEqual(data["node_id"], "node-1")
 
     def test_focus_node_not_found(self):
         """viewport.focus returns 404 for missing node."""
-        response = self.client.post(
-            f"/api/projects/{self.project_id}/viewport/focus",
-            json={"node_id": "nonexistent"},
-        )
-        self.assertEqual(response.status_code, 404)
+        response = self._post_viewport("focus", {"node_id": "nonexistent"})
+        self.assertEqual(response.status_code, 404, response.text)
 
     def test_focus_node_missing_node_id(self):
         """viewport.focus returns 400 when node_id is missing."""
-        response = self.client.post(
-            f"/api/projects/{self.project_id}/viewport/focus",
-            json={},
-        )
-        self.assertEqual(response.status_code, 400)
+        response = self._post_viewport("focus", {})
+        self.assertEqual(response.status_code, 400, response.text)
         # #391：detail 统一形状；code=INVALID_ARGUMENT，参数名进 message/hint
         detail = response.json()["detail"]
         self.assertEqual(detail["code"], "INVALID_ARGUMENT")
@@ -75,22 +72,16 @@ class AgentViewportToolsTests(unittest.TestCase):
 
     def test_set_zoom(self):
         """viewport.zoom sets the zoom level."""
-        response = self.client.post(
-            f"/api/projects/{self.project_id}/viewport/zoom",
-            json={"level": 1.5},
-        )
-        self.assertEqual(response.status_code, 200)
+        response = self._post_viewport("zoom", {"level": 1.5})
+        self.assertEqual(response.status_code, 200, response.text)
         data = response.json()
         self.assertEqual(data["success"], True)
         self.assertEqual(data["level"], 1.5)
 
     def test_set_zoom_missing_level(self):
         """viewport.zoom returns 400 when level is missing."""
-        response = self.client.post(
-            f"/api/projects/{self.project_id}/viewport/zoom",
-            json={},
-        )
-        self.assertEqual(response.status_code, 400)
+        response = self._post_viewport("zoom", {})
+        self.assertEqual(response.status_code, 400, response.text)
         # #391：detail 统一形状
         detail = response.json()["detail"]
         self.assertEqual(detail["code"], "INVALID_ARGUMENT")
@@ -98,17 +89,11 @@ class AgentViewportToolsTests(unittest.TestCase):
 
     def test_get_viewport_state(self):
         """viewport.state returns the current viewport state."""
-        # Set some state
-        self.client.post(
-            f"/api/projects/{self.project_id}/viewport/focus",
-            json={"node_id": "node-1"},
-        )
-        self.client.post(
-            f"/api/projects/{self.project_id}/viewport/zoom",
-            json={"level": 2.0},
-        )
+        focus = self._post_viewport("focus", {"node_id": "node-1"})
+        self.assertEqual(focus.status_code, 200, focus.text)
+        zoom = self._post_viewport("zoom", {"level": 2.0})
+        self.assertEqual(zoom.status_code, 200, zoom.text)
 
-        # Get the state
         response = self.client.get(
             f"/api/projects/{self.project_id}/viewport/state"
         )
@@ -121,9 +106,11 @@ class AgentViewportToolsTests(unittest.TestCase):
         """Viewport tools return 404 for missing project."""
         response = self.client.post(
             "/api/projects/nonexistent/viewport/focus",
+            headers={"X-Agent-Project": "nonexistent"},
             json={"node_id": "node-1"},
         )
-        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.status_code, 404, response.text)
+        self.assertEqual(response.json()["detail"]["code"], "PROJECT_NOT_FOUND")
 
 
 if __name__ == "__main__":

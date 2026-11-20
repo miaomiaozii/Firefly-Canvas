@@ -785,13 +785,19 @@ class TestAgentSettingsOwnership(unittest.TestCase):
 
     def test_tool_broadcast_stays_agent_while_settings_use_empty_source(self):
         broadcasts = []
+        operation_starts = []
 
-        async def broadcast(project_id, updated_at, source=""):
-            broadcasts.append(source)
+        async def broadcast(project_id, updated_at, source="", *, phase=None, **operation):
+            if phase == "start":
+                operation_starts.append(source)
+            else:
+                broadcasts.append(source)
 
         with patch.object(main.manager, "broadcast_canvas_updated", broadcast):
             response = self.client.patch(f"/api/projects/{self.project_id}/canvas/nodes/settings-agent",
-                                         json={"title": "tool title"})
+                                         json={"title": "tool title"},
+                                         headers={"X-Agent-Project": self.project_id},
+                                         params={"agent_node_id": self.node["id"]})
             self.assertEqual(response.status_code, 200, response.text)
             for endpoint, body in (("model", {"model": "new-model"}),
                                    ("autonomy", {"autonomy": "standard"}),
@@ -799,6 +805,7 @@ class TestAgentSettingsOwnership(unittest.TestCase):
                                    ("switch-branch", {"branch_id": "other"})):
                 response = self.post_setting(endpoint, {**body, "user_edit": True})
                 self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(operation_starts, ["agent"])
         self.assertEqual(broadcasts, ["agent", "", "", "", ""])
         node = next(n for n in self.store.canvas(self.project_id)["nodes"] if n["id"] == "settings-agent")
         self.assertEqual(node["title"], "tool title")

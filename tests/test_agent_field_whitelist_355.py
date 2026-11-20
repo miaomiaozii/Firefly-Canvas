@@ -52,9 +52,13 @@ class Guards355Tests(unittest.TestCase):
                                  headers={"origin": "http://127.0.0.1:8125"})
         project = self.store.create_project("Guards 355")
         self.pid = project["id"]
+        self.actor_id = "agent-1"
+        self.agent_headers = {"X-Agent-Project": self.pid}
+        self.actor_query = {"agent_node_id": self.actor_id}
         self.store.apply_mutations(self.pid, [
             {"op": "upsert_node", "node": {"id": "prompt-1", "type": "smart-prompt",
                                            "title": "P", "x": 0, "y": 0}},
+            {"op": "upsert_node", "node": {"id": self.actor_id, "type": "smart-agent"}},
         ], base_revision=0)
         self._tabs = []
 
@@ -86,6 +90,11 @@ class Guards355Tests(unittest.TestCase):
         path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 24)
         return path
 
+    def _upload_media(self, path: Path):
+        return self.client.post(f"/api/projects/{self.pid}/media/upload",
+                                json={"file_path": str(path)},
+                                headers=self.agent_headers, params=self.actor_query)
+
     # ---------------------------------------------------------------- W1 whitelist
     def test_whitelist_covers_blocked_fields_and_is_manifest_shared(self):
         for field in ("images", "model", "agentCli", "extSessionId", "autonomy", "items"):
@@ -111,7 +120,8 @@ class Guards355Tests(unittest.TestCase):
 
     def test_rest_twin_hits_whitelist(self):
         resp = self.client.patch(f"/api/projects/{self.pid}/canvas/nodes/prompt-1",
-                                 json={"model": "some-model"})
+                                 json={"model": "some-model"},
+                                 headers=self.agent_headers, params=self.actor_query)
         self.assertEqual(resp.status_code, 400)
         self.assertIn("白名单", resp.text)
 
@@ -141,18 +151,21 @@ class Guards355Tests(unittest.TestCase):
         self.assertIn("server generates ids", cm.exception.detail["message"])
         # REST 孪生同样报错（#343：调用方 id 一律 400，不分存在/新建）
         dup = self.client.post(f"/api/projects/{self.pid}/canvas/nodes",
-                               json={"node": {"id": "prompt-1", "type": "smart-prompt"}})
+                               json={"node": {"id": "prompt-1", "type": "smart-prompt"},
+                                     "agent_node_id": self.actor_id},
+                               headers=self.agent_headers)
         self.assertEqual(dup.status_code, 400)
         self.assertIn("server generates ids", dup.text)
         fresh = self.client.post(f"/api/projects/{self.pid}/canvas/nodes",
-                                 json={"node": {"id": "brand-new-9", "type": "smart-prompt"}})
+                                 json={"node": {"id": "brand-new-9", "type": "smart-prompt"},
+                                       "agent_node_id": self.actor_id},
+                                 headers=self.agent_headers)
         self.assertEqual(fresh.status_code, 400, fresh.text)  # #343：新 id 同样拒
 
     # ---------------------------------------------------------------- W3 media paths
     def test_media_upload_under_own_project_dir_ok(self):
         img = self._png(self.store.root / self.pid / "ok-image.png")
-        resp = self.client.post(f"/api/projects/{self.pid}/media/upload",
-                                json={"file_path": str(img)})
+        resp = self._upload_media(img)
         self.assertEqual(resp.status_code, 200, resp.text)
         self.assertTrue(resp.json()["success"])
 
@@ -160,14 +173,12 @@ class Guards355Tests(unittest.TestCase):
         """review 01:08：store.root 是全部项目的根，其他项目目录必须在禁区。"""
         other = self.store.create_project("Other 355")
         img = self._png(self.store.root / other["id"] / "other-secret.png")
-        resp = self.client.post(f"/api/projects/{self.pid}/media/upload",
-                                json={"file_path": str(img)})
+        resp = self._upload_media(img)
         self.assertEqual(resp.status_code, 404, resp.text)
         self.assertIn("not available", resp.text)
         # store 根本身也不再是允许根（它是全部项目的父目录）
         stray = self._png(self.store.root / "stray.png")
-        resp2 = self.client.post(f"/api/projects/{self.pid}/media/upload",
-                                 json={"file_path": str(stray)})
+        resp2 = self._upload_media(stray)
         self.assertEqual(resp2.status_code, 404, resp2.text)
 
     def test_media_upload_under_user_selected_dir_ok(self):
@@ -175,16 +186,14 @@ class Guards355Tests(unittest.TestCase):
         sel.mkdir()
         main.OUTPUT_OUTPUT_DIR = str(sel)
         img = self._png(sel / "sel.png")
-        resp = self.client.post(f"/api/projects/{self.pid}/media/upload",
-                                json={"file_path": str(img)})
+        resp = self._upload_media(img)
         self.assertEqual(resp.status_code, 200, resp.text)
 
     def test_media_upload_out_of_bounds_rejected(self):
         outside = tempfile.TemporaryDirectory(prefix="firefly-355-outside-")
         try:
             img = self._png(Path(outside.name) / "sneaky.png")
-            resp = self.client.post(f"/api/projects/{self.pid}/media/upload",
-                                    json={"file_path": str(img)})
+            resp = self._upload_media(img)
             self.assertEqual(resp.status_code, 404, resp.text)
             self.assertIn("not available", resp.text)
         finally:
@@ -195,10 +204,8 @@ class Guards355Tests(unittest.TestCase):
         try:
             existing = self._png(Path(outside.name) / "probe.png")
             missing = Path(outside.name) / "missing" / "probe.png"  # 同 basename，不存在
-            r_existing = self.client.post(f"/api/projects/{self.pid}/media/upload",
-                                          json={"file_path": str(existing)})
-            r_missing = self.client.post(f"/api/projects/{self.pid}/media/upload",
-                                         json={"file_path": str(missing)})
+            r_existing = self._upload_media(existing)
+            r_missing = self._upload_media(missing)
             self.assertEqual(r_existing.status_code, 404)
             self.assertEqual(r_missing.status_code, 404)
             self.assertEqual(r_existing.json()["detail"], r_missing.json()["detail"],
@@ -210,8 +217,7 @@ class Guards355Tests(unittest.TestCase):
         txt = self.store.root / self.pid / "notes.txt"
         txt.parent.mkdir(parents=True, exist_ok=True)
         txt.write_text("not an image", encoding="utf-8")
-        resp = self.client.post(f"/api/projects/{self.pid}/media/upload",
-                                json={"file_path": str(txt)})
+        resp = self._upload_media(txt)
         self.assertEqual(resp.status_code, 400, resp.text)
         self.assertIn("image", resp.text)
 

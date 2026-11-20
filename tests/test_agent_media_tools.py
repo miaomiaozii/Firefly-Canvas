@@ -1,7 +1,6 @@
 """Tests for agent media tools API endpoints (issue #122)."""
 import sys
 import tempfile
-import time
 import unittest
 from pathlib import Path
 
@@ -25,13 +24,15 @@ class AgentMediaToolsTests(unittest.TestCase):
         main.FIREFLY_PROJECT_STORE = self.store
         self.client = TestClient(main.app, base_url="http://127.0.0.1", headers={"origin": "http://127.0.0.1"})
 
-        # Create a test project
-        self.project = self.store.create_project("Media Tools Test")
-        self.project_id = self.project["id"]
+        self.project_id = self.store.create_project("Media Tools Test")["id"]
+        self.actor_id = "agent-1"
+        self.store.apply_mutations(
+            self.project_id,
+            [{"op": "upsert_node", "node": {"id": self.actor_id, "type": "smart-agent"}}],
+            base_revision=0,
+        )
 
-        # Create a test image file
-        # #355（01:08 收口）：media.upload 只允许读当前项目目录（store.root/<pid>）/用户选定目录，
-        # 测试图落本项目目录下。
+        # #355: media.upload only reads from the project or user-selected directories.
         self.test_image = self.store.root / self.project_id / "test-image.png"
         self.test_image.parent.mkdir(parents=True, exist_ok=True)
         # Create a minimal valid PNG (1x1 red pixel)
@@ -60,6 +61,14 @@ class AgentMediaToolsTests(unittest.TestCase):
         main.FIREFLY_PROJECT_STORE = self.previous_store
         self.temp_dir.cleanup()
 
+    def _upload(self, payload):
+        return self.client.post(
+            f"/api/projects/{self.project_id}/media/upload",
+            headers={"X-Agent-Project": self.project_id},
+            params={"agent_node_id": self.actor_id},
+            json=payload,
+        )
+
     def test_list_media_empty(self):
         """media.list returns empty list for new project."""
         response = self.client.get(
@@ -72,11 +81,8 @@ class AgentMediaToolsTests(unittest.TestCase):
 
     def test_upload_media(self):
         """media.upload imports a file into the project."""
-        response = self.client.post(
-            f"/api/projects/{self.project_id}/media/upload",
-            json={"file_path": str(self.test_image)},
-        )
-        self.assertEqual(response.status_code, 200)
+        response = self._upload({"file_path": str(self.test_image)})
+        self.assertEqual(response.status_code, 200, response.text)
         data = response.json()
         self.assertIn("success", data)
         self.assertTrue(data["success"])
@@ -89,11 +95,9 @@ class AgentMediaToolsTests(unittest.TestCase):
 
         #355：错误句改为不泄漏存在性的统一措辞（越界/不存在同一句）。
         """
-        response = self.client.post(
-            f"/api/projects/{self.project_id}/media/upload",
-            json={"file_path": "/nonexistent/file.png"},
-        )
-        self.assertEqual(response.status_code, 404)
+        missing_image = Path(self.temp_dir.name) / "missing.png"
+        response = self._upload({"file_path": str(missing_image)})
+        self.assertEqual(response.status_code, 404, response.text)
         # #391：统一形状；#355 不泄漏存在性的语义保留在文案里
         detail = response.json()["detail"]
         self.assertIn(detail["code"], ("NOT_FOUND", "ASSET_NOT_FOUND"))
@@ -101,24 +105,17 @@ class AgentMediaToolsTests(unittest.TestCase):
 
     def test_upload_media_missing_file_path(self):
         """media.upload returns 400 when file_path is missing."""
-        response = self.client.post(
-            f"/api/projects/{self.project_id}/media/upload",
-            json={},
-        )
-        self.assertEqual(response.status_code, 400)
+        response = self._upload({})
+        self.assertEqual(response.status_code, 400, response.text)
         detail = response.json()["detail"]
         self.assertEqual(detail["code"], "INVALID_ARGUMENT")
         self.assertIn("file_path", detail["message"] + detail["hint"])
 
     def test_list_media_after_upload(self):
         """media.list shows uploaded media."""
-        # Upload a file
-        self.client.post(
-            f"/api/projects/{self.project_id}/media/upload",
-            json={"file_path": str(self.test_image)},
-        )
+        upload = self._upload({"file_path": str(self.test_image)})
+        self.assertEqual(upload.status_code, 200, upload.text)
 
-        # List media
         response = self.client.get(
             f"/api/projects/{self.project_id}/media/list"
         )

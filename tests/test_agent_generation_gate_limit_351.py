@@ -13,6 +13,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
 
@@ -196,14 +197,20 @@ class RestGeneration351Tests(_Base):
         self.assertTrue(any(h.get("status") == "failed" for h in history),
                         "#351：失败也要写项目历史")
 
-    def test_browser_trigger_not_gated(self):
-        """浏览器用户路径（无 X-Agent-Project）不进服务端门、不计会话限额。"""
-        self._approve(approved=False, reason="rejected")  # 若误进门 → 409
-        self._fake_build()
-        r = self.client.post(f"/api/projects/{self.pid}/generate/trigger",
-                             json={"node_id": "prompt-1"})
-        self.assertEqual(r.status_code, 200, r.text)
-        self._await_task(r.json()["task_id"])
+    def test_same_origin_trigger_requires_agent_project_header(self):
+        before = self.store.canvas(self.pid)
+        with patch.object(api_agent_tools, "request_confirmation_core",
+                          new=AsyncMock(return_value={"approved": True})) as confirm:
+            r = self.client.post(f"/api/projects/{self.pid}/generate/trigger?agent_node_id=agent-1",
+                                 json={"node_id": "prompt-1"})
+        self.assertEqual(r.status_code, 400, r.text)
+        detail = r.json()["detail"]
+        self.assertEqual(detail["code"], "INVALID_ARGUMENT")
+        self.assertIn("X-Agent-Project", detail["message"])
+        confirm.assert_not_awaited()
+        self.assertEqual(self.store.canvas(self.pid), before)
+        with self._tasks_lock:
+            self.assertFalse(any(task.get("project_id") == self.pid for task in self._tasks.values()))
 
 
 class McpGeneration351Tests(_Base):

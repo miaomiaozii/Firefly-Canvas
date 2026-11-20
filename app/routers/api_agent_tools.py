@@ -31,7 +31,7 @@ from app.services.agent_errors import agent_error
 from app.services.agent_tools_manifest import LAYOUT_TOOLS, UPDATABLE_NODE_FIELDS as _UPDATABLE_NODE_FIELDS
 from app.core import ONLINE_IMAGE_REFERENCE_MAX, PROJECT_IMAGE_GENERATION_FUTURES, ProjectImageGenerationRequest
 from firefly_generation import ImageGenerationRequest, ModelRoutingError
-from firefly_projects import ProjectStoreError
+from firefly_projects import ProjectNotFound, ProjectStoreError
 
 # #240：agent-tools 系列端点接入同源/Host 守卫（与现有 API 一致；
 # 无 Origin 的本机回环 sidecar 调用按票面模型放行）。
@@ -44,6 +44,16 @@ media_router = APIRouter(prefix="/api/projects/{project_id}/media", tags=["agent
 viewport_router = APIRouter(prefix="/api/projects/{project_id}/viewport", tags=["agent-viewport"], dependencies=[Depends(ensure_agent_same_origin)])
 
 confirm_router = APIRouter(prefix="/api/projects/{project_id}/agent", tags=["agent-confirm"], dependencies=[Depends(ensure_agent_same_origin)])
+
+def require_agent_project(request: Request) -> None:
+    """Only the dedicated tool writes require an explicit Agent context; this is not authentication."""
+    if not request.headers.get("X-Agent-Project", "").strip():
+        raise agent_error(400, "INVALID_ARGUMENT", "X-Agent-Project is required for Agent tool writes",
+                          "请在请求中携带 X-Agent-Project 项目 ID。")
+
+
+_AGENT_WRITE = [Depends(require_agent_project)]
+
 
 # Global viewport state per project
 VIEWPORT_STATE = {}
@@ -232,8 +242,7 @@ def _operation_touched(store, project_id, op_ids):
 
 async def _rest_agent_call(request, project_id, tool, args, callback, agent_node_id=""):
     from app.services.agent_ops_context import agent_ops_scope
-    if not request.headers.get("X-Agent-Project", ""):
-        return await callback()
+    require_agent_project(request)
     agent_node_id = agent_node_id or request.query_params.get("agent_node_id", "")
     if not agent_node_id:
         raise agent_error(400, "INVALID_ARGUMENT", "Agent node identity is required for operation journaling",
@@ -568,7 +577,7 @@ async def get_node(project_id: str, node_id: str, x_agent_project: str = Header(
     return _find_node(project_id, node_id)
 
 
-@router.post("/nodes")
+@router.post("/nodes", dependencies=_AGENT_WRITE)
 async def create_node(project_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Create a new node on the canvas. 可选 `agent_node_id`（#356 D11）：传了则
     未显式给 x/y 时自动落位；Agent 缺少会话框时自动建立（与 MCP 同行为）。"""
@@ -587,17 +596,17 @@ async def _rest_reference_tool(project_id, request, tool, core):
                                   lambda: core(project_id, args, agent_node_id=agent), agent)
 
 
-@router.post("/place_media")
+@router.post("/place_media", dependencies=_AGENT_WRITE)
 async def place_media(project_id: str, request: Request):
     return await _rest_reference_tool(project_id, request, "canvas.place_media", place_media_core)
 
 
-@router.post("/attach_refs")
+@router.post("/attach_refs", dependencies=_AGENT_WRITE)
 async def attach_refs(project_id: str, request: Request):
     return await _rest_reference_tool(project_id, request, "canvas.attach_refs", attach_refs_core)
 
 
-@router.post("/set_ref_order")
+@router.post("/set_ref_order", dependencies=_AGENT_WRITE)
 async def set_ref_order(project_id: str, request: Request):
     return await _rest_reference_tool(project_id, request, "canvas.set_ref_order", set_ref_order_core)
 
@@ -612,16 +621,17 @@ def _layout_route(tool):
         owner = request.query_params.get("agent_node_id", "")
         return await _rest_agent_call(request, project_id, tool, args,
                                       lambda: layout_tool_core(project_id, owner, tool, args,
-                                                               hosted=bool(request.headers.get("X-Agent-Project"))), owner)
+                                                               hosted=True), owner)
     return endpoint
 
 
 for _layout_tool in sorted(LAYOUT_TOOLS):
     _layout_path = _layout_tool.split(".", 1)[1]
-    router.add_api_route(f"/{_layout_path}", _layout_route(_layout_tool), methods=["POST"], name=_layout_path)
+    router.add_api_route(f"/{_layout_path}", _layout_route(_layout_tool), methods=["POST"], name=_layout_path,
+                         dependencies=_AGENT_WRITE)
 
 
-@router.patch("/nodes/{node_id}")
+@router.patch("/nodes/{node_id}", dependencies=_AGENT_WRITE)
 async def update_node(project_id: str, node_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Update an existing node's properties."""
     body = await request.json()
@@ -629,12 +639,9 @@ async def update_node(project_id: str, node_id: str, request: Request, x_agent_p
                                   lambda: update_node_core(project_id, node_id, body))
 
 
-@router.delete("/nodes/{node_id}")
+@router.delete("/nodes/{node_id}", dependencies=_AGENT_WRITE)
 async def delete_node(project_id: str, node_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
-    """Delete a node from the canvas. #353：若该节点有 agent 宿主会话，同步杀进程并
-    摘除会话（REST 与 MCP 共用本协程，单点覆盖；非 agent 节点 no-op）。
-    #357：确认门移到服务端——带 X-Agent-Project 的 agent 写操作先过门（409=拒/超时）；
-    浏览器用户路径不进本门（前端 #347 ffDialog 已确认）。"""
+    """Delete a node after confirmation; shared delete core also tears down any Agent host."""
     _validate_project(project_id)
     await _server_confirm_gate(request, project_id, "canvas.delete_node",
                                {"node_id": node_id}, f"删除画布节点 {node_id}")
@@ -793,7 +800,7 @@ async def _cleanup_deleted_node(project_id: str, node_id: str) -> None:
     reset_generation_counts(project_id, node_id)
 
 
-@router.post("/edges")
+@router.post("/edges", dependencies=_AGENT_WRITE)
 async def create_edge(project_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Create a connection between two nodes."""
     body = await request.json()
@@ -801,7 +808,7 @@ async def create_edge(project_id: str, request: Request, x_agent_project: str = 
                                   lambda: create_edge_core(project_id, body.get("edge", {})))
 
 
-@router.delete("/edges/{from_node}/{to_node}")
+@router.delete("/edges/{from_node}/{to_node}", dependencies=_AGENT_WRITE)
 async def delete_edge(project_id: str, from_node: str, to_node: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
     """Remove a connection between two nodes. #357：agent 调用同样过确认门。"""
     _validate_project(project_id)
@@ -846,10 +853,9 @@ async def canvas_view_media(project_id: str, request: Request, x_agent_project: 
     return await view_media_core(project_id, body.get("node_id"), body.get("max_px"), body.get("frames"))
 
 
-@router.post("/edit_crop")
+@router.post("/edit_crop", dependencies=_AGENT_WRITE)
 async def canvas_edit_crop(project_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
-    """#266 canvas.edit_crop: 本地裁节点图选区覆写节点图（写操作）。
-    #357：确认门移到服务端（带 X-Agent-Project 时）；浏览器路径前端 ffDialog 已确认。"""
+    """Crop a node image after confirmation, retaining the original in the media library."""
     body = await request.json()
     await _server_confirm_gate(request, project_id, "canvas.edit_crop", body,
                                f"裁剪节点 {body.get('node_id')} 的图像并覆写节点图（原资源保留在资源库）")
@@ -863,18 +869,15 @@ async def canvas_batch_prompt_edit(project_id: str, request: Request):
     parsed = agent_batch_prompt.parse(args)
     if not isinstance(parsed, str):
         return await batch_prompt_edit_core(project_id, request.query_params.get("agent_node_id", ""), parsed)
-    if not request.headers.get("X-Agent-Project"):
-        raise agent_error(400, "INVALID_ARGUMENT", "Agent project context is required to apply a batch prompt edit")
+    require_agent_project(request)  # Preview on this URL is read-only.
     actor = _paid_rest_actor(request)
     return await _rest_agent_call(request, project_id, "canvas.batch_prompt_edit", args,
                                   lambda: batch_prompt_edit_core(project_id, actor, parsed), actor)
 
 
-@router.post("/batch_edit")
+@router.post("/batch_edit", dependencies=_AGENT_WRITE)
 async def canvas_batch_edit(project_id: str, request: Request):
     body = agent_refs.require_object(await request.json(), "batch_edit", required=("node_ids", "prompt"))
-    if not request.headers.get("X-Agent-Project"):
-        raise agent_error(400, "INVALID_ARGUMENT", "Agent project context is required for batch_edit")
     node_ids = body["node_ids"]
     agent = _paid_rest_actor(request)
     prompt, plans = await prepare_batch_generation(project_id, node_ids, body["prompt"])
@@ -887,7 +890,7 @@ async def canvas_batch_edit(project_id: str, request: Request):
                                                           agent_node_id=agent, plans=plans), agent)
 
 
-@router.post("/edit_rotate")
+@router.post("/edit_rotate", dependencies=_AGENT_WRITE)
 async def canvas_edit_rotate(project_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
     """#266b canvas.edit_rotate: 本地旋转节点图（90/180/270 逆时针）覆写节点图。
     #357：agent 调用经服务端确认门。"""
@@ -898,7 +901,7 @@ async def canvas_edit_rotate(project_id: str, request: Request, agent_node_id: s
                                   lambda: rotate_node_image_core(project_id, body.get("node_id"), body.get("angle")), agent_node_id)
 
 
-@router.post("/edit_flip")
+@router.post("/edit_flip", dependencies=_AGENT_WRITE)
 async def canvas_edit_flip(project_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
     """#266b canvas.edit_flip: 本地镜像节点图（horizontal 左右 / vertical 上下）覆写节点图。
     #357：agent 调用经服务端确认门。"""
@@ -909,7 +912,7 @@ async def canvas_edit_flip(project_id: str, request: Request, agent_node_id: str
                                   lambda: flip_node_image_core(project_id, body.get("node_id"), body.get("direction")), agent_node_id)
 
 
-@router.post("/edit_outpaint")
+@router.post("/edit_outpaint", dependencies=_AGENT_WRITE)
 async def canvas_edit_outpaint(project_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
     """#289 canvas.edit_outpaint: 服务端复刻站内红底扩图链（PIL 填 #ff0044 + 贴原图）覆写节点图。
     #357：agent 调用经服务端确认门。"""
@@ -1303,7 +1306,7 @@ def reset_generation_counts(project_id: str, agent_node_id: str = "") -> None:
             _GENERATION_COUNTS.pop(key, None)
 
 
-@generate_router.post("/trigger")
+@generate_router.post("/trigger", dependencies=_AGENT_WRITE)
 async def trigger_generation(project_id: str, request: Request, x_agent_project: str = Header(default="")):
     body = agent_refs.require_object(await request.json(), "generate.trigger", required=("node_id",))
     agent = _paid_rest_actor(request)
@@ -1312,15 +1315,15 @@ async def trigger_generation(project_id: str, request: Request, x_agent_project:
     count = plan.request.count
     await _server_confirm_gate(request, project_id, "generate.trigger", {"node_id": node_id, "n": count},
                                f"节点 {node_id} 生成 {count} 张图片（消耗外部生成额度）")
-    if x_agent_project:
-        enforce_generation_limit(project_id, agent, count=count)
+    enforce_generation_limit(project_id, agent, count=count)
     return await _rest_agent_call(request, project_id, "generate.trigger", body,
                                   lambda: trigger_generation_core(project_id, node_id, agent_node_id=agent, plan=plan), agent)
 
 
 def _paid_rest_actor(request):
+    require_agent_project(request)
     actor = request.query_params.get("agent_node_id", "")
-    if request.headers.get("X-Agent-Project") and not actor:
+    if not actor:
         raise agent_error(400, "CONFIRM_MISSING_NODE_ID", "agent_node_id is required for confirmation")
     return _creation_context(request, actor)
 
@@ -2001,7 +2004,7 @@ async def wait_for_task(project_id: str, task_id: str, timeout: int = Query(defa
 # =============================================================================
 
 
-@media_router.post("/upload")
+@media_router.post("/upload", dependencies=_AGENT_WRITE)
 async def upload_media(project_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Upload a media file to the project library."""
     body = await request.json()
@@ -2158,7 +2161,7 @@ async def list_media(project_id: str, x_agent_project: str = Header(default=""))
     return response
 
 
-@media_router.delete("/{asset_id}")
+@media_router.delete("/{asset_id}", dependencies=_AGENT_WRITE)
 async def delete_media(project_id: str, asset_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
     """Delete a media file from the project. #357：agent 调用经服务端确认门。"""
     _validate_project(project_id)
@@ -2216,14 +2219,14 @@ async def delete_media_core(project_id: str, asset_id: str) -> dict:
 # =============================================================================
 
 
-@viewport_router.post("/focus")
+@viewport_router.post("/focus", dependencies=_AGENT_WRITE)
 async def focus_node(project_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Scroll canvas to focus on a node."""
     body = await request.json()
     return await focus_node_core(project_id, body.get("node_id"))
 
 
-@viewport_router.post("/zoom")
+@viewport_router.post("/zoom", dependencies=_AGENT_WRITE)
 async def set_zoom(project_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Set the canvas zoom level."""
     body = await request.json()
@@ -3212,7 +3215,7 @@ async def erase_node_image_core(project_id: str, node_id, rect, prompt) -> dict:
                 _generation_release(store, project_id, context.op_id, guarded)
 
 
-@router.post("/edit_erase")
+@router.post("/edit_erase", dependencies=_AGENT_WRITE)
 async def canvas_edit_erase(project_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
     """#290 canvas.edit_erase: 按 prompt 擦除节点图选区内容。
     #357：agent 调用经服务端确认门。"""
@@ -3224,9 +3227,7 @@ async def canvas_edit_erase(project_id: str, request: Request, agent_node_id: st
 
 
 # ── #357：服务端确认门（ADR 0022 实化门从客户端/网关移到统一执行入口）──────────
-# 判定：带 X-Agent-Project 的请求 = agent 写操作 → 先过门（复用 request_confirmation_core，
-# 含 autonomy=autonomous 自动放行与 SAFETY_FLOOR_TOOLS 兑底）；浏览器用户路径不进本门
-# （前端 #347 ffDialog 已在发起侧确认）。MCP 网关（api_mcp._confirm_gate）同用本 core。
+# #456：同一 Agent 写入 URL 不再兼作无头直写路径。MCP 网关仍共用 request_confirmation_core。
 # 超时 >60s（review 口径：pi 写操作的等待必须大于旧 60s 门槛）。
 AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS = 90.0
 
@@ -3237,9 +3238,7 @@ class AgentConfirmationDenied(Exception):
 
 async def _server_confirm_gate(request: Request, project_id: str, tool: str,
                                args: dict, message: str) -> None:
-    """统一执行入口上的确认门：仅 agent 请求（X-Agent-Project）生效。"""
-    if not request.headers.get("X-Agent-Project", ""):
-        return
+    require_agent_project(request)
     agent_node_id = request.query_params.get("agent_node_id", "")
     if not agent_node_id:
         raise agent_error(400, "CONFIRM_MISSING_NODE_ID",

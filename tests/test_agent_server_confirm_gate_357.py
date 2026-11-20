@@ -4,7 +4,7 @@
 - 确认门挂在 pi REST 与 MCP 共用的执行入口（api_agent_tools._server_confirm_gate，
   复用 request_confirmation_core）；pi 扩展不再预确认（canvas-tools.ts 源码钉住）。
 - REST DELETE /nodes、DELETE /edges（含 edit_* / media.delete）带 X-Agent-Project 时过门；
-  浏览器用户路径（无该头）不进门——前端 #347 ffDialog 已在发起侧确认。
+  #456：同源请求缺该头也返回 400，不能直接删除。浏览器项目库路径不变。
 - 写操作确认等待 >60s。
 门自身的阻塞/批准/autonomy 语义由 request_confirmation_core 既有测试与
 test_tool_surface_consistency 的 gated()（含 #357 新增 disconnect）覆盖；这里钉接线。
@@ -65,14 +65,18 @@ class ServerConfirmGate357Tests(unittest.TestCase):
     def _agent_headers(self):
         return {"X-Agent-Project": self.pid}
 
-    # ── 浏览器路径不进门 ──────────────────────────────────────────────
-    def test_browser_delete_not_gated(self):
-        self._patch_decision({"approved": False, "reason": "rejected"})
-        r = self.client.delete(f"/api/projects/{self.pid}/canvas/nodes/image-1")
-        self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(self._calls, [], "浏览器（无 X-Agent-Project）不应触发服务端门")
-        ids = {n.get("id") for n in self.store.canvas(self.pid)["nodes"]}
-        self.assertNotIn("image-1", ids)
+    def test_same_origin_delete_requires_agent_project_header(self):
+        self._patch_decision({"approved": True})
+        before = self.store.canvas(self.pid)
+        for route in ("nodes/image-1", "edges/prompt-1/image-1"):
+            with self.subTest(route=route):
+                r = self.client.delete(f"/api/projects/{self.pid}/canvas/{route}?agent_node_id=prompt-1")
+                self.assertEqual(r.status_code, 400, r.text)
+                detail = r.json()["detail"]
+                self.assertEqual(detail["code"], "INVALID_ARGUMENT")
+                self.assertIn("X-Agent-Project", detail["message"])
+                self.assertEqual(self._calls, [])
+                self.assertEqual(self.store.canvas(self.pid), before)
 
     # ── agent 路径必带归属节点 ───────────────────────────────────────
     def test_agent_delete_requires_agent_node_id(self):

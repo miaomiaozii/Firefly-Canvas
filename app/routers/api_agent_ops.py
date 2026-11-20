@@ -6,7 +6,7 @@ import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.core import ensure_agent_same_origin
-from app.routers.api_agent_tools import _app_main, _validate_project, agent_generation_is_running
+from app.routers.api_agent_tools import _app_main, _validate_project, agent_generation_is_running, require_agent_project
 from app.services import agent_ops_undo
 from app.services.agent_errors import agent_error
 
@@ -84,7 +84,7 @@ async def list_ops_endpoint(project_id: str, request: Request):
     return await list_ops_core(project_id, args)
 
 
-@router.post("/undo")
+@router.post("/undo", dependencies=[Depends(require_agent_project)])
 async def undo_ops_endpoint(project_id: str, request: Request):
     try:
         args = await request.json()

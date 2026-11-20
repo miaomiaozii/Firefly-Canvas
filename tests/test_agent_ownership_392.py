@@ -249,16 +249,17 @@ class Ownership392Tests(unittest.TestCase):
         self.broadcast.assert_awaited_once()
 
     def test_batch_real_core_preserves_existing_and_legacy_metadata_and_forwards_context(self):
-        self.seed(node("source", prompt="old", **ownership("old-owner")), node("legacy", prompt="old"))
-        expected = {**self.nodes()["source"], **HUMAN}
+        self.seed(node("source", prompt="old", **HUMAN), node("legacy", prompt="old"))
+        expected = copy.deepcopy(self.nodes()["source"])
         legacy = copy.deepcopy(self.nodes()["legacy"])
-        with self.race(lambda: [upsert(expected)]) as attempts, patch.object(
+        with patch.object(self.store, "apply_mutations", wraps=self.store.apply_mutations) as apply, patch.object(
             self.tools, "trigger_generation_core", new=AsyncMock(side_effect=[
                 {"task_id": "stub-one"}, {"task_id": "stub-two"},
             ]),
         ) as trigger:
             result = run(self.tools.batch_edit_core(self.pid, ["source", "legacy"], " batch ", "context"))
-        self.assertEqual(len(attempts), 3)
+        apply.assert_called_once()
+        self.assertEqual([m["node"]["id"] for m in apply.call_args.args[1]], ["source", "legacy"])
         self.assertEqual(trigger.await_args_list, [call(self.pid, identity, agent_node_id="context", plan=None)
                                                  for identity in ("source", "legacy")])
         self.assertEqual(result["tasks"], [{"node_id": "source", "task_id": "stub-one"},

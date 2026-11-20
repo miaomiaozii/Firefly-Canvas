@@ -78,9 +78,19 @@ MCP 端点对外暴露，外部会话具现为画布上的 Agent 节点。关联
   改挂在 pi REST 与 MCP 共用的服务端执行入口：`api_agent_tools._server_confirm_gate`
   （复用 `request_confirmation_core`），pi 写操作 URL 带 `?agent_node_id=` 指明归属节点。
 - 覆盖面：`DELETE /canvas/nodes`、`DELETE /canvas/edges`（新增）、edit_crop/rotate/flip/
-  outpaint/erase、`DELETE /media`——带 `X-Agent-Project` 头的请求一律过门；浏览器用户路径
-  （无该头）不进服务端门（前端 #347 ffDialog 已在发起侧确认）。MCP 侧 `canvas.disconnect`
-  同步入门。
+  outpaint/erase、`DELETE /media`——这些 Agent 工具写操作在服务端确认。MCP 侧
+  `canvas.disconnect` 同步入门。此修订原先允许同一 REST URL 的无头同源直写绕过确认，
+  **该兼容规则已由 #456 取代**；其余确认规则仍有效。
 - 确认等待超时 60s → 90s（`AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS` /
   `api_mcp.CONFIRM_TIMEOUT_SECONDS`）：写操作（含门等待）必须大于旧 60s 门槛。
 - 本 ADR 上文引用的行号（`:579-580`/`:530`）为撰写时快照，已随 #357 重构漂移。
+
+## 修订（#456）：Agent 工具写入 REST URL 专用
+
+- Agent 写入工具 URL 必须携带非空 `X-Agent-Project`；缺头或空白返回标准 Agent 错误
+  `400 INVALID_ARGUMENT`，不能绕过服务端确认、归属、记账或生成限额。该头是调用上下文，
+  不是鉴权凭据；同源和 Host 检查不变。
+- 覆盖节点、边、布局、参考图、媒体上传/删除、视口变更、生成触发、批量编辑和操作撤销。
+  批量提示词工具只在应用差异时要求该头，预览仍只读。
+- 浏览器的用户写入走 `/api/project-library/`，宿主控制走 `/agent-nodes/`；这些路径、
+  只读工具和 MCP 不改。`/agent/confirm` 是确认请求接口，不执行画布工具写入。

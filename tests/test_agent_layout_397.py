@@ -73,7 +73,8 @@ class LayoutTests(unittest.TestCase):
                                         **extra}, mcp=mcp)
 
     def undo(self, op_id):
-        return self.client.post(f"/api/projects/{self.pid}/ops/undo", json={"op_id": op_id}).json()
+        return self.client.post(f"/api/projects/{self.pid}/ops/undo", json={"op_id": op_id},
+                                headers={"X-Agent-Project": self.pid}).json()
 
     def test_main_and_a_plus_row_grid_visible_fit_and_atomic_undo(self):
         edge = {"id": "ab", "from": "a", "to": "b", "kind": "input"}
@@ -346,9 +347,14 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(self.request("group_create", {"title": "wrong"}, owner="a")["code"], "INVALID_ARGUMENT")
         self.assertEqual(self.request("create_node", {"node": {"type": "smart-group", "layoutFrame": True}}, mcp=True)["code"], "INVALID_ARGUMENT")
         self.assertEqual(self.request("update_node", {"node_id": "a", "updates": {"layoutFrame": True}}, mcp=True)["code"], "INVALID_ARGUMENT")
-        for method, route, payload in (("POST", "nodes", {"node": {"type": "smart-group", "layoutFrame": True}}),
-                                        ("PATCH", "nodes/a", {"layoutFrame": True})):
-            reply = self.client.request(method, f"/api/projects/{self.pid}/canvas/{route}", json=payload)
+        for method, route, payload in (
+            ("POST", "nodes", {"node": {"type": "smart-group", "layoutFrame": True}, "agent_node_id": "agent"}),
+            ("PATCH", "nodes/a?agent_node_id=agent", {"layoutFrame": True}),
+        ):
+            reply = self.client.request(method, f"/api/projects/{self.pid}/canvas/{route}", json=payload,
+                                        headers={"X-Agent-Project": self.pid})
             self.assertEqual(reply.status_code, 400, reply.text)
-            self.assertEqual(reply.json()["detail"]["code"], "INVALID_ARGUMENT")
+            detail = reply.json()["detail"]
+            self.assertEqual(detail["code"], "INVALID_ARGUMENT")
+            self.assertIn("layoutFrame", detail["message"])
         self.assertEqual(before, self.canvas())
