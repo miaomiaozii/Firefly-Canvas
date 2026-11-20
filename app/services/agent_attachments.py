@@ -10,6 +10,7 @@ from urllib.parse import unquote
 
 from fastapi import HTTPException, Request
 
+import firefly_json_io
 from app.services.agent_host import InvalidEventsCursor, validate_events_identifiers
 
 # Server-owned per-file limit, in bytes. Browsers use the 413 response as authority.
@@ -52,7 +53,9 @@ async def save_attachment(request: Request, root: Path) -> dict:
                     })
                 file.write(chunk)
         record = {"id": attachment_id, "name": name, "type": mime, "size": size, "file": content.name}
-        (folder / "metadata.json").write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+        # metadata.json 走原子写（staging + os.replace）：截断式写法在打开那一刻就清空旧文件，
+        # 写到一半断电这份附件的 sidecar 就归零了（#374 的同一类问题，sweep 测试抓到的漏网之鱼）。
+        firefly_json_io.write_json_atomic(folder / "metadata.json", record)
         return {key: value for key, value in record.items() if key != "file"} | {"path": str(content)}
     except BaseException:
         content.unlink(missing_ok=True)
