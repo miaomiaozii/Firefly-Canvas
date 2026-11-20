@@ -57,15 +57,11 @@ PARAM_REF_SOURCE = {
 
 VIEW_TIMEOUT_NOTE = "慢操作独立 90s 超时契约：客户端请求超时应设为 >= 90s"
 
-# #355 W1：canvas.update_node / REST PATCH /canvas/nodes/{id} 可更新字段白名单——
-# 两路共用同一份（update_node_core 强制）。故意不含：images、model、agentCli、
-# extSessionId、autonomy、chatFrameId、mcp_session 等会话/生成/绑定字段（票面点名）。
-# id/type/created_at 在 core 里另有身份保护（命中白名单外同样被拒）。
-# #355：update_node 可更新字段白名单（单一来源，REST/MCP 两路共用；白名单外 400）。
-# 不含 `items`：frame 成员列表由 frame/连边端点专管，开放给 update_node 会绕过
-# 成员一致性检查（review 01:08 口径：无正当理由，删）。
+# Host settings and bindings are not image runSettings. Frame items remain server-managed.
+from app.services.agent_image_settings import RUN_SETTINGS_PROPERTIES
+
 UPDATABLE_NODE_FIELDS = frozenset({
-    "title", "text", "prompt", "x", "y", "w", "h", "status",
+    "title", "text", "prompt", "x", "y", "w", "h", "status", "runSettings",
 })
 
 TOOLS = [
@@ -89,11 +85,12 @@ TOOLS = [
     }, "required": ["type"], "additionalProperties": False}},
     # #356 D11：平铺形状（node_id + 可更新字段）；旧 `updates` 自由对象 handler 兼容
     # 一版已弃用。#355 将在此条目落实字段白名单。
-    {"name": "canvas.update_node", "description": "更新节点属性（平铺字段：node_id + title/text/prompt 等可更新字段；旧 updates 自由对象已弃用）", "inputSchema": {"type": "object", "properties": {
+    {"name": "canvas.update_node", "description": "更新节点属性并返回 prev；runSettings 只合并指定的生图字段，仅可改未被人工编辑的自有 Agent 节点的生成参数", "inputSchema": {"type": "object", "properties": {
         "node_id": {"type": "string"},
         "title": {"type": "string", "description": "新标题"},
         "text": {"type": "string", "description": "新正文"},
         "prompt": {"type": "string", "description": "新提示词"},
+        "runSettings": {"type": "object", "properties": RUN_SETTINGS_PROPERTIES, "additionalProperties": False},
     }, "required": ["node_id"], "additionalProperties": False}},
     {"name": "canvas.delete_node", "description": "删除节点（破坏性：需画布确认门批准，阻塞最长 90s）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"], "additionalProperties": False}},
     # #356 D12：connect 统一平铺 from_node/to_node/kind；旧 edge 对象 handler 兼容一版。
@@ -148,7 +145,7 @@ TOOLS = [
     {"name": "canvas.edit_flip", "description": "镜像节点图像（horizontal 左右 / vertical 上下）并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 90s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "direction": {"type": "string", "enum": ["horizontal", "vertical"], "description": "horizontal=左右镜像，vertical=上下镜像"}}, "required": ["node_id", "direction"], "additionalProperties": False}},
     {"name": "canvas.edit_outpaint", "description": "复刻站内红底扩图链：扩大画布用高饱和红（#ff0044）填充、原图按 offset 贴回，覆写节点图（本地 PIL，不消耗外部生成；外区红底供 generate.trigger 重绘填充，不向模型发 mask——ADR 0007；写操作：需画布确认门批准，阻塞最长 90s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "outpaint_size": {"type": "object", "properties": {"width": {"type": "integer"}, "height": {"type": "integer"}}, "required": ["width", "height"], "additionalProperties": False, "description": "目标画布尺寸（像素；须大于原图像素）"}, "offset": {"type": "object", "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}}, "additionalProperties": False, "description": "原图在新画布中的位置（像素，默认 0,0 左上角）"}}, "required": ["node_id", "outpaint_size"], "additionalProperties": False}},
     {"name": "canvas.edit_erase", "description": "按 prompt 擦除节点图选区内容：裁出选区送 bailian 局部编辑模型（qwen-image-edit-max-2026-01-16）重绘后合成回节点图（消耗一次外部模型调用；不向模型发 mask——ADR 0007；写操作：需画布确认门批准，阻塞最长 90s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "rect": PARAM_RECT, "prompt": {"type": "string", "minLength": 1, "description": "描述要擦除什么、如何填充该区域"}}, "required": ["node_id", "rect", "prompt"], "additionalProperties": False}},
-    {"name": "generate.trigger", "description": "在节点上触发生成，立即返回 task_id（节点需已有 prompt）。#351：花钱工具走服务端确认门（阻塞最长 90s，autonomous 自动放行），每 agent 会话有生成次数上限（超限拒绝）；结果自动挂到源节点旁的结果节点并写入项目历史", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"], "additionalProperties": False}},
+    {"name": "generate.trigger", "description": "按节点保存的 runSettings 和 Agent input 连线生图，返回 task_id。按本次请求图片张数确认和计入会话额度（阻塞最长 90s，autonomous 自动放行）；结果写入项目历史", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"], "additionalProperties": False}},
     {"name": "generate.status", "description": "查询生成任务状态", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}}, "required": ["task_id"], "additionalProperties": False}},
     {"name": "generate.wait", "description": "等待生成任务完成。可阻塞数分钟：timeout_seconds 1..600（默认 120）；客户端请求超时必须设为 >= 600s（ADR 0022 超时契约）", "inputSchema": {"type": "object", "properties": {"task_id": {"type": "string"}, "timeout_seconds": {"type": "number", "description": "1..600，默认 120", "minimum": 1, "maximum": 600}}, "required": ["task_id"], "additionalProperties": False}},
     {"name": "media.upload", "description": "导入本机媒体文件到项目资源库（file_path 为服务器本机路径）", "inputSchema": {"type": "object", "properties": {"file_path": {"type": "string"}}, "required": ["file_path"], "additionalProperties": False}},

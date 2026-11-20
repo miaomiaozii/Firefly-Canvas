@@ -179,7 +179,7 @@ REVERSE_REFERENCE_CEILINGS = {
     # 新增对核心档位/尺寸层的引用 +4（2026-10-28 实测），走的是「核心调模块」既有方向，无新自由耦合。
     # smartVideoFallbackHtml/mediaDisplaySrc）从宿主上移到本模块，紧邻 smartMediaPreviewUrl 档位逻辑；
     # +1 可归因到这次搬迁（displayMediaUrl 经 canvasCore 接口），无自由新耦合。
-    "canvas-generation-tasks.js": 99,  # 103 -> 113（正则修正）-> 115 -> 116 -> 101：#236 即梦退役删
+    "canvas-generation-tasks.js": 98,  # #453: trf 下沉；#396: 复用已截断的参考图列表，引用 -1。
     # jimeng 发图/发视频/轮询/取回整块（-15 核心引用，2026-10-29 实测），棘轮随之收紧。
     # 101 -> 103：#237 stop≠error 中性终态在本模块新增 scheduleStateSave/scheduleSave/
     # render/trf 引用 +17，#236 合入后净 -15，结算 103（origin/main 实测 2026-10-29，
@@ -243,7 +243,7 @@ FREE_GLOBAL_REFERENCE_CEILINGS = {
     # 同上：2026-10-19 数值上调是修正测量，不是放宽。括号里是「旧（少算） -> 修正后」。
     "canvas-generation-cascade.js": 52,  # #201 接口化 147->42；正则修正 42->50（+8 个之前隐形的 async 名字）
     "canvas-media-history.js": 51,  # #201 接口化 83->36；正则修正 36->51；2026-10-28 实测 51->54（#260 Upscale 菜单）
-    "canvas-generation-tasks.js": 35,  # #199 轨道 1 接口化：自由侧 113->35（20 个共享名字 78 处改走 canvasCore 接口）；
+    "canvas-generation-tasks.js": 34,  # #396 reuses the capped reference list (-1); #199 轨道 1 接口化：自由侧 113->35。
     # 2026-10-28 实测：#254 新增 EACH_RUN_RESULT_GAP/expandEachRuns/runEachImageGeneration 顶层名（+3）
     # 与既有内联回收抵消后 34->35；#252 imeComposing 在 smart-canvas.js 自有作域。
     # #219：reducedAspectRatio 也改走 canvasCore 接口（35->34，接口 78->79）；源码契约按

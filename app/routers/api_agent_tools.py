@@ -9,6 +9,7 @@ import mimetypes
 import os
 import time
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -25,11 +26,11 @@ import os as _os
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK, ensure_agent_same_origin
 from app.constants import NODE_TYPE_AGENT, NODE_TYPE_GROUP
-from app.services import agent_frame, agent_refs
+from app.services import agent_frame, agent_image_settings, agent_refs
 from app.services.agent_errors import agent_error
 from app.services.agent_tools_manifest import UPDATABLE_NODE_FIELDS as _UPDATABLE_NODE_FIELDS
-from app.core import OnlineImageRequest, AIReference
-from app.services.misc import build_online_image_result
+from app.core import AIReference, ONLINE_IMAGE_REFERENCE_MAX, PROJECT_MEDIA_ADAPTER_PROJECT, ProjectImageGenerationRequest
+from app.services.misc import RoutedOnlineImageRequest, build_online_image_result
 from firefly_generation import ImageGenerationRequest, ModelRoutingError
 from firefly_projects import ProjectStoreError
 
@@ -840,19 +841,18 @@ async def canvas_edit_crop(project_id: str, request: Request, agent_node_id: str
 
 @router.post("/batch_edit")
 async def canvas_batch_edit(project_id: str, request: Request, x_agent_project: str = Header(default="")):
-    """#266 canvas.batch_edit（§59.3）：N 节点 + 一句 prompt = N 次生成（调既有生成通路，消耗生成任务）。
-    #351：agent 调用过确认门并按张数计会话限额。"""
-    body = await request.json()
-    node_ids = body.get("node_ids") or []
-    await _server_confirm_gate(request, project_id, "canvas.batch_edit", body,
-                               f"批量生成 {len(node_ids)} 个节点（消耗外部生成额度）")
-    if request.headers.get("X-Agent-Project", ""):
-        enforce_generation_limit(project_id, request.query_params.get("agent_node_id", ""),
-                                 count=max(1, len(node_ids)))
-    agent = _creation_context(request, request.query_params.get("agent_node_id", ""))
+    body = agent_refs.require_object(await request.json(), "batch_edit", required=("node_ids", "prompt"))
+    node_ids = body["node_ids"]
+    agent = _paid_rest_actor(request)
+    prompt, plans = await prepare_batch_generation(project_id, node_ids, body["prompt"])
+    count = sum(plan.request.count for plan in plans)
+    await _server_confirm_gate(request, project_id, "canvas.batch_edit", {"node_ids": node_ids, "prompt": prompt, "n": count},
+                               f"批量生成 {len(plans)} 个节点，共 {count} 张图片（消耗外部生成额度）")
+    if x_agent_project:
+        enforce_generation_limit(project_id, agent, count=count)
     return await _rest_agent_call(request, project_id, "canvas.batch_edit", body,
-                                  lambda: batch_edit_core(project_id, body.get("node_ids"), body.get("prompt"),
-                                                          agent_node_id=agent), agent)
+                                  lambda: batch_edit_core(project_id, node_ids, prompt,
+                                                          agent_node_id=agent, plans=plans), agent)
 
 
 @router.post("/edit_rotate")
@@ -1113,8 +1113,10 @@ async def update_node_core(project_id: str, node_id: str, updates: dict) -> dict
         if key in updates and (isinstance(updates[key], bool) or not isinstance(updates[key], (int, float))):
             raise agent_error(400, "INVALID_ARGUMENT", f"{key} must be a number",
                               f"{key} 需是数字；重新传入。")
+    run_patch = agent_image_settings.validate_patch(updates["runSettings"]) if "runSettings" in updates else None
     _validate_project(project_id)
     updated_at = _app_main.now_ms()
+    result = {"success": True, "node_id": node_id}
 
     def build(canvas):
         target_node = _snapshot_node(canvas, node_id)
@@ -1125,17 +1127,29 @@ async def update_node_core(project_id: str, node_id: str, updates: dict) -> dict
                               "会话框成员由服务端维护；不要改 items，用 canvas.create_node 在会话框内建节点。")
         from app.services.agent_ops_context import current_agent_ops_context
         from app.services.agent_ops_delta import _equal
-        context = current_agent_ops_context()
-        if (context and context.project_id == project_id and context.agent_node_id
-                and context.tool in _JOURNALED_TOOLS
-                and all(key in target_node and _equal(target_node[key], value)
-                        for key, value in updates.items())):
+        fields = {key: value for key, value in updates.items() if key != "runSettings"}
+        prev = {key: target_node.get(key) for key in fields}
+        if run_patch is not None:
+            stored = target_node.get("runSettings")
+            if stored is not None and not isinstance(stored, dict):
+                raise agent_image_settings.invalid("Saved runSettings is not an object")
+            merged, prev["runSettings"] = agent_image_settings.merge_patch(stored or {}, run_patch)
+            if not _equal(stored or {}, merged):
+                context = current_agent_ops_context()
+                owner = target_node.get("agentNodeId")
+                if (target_node.get("createdBy") != "agent" or not owner or
+                        target_node.get("userTouchedAt") is not None or
+                        (context and context.agent_node_id != owner)):
+                    raise agent_error(403, "NOT_ALLOWED_ON_USER_NODE", "Agent cannot overwrite user generation settings",
+                                      "请用户在节点参数面板修改设置，或改用未被人工编辑的自有节点。")
+                fields["runSettings"] = merged
+        result["prev"] = prev
+        if all(key in target_node and _equal(target_node[key], value) for key, value in fields.items()):
             return []
-        patched = {**target_node, **updates, "updated_at": updated_at}
-        return [{"op": "upsert_node", "node": patched}]
+        return [{"op": "upsert_node", "node": {**target_node, **fields, "updated_at": updated_at}}]
 
     await _apply_mutations_from_snapshot(project_id, build)
-    return _op_result({"success": True, "node_id": node_id})
+    return _op_result(result)
 
 
 async def create_edge_core(project_id: str, edge: dict) -> dict:
@@ -1161,7 +1175,7 @@ async def create_edge_core(project_id: str, edge: dict) -> dict:
 # Generate tools
 # =============================================================================
 
-# #351：花钱生成类工具每 agent 会话限额（generate.trigger 计 1，batch_edit 计张数）。
+# #351: session quota is in requested images, not task count.
 # 内存计数，键 (project_id, agent_node_id)；节点删除/会话 drop 时清理。
 GENERATION_SESSION_LIMIT = int(os.environ.get("FIREFLY_AGENT_GENERATION_LIMIT", "20"))
 _GENERATION_COUNTS: dict = {}
@@ -1193,18 +1207,24 @@ def reset_generation_counts(project_id: str, agent_node_id: str = "") -> None:
 
 @generate_router.post("/trigger")
 async def trigger_generation(project_id: str, request: Request, x_agent_project: str = Header(default="")):
-    """Trigger generation on a node, returns task ID.
-    #351：agent 调用（带 X-Agent-Project）先过服务端确认门 + 会话限额；
-    浏览器用户路径不进本门（用户主动点击，由前端发起）。"""
-    body = await request.json()
-    await _server_confirm_gate(request, project_id, "generate.trigger",
-                               body, f"节点 {body.get('node_id', '')} 生成图片（消耗外部生成额度）")
-    if request.headers.get("X-Agent-Project", ""):
-        enforce_generation_limit(project_id, request.query_params.get("agent_node_id", ""),
-                                 count=max(1, int(body.get("n") or 1)))
-    agent = _creation_context(request, request.query_params.get("agent_node_id", ""))
+    body = agent_refs.require_object(await request.json(), "generate.trigger", required=("node_id",))
+    agent = _paid_rest_actor(request)
+    node_id = body["node_id"]
+    plan = await prepare_generation(project_id, node_id)
+    count = plan.request.count
+    await _server_confirm_gate(request, project_id, "generate.trigger", {"node_id": node_id, "n": count},
+                               f"节点 {node_id} 生成 {count} 张图片（消耗外部生成额度）")
+    if x_agent_project:
+        enforce_generation_limit(project_id, agent, count=count)
     return await _rest_agent_call(request, project_id, "generate.trigger", body,
-                                  lambda: trigger_generation_core(project_id, body.get("node_id"), agent_node_id=agent), agent)
+                                  lambda: trigger_generation_core(project_id, node_id, agent_node_id=agent, plan=plan), agent)
+
+
+def _paid_rest_actor(request):
+    actor = request.query_params.get("agent_node_id", "")
+    if request.headers.get("X-Agent-Project") and not actor:
+        raise agent_error(400, "CONFIRM_MISSING_NODE_ID", "agent_node_id is required for confirmation")
+    return _creation_context(request, actor)
 
 
 def _batch_register_reserved(journal, project_id, record, delta):
@@ -1409,75 +1429,72 @@ def _schedule_generation_worker(create_task, *args, pre_cancel=False):
     return _track_lifetime_task(task)
 
 
-async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: str = "") -> dict:
-    """Trigger generation on a node, returns task ID (Request-free core)."""
+@dataclass(frozen=True)
+class _PreparedGeneration:
+    request: ImageGenerationRequest
+    payload: RoutedOnlineImageRequest
+    node_type: str
+    original_prompt: tuple
+
+
+def _node_prompt_fields(node):
+    return node.get("prompt"), node.get("text"), node.get("promptEditedByUser")
+
+
+async def prepare_generation(project_id, node_id, *, canvas=None, prompt_override=None):
+    from app.routers.api_project_library import project_image_executed_prompt, project_image_request
+
     _validate_project(project_id)
-    creation = ownership_fields(agent_node_id)
-    if not node_id:
-        raise agent_error(400, "INVALID_ARGUMENT", "node_id is required",
-                          "先调用 canvas.list_nodes 获取节点 ID。")
-
-    target_node = _find_node(project_id, node_id)
-
-    node_type = str(target_node.get("type", ""))
-    prompt = str(target_node.get("prompt", "") or target_node.get("text", ""))
+    agent_refs.identifier(node_id, "node_id")
+    if canvas is None:
+        canvas = _app_main.FIREFLY_PROJECT_STORE.canvas(project_id)
+    node = _snapshot_node(canvas, node_id)
+    prompt = prompt_override if prompt_override is not None else str(node.get("prompt") or node.get("text") or "").strip()
     if not prompt:
         raise agent_error(400, "NODE_NOT_GENERATABLE", f"Node {node_id} has no prompt",
-                          "先给节点写 prompt（canvas.update_node 或连提示词节点），再触发生成。")
-
-    # Route through model routing (ADR 0006): the router picks provider + model
-    # from the node's generation parameters; no hardcoded provider/size.
-    reference_asset_ids = [str(a) for a in (target_node.get("reference_asset_ids") or [])]
-    gen_request = ImageGenerationRequest(
-        prompt=prompt,
-        size=str(target_node.get("generation_size") or "1024x1024"),
-        width=target_node.get("width"),
-        height=target_node.get("height"),
-        aspect_ratio=str(target_node.get("aspect_ratio") or "1:1"),
-        resolution=str(target_node.get("generation_resolution") or "1k"),
-        reference_asset_ids=tuple(reference_asset_ids),
-        media_type="image",
-        quality="auto",
-        count=1,
-    )
+                          "先给节点写 prompt，再触发生成。")
+    refs = agent_refs.generation_refs(canvas, node_id, ONLINE_IMAGE_REFERENCE_MAX)
+    providers = _app_main.load_api_providers()
     try:
-        route = _app_main.route_image_generation(
-            gen_request, _app_main.load_api_providers(), provider_id="", model=""
+        wire = ProjectImageGenerationRequest(
+            **agent_image_settings.image_settings(node, canvas, providers, _app_main.model_spec_for),
+            prompt=prompt,
+            reference_asset_ids=[ref['asset_id'] for ref in refs],
+            reference_roles=[ref['role'] for ref in refs],
+            result_node_id=node_id, base_revision=canvas.get("revision", 0),
+        )
+        request = project_image_request(wire)
+        route = _app_main.route_image_generation(request, providers, provider_id=wire.provider_id, model=wire.model)
+        executed_prompt = project_image_executed_prompt(wire)
+        payload = RoutedOnlineImageRequest(
+            prompt=executed_prompt, provider_id=route.provider_id, model=route.model, size=wire.size,
+            quality=request.quality, n=request.count,
+            image_parameters={"width": request.width, "height": request.height, "aspect_ratio": request.aspect_ratio,
+                              "resolution": request.resolution, "media_type": request.media_type, "output_format": wire.output_format},
         )
     except ModelRoutingError as exc:
         raise agent_error(400, "INVALID_ARGUMENT", exc.to_dict()["message"],
                           "换一个可用的 provider/model 或调整参数后重试。",
                           details={"routing": exc.to_dict()}) from exc
-
-    # Convert reference asset IDs to image references for the provider call.
-    reference_images = []
-    if reference_asset_ids:
+    except ValueError as exc:
+        raise agent_image_settings.invalid(str(exc)) from exc
+    if wire.reference_asset_ids:
         try:
-            ref_records = await asyncio.to_thread(
-                _app_main.project_image_references, project_id, reference_asset_ids
-            )
-        except Exception as exc:
+            ref_records = await asyncio.to_thread(_app_main.project_image_references, project_id, wire.reference_asset_ids)
+        except ProjectStoreError as exc:
             raise agent_error(400, "ASSET_NOT_FOUND", str(exc),
                               "参考图资产不可用；先调用 media.list 确认 asset id。") from exc
-        reference_images = [
-            AIReference(
-                url=str(r.get("url") or ""),
-                name=str(r.get("name") or ""),
-                kind=str(r.get("kind") or "image"),
-                mime=str(r.get("mime") or "image/png"),
-            )
-            for r in ref_records
-        ]
+        payload.reference_images = [AIReference(**ref) for ref in ref_records]
+    return _PreparedGeneration(request, payload, str(node.get("type", "")), _node_prompt_fields(node))
 
-    payload = {
-        "prompt": prompt,
-        "provider_id": route.provider_id,
-        "model": route.model,
-        "size": gen_request.size,
-        "quality": "auto",
-        "n": 1,
-        "reference_images": reference_images,
-    }
+
+async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: str = "", *, plan=None) -> dict:
+    if plan is None:
+        plan = await prepare_generation(project_id, node_id)
+    creation = ownership_fields(agent_node_id)
+    payload = plan.payload
+    prompt = plan.request.prompt
+    node_type = plan.node_type
 
     task_id = f"agent_img_{uuid.uuid4().hex}"
     result_node_id = f"node-{uuid.uuid4().hex[:12]}"
@@ -1579,8 +1596,8 @@ async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: 
                     _generation_mutation(store, project_id, context, task_id, guarded, create_result)
                 _generation_child(store, project_id, context, task_id, guarded,
                     lambda: store.begin_image_generation(project_id, result_node_id,
-                        {"taskId": task_id, "count": 1, "providerId": route.provider_id,
-                         "model": route.model, "prompt": prompt},
+                        {"taskId": task_id, "count": payload.n, "providerId": payload.provider_id,
+                         "model": payload.model, "prompt": prompt},
                         base_revision=store.canvas(project_id)["revision"]))
                 started = True
             except BaseException as exc:
@@ -1643,8 +1660,8 @@ async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: 
             rev = int(store.canvas(project_id).get("revision") or 0)
             await run_blocking_to_completion(
                 store.begin_image_generation, project_id, result_node_id,
-                {"taskId": task_id, "count": 1, "providerId": route.provider_id,
-                 "model": route.model, "prompt": prompt}, base_revision=rev)
+                {"taskId": task_id, "count": payload.n, "providerId": payload.provider_id,
+                 "model": payload.model, "prompt": prompt}, base_revision=rev)
             await run_blocking_to_completion(store.flush, project_id)
         except (OSError, ProjectStoreError) as exc:
             from app.core import logger as _logger
@@ -1704,7 +1721,7 @@ async def wait_for_task_core(project_id: str, task_id: str, timeout: int = 120) 
 
 
 async def _run_agent_generation(task_id: str, project_id: str, node_id: str,
-                                result_node_id: str, payload: dict, context=None, guarded=None, lifecycle=None,
+                                result_node_id: str, payload: RoutedOnlineImageRequest, context=None, guarded=None, lifecycle=None,
                                 *, pre_cancel=False):
     """Run generation in the background and update task status.
 
@@ -1725,7 +1742,11 @@ async def _run_agent_generation(task_id: str, project_id: str, node_id: str,
         if context:
             await run_blocking_to_completion(_generation_child, store, project_id, context, task_id, guarded,
                                              lambda: None, effects=("external image generation attempted",))
-        result = await build_online_image_result(OnlineImageRequest(**payload))
+        scope = PROJECT_MEDIA_ADAPTER_PROJECT.set(project_id)
+        try:
+            result = await build_online_image_result(payload)
+        finally:
+            PROJECT_MEDIA_ADAPTER_PROJECT.reset(scope)
         from app.services import archive_project_generated_image as archive
         items = []
         for idx, raw_item in enumerate(result.get("image_items") or []):
@@ -1750,7 +1771,7 @@ async def _run_agent_generation(task_id: str, project_id: str, node_id: str,
             "task_id": task_id,
             "type": "online-image",
             "status": "succeeded",
-            "prompt": payload.get("prompt", ""),
+            "prompt": payload.prompt,
             "created_at": started_at,
             "createdAt": started_at,
             "completed_at": timestamp,
@@ -1759,7 +1780,7 @@ async def _run_agent_generation(task_id: str, project_id: str, node_id: str,
             "actual_provider_name": result.get("provider_name", ""),
             "actual_model": result.get("model", ""),
             "model": result.get("model", ""),
-            "params": payload.get("params") or {},
+            "params": {**payload.image_parameters, "n": payload.n, "size": payload.size, "quality": payload.quality},
             "outputs": [{"asset_id": it["asset_id"], "kind": "image"} for it in items],
             "result_node_id": result_node_id,
             "source_node_id": node_id,
@@ -1829,7 +1850,7 @@ async def _run_agent_generation(task_id: str, project_id: str, node_id: str,
                 "task_id": task_id,
                 "type": "online-image",
                 "status": "failed",
-                "prompt": payload.get("prompt", ""),
+                "prompt": payload.prompt,
                 "created_at": started_at,
                 "createdAt": started_at,
                 "completed_at": failure_time,
@@ -1880,7 +1901,7 @@ async def _run_agent_generation(task_id: str, project_id: str, node_id: str,
                                       if isinstance(item, dict))
                         if pending:
                             failure = {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id,
-                                       'type': 'online-image', 'status': 'failed', 'prompt': payload.get('prompt', ''),
+                                       'type': 'online-image', 'status': 'failed', 'prompt': payload.prompt,
                                        'created_at': started_at, 'completed_at': _app_main.now_ms(), 'outputs': [],
                                        'result_node_id': result_node_id, 'source_node_id': node_id,
                                        'error': 'Generation cleanup required'}
@@ -2700,9 +2721,7 @@ async def _replace_node_image_impl(project_id: str, node: dict, node_id: str, pi
     return result
 
 
-async def batch_edit_core(project_id: str, node_ids, prompt, agent_node_id: str = "") -> dict:
-    """Write the prompt and start one generation per node."""
-    _validate_project(project_id)
+def _batch_prompt(node_ids, prompt):
     if not isinstance(node_ids, list) or not node_ids or not all(isinstance(n, str) and n for n in node_ids):
         raise agent_error(400, "INVALID_ARGUMENT", "node_ids 必须是非空节点 ID 数组",
                           "先调用 canvas.list_nodes 获取节点 ID。")
@@ -2714,6 +2733,20 @@ async def batch_edit_core(project_id: str, node_ids, prompt, agent_node_id: str 
     if not prompt:
         raise agent_error(400, "INVALID_ARGUMENT", "prompt 必须是非空字符串",
                           "请填写批量 prompt 后重试。")
+    return prompt
+
+
+async def prepare_batch_generation(project_id, node_ids, prompt):
+    _validate_project(project_id)
+    prompt = _batch_prompt(node_ids, prompt)
+    canvas = _app_main.FIREFLY_PROJECT_STORE.canvas(project_id)
+    plans = [await prepare_generation(project_id, node_id, canvas=canvas, prompt_override=prompt) for node_id in node_ids]
+    return prompt, tuple(plans)
+
+
+async def batch_edit_core(project_id: str, node_ids, prompt, agent_node_id: str = "", *, plans=None) -> dict:
+    _validate_project(project_id)
+    prompt = _batch_prompt(node_ids, prompt)
     from app.services.agent_ops_context import current_agent_ops_context
     from app.services.agent_ops_async import run_blocking_to_completion
     context = current_agent_ops_context()
@@ -2730,13 +2763,17 @@ async def batch_edit_core(project_id: str, node_ids, prompt, agent_node_id: str 
     token = _BATCH_GENERATION.set(batch)
     guarded = set()
     try:
-        for node_id in node_ids:
+        for index, node_id in enumerate(node_ids):
+            plan = plans[index] if plans is not None else None
             updated_at = _app_main.now_ms()
 
             def build(canvas):
                 node = _snapshot_node(canvas, node_id)
-                if context and node.get("prompt") == prompt:
+                if node.get("prompt") == prompt:
                     return []
+                if plan and _node_prompt_fields(node) != plan.original_prompt:
+                    raise agent_error(409, "CANVAS_CONFLICT", "Batch source prompt changed before write",
+                                      "检查最新提示词后重新预览；不要盲目重试。")
                 return [{"op": "upsert_node", "node": {**node, "prompt": prompt, "updated_at": updated_at}}]
 
             if context:
@@ -2763,7 +2800,7 @@ async def batch_edit_core(project_id: str, node_ids, prompt, agent_node_id: str 
                         await _media_end(project_id, *lifecycle)
             else:
                 await _apply_mutations_from_snapshot(project_id, build)
-            triggered = await trigger_generation_core(project_id, node_id, agent_node_id=agent_node_id)
+            triggered = await trigger_generation_core(project_id, node_id, agent_node_id=agent_node_id, plan=plan)
             if not context:
                 tasks.append({"node_id": node_id, "task_id": str(triggered.get("task_id") or "")})
         result = {"success": True, "count": len(tasks), "prompt": prompt, "tasks": tasks}

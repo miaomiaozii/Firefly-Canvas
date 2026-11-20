@@ -117,28 +117,46 @@ def apimart_video_reference_error(value: str) -> str:
         return 'APIMart 的 video_urls 不支持 data/blob/file 地址；请改用公网 http/https 视频 URL，或审核后的 asset:// 地址。'
     return 'APIMart 的 video_urls 只支持公网 http/https URL 或 asset:// 私域素材 URL。'
 
+class RoutedOnlineImageRequest(OnlineImageRequest):
+    """Internal adapter input after project routing; not a public request schema."""
+    image_parameters: dict
+
+
+async def run_routed_image_candidate(provider_id, model, prompt, size, quality, references,
+                                     image_parameters, **kwargs):
+    return await _svc._main('run_provider_generation_with_backoff')(
+        provider_id, _svc._main('generate_ai_image'), prompt, size, quality, model,
+        references, provider_id, preserve_model=True, image_parameters=image_parameters, **kwargs,
+    )
+
+
 async def build_online_image_result(payload: OnlineImageRequest):
     require_online_image_project_media_scope(payload)
-    # #381（接 #349）：这里以前用会静默换服务商的 get_api_provider——前端存着已删的平台时，
-    # 出图的其实是主服务商。新建请求允许没指定（按主平台走，记日志），但不允许认不出还继续。
+    routed = isinstance(payload, RoutedOnlineImageRequest)
     provider = _svc._main('get_api_provider_required')(payload.provider_id)
     default_model = (provider.get('image_models') or [IMAGE_MODEL])[0]
-    model = selected_model(payload.model, default_model)
-    request_size = snap_size_to_multiple(payload.size, 16)
-    refs = [ref.dict() for ref in payload.reference_images if ref.url]
+    model = payload.model if routed else selected_model(payload.model, default_model)
+    request_size = payload.size if routed else snap_size_to_multiple(payload.size, 16)
+    refs = [ref.model_dump() for ref in payload.reference_images if ref.url]
     image_refs = image_references(refs)
     count = max(1, min(8, int(payload.n or 1)))
 
     async def generate_one():
-        # #41: 受控并发 + 429 退避（共享 helper）。#40 的全串行 Semaphore(1) 会让
-        # count=8 变成「间隔很久一张一张传」，这里恢复并发连发。
-        image_data, raw_item = await _svc._main('run_provider_generation_with_backoff')(
-            provider['id'], _svc._main('generate_ai_image'),
-            payload.prompt, request_size, payload.quality, model, image_refs, provider['id'],
-        )
+        if routed:
+            image_data, raw_item = await run_routed_image_candidate(
+                provider['id'], model, payload.prompt, request_size, payload.quality,
+                image_refs, payload.image_parameters,
+            )
+        else:
+            image_data, raw_item = await _svc._main('run_provider_generation_with_backoff')(
+                provider['id'], _svc._main('generate_ai_image'),
+                payload.prompt, request_size, payload.quality, model, image_refs, provider['id'],
+            )
         try:
             image_items = extract_images(raw_item) if isinstance(raw_item, dict) else [image_data]
         except HTTPException:
+            image_items = [image_data]
+        if routed and not image_items:
             image_items = [image_data]
         local_urls = []
         local_items = []
@@ -149,7 +167,17 @@ async def build_online_image_result(payload: OnlineImageRequest):
                 local_items.append(_svc.image_output_meta(local_url, item))
         return (local_urls, local_items, raw_item)
     try:
-        generated = await asyncio.gather(*(generate_one() for _ in range(count)))
+        if routed:
+            # Drain admitted candidates before the Agent journal releases its running guard.
+            results = await asyncio.wait_for(
+                asyncio.gather(*(generate_one() for _ in range(count)), return_exceptions=True),
+                timeout=image_generation_task_timeout_seconds(),
+            )
+            generated = [item for item in results if not isinstance(item, BaseException)]
+            if not generated:
+                raise results[0]
+        else:
+            generated = await asyncio.gather(*(generate_one() for _ in range(count)))
     except httpx.HTTPStatusError as exc:
         log_net_error(f"生图 HTTP状态错误 provider={provider.get('id')} model={model} size={request_size}", exc)
         text = exc.response.text or ''
@@ -167,9 +195,10 @@ async def build_online_image_result(payload: OnlineImageRequest):
         raw_text = json.dumps(raw, ensure_ascii=False)[:800] if isinstance(raw, (dict, list)) else str(raw)[:800]
         raise HTTPException(status_code=502, detail=f'{provider_name} 没有返回图片：{raw_text}')
     result = {'prompt': payload.prompt, 'images': local_urls, 'image_items': local_items, 'timestamp': time.time(), 'type': 'online', 'model': model, 'provider_id': provider['id'], 'provider_name': provider.get('name') or provider['id'], 'task_id': extract_task_id(raw) if isinstance(raw, dict) else None, 'request_id': raw.get('id') if isinstance(raw, dict) else None, 'params': {'provider_id': provider['id'], 'model': model, 'size': request_size, 'requested_size': payload.size, 'quality': payload.quality, 'n': count, 'reference_images': refs}, 'raw_usage': raw.get('usage') if isinstance(raw, dict) else None}
-    _svc.save_to_history(result)
-    if GLOBAL_LOOP:
-        asyncio.run_coroutine_threadsafe(_svc._main('manager').broadcast_new_image(result), GLOBAL_LOOP)
+    if not routed:
+        _svc.save_to_history(result)
+        if GLOBAL_LOOP:
+            asyncio.run_coroutine_threadsafe(_svc._main('manager').broadcast_new_image(result), GLOBAL_LOOP)
     return result
 
 def project_video_references(project_id: str, asset_ids: List[str], kind: str) -> List[Dict[str, Any]]:

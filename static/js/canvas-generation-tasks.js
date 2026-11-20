@@ -174,12 +174,16 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
         const size = sendsExplicitSize ? sizeForRun(runSettings) : '';
         const parsed = sendsExplicitSize ? canvasCore.parseSizeValue(size) : null;
         if(sendsExplicitSize && !parsed) throw new Error(tr('smart.imageSizeInvalid'));
-        const ownedRefs = await Promise.all(imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX).map(canvasCore.importProjectMediaReference));
+        const imageRefs = imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX);
+        const ownedRefs = await Promise.all(imageRefs.map(canvasCore.importProjectMediaReference));
         const reference_asset_ids = ownedRefs.filter(Boolean).map(item => item.asset_id).filter(Boolean);
-        if(reference_asset_ids.length !== imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX).length) throw new Error(tr('smart.refsNotInProject'));
+        if(reference_asset_ids.length !== imageRefs.length) throw new Error(tr('smart.refsNotInProject'));
+        // Send positions in the actual upload list; Agent and browser share server prompt formatting (#396).
+        const roles = imageRefs.map(ref => ref.agentRefRole || null);
         const projectId = canvas.project_id || canvas.project || canvasCore.canvasId;
         const payload = {
             prompt,
+            ...(roles.some(Boolean) ? {reference_roles:roles} : {}),
             routing_mode:runSettings.routingMode === 'manual' ? 'manual' : 'auto',
             provider_id:runSettings.routingMode === 'manual' ? (runSettings.provider_id || '') : '',
             model:runSettings.routingMode === 'manual' ? (runSettings.model || '') : '',

@@ -1154,6 +1154,8 @@ class ProjectImageGenerationRequest(BaseModel):
     output_format: str = Field(default='', max_length=16)
     n: int = 1
     reference_asset_ids: List[str] = Field(default_factory=list)
+    # A browser run has already applied exclusions and @ mentions. Roles index that immutable upload list.
+    reference_roles: List[Optional[str]] = Field(default_factory=list, max_length=ONLINE_IMAGE_REFERENCE_MAX)
     media_type: str = 'image'
     result_node_id: str = Field(min_length=1, max_length=200)
     angle_preset: str = 'none'

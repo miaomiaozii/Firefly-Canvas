@@ -163,6 +163,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         self.assertIsNone(main.PROJECT_MEDIA_ADAPTER_PROJECT.get())
         self.assertEqual(call.kwargs["image_parameters"], {
             "width": 3840, "height": 1648, "aspect_ratio": "21:9", "resolution": "4k", "media_type": "image",
+            "output_format": "",
         })
         self.assertTrue(call.kwargs["preserve_model"])
         self.assertIn("后侧四分之三", call.args[0])

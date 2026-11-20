@@ -366,7 +366,9 @@ async def _impl_update_node(project_id, agent_node_id, args):
     # #356 D11：平铺字段为主；旧 `updates` 自由对象兼容一版（已弃用）。
     updates = args.get("updates")
     if not isinstance(updates, dict) or not updates:
-        updates = {k: v for k, v in args.items() if k != "node_id" and v is not None}
+        updates = {k: v for k, v in args.items() if k != "node_id" and (v is not None or k == "runSettings")}
+    elif "runSettings" in args:
+        raise HTTPException(400, "Do not mix flat runSettings with the legacy updates object")
     updates = {**updates, **{key: args[key] for key in ownership_fields() if key in args}}
     return await update_node_core(project_id, str(args.get("node_id") or ""), updates)
 
@@ -423,20 +425,16 @@ async def _impl_search_projects(project_id, agent_node_id, args):
 
 
 async def _impl_trigger(project_id, agent_node_id, args):
-    # #351：花钱工具走服务端确认门（cautious/默认必确认；autonomous 自动放行，
-    # SAFETY_FLOOR 不含 generate——用户拍板「按自主级别走门」）+ 会话生成限额。
-    await _confirm_gate(project_id, agent_node_id, "generate.trigger", args,
-                        f"节点 {args.get('node_id', '')} 生成图片（消耗外部生成额度）")
-    try:
-        from app.routers.api_agent_tools import enforce_generation_limit
-        enforce_generation_limit(project_id, agent_node_id, count=1)
-    except HTTPException:
-        raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
-    try:
-        return await trigger_generation_core(project_id, str(args.get("node_id") or ""),
-                                             agent_node_id=agent_node_id or "")
-    except HTTPException:
-        raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
+    from app.routers.api_agent_tools import enforce_generation_limit, prepare_generation
+    from app.services.agent_refs import require_object
+    require_object(args, "generate.trigger", required=("node_id",))
+    node_id = args["node_id"]
+    plan = await prepare_generation(project_id, node_id)
+    count = plan.request.count
+    await _confirm_gate(project_id, agent_node_id, "generate.trigger", {"node_id": node_id, "n": count},
+                        f"节点 {node_id} 生成 {count} 张图片（消耗外部生成额度）")
+    enforce_generation_limit(project_id, agent_node_id, count=count)
+    return await trigger_generation_core(project_id, node_id, agent_node_id=agent_node_id or "", plan=plan)
 
 
 async def _impl_status(project_id, agent_node_id, args):
@@ -504,18 +502,16 @@ async def _impl_edit_crop(project_id, agent_node_id, args):
 
 
 async def _impl_batch_edit(project_id, agent_node_id, args):
-    # #266 §59.3：N 节点 + 一句 prompt = N 次生成（调既有生成通路）。
-    # #351：改走确认门 + 按张数计会话生成限额（旧注释「不走门」作废）。
-    node_ids = args.get("node_ids") or []
-    await _confirm_gate(project_id, agent_node_id, "canvas.batch_edit", args,
-                        f"批量生成 {len(node_ids)} 个节点（消耗外部生成额度）")
-    try:
-        from app.routers.api_agent_tools import enforce_generation_limit
-        enforce_generation_limit(project_id, agent_node_id, count=max(1, len(node_ids)))
-        return await batch_edit_core(project_id, args.get("node_ids"), args.get("prompt"),
-                                     agent_node_id=agent_node_id or "")
-    except HTTPException:
-        raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
+    from app.routers.api_agent_tools import enforce_generation_limit, prepare_batch_generation
+    from app.services.agent_refs import require_object
+    require_object(args, "batch_edit", required=("node_ids", "prompt"))
+    node_ids = args["node_ids"]
+    prompt, plans = await prepare_batch_generation(project_id, node_ids, args["prompt"])
+    count = sum(plan.request.count for plan in plans)
+    await _confirm_gate(project_id, agent_node_id, "canvas.batch_edit", {"node_ids": node_ids, "prompt": prompt, "n": count},
+                        f"批量生成 {len(plans)} 个节点，共 {count} 张图片（消耗外部生成额度）")
+    enforce_generation_limit(project_id, agent_node_id, count=count)
+    return await batch_edit_core(project_id, node_ids, prompt, agent_node_id=agent_node_id or "", plans=plans)
 
 
 async def _impl_edit_rotate(project_id, agent_node_id, args):

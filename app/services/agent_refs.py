@@ -85,11 +85,34 @@ def numbered_refs(edges):
     return refs
 
 
+def role_prefix(roles):
+    labels = [f"图{n}：{ROLES.get(role, ROLES['general'])}" for n, role in enumerate(roles, 1) if role is not None]
+    return "参考图说明：" + "；".join(labels) + "。" if labels else ""
+
+
+def with_role_prefix(prompt, roles):
+    prefix = role_prefix(roles)
+    return f"{prefix}\n\n{prompt}" if prefix else prompt
+
+
+def generation_refs(canvas, target, limit):
+    node_ids = {node.get("id") for node in canvas.get("nodes", []) if isinstance(node, dict)}
+    edges = [edge for edge in managed_edges(canvas, target)
+             if isinstance(edge.get("from"), str) and edge["from"] in node_ids]
+    refs, seen = [], set()
+    for ref in numbered_refs(edges):
+        if ref["enabled"] and ref["asset_id"] not in seen:
+            seen.add(ref["asset_id"])
+            refs.append({**ref, "n": len(refs) + 1})
+            if len(refs) == limit:
+                break
+    return refs
+
+
 def ref_result(edges):
     refs = numbered_refs(edges)
-    labels = [f"图{ref['n']}：{ROLES[ref['role']]}" for ref in refs if ref["enabled"]]
-    return {"refs": refs, "prefix_preview": ("参考图说明：" + "；".join(labels) + "。") if labels else "",
-            "warnings": ["REFS_MANY"] if len(labels) > 8 else []}
+    return {"refs": refs, "prefix_preview": role_prefix(ref["role"] for ref in refs if ref["enabled"]),
+            "warnings": ["REFS_MANY"] if sum(ref["enabled"] for ref in refs) > 8 else []}
 
 
 def _role(value):

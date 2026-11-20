@@ -305,9 +305,12 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
     def test_default_reference_images_never_include_own_history_output(self):
         self.assertNotIn("const self = selfReferenceImagesForNode(node, consume, ctx).filter(img => img?.url);", self.source)
         self.assertNotIn("if(self.length) return uniqueReferenceImages([...self, ...upstream, ...manual]);", self.source)
-        self.assertIn("const upstream = (smartImageUsesWorkflowInput(node, ctx) ? workflowInputImagesFor(node, consume, ctx) : inputImagesFor(node, consume, ctx))", self.source)
-        self.assertIn("const manual = manualReferenceImagesFor(node);", self.source)
-        self.assertIn("return uniqueReferenceImages([...upstream, ...manual]);", self.source)
+        candidates = self.source.split("function referenceCandidatesFor(", 1)[1].split("\n}", 1)[0]
+        self.assertIn("smartImageUsesWorkflowInput(node, ctx) ? workflowInputImagesFor(node, consume, ctx) : inputImagesFor(node, consume, ctx)", candidates)
+        self.assertIn("...manualReferenceImagesFor(node)", candidates)
+        self.assertNotIn("selfReferenceImagesForNode", candidates)
+        defaults = self.source.split("function defaultReferenceImagesFor(", 1)[1].split("\n}", 1)[0]
+        self.assertIn("uniqueReferenceImages(referenceCandidatesFor(node, consume, ctx)", defaults)
 
     def test_history_uses_provider_friendly_model_name_and_preserves_raw_id(self):
         self.assertIn("function historyLogModelMeta(log){", self.source)

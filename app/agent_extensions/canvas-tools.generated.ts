@@ -38,8 +38,8 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     },
     {
         name: "canvas.update_node",
-        description: "更新节点属性（平铺字段：node_id + title/text/prompt 等可更新字段；旧 updates 自由对象已弃用）。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
-        parameters: Type.Object({ node_id: Type.String(), title: Type.Optional(Type.String({description: "新标题"})), text: Type.Optional(Type.String({description: "新正文"})), prompt: Type.Optional(Type.String({description: "新提示词"})) }),
+        description: "更新节点属性并返回 prev；runSettings 只合并指定的生图字段，仅可改未被人工编辑的自有 Agent 节点的生成参数。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        parameters: Type.Object({ node_id: Type.String(), title: Type.Optional(Type.String({description: "新标题"})), text: Type.Optional(Type.String({description: "新正文"})), prompt: Type.Optional(Type.String({description: "新提示词"})), runSettings: Type.Optional(Type.Object({ model: Type.Optional(Type.String()), provider_id: Type.Optional(Type.String()), aspect_ratio: Type.Optional(Type.String({description: "宽高比，例如 16:9"})), count: Type.Optional(Type.Integer({minimum: 1, maximum: 8})), routingMode: Type.Optional(Type.Union([Type.Literal("auto"), Type.Literal("manual")])) })) }),
     },
     {
         name: "canvas.delete_node",
@@ -118,7 +118,7 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     },
     {
         name: "generate.trigger",
-        description: "在节点上触发生成，立即返回 task_id（节点需已有 prompt）。#351：花钱工具走服务端确认门（阻塞最长 90s，autonomous 自动放行），每 agent 会话有生成次数上限（超限拒绝）；结果自动挂到源节点旁的结果节点并写入项目历史。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        description: "按节点保存的 runSettings 和 Agent input 连线生图，返回 task_id。按本次请求图片张数确认和计入会话额度（阻塞最长 90s，autonomous 自动放行）；结果写入项目历史。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
         parameters: Type.Object({ node_id: Type.String() }),
     },
     {

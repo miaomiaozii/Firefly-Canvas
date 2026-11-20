@@ -25,6 +25,8 @@ from app.core import (AIReference, Any, BackgroundTask, BaseModel, CANVAS_TASKS,
 from app.core import _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _AGENT_PROMPT_PARAM_SCHEMA, _AGENT_TASK_INPUT_KEYS, _AGENT_VIDEO_PARAM_SCHEMA, _agent_clean_params, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_forbidden_value, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_plan_response, _agent_public_task, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout, _agent_task_specs, _ensure_photoshop_loopback, _local_upload_kind_ext, _photoshop_protocol_error, _photoshop_public_request, _photoshop_reset_processing, _photoshop_validate_display_name, _photoshop_validate_media_type, image_generation_task_timeout_seconds, ProjectOriginalProjectWideRequest, ProjectOriginalRestoreRequest
 from app.services.agent_host import agent_host_manager
 from app.services.agent_errors import agent_error
+from app.services.agent_refs import with_role_prefix
+from app.services.misc import run_routed_image_candidate
 from app.core import is_registered_conversation_user_message
 from app.project_activity import (
     ProjectCleanupActive,
@@ -92,6 +94,8 @@ def project_image_request(payload: ProjectImageGenerationRequest) -> ImageGenera
         raise HTTPException(status_code=400, detail='单次生图数量必须在 1 到 8 之间')
     if len(payload.reference_asset_ids) > ONLINE_IMAGE_REFERENCE_MAX:
         raise HTTPException(status_code=400, detail={'code': 'no_compatible_image_model', 'message': '参考图片数量超过应用安全上限', 'incompatible_parameters': ['reference_count']})
+    if payload.reference_roles and len(payload.reference_roles) != len(payload.reference_asset_ids):
+        raise HTTPException(status_code=400, detail='参考图角色必须和上传列表对应')
     size, width, height, aspect_ratio, resolution = _normalize_generation_size_params(
         payload, code='inconsistent_image_dimensions', message='size 与 width/height 不一致'
     )
@@ -629,6 +633,8 @@ def project_image_idempotency_signature(payload: Any) -> str:
         data = {}
     data.pop('idempotency_key', None)
     data.pop('base_revision', None)
+    if not data.get('reference_roles'):
+        data.pop('reference_roles', None)  # Preserve signatures of durable tasks saved before #396.
     return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
 
 
@@ -680,6 +686,10 @@ class _CandidateWriteFailure(Exception):
         self.cause = cause
 
 
+def project_image_executed_prompt(payload):
+    return apply_angle_preset(with_role_prefix(payload.prompt, payload.reference_roles), payload.angle_preset)
+
+
 async def run_project_image_task(task_id: str, project_id: str, payload: ProjectImageGenerationRequest, request_snapshot: ImageGenerationRequest, route, registered_revision: int):
     started_at = _app_main.now_ms()
     generated_items = []
@@ -694,7 +704,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
     try:
         preexisting_asset_ids = {item.get('asset_id') for item in await asyncio.to_thread(_app_main.project_store_call, 'list_media', project_id) if item.get('asset_id')}
         references = await asyncio.to_thread(project_image_references, project_id, payload.reference_asset_ids)
-        executed_prompt = apply_angle_preset(payload.prompt, payload.angle_preset)
+        executed_prompt = project_image_executed_prompt(payload)
         image_parameters = {'width': request_snapshot.width, 'height': request_snapshot.height, 'aspect_ratio': request_snapshot.aspect_ratio, 'resolution': request_snapshot.resolution, 'media_type': request_snapshot.media_type, 'output_format': payload.output_format}
         if not references:
             update_project_image_task_progress(task_id, 'provider_generating')
@@ -730,18 +740,9 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                 candidate_start = _app_main.now_ms()
                 raise_if_project_image_task_cancelled(task_id)
                 await set_candidate_phase(candidate_index, 'uploading' if references else 'provider_generating')
-                image_data, raw = await _app_main.run_provider_generation_with_backoff(
-                    route.provider_id,
-                    _app_main.generate_ai_image,
-                    executed_prompt,
-                    payload.size,
-                    payload.quality,
-                    route.model,
-                    references,
-                    route.provider_id,
-                    preserve_model=True,
-                    image_parameters=image_parameters,
-                    progress_callback=progress_callback,
+                image_data, raw = await run_routed_image_candidate(
+                    route.provider_id, route.model, executed_prompt, payload.size, payload.quality,
+                    references, image_parameters, progress_callback=progress_callback,
                 )
                 raise_if_project_image_task_cancelled(task_id)
                 try:
@@ -894,7 +895,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
         resolved_status = 'timeout' if isinstance(exc, ImageGenerationTaskTimeout) else 'failed'
         # 取回兑底：已归档成功的图写进失败记录 outputs，客户端可凭 task_id 重新取回。
         failed_outputs = _history_output_entries(generated_items, 'image')
-        failure_record = {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': resolved_status, 'prompt': payload.prompt, 'executed_prompt': apply_angle_preset(payload.prompt, payload.angle_preset), 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': failure_time, 'runMs': max(0, failure_time - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'progress': failure_progress, 'outputs': failed_outputs, 'result_node_id': payload.result_node_id, 'error': str(detail), 'upstream_task_id': upstream_task_id}
+        failure_record = {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': resolved_status, 'prompt': payload.prompt, 'executed_prompt': project_image_executed_prompt(payload), 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': failure_time, 'runMs': max(0, failure_time - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'progress': failure_progress, 'outputs': failed_outputs, 'result_node_id': payload.result_node_id, 'error': str(detail), 'upstream_task_id': upstream_task_id}
         try:
             failed_canvas = await asyncio.to_thread(
                 _app_main.project_store_call,
@@ -1406,7 +1407,7 @@ async def cancel_project_image_task(project_id: str, task_id: str, request: Requ
         'type': 'online-image',
         'status': 'cancelled',
         'prompt': payload.prompt,
-        'executed_prompt': apply_angle_preset(payload.prompt, payload.angle_preset),
+        'executed_prompt': project_image_executed_prompt(payload),
         'angle_preset': payload.angle_preset,
         'created_at': created_at,
         'createdAt': created_at,
@@ -1612,7 +1613,7 @@ async def create_project_image_task(project_id: str, payload: ProjectImageGenera
         for asset_id in payload.reference_asset_ids:
             await asyncio.to_thread(_app_main.project_store_call, 'media_record', project_id, asset_id)
         route = _app_main.route_image_generation(request_snapshot, _app_main.load_api_providers(), provider_id=payload.provider_id if payload.routing_mode == 'manual' else '', model=payload.model if payload.routing_mode == 'manual' else '')
-        apply_angle_preset(payload.prompt, payload.angle_preset)
+        project_image_executed_prompt(payload)
     except ModelRoutingError as exc:
         raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
     except ProjectNotFound as exc:

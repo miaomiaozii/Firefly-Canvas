@@ -14171,7 +14171,7 @@ function managedAgentReferenceImagesFor(node){
             const url = item?.url || (isProjectCanvasData() ? projectMediaUrl(edge.asset_id) : '');
             if(!url) return [];
             seen.add(edge.asset_id);
-            return [{...item, url, asset_id:edge.asset_id, agentRefEdgeId:edge.id}];
+            return [{...item, url, asset_id:edge.asset_id, agentRefEdgeId:edge.id, agentRefRole:edge.role || 'general'}];
         });
 }
 function inputImagesFor(node, consume=false, ctx=smartLoopContext){
@@ -14755,7 +14755,7 @@ function buildPromptRequest(node, overrideDefaultImages=null, consumeDefault=fal
     if(!body && settings.engine === 'runninghub'){
         body = rhDefaultPromptSuggestion();
     }
-    const requestRefs = refs.map((img, index) => ({url:img.url, name:img.name || `图${index + 1}`, kind:img.kind || mediaKindForItem(img), asset_uris:img.asset_uris || {}, role:`image_${index + 1}`, ...(img.asset_id && (managed || img.agentRefEdgeId) ? {asset_id:img.asset_id} : {})}));
+    const requestRefs = refs.map((img, index) => ({url:img.url, name:img.name || `图${index + 1}`, kind:img.kind || mediaKindForItem(img), asset_uris:img.asset_uris || {}, role:`image_${index + 1}`, ...(img.asset_id && (managed || img.agentRefEdgeId) ? {asset_id:img.asset_id} : {}), ...(img.agentRefRole ? {agentRefRole:img.agentRefRole} : {})}));
     const mentioned = hasMentionToken && refs.length > 0;
     const mapText = mentioned ? refs.map((img, i) => `图${i + 1}：${img.name || `图片${i + 1}`}`).join('\n') : '';
     return {
