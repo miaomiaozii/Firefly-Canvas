@@ -20,6 +20,8 @@ from tests.generation_lifecycle_fixture import write_generation_lifecycle_runner
 from tests.long_content_fixture import write_long_content_runner
 from tests.project_linked_generation_fixture import write_project_linked_generation_runner
 from tests.ui_integrity_fixture import write_ui_integrity_runner, write_valid_ui_integrity_artifact
+from tests.test_pre_commit_hook import git as hook_test_git
+from tools.install_git_hooks import HOOKS_DIR, install as install_git_hooks
 from tools.native_input_evidence import double_click_evidence, selector_owner_click_evidence
 from tools.process_tree import kill_process_tree, process_alive
 from tools.quality_gate import (
@@ -1179,6 +1181,49 @@ class QualityGateTests(unittest.TestCase):
         red = [step["name"] for step in report["steps"] if step["status"] != "passed"]
         self.assertEqual(red, ["javascript-syntax", "surface-contract"])
         self.assertEqual(report["first_failure"]["name"], "javascript-syntax")
+
+    def test_real_pre_commit_fast_gate_blocks_broken_canvas_and_runs_later_checks(self):
+        # Git 实际调用仓库里的 hook；薄包装只把真门的证据指向夹具目录。
+        hooks = self.fixture_root / HOOKS_DIR
+        hooks.mkdir(parents=True)
+        shutil.copy2(ROOT / HOOKS_DIR / "pre-commit", hooks / "pre-commit")
+        (hooks.parent / "quality_gate.py").write_text(
+            "import subprocess, sys\n"
+            f"raise SystemExit(subprocess.call([sys.executable, {str(QUALITY_GATE)!r}, "
+            f"*sys.argv[1:], '--repo-root', {str(self.fixture_root)!r}, "
+            f"'--evidence-dir', {str(self.evidence_dir)!r}]))\n",
+            encoding="utf-8",
+        )
+        for key, value in (("user.name", "gate test"), ("user.email", "gate@test.invalid")):
+            result = hook_test_git(self.fixture_root, "config", key, value)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(install_git_hooks(self.fixture_root), 0)
+        script = self.fixture_root / "static/js/smart-canvas.js"
+        valid_source = script.read_text(encoding="utf-8")
+        script.write_text("const broken = ;\n", encoding="utf-8")
+        result = hook_test_git(self.fixture_root, "add", "--all")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        rejected = hook_test_git(self.fixture_root, "commit", "-m", "invalid canvas")
+        self.assertNotEqual(rejected.returncode, 0, rejected.stderr)
+        self.assertNotEqual(hook_test_git(self.fixture_root, "rev-parse", "--verify", "HEAD").returncode, 0)
+        report = self.report()
+        self.assertEqual(report["final_exit_code"], 1)
+        self.assertEqual([step["name"] for step in report["steps"]], list(MODE_STEPS["fast"]))
+        self.assertEqual(
+            [(step["name"], step["status"]) for step in report["steps"]],
+            [(name, "failed" if name == "javascript-syntax" else "passed") for name in MODE_STEPS["fast"]],
+        )
+        self.assertIn("[failed] javascript-syntax", rejected.stderr)
+        self.assertIn("[passed] studio-color-guard", rejected.stderr)
+
+        script.write_text(valid_source, encoding="utf-8")
+        result = hook_test_git(self.fixture_root, "add", "--", "static/js/smart-canvas.js")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.evidence_dir.rename(self.evidence_dir.with_name("red-evidence"))
+        accepted = hook_test_git(self.fixture_root, "commit", "-m", "valid canvas")
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertEqual(self.report()["verdict"], "passed")
 
     def test_domain_validates_and_reports_native_browser_artifacts(self):
         (self.fixture_root / "tests" / "test_project_store.py").write_text(
