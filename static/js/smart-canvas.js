@@ -6682,6 +6682,8 @@ async function deleteProjectOriginalWide(assetId, btn){
 function migrateSmartGroupImageMembers(){
     let changed = false;
     canvasState.nodes.filter(isSmartGroupNode).forEach(group => {
+        // #469：排版框必须保留独立生图卡及提示词连线，不能按旧缩略图组吸收。
+        if(isSmartLayoutFrame(group)) return;
         const imageMemberIds = (Array.isArray(group.items) ? group.items : [])
             .map(id => canvasState.nodes.find(n => n.id === id))
             .filter(m => m && isSmartImageNode(m) && (m.images || []).some(img => img?.url))
