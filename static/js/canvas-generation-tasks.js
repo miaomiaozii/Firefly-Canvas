@@ -965,7 +965,7 @@ async function resumeSmartPendingNode(node, logContext={}){
 async function retryFailedGeneration(nodeId){
     const node = canvasState.nodes.find(item => String(item.id || '') === String(nodeId));
     if(!node) return;
-    // 防连点：重试在途时不重复提交（会生成新的幂等键并重复计费）
+    // 防连点：旧提交标记的重发会生成新幂等键，不能并发执行。
     if(node._retryInFlight) return;
     node._retryInFlight = true;
     try{
@@ -977,15 +977,20 @@ async function retryFailedGeneration(nodeId){
 
 async function retryFailedGenerationInner(node){
     const failedTasks = Array.isArray(node.failedGenerationTasks) ? node.failedGenerationTasks.slice() : [];
+    const readProjectId = () => canvas.project_id || canvas.project || canvasCore.canvasId;
+    const projectId = readProjectId();
+    let durableRetry;
     if(failedTasks.length){
-        const projectId = canvas.project_id || canvas.project || canvasCore.canvasId;
         for(const failedTask of failedTasks){
+            if(readProjectId() !== projectId) return;
             try{
-                const response = await fetch(projectImageTaskUrl(failedTask.taskId));
+                const url = projectImageTaskUrl(failedTask.taskId);
+                const response = await fetch(url);
                 if(!response.ok) continue;
                 const task = await response.json();
+                if(readProjectId() !== projectId) return;
                 const outputs = Array.isArray(task?.result?.history_record?.outputs) ? task.result.history_record.outputs : [];
-                if(task.status === 'failed' && outputs.length){
+                if((task.status === 'succeeded' || task.status === 'failed') && outputs.length){
                     const base = `/api/project-library/${encodeURIComponent(projectId)}/media/`;
                     const images = outputs.map(item => ({url: base + encodeURIComponent(item.asset_id || ''), kind: item.kind || 'image'}));
                     node.failedGenerationTasks = [];
@@ -995,11 +1000,39 @@ async function retryFailedGenerationInner(node){
                     toast(canvasCore.trf('smart.recoveredResults', {n: images.length}));
                     return;
                 }
+                const payload = task.request_payload;
+                // 带上游诊断的任务走原有取回流程，不能把未取回当作允许重新计费。
+                if(!durableRetry && url.startsWith('/api/project-library/') &&
+                    String(failedTask.taskId || '').startsWith('project_img_') &&
+                    task.status === 'failed' && !task.upstream_task_id && !task.recover &&
+                    payload?.result_node_id === node.id && payload.prompt){
+                    durableRetry = {url, payload, failedId:failedTask.taskId};
+                }
             }catch(_){
                 // #348: 取回失败仍可检查原请求是否能重新提交，保留日志用于排查。
                 console.warn('[generation-tasks] 失败任务取回请求出错，将检查是否可重新提交', _);
             }
         }
+    }
+    if(readProjectId() !== projectId) return;
+    if(durableRetry){
+        const {url, payload, failedId} = durableRetry;
+        try {
+            // #438：服务端按原任务去重。即使 POST 已落盘但响应丢失，再点也是同一次重试。
+            const response = await fetch(`${url}/retry`, {method:'POST'});
+            const task = await response.json();
+            if(!response.ok || !task.task_id || !task.idempotency_key){
+                throw new Error(typeof task.detail === 'string' ? task.detail : tr('smart.recoverSubmitFailed'));
+            }
+            if(readProjectId() !== projectId) return;
+            await resumeSmartGenerationSubmission(node, {
+                requestPayload:payload,
+                idempotencyKey:task.idempotency_key
+            }, {task, failedId});
+        } catch(error) {
+            toast((error?.message || tr('smart.recoverSubmitFailed')).slice(0, 160));
+        }
+        return;
     }
     const submission = smartGenerationSubmissions(node).find(item => item && item.requestPayload);
     if(submission){
@@ -1014,7 +1047,7 @@ async function retryFailedGenerationInner(node){
     toast(tr('smart.noRetryableRequest'));
 }
 
-async function resumeSmartGenerationSubmission(node, submission){
+async function resumeSmartGenerationSubmission(node, submission, registeredRetry){
     const nodeId = String(node?.id || '');
     const idempotencyKey = String(submission?.idempotencyKey || '');
     const recoveryKey = `${nodeId}:${idempotencyKey}`;
@@ -1023,7 +1056,7 @@ async function resumeSmartGenerationSubmission(node, submission){
     try {
         const projectId = canvas.project_id || canvas.project || canvasCore.canvasId;
         const payload = {...(submission.requestPayload || {}), idempotency_key:idempotencyKey, result_node_id:nodeId, base_revision:Number(canvas.revision || 0)};
-        const task = await postProjectImageTaskWithReplay(projectId, payload);
+        const task = registeredRetry?.task || await postProjectImageTaskWithReplay(projectId, payload);
         const pendingHistoryId = String(submission.pendingHistoryId || smartPendingHistoryId(task.task_id));
         const taskResult = {
             taskIds:[task.task_id].filter(Boolean),
@@ -1038,7 +1071,11 @@ async function resumeSmartGenerationSubmission(node, submission){
         };
         await canvasCore.acceptProjectGenerationRegistration(taskResult);
         const currentNode = canvasState.nodes.find(item => String(item.id || '') === nodeId) || node;
-        clearSmartGenerationSubmission(currentNode, idempotencyKey);
+        if(registeredRetry){
+            currentNode.failedGenerationTasks = currentNode.failedGenerationTasks?.filter(item => item.taskId !== registeredRetry.failedId) || [];
+        }else{
+            clearSmartGenerationSubmission(currentNode, idempotencyKey);
+        }
         const taskIds = taskResult.taskIds;
         const newTasks = taskIds.map(taskId => ({
             taskId,
@@ -1064,7 +1101,7 @@ async function resumeSmartGenerationSubmission(node, submission){
         canvasCore.scheduleSave();
         await resumeSmartPendingNode(currentNode, {taskIds});
     } catch(error) {
-        if(!error?.smartSubmissionUnknown){
+        if(!registeredRetry && !error?.smartSubmissionUnknown){
             const currentNode = canvasState.nodes.find(item => String(item.id || '') === nodeId) || node;
             clearSmartGenerationSubmission(currentNode, idempotencyKey);
             canvasCore.scheduleSave();

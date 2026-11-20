@@ -1434,7 +1434,8 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
             )
             self.assertEqual(submitted.status_code, 202, submitted.text)
             failed_id = submitted.json()["task_id"]
-            self.assertEqual(self.wait_for_task(failed_id)["status"], "failed")
+            original = self.wait_for_task(failed_id)
+            self.assertEqual(original["status"], "failed")
             # Simulate process-memory loss: retry must resolve the durable
             # failed record rather than requiring the old registry entry.
             with main.CANVAS_TASK_LOCK:
@@ -1454,8 +1455,17 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
             self.assertEqual(second_retry.json()["task_id"], retry_id)
             self.assertEqual(first_retry.json()["retry_of_task_id"], failed_id)
             self.assertEqual(first_retry.json()["idempotency_key"], f"retry:{failed_id}")
-            self.assertEqual(self.wait_for_task(retry_id)["status"], "succeeded")
+            retried = self.wait_for_task(retry_id)
+            self.assertEqual(retried["status"], "succeeded")
 
+        original_request = original["request_payload"]
+        retry_request = retried["request_payload"]
+        self.assertNotEqual(original_request["idempotency_key"], retry_request["idempotency_key"])
+        mutable_fields = {"base_revision", "idempotency_key"}
+        self.assertEqual(
+            {key: value for key, value in retry_request.items() if key not in mutable_fields},
+            {key: value for key, value in original_request.items() if key not in mutable_fields},
+        )
         self.assertEqual(adapter.await_count, 2)
         history_by_task = {
             item.get("task_id"): item

@@ -1330,6 +1330,42 @@ for (const scenario of ['no outputs', 'cancelled', 'http error', 'network error'
     assert.ok(harness.fetchLog.every(entry => !entry.options || !entry.options.method || entry.options.method === 'GET'), 'no POST without a submission');
 });
 
+test('#438: 无提交标记时重试持久化失败任务，响应丢失仍可重试同一任务', async () => {
+    const failed = {taskId:'project_img_original', error:'provider failed'};
+    const node = {id:'img', type:'smart-image', failedGenerationTasks:[failed]};
+    const original = {result_node_id:'img', prompt:'原提示词', size:'768x1024', n:2};
+    const {ctx, harness} = loadGenerationTasksModule({nodes:[node]});
+    const url = '/api/project-library/proj-1/image-generation-tasks/project_img_original';
+    let posts = 0;
+    harness.fetchResponder = (requestUrl, options) => {
+        if(requestUrl === url) return fakeResponse({data:{status:'failed', request_payload:original}});
+        if(requestUrl === `${url}/retry`){
+            assert.equal(options.method, 'POST');
+            assert.equal(options.body, undefined, '服务端重放原快照，不用当前节点重建请求');
+            if(++posts === 1) throw new Error('retry response lost');
+            return fakeResponse({data:{task_id:'project_img_retry', idempotency_key:'retry:project_img_original'}});
+        }
+        assert.equal(requestUrl, '/api/project-library/proj-1/image-generation-tasks/project_img_retry');
+        return fakeResponse({data:{status:'succeeded', result:{}}});
+    };
+    const retry = globalFunction(ctx, 'retryFailedGeneration');
+    await Promise.all([retry('img'), retry('img')]);
+    assert.equal(posts, 1, '重试在途时连点不重复发送');
+    assert.deepEqual(fromContext(node.failedGenerationTasks), [failed], '未收到确认时保留失败卡片');
+    const settled = retry('img');
+    await tick();
+    assert.equal(posts, 2);
+    assert.equal(node.failedGenerationTasks.length, 0);
+    assert.equal(node.pendingTasks[0].taskId, 'project_img_retry');
+    assert.equal(node.pendingTasks[0].count, 2);
+    assert.equal(node.pendingTasks[0].prompt, '原提示词');
+    assert.equal(node.pendingTasks[0].idempotencyKey, 'retry:project_img_original');
+    harness.advanceTimers();
+    await tick();
+    await settled;
+    assert.equal(node.pendingTasks, undefined);
+});
+
 test('retryFailedGeneration: 先取回已归档输出（无新计费），无归档则换新幂等键重新生成', async () => {
     // ---- 路径 1：服务端已归档成功输出 → 直接取回，零 POST ----
     {
