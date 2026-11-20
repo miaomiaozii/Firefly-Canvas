@@ -243,44 +243,76 @@ class McpReservedMetadata392Tests(_Transport392):
 
 
 class GenerationIdentity392Tests(_Transport392):
+    def setUp(self):
+        super().setUp()
+        from tests.agent_image_task_fakes import route_stub
+
+        # #454: routing/target preflight runs before the mocked generation cores.
+        self.start_patch(self.main, "load_api_providers", Mock(return_value=[]))
+        self.start_patch(self.main, "route_image_generation", Mock(return_value=route_stub()))
+        self.seed(
+            {"id": "source", "type": NODE_TYPE_IMAGE, "prompt": "one", "runSettings": {"count": 2}},
+            {"id": "source-2", "type": NODE_TYPE_IMAGE, "prompt": "two"},
+        )
+
     def test_trigger_and_batch_forward_explicit_resolved_node_not_argument_override(self):
         self.seed({"id": "owner", "type": NODE_TYPE_AGENT})
-        for name, args, core_name, core_args, count in [
-            ("generate.trigger", {"node_id": "source", "agent_node_id": "forged"},
-             "trigger_generation_core", (self.pid, "source"), 1),
-            ("canvas.batch_edit", {"node_ids": ["source", "source-2"], "prompt": "edit", "agent_node_id": "forged"},
-             "batch_edit_core", (self.pid, ["source", "source-2"], "edit"), 2),
+        before = self.canvas()
+        for name, args, core_name, core_args, count, gate_owner, gate_name in [
+            ("generate.trigger", {"node_id": "source"}, "trigger_generation_core",
+             (self.pid, "source"), 2, self.mcp, "_confirm_gate"),
+            ("canvas.batch_edit", {"node_ids": ["source", "source-2"], "prompt": "edit"}, "batch_edit_core",
+             (self.pid, ["source", "source-2"], "edit"), 3, self.tools, "confirm_batch_prompt"),
         ]:
             with self.subTest(tool=name), patch.object(self.mcp, core_name, new=AsyncMock(
                 return_value={"ok": True},
-            )) as core, patch.object(self.mcp, "_confirm_gate", new=AsyncMock()) as gate, patch.object(
+            )) as core, patch.object(gate_owner, gate_name, new=AsyncMock()) as gate, patch.object(
                 self.tools, "enforce_generation_limit",
             ) as limit, patch.object(self.mcp, "ensure_external_agent_node", new=AsyncMock()) as carrier:
+                # #396: unknown input fields are rejected, not used or silently ignored.
+                rejected = self.call(name, {**args, "agent_node_id": "forged"}, node="owner")
+                self.assertTrue(rejected["isError"], rejected)
+                self.assertTrue(is_agent_error_shape(rejected["structuredContent"]), rejected)
+                self.assertEqual(rejected["structuredContent"]["code"], "INVALID_ARGUMENT")
+                core.assert_not_awaited()
+                gate.assert_not_awaited()
+                limit.assert_not_called()
+
                 self.assertEqual(self.read_result(self.call(name, args, node="owner")), {"ok": True})
-                core.assert_awaited_once_with(*core_args, agent_node_id="owner")
+                self.assertEqual(core.await_args.args, core_args)
+                self.assertEqual(core.await_args.kwargs["agent_node_id"], "owner")
+                core.assert_awaited_once()
                 self.assertEqual(gate.await_args.args[:3], (self.pid, "owner", name))
+                gate.assert_awaited_once()
                 limit.assert_called_once_with(self.pid, "owner", count=count)
                 carrier.assert_not_awaited()
+        self.assertEqual(self.canvas(), before)
 
     def test_external_generation_tools_use_self_owned_carrier_as_context(self):
+        before = {node["id"]: node for node in self.canvas()["nodes"]}
         with patch.object(self.mcp, "trigger_generation_core", new=AsyncMock(
             return_value={"task_id": "stub-task"},
         )) as trigger, patch.object(self.mcp, "batch_edit_core", new=AsyncMock(
             return_value={"tasks": []},
         )) as batch, patch.object(self.mcp, "_confirm_gate", new=AsyncMock()), patch.object(
-            self.tools, "enforce_generation_limit",
-        ):
+            self.tools, "confirm_batch_prompt", new=AsyncMock(),
+        ), patch.object(self.tools, "enforce_generation_limit"):
             self.read_result(self.call("generate.trigger", {"node_id": "source"}))
             self.read_result(self.call("canvas.batch_edit", {"node_ids": ["source"], "prompt": "edit"}))
-        nodes = self.canvas()["nodes"]
+        nodes = {node["id"]: node for node in self.canvas()["nodes"]}
+        self.assertEqual({key: nodes.pop(key) for key in before}, before)
         self.assertEqual(len(nodes), 1)
-        carrier = nodes[0]
+        carrier = next(iter(nodes.values()))
+        self.assertEqual(carrier["type"], NODE_TYPE_AGENT)
         self.assertEqual(carrier["createdBy"], "agent")
         self.assertEqual(carrier["agentNodeId"], carrier["id"])
         self.assertIsNone(carrier["userTouchedAt"])
         self.assertIs(carrier["promptEditedByUser"], False)
-        trigger.assert_awaited_once_with(self.pid, "source", agent_node_id=carrier["id"])
-        batch.assert_awaited_once_with(self.pid, ["source"], "edit", agent_node_id=carrier["id"])
+        for core, expected_args in ((trigger, (self.pid, "source")),
+                                    (batch, (self.pid, ["source"], "edit"))):
+            core.assert_awaited_once()
+            self.assertEqual(core.await_args.args, expected_args)
+            self.assertEqual(core.await_args.kwargs["agent_node_id"], carrier["id"])
 
 
 class McpCarrierCas392Tests(_Transport392):
