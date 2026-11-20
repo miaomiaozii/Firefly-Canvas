@@ -10,6 +10,7 @@ from functools import cmp_to_key
 from html.parser import HTMLParser
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
+from app.constants import NODE_TYPE_IMAGE, NODE_TYPE_PROMPT
 from app.services.agent_refs import managed_edges, managed_edge
 
 
@@ -194,7 +195,7 @@ class ReferenceGraph:
             return {**item, 'url': self.prefix + quote(asset, safe='')}
         return item
 
-    def _inputs(self, node, workflow=False):
+    def _inputs(self, node, workflow=False, *, prompt=False):
         target = node.get('id')
         sources, managed = {}, set()
         for edge in self.edges:
@@ -203,8 +204,11 @@ class ReferenceGraph:
                 continue
             if managed_edge(edge, target):
                 managed.add(source)
-            elif edge.get('kind') == 'input' or (workflow and (edge.get('kind') or 'flow') == 'flow'):
-                sources[source] = None
+            else:
+                # Prompt flow carries text, not default reference images (#468).
+                flow = workflow or (prompt and self.nodes.get(source, {}).get('type') == NODE_TYPE_PROMPT)
+                if edge.get('kind') == 'input' or (flow and (edge.get('kind') or 'flow') == 'flow'):
+                    sources[source] = None
         if self.legacy:
             sources.update(dict.fromkeys(source for source in _strings(node.get('inputNodeIds')) if source not in managed))
         return [self.nodes[source] for source in sources if source in self.nodes]
@@ -306,12 +310,15 @@ class ReferenceGraph:
             text = text.replace('[Count]', str(index))
         return [text.strip()] if text.strip() else []
 
-    def _prefix_prompt(self, node, body, ctx):
+    def _compose_prompt(self, node, body, display, ctx):
         group = '\n\n'.join(self._prompt_items(node, set(), ctx)) if node.get('type') == 'smart-group' else ''
-        inputs = self._inputs(node) + [self.nodes[key] for key in _strings(ctx.get('relayPromptNodeIds')) if key in self.nodes]
+        inputs = self._inputs(node, prompt=True) + [self.nodes[key] for key in _strings(ctx.get('relayPromptNodeIds')) if key in self.nodes]
         snippets = ['\n\n'.join(self._prompt_items(source, set(), ctx)).strip() for source in inputs]
         upstream = '\n\n'.join(dict.fromkeys(filter(None, snippets)))
-        return '\n\n'.join(filter(None, (group, upstream, body)))
+        # Empty upstream text retains the own draft; reference prefixes are added separately (#468).
+        if node.get('type') in (None, NODE_TYPE_IMAGE, 'image') and upstream:
+            return upstream, upstream
+        return '\n\n'.join(filter(None, (group, upstream, body))), display
 
     def _saved_parts(self, node):
         html = _str(node.get('promptDraftHtml'))
@@ -421,9 +428,10 @@ class ReferenceGraph:
             if saved_mentions is not None and _url(refs[number - 1]) == url:
                 saved_mentions.add(number - 1)
             body.append(f'图{number}')
-        body_text = _trim(''.join(body))
+        body_text, display_text = _trim(''.join(body)), _trim(''.join(display))
         if prompt_override is None:
-            body_text = self._prefix_prompt(node, body_text, ctx) or _str(ctx.get('emptyPrompt'))
+            body_text, display_text = self._compose_prompt(node, body_text, display_text, ctx)
+            body_text = body_text or _str(ctx.get('emptyPrompt'))
         numbered = []
         for n, img in enumerate(refs, 1):
             ref = {'url': _url(img), 'name': _str(img.get('name')) or f'图{n}', 'kind': _str(img.get('kind')) or _kind(img),
@@ -438,7 +446,7 @@ class ReferenceGraph:
         header, user_need = ('Reference image map:', 'User request:') if ctx.get('english') else ('下面是参考图编号：', '用户需求：')
         mapping = '\n'.join(f'图{n}：{ref["name"]}' for n, ref in enumerate(numbered, 1))
         prompt = f'{header}\n{mapping}\n\n{user_need}\n{body_text}' if mentioned else body_text
-        request = {'prompt': prompt, 'displayPrompt': _trim(''.join(display)) or body_text, 'refs': numbered, 'mentioned': mentioned}
+        request = {'prompt': prompt, 'displayPrompt': display_text or body_text, 'refs': numbered, 'mentioned': mentioned}
         if track_saved_mentions:
             request['saved_mention_positions'] = saved_mentions or set()
         return request

@@ -14167,7 +14167,10 @@ function textForNode(node, ctx=smartLoopContext){
     return '';
 }
 function promptInputNodesFor(node){
-    return inputNodesFor(node).filter(input => input?.type === NODE_TYPE_PROMPT || input?.type === NODE_TYPE_LOOP || input?.type === NODE_TYPE_GROUP);
+    const inputs = new Set(inputNodesFor(node));
+    // Prompt flow carries text without promoting image flow to default references (#468).
+    return workflowInputNodesFor(node).filter(input => input?.type === NODE_TYPE_PROMPT
+        || (inputs.has(input) && (input?.type === NODE_TYPE_LOOP || input?.type === NODE_TYPE_GROUP)));
 }
 function inputPromptTextFor(node, ctx=smartLoopContext){
     const directText = promptInputNodesFor(node).map(input => textForNode(input, ctx)).filter(Boolean);
@@ -14723,10 +14726,8 @@ function buildPromptRequest(node, overrideDefaultImages=null, consumeDefault=fal
     const filteredDefaultImages = defaults.filter(img => !blockedRefs.has(inputRefKey(img)));
     const defaultRefs = uniqueReferenceImages(filteredDefaultImages, managed);
     const refs = defaultRefs.map((img, index) => ({...img, role:`image_${index + 1}`}));
-    // 扩图修复：扩图激活时，必须把扩图底图（红底+原图合成图，即节点当前图）作为参考图发给模型，
-    // 否则模型只拿到提示词而没有底图，会凭空生成全新图而不是扩展原图（"扩图不生效"根因）。
-    // 注意：不能把原始 URL 存到节点顶层字段（会触发"只能引用项目媒体资源ID"校验），
-    // 直接取 node.images[0]，生成时 importProjectMediaReference 会把它归档为项目媒体。
+    // 扩图必须携带红底+原图合成底图，否则模型会生成全新图。原始 URL 不能写入
+    // 节点顶层字段；从 images 取底图，生成时由 importProjectMediaReference 归档。
     if(validOutpaintSize(node)){
         const selfImg = (node.images || []).find(img => img?.url);
         if(selfImg?.url && !refs.some(ref => ref.url === selfImg.url || (managed && selfImg.asset_id && ref.asset_id === selfImg.asset_id))){
@@ -14782,7 +14783,9 @@ function buildPromptRequest(node, overrideDefaultImages=null, consumeDefault=fal
     body = body.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
     const groupPrompt = isSmartGroupNode(node) ? textForNode(node, ctx).trim() : '';
     const inputPrompt = inputPromptTextFor(node, ctx).trim();
-    if(groupPrompt || inputPrompt) body = [groupPrompt, inputPrompt, body].filter(Boolean).join('\n\n');
+    // Empty upstream text retains the own draft; nonempty text replaces it, not reference prefixes (#468).
+    const replacesOwnPrompt = isSmartImageNode(node) && Boolean(inputPrompt);
+    body = replacesOwnPrompt ? inputPrompt : [groupPrompt, inputPrompt, body].filter(Boolean).join('\n\n');
     if(!body && settings.engine === 'runninghub'){
         body = rhDefaultPromptSuggestion();
     }
@@ -14791,7 +14794,7 @@ function buildPromptRequest(node, overrideDefaultImages=null, consumeDefault=fal
     const mapText = mentioned ? refs.map((img, i) => `图${i + 1}：${img.name || `图片${i + 1}`}`).join('\n') : '';
     return {
         prompt:mentioned ? `${tr('smart.refMapHeader')}\n${mapText}\n\n${tr('smart.refUserNeed')}\n${body}` : body,
-        displayPrompt:originalPrompt || body,
+        displayPrompt:replacesOwnPrompt ? inputPrompt : (originalPrompt || body),
         refs:requestRefs,
         mentioned
     };
