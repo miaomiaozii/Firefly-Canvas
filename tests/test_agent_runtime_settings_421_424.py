@@ -95,16 +95,24 @@ class NativePi:
 
 
 class CodexProcess:
-    def __init__(self, argv, *, fail_resume=False):
+    def __init__(self, argv, *, resume_stderr=None, resume_events=()):
         self.returncode = None
-        self.exit_code = 1 if fail_resume and "resume" in argv else 0
-        self.lines = ([] if self.exit_code else [
+        self.exit_code = 1 if resume_stderr is not None and "resume" in argv else 0
+        self.lines = (list(resume_events) if self.exit_code else [
             {"type": "thread.started", "thread_id": "codex-native"},
             {"type": "turn.started"}, {"type": "turn.completed", "usage": {}},
         ])
         self.stdin = io.StringIO()
+        self.prompt = None
+        close = self.stdin.close
+
+        def record_prompt():
+            self.prompt = self.stdin.getvalue()
+            close()
+
+        self.stdin.close = record_prompt
         self.stdout = self
-        self.stderr = io.StringIO()
+        self.stderr = io.StringIO(resume_stderr if self.exit_code else "")
         self.killed = False
 
     def readline(self):
@@ -143,6 +151,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.enterContext(patch.object(ah, "_app_main", main))
         # No global store, credentials, warmup process or real native spawn.
         self.enterContext(patch.object(ah._app_main, "project_store_call", None))
+        self.enterContext(patch.object(ah._app_main, "FIREFLY_PROJECT_STORE", None))
         self.enterContext(patch.object(ah, "maybe_warm_codex", return_value=False))
         self.enterContext(patch.object(ah, "MAX_CONSECUTIVE_RESPAWNS", 0))
         self.enterContext(patch.object(ah.subprocess, "Popen", side_effect=AssertionError("real spawn forbidden")))
@@ -398,12 +407,22 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.session.effort_state["requested"], "low")
         self.assertEqual(self.session.effort_state["effective"], "high")
 
-    async def run_codex(self, *, binding=None, fail_resume=False, mutate=False):
+    async def run_codex(self, *, binding=None, resume_stderr=None, resume_events=(), mutate=False,
+                        seed_history=False):
         self.session.agent_cli = "codex"
         self.session.ext_session_id = binding
         self.session.model, self.session.reasoning_effort = "gpt-test", "high"
         captured = []
         manager, session = self.manager, self.session
+        if seed_history:
+            manager._persist_event(session, {"type": "user_prompt", "text": "past prompt",
+                                             "node_ref_context": "past saved reference"})
+            manager._persist_event(session, {"type": "queued_input", "input_type": "follow_up",
+                                             "text": "an unsent follow-up"})
+            manager._persist_event(session, {"type": "agent_end"})
+            manager._persist_event(session, {"type": "user_prompt", "text": "an uncertain prompt"})
+            manager._persist_event(session, {"type": "error", "delivery": "uncertain"})
+
         class RecordingAdapter(CodexAdapter):
             def build_argv(self, params):
                 captured.append((params.model, params.reasoning_effort, params.ext_session_id))
@@ -412,22 +431,35 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
                     session.model, session.reasoning_effort = "gpt-later", "low"
                 return argv
         manager._adapters["codex"] = RecordingAdapter()
-        spawned = []
+        spawned, processes, turn_ids, events = [], [], [], []
+        def collect_event(_, event):
+            events.append(event)
+
+        manager.on_event(session, collect_event)
+
         def spawn(argv, **kwargs):
+            if processes:
+                self.assertIsNotNone(processes[-1].returncode)
             spawned.append(list(argv))
-            return CodexProcess(argv, fail_resume=fail_resume)
+            turn_ids.append(session._current_turn_id)
+            process = CodexProcess(argv, resume_stderr=resume_stderr, resume_events=resume_events)
+            processes.append(process)
+            return process
+
+        refs = [{"node_id": "ref", "name": "reference", "path": str(self.root / "ref.png")}]
         with patch.object(ah.shutil, "which", return_value="fake-codex.exe"), \
                 patch("app.services.agent_adapters.codex_adapter.codex_spawn_env", return_value={"CODEX_HOME": str(self.root / "home")}), \
                 patch("app.services.agent_adapters.codex_adapter.write_home_mcp_config"), \
+                patch.object(manager, "_collect_reference_images", return_value=(refs, [])) as collect, \
                 patch.object(ah.subprocess, "Popen", side_effect=spawn):
-            await manager._codex_turn(session, "fake prompt", ref_paths=[str(self.root / "ref.png")])
-            for _ in range(200):
-                task = session._reader_task
-                if task is None:
-                    break
-                await asyncio.wait_for(asyncio.shield(task), 3)
-            self.assertIsNone(session.process)
-        return captured, spawned
+            await manager.send_prompt(session, "fake prompt", node_refs=[{"node_id": "ref"}],
+                                      node_ref_context="current reference", request_id=f"request-{session.generation}")
+            while session._reader_task is not None:
+                await asyncio.wait_for(asyncio.shield(session._reader_task), 3)
+            collect.assert_called_once_with(session)
+            self.assertFalse(session.is_busy)
+        session.event_handlers.remove(collect_event)
+        return captured, spawned, processes, turn_ids, events
 
     async def test_stop_during_codex_spawn_cannot_attach_late_process(self):
         self.session.agent_cli = "codex"
@@ -456,7 +488,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_codex_first_and_resume_submit_real_snapshot_never_effective(self):
         for binding in (None, "old-thread"):
             with self.subTest(binding=binding):
-                captured, spawned = await self.run_codex(binding=binding, mutate=True)
+                captured, spawned, _, _, _ = await self.run_codex(binding=binding, mutate=True)
                 self.assertEqual(captured, [("gpt-test", "high", binding)])
                 argv = spawned[0]
                 self.assertIn('model_reasoning_effort="high"', argv)
@@ -489,14 +521,41 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(spawned[1][spawned[1].index("resume") + 1], "codex-native")
 
     async def test_codex_failed_resume_replay_retry_reuses_pair_and_reference_snapshot(self):
-        captured, spawned = await self.run_codex(binding="missing-thread", fail_resume=True, mutate=True)
+        captured, spawned, processes, turn_ids, events = await self.run_codex(
+            binding="missing-thread", resume_stderr="Error: no rollout found for thread id missing-thread\n",
+            mutate=True, seed_history=True)
         self.assertEqual(captured, [("gpt-test", "high", "missing-thread"), ("gpt-test", "high", None)])
         self.assertIn("resume", spawned[0])
         self.assertNotIn("resume", spawned[1])
         for argv in spawned:
             self.assertIn('model_reasoning_effort="high"', argv)
             self.assertIn(str(self.root / "ref.png"), argv)
+        self.assertTrue(turn_ids[0])
+        self.assertEqual(turn_ids, [turn_ids[0], turn_ids[0]])
+        self.assertEqual(processes[1].prompt, (
+            "<canvas-history-replay host-session-lost rebuilt-by-firefly>\n"
+            "user: past prompt\n\npast saved reference\nassistant: \n</canvas-history-replay>\n\n"
+            "（以上是画布历史重放，请接着继续）\n" + processes[0].prompt))
+        self.assertIn("fake prompt\n\ncurrent reference", processes[0].prompt)
+        self.assertNotIn("input_delivery_terminal", [event["type"] for event in events])
+        prompts = [r["event"] for r in self.manager.load_events("project", "node")["events"]
+                   if r["event"]["type"] == "user_prompt"]
+        self.assertEqual([p["text"] for p in prompts], ["past prompt", "an uncertain prompt", "fake prompt"])
+        self.assertEqual(self.session.ext_session_id, "codex-native")
         self.assertIsNone(self.session.effort_state["effective"])
+
+    async def test_codex_ambiguous_resume_failure_does_not_replay_or_retry(self):
+        exact = "Error: no rollout found for thread id missing-thread\n"
+        for stderr, stdout in (("", ()), ("Error: no rollout found for thread id wrong-thread\n", ()),
+                               (exact, ({"type": "turn.started"},))):
+            with self.subTest(stderr=stderr, stdout=stdout):
+                captured, _, _, _, events = await self.run_codex(
+                    binding="missing-thread", resume_stderr=stderr, resume_events=stdout)
+                self.assertEqual(captured, [("gpt-test", "high", "missing-thread")])
+                self.assertEqual([(e["type"], e.get("delivery")) for e in events
+                                  if e["type"] in ("input_delivery_terminal", "error")],
+                                 [("input_delivery_terminal", "uncertain"), ("error", "uncertain")])
+                self.assertEqual(self.session.ext_session_id, "missing-thread")
 
     async def test_host_history_filter_legacy_pi_node_cursor_and_restart(self):
         path = self.root / "agent-events" / "node.jsonl"

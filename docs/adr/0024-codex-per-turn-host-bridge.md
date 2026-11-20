@@ -36,10 +36,10 @@ stopped ─prompt─▶ spawning ─OK─▶ busy(turn) ─turn_completed/aborte
    ▲                │spawn失败                                        │
    │                ▼                                                │
    └──abort/退出── idle_stored ◀── resume <sessionId>（下轮） ────────┘
-busy ─崩溃─▶ auto-respawn 一次：resume <sessionId>
-resume 失败（session 缺失/版本不兼容，实测报错退出）──▶
-  降级：新会话（无 resume）+ events.jsonl（票C）最近 N 轮（默认 12）文本前置注入
-  + error 事件「会话续接失败，已降级重建」——UI 可见，不静默。
+resume 在开始轮前明确拒绝当前 thread（无 stdout、正常等到非零退出、stderr 只有匹配该 ID 的无 rollout 诊断）──▶
+  降级一次：新会话（无 resume），前置 events.jsonl 最近 N 轮已完成的同宿主文本。
+  同一逻辑轮、已提交参数与参考图快照；发出可见的重建事件，不再记一次用户输入。
+其他失败 ──▶ #393：投递状态不确定，不自动重发。
 ```
 
 不变量：

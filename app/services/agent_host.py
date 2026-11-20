@@ -21,6 +21,7 @@ import threading
 import time
 import uuid
 from collections import deque
+from concurrent.futures import Future
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -394,6 +395,7 @@ class AgentSession:
     _current_turn_id: Optional[str] = None
     _current_request_id: Optional[str] = None
     _codex_cleanup: bool = False
+    _codex_abort_requested: bool = False
     _input_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     _follow_ups: deque = field(default_factory=deque, repr=False)
     _follow_up_ids: set = field(default_factory=set, repr=False)
@@ -1342,7 +1344,7 @@ class AgentHostManager:
         """一轮 = 一个 `codex exec --json` 进程（ADR 0024 状态机）。
 
         Resume options must precede the subcommand; the prompt goes via stdin.
-        #393: failed resume cannot prove non-execution; never auto-resend.
+        #393: retry only a positively identified pre-turn rejection, not an uncertain delivery.
         """
         if session._stopping:
             raise RuntimeError("Agent runtime is stopping")
@@ -1400,13 +1402,27 @@ class AgentHostManager:
         # #343: reject unresolved npm wrappers instead of invoking an implicit shell.
         cmd = finalize_spawn_argv(cmd)
 
+        resume_rejected = None
+        replay_through = None
+        if resumed and degrade_budget:
+            resume_rejected = Future()
+            # The admitted user_prompt and any follow-ups logged during this attempt
+            # must not be included in its history replay.
+            try:
+                self._init_event_seq(session, self._events_log_path(session))
+                replay_through = session._event_seq
+            except ValueError:
+                logger.warning("Cannot establish replay history boundary for %s", session.node_id)
+                resume_rejected = None
+
         session.last_error = ""
+        session._codex_abort_requested = False
         session._turn_started_at = time.time()
         session._turn_open = True
         session._generation += 1
         host, generation = session.agent_cli, session.generation
         try:
-            process = await asyncio.to_thread(
+            spawn = asyncio.to_thread(
                 subprocess.Popen,
                 cmd,
                 stdin=subprocess.PIPE,
@@ -1422,6 +1438,22 @@ class AgentHostManager:
                 # Keep Codex sessions out of the user's global home.
                 env=spawn_env,
             )
+            if allow_resume:
+                process = await spawn
+            else:
+                # stop_session can cancel the old reader while it is spawning the
+                # replacement. Reap the late child before returning from the reader.
+                spawn_task = asyncio.create_task(spawn)
+                try:
+                    process = await asyncio.shield(spawn_task)
+                except asyncio.CancelledError:
+                    try:
+                        child = await spawn_task
+                    except OSError:
+                        pass
+                    else:
+                        await self._kill_process_tree(session, reason="cancelled codex replay spawn", process=child)
+                    raise
         except OSError as e:
             if self._runtime_matches(session, host, generation):
                 session._turn_open = False
@@ -1429,6 +1461,11 @@ class AgentHostManager:
         if not self._runtime_matches(session, host, generation) or session._stopping:
             await self._kill_process_tree(session, reason="runtime changed during codex spawn", process=process)
             raise RuntimeError("Agent runtime changed during codex spawn")
+        if not allow_resume and session._codex_abort_requested:
+            await self._kill_process_tree(session, reason="codex replay aborted during spawn", process=process)
+            if self._runtime_matches(session, host, generation):
+                session._turn_open = False
+            raise RuntimeError("Agent aborted during codex replay spawn")
         session.process = process
         session.effort_submitted = turn_effort
         session.effort_effective = None
@@ -1436,9 +1473,17 @@ class AgentHostManager:
         session._stopping = False
         session._started_at = time.time()
         session._last_activity = time.time()
+        def _read_stderr() -> None:
+            # Match the local ADR 0024 diagnostic for the exact attempted binding.
+            # A shared stderr tail could contain a previous process's failure.
+            expected = (f"Error: no rollout found for thread id {turn_binding}"
+                        if resume_rejected is not None else None)
+            rejected = self._drain_stderr(session, process=process, expected=expected)
+            if resume_rejected is not None:
+                resume_rejected.set_result(rejected)
+
         session._stderr_thread = threading.Thread(
-            target=self._drain_stderr,
-            args=(session,),
+            target=_read_stderr,
             name=f"agent-stderr-{session.node_id[:8]}",
             daemon=True,
         )
@@ -1460,7 +1505,8 @@ class AgentHostManager:
         session._reader_task = asyncio.create_task(
             self._read_codex_turn(session, process, resumed, message, degrade_budget,
                                   settings_snapshot=settings_snapshot, ref_paths=tuple(ref_paths or ()),
-                                  host=host, generation=generation)
+                                  host=host, generation=generation, resume_rejected=resume_rejected,
+                                  replay_through=replay_through)
         )
 
     async def _read_codex_turn(
@@ -1472,6 +1518,7 @@ class AgentHostManager:
         degrade_budget: bool,
         *, settings_snapshot: Optional[tuple[str, Optional[str]]] = None,
         ref_paths: tuple = (), host: Optional[str] = None, generation: Optional[int] = None,
+        resume_rejected: Optional[Future] = None, replay_through: Optional[int] = None,
     ) -> None:
         """codex 单轮 reader：JSONL → 内部词汇（ADR 0024 §1），轮末清进程槽。"""
         from .agent_adapters.codex_adapter import map_codex_event
@@ -1480,6 +1527,7 @@ class AgentHostManager:
         generation = session.generation if generation is None else generation
         settings_snapshot = settings_snapshot or (session.model, session.reasoning_effort)
         saw_turn_completed = False
+        saw_output = empty_stdout = False
         cancelled = False
         try:
             while True:
@@ -1487,7 +1535,9 @@ class AgentHostManager:
                 if not self._runtime_matches(session, host, generation):
                     break
                 if not line:
+                    empty_stdout = not saw_output
                     break
+                saw_output = True
                 line = line.strip()
                 if not line:
                     continue
@@ -1523,8 +1573,10 @@ class AgentHostManager:
             if process.poll() is None and (cancelled or session._stopping
                     or not self._runtime_matches(session, host, generation)):
                 await self._kill_process_tree(session, reason="codex reader exited", process=process)
+            clean_wait = False
             try:
                 await asyncio.wait_for(asyncio.to_thread(process.wait), timeout=KILL_WAIT_SECONDS)
+                clean_wait = True
             except asyncio.TimeoutError:
                 await self._kill_process_tree(session, reason="codex exit timeout", process=process)
             if not self._runtime_matches(session, host, generation):
@@ -1536,11 +1588,47 @@ class AgentHostManager:
                 session.process = None
             exit_code = process.returncode
             session._last_activity = time.time()
-            # Absence of thread.started cannot prove that resume had no side effects.
-            maybe_warm_codex(session.node_id)
-            # Keep the turn reserved through the error broadcast. Inputs admitted
-            # during cleanup are drained only after the old process has exited.
+            # Keep the same logical turn and request reserved through recovery or
+            # terminal classification. A nonzero exit and silence alone prove nothing.
             session._codex_cleanup = True
+            if (resumed and degrade_budget and resume_rejected is not None and replay_through is not None
+                    and clean_wait and type(exit_code) is int and exit_code > 0 and empty_stdout
+                    and not cancelled and not session._codex_abort_requested):
+                try:
+                    rejected = await asyncio.wait_for(asyncio.shield(asyncio.wrap_future(resume_rejected)),
+                                                      timeout=1.0)
+                except asyncio.TimeoutError:
+                    rejected = False
+                if not self._runtime_matches(session, host, generation) or session._stopping:
+                    return
+                if rejected and not session._codex_abort_requested:
+                    try:
+                        context, turns = self._build_replay_context(session, completed_through=replay_through)
+                    except (OSError, ValueError):
+                        logger.warning("Could not read Codex replay history for %s", session.node_id)
+                        context, turns = "", 0
+                    await self._dispatch_event(session, {
+                        "type": "error", "message": f"会话续接失败，正在重建（重放 {turns} 轮上下文）"},
+                        host=host, generation=generation)
+                    if not self._runtime_matches(session, host, generation) or session._stopping:
+                        return
+                    if not session._codex_abort_requested:
+                        retry_message = (f"{context}\n\n（以上是画布历史重放，请接着继续）\n{message}"
+                                         if context else message)
+                        try:
+                            await self._codex_turn(session, retry_message, allow_resume=False, degrade_budget=False,
+                                                   settings_snapshot=settings_snapshot, ref_paths=list(ref_paths))
+                        except (RuntimeError, OSError, ValueError) as e:
+                            logger.warning("Codex replay retry failed for %s: %s", session.node_id, e)
+                            # A failed spawn may have advanced the generation before raising.
+                            if (session._stopping or session._reader_task is not asyncio.current_task()
+                                    or session.agent_cli != host or session.generation not in (generation, generation + 1)):
+                                return
+                            generation = session.generation
+                        else:
+                            session._codex_cleanup = False
+                            return
+            maybe_warm_codex(session.node_id)
             uncertain = cancelled or not saw_turn_completed or exit_code not in (0,)
             if uncertain:
                 async with session._input_lock:
@@ -1633,6 +1721,7 @@ class AgentHostManager:
         if session.agent_cli == "codex":
             # ADR 0024：abort=SIGINT 单轮（实测 rollout 实时落盘、可 resume）。
             # Windows 无 SIGINT：terminate() 终止当前轮进程（不毁 sessionId）。
+            session._codex_abort_requested = True
             proc = session.process
             if proc is not None and proc.poll() is None:
                 try:
@@ -1905,17 +1994,24 @@ class AgentHostManager:
             return state
         return None
 
-    def _drain_stderr(self, session: AgentSession) -> None:
-        """#239: 后台线程排空 sidecar stderr（防管道背压挂死子进程，只留尾部）."""
-        process = session.process
+    def _drain_stderr(self, session: AgentSession, *, process=None, expected: Optional[str] = None) -> bool:
+        """#239: Keep pipes draining; confirm an expected diagnostic only after EOF."""
+        process = session.process if process is None else process
         if process is None or process.stderr is None:
-            return
+            return False
+        matched = False
         try:
             for line in process.stderr:
                 chunk = line if len(line) <= STDERR_CHUNK_CHARS else line[-STDERR_CHUNK_CHARS:]
                 session._stderr_chunks.append(chunk)
+                if expected is not None and line.strip():
+                    if not matched and line.rstrip("\r\n") == expected:
+                        matched = True
+                    else:
+                        expected = None
         except (ValueError, OSError):
-            pass
+            return False
+        return expected is not None and matched
 
     async def _kill_process_tree(self, session: AgentSession, reason: str = "", *, process=None) -> None:
         """#239: 必杀 sidecar 及其整棵任务进程树，并等待退出（killer 与被杀者都 await）。
@@ -2344,10 +2440,11 @@ class AgentHostManager:
             return {'events': list(reversed(selected)), 'last_seq': last_seq,
                     'has_more': token is not None, 'cursor': token}
 
-    def _build_replay_context(self, session: AgentSession) -> tuple:
+    def _build_replay_context(self, session: AgentSession, *, completed_through: Optional[int] = None) -> tuple:
         """从活跃宿主回放派生最近 EVENTS_REPLAY_TURNS 轮文本（含 user 侧）。
         返回 (text_block, turns_used)。不足 N 轮按实际全量（监理裁定）。
-        轮界定：user_prompt 开轮，agent_end 收轮（未收尾尾轮也收）。"""
+        轮界定：user_prompt 开轮，agent_end 收轮（未收尾尾轮也收）。
+        Automatic recovery sets completed_through to replay only finished, earlier turns."""
         records = []
         path = self._events_log_path(session)
         try:
@@ -2357,7 +2454,8 @@ class AgentHostManager:
                     if line:
                         try:
                             record = json.loads(line)
-                            if record.get("host", "pi") == session.agent_cli:
+                            if (record.get("host", "pi") == session.agent_cli
+                                    and (completed_through is None or record.get("seq", 0) <= completed_through)):
                                 records.append(record)
                         except json.JSONDecodeError:
                             pass
@@ -2371,16 +2469,27 @@ class AgentHostManager:
             if et == "user_prompt":
                 cur = {"user": self._input_text({"text": str(ev.get("text") or ""),
                                                "node_ref_context": ev.get("node_ref_context")}),
-                       "parts": []}
+                       "parts": [], "request_id": ev.get("request_id")}
                 turns.append(cur)
             elif et == "queued_input" and turns:
+                # For automatic recovery, a queued follow-up is history only if
+                # independently delivered as a user_prompt; never replay the queue itself.
+                if completed_through is not None and (cur is None or ev.get("input_type") != "steer"):
+                    continue
                 # Inputs accepted after agent_end still belong to the preceding
                 # existing round. Read the saved snapshot, never today's canvas.
                 text = self._input_text({"text": str(ev.get("text") or ""),
                                          "node_ref_context": ev.get("node_ref_context")})
                 turns[-1]["parts"].append({"role": f"queued_input ({ev.get('input_type', '')})", "text": text})
+            elif et == "turn_end" and cur is not None and (ev.get("message") or {}).get("stopReason") == "aborted":
+                cur["aborted"] = True
             elif et == "agent_end":
+                if cur is not None:
+                    cur["complete"] = not cur.get("aborted")
                 cur = None
+            elif ev.get("delivery") == "uncertain" and turns:
+                if et == "error" or (et == "input_delivery_terminal" and ev.get("request_id") == turns[-1]["request_id"]):
+                    turns[-1]["complete"] = False
             elif et == "message_update":
                 ame = ev.get("assistantMessageEvent") or {}
                 if ame.get("type") == "text_delta" and cur is not None:
@@ -2388,6 +2497,8 @@ class AgentHostManager:
                     if not parts or parts[-1]["role"] != "assistant":
                         parts.append({"role": "assistant", "text": ""})
                     parts[-1]["text"] += str(ame.get("delta") or "")
+        if completed_through is not None:
+            turns = [turn for turn in turns if turn.get("complete")]
         recent = turns[-EVENTS_REPLAY_TURNS:]
         # 预算内保留最近轮（从尾向前积）
         keep = []
