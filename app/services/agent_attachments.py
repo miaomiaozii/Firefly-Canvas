@@ -11,6 +11,7 @@ from urllib.parse import unquote
 from fastapi import HTTPException, Request
 
 from app.services.agent_host import InvalidEventsCursor, validate_events_identifiers
+from firefly_json_io import write_json_atomic
 
 # Server-owned per-file limit, in bytes. Browsers use the 413 response as authority.
 AGENT_ATTACHMENT_MAX_BYTES = int(os.environ.get("FIREFLY_AGENT_ATTACHMENT_MAX_BYTES", str(64 * 1024 * 1024)))
@@ -52,7 +53,7 @@ async def save_attachment(request: Request, root: Path) -> dict:
                     })
                 file.write(chunk)
         record = {"id": attachment_id, "name": name, "type": mime, "size": size, "file": content.name}
-        (folder / "metadata.json").write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+        write_json_atomic(folder / "metadata.json", record)
         return {key: value for key, value in record.items() if key != "file"} | {"path": str(content)}
     except BaseException:
         content.unlink(missing_ok=True)
