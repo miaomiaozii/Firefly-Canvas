@@ -27,6 +27,7 @@ HTML = ROOT / "static" / "smart-canvas.html"
 CORE_NAMES = (
     "smartGenerationSubmissions",
     "tr",
+    "trf",
     "escapeHtml",
     "escapeAttr",
     "uid",
@@ -171,13 +172,14 @@ REVERSE_REFERENCE_CEILINGS = {
     # 括号里是「旧（少算） -> 修正后」。每个增量都能归因到正则修正，无一个是真回归：
     # cascade +8、media-history +15、generation-tasks +10、image-editor +2、undo +1，
     # node-ops / connections / agent-tui 实测不变（它们不引用 async 核心名字）。
-    "canvas-generation-cascade.js": 154,  # 147 -> 155 -> 153 -> 152：#236 即梦退役删
+    # #453：trf 下沉到 canvas-core，六个模块按实测净值收紧。
+    "canvas-generation-cascade.js": 151,  # 147 -> 155 -> 153 -> 152：#236 即梦退役删
     # cascade 里即梦相关发图路径引用，净 -1 核心引用（2026-10-29 实测，棘轮随之收紧）。
-    "canvas-media-history.js": 105,  # 83 -> 98 -> 99 -> 103：#260 Upscale 菜单（2K/4K/8K 档位）在本模块
+    "canvas-media-history.js": 102,  # 83 -> 98 -> 99 -> 103：#260 Upscale 菜单（2K/4K/8K 档位）在本模块
     # 新增对核心档位/尺寸层的引用 +4（2026-10-28 实测），走的是「核心调模块」既有方向，无新自由耦合。
     # smartVideoFallbackHtml/mediaDisplaySrc）从宿主上移到本模块，紧邻 smartMediaPreviewUrl 档位逻辑；
     # +1 可归因到这次搬迁（displayMediaUrl 经 canvasCore 接口），无自由新耦合。
-    "canvas-generation-tasks.js": 103,  # 103 -> 113（正则修正）-> 115 -> 116 -> 101：#236 即梦退役删
+    "canvas-generation-tasks.js": 99,  # 103 -> 113（正则修正）-> 115 -> 116 -> 101：#236 即梦退役删
     # jimeng 发图/发视频/轮询/取回整块（-15 核心引用，2026-10-29 实测），棘轮随之收紧。
     # 101 -> 103：#237 stop≠error 中性终态在本模块新增 scheduleStateSave/scheduleSave/
     # render/trf 引用 +17，#236 合入后净 -15，结算 103（origin/main 实测 2026-10-29，
@@ -186,9 +188,9 @@ REVERSE_REFERENCE_CEILINGS = {
     # canvasCore 接口（自由侧仍 34，接口引用 +2）。
     # 等 #203 把比例簇（IMAGE_RATIO_PRESETS / ratioLog /
     # apiImageAllowedAspectRatios / alignRatioToModel）整簇从核心抽出后应回落。
-    "canvas-image-editor.js": 77,  # 87 -> 89 -> 87：#236 即梦退役删 jimengImageEditMode 等
+    "canvas-image-editor.js": 76,  # 87 -> 89 -> 87：#236 即梦退役删 jimengImageEditMode 等
     # 即梦编辑态引用，净 -2 核心引用（2026-10-29 实测），棘轮随之收紧。
-    "canvas-node-ops.js": 78,  # #200 实测持平；2026-10-28 实测 60->68：#260 批量重命名（单件复用 + 模板批量）
+    "canvas-node-ops.js": 76,  # #200 实测持平；2026-10-28 实测 60->68：#260 批量重命名（单件复用 + 模板批量）
     # 新增核心引用 +8，方向为「核心调模块」。棘轮不能低于实测。2026-10-29 实测 68->71：#246 freeSpot
     # 落点接线（createNodeFromMenu 扫描锚点 + 碰撞盒），canvasCore.mediaNodeDefaultScale×1 /
     # canvasCore.nodeRect×2 接口引用净 +3，全走 canvasCore 接口，无新自由全局。
@@ -216,7 +218,7 @@ REVERSE_REFERENCE_CEILINGS = {
     # 钉 3 是防未来出现真·smart-canvas.js 顶层名引用而漏计。
     "canvas-annotations.js": 3,
     "canvas-undo.js": 8,  # 6 -> 7 -> 8 (#418 measured drift)
-    "canvas-agent-tui.js": 43,  # #418 measured dock/navigation drift; #200 实测持平：-2 被搬名字 + 2 搬回代码块新增引用（providerChatModels、chatApiProviders）
+    "canvas-agent-tui.js": 40,  # #418 measured dock/navigation drift; #200 实测持平：-2 被搬名字 + 2 搬回代码块新增引用（providerChatModels、chatApiProviders）
     "canvas-agent-navigation.js": 0,  # #421 新模块，核心总引用实测为 0。
     # #324 新建跨项目搜索面板（#359 补登记）：实测 2 处均来自同一行 `window.focusAndSelectNode`
     # 的 typeof 守卫 + 调用——那是 smart-canvas.js 经 window 暴露的契约，不是裸词法全局引用；
@@ -240,14 +242,14 @@ REVERSE_REFERENCE_CEILINGS = {
 FREE_GLOBAL_REFERENCE_CEILINGS = {
     # 同上：2026-10-19 数值上调是修正测量，不是放宽。括号里是「旧（少算） -> 修正后」。
     "canvas-generation-cascade.js": 52,  # #201 接口化 147->42；正则修正 42->50（+8 个之前隐形的 async 名字）
-    "canvas-media-history.js": 55,  # #201 接口化 83->36；正则修正 36->51；2026-10-28 实测 51->54（#260 Upscale 菜单）
+    "canvas-media-history.js": 51,  # #201 接口化 83->36；正则修正 36->51；2026-10-28 实测 51->54（#260 Upscale 菜单）
     "canvas-generation-tasks.js": 35,  # #199 轨道 1 接口化：自由侧 113->35（20 个共享名字 78 处改走 canvasCore 接口）；
     # 2026-10-28 实测：#254 新增 EACH_RUN_RESULT_GAP/expandEachRuns/runEachImageGeneration 顶层名（+3）
     # 与既有内联回收抵消后 34->35；#252 imeComposing 在 smart-canvas.js 自有作域。
     # #219：reducedAspectRatio 也改走 canvasCore 接口（35->34，接口 78->79）；源码契约按
     # 99453da 模式放宽为 (?:canvasCore\.)? 前缀（tests/test_project_image_generation_ui.py:97）
     "canvas-image-editor.js": 43,  # #201 接口化 87->41；正则修正 41->43（+2）
-    "canvas-node-ops.js": 26,  # #201 接口化 60->17；2026-10-28 实测 17->23（#260 批量重命名自由侧新增）
+    "canvas-node-ops.js": 24,  # #201 接口化 60->17；2026-10-28 实测 17->23（#260 批量重命名自由侧新增）
     "canvas-connections.js": 12,  # #201 接口化：自由侧 41 -> 12（9 个共享名字 29 处改走 canvasCore 接口）
     "canvas-download.js": 0,  # #223 新建：零自由全局（tr 来自 canvas-core.js）
     "canvas-geometry.js": 0,  # #255 新建：零自由全局（纯函数，无模块依赖）
@@ -262,7 +264,7 @@ FREE_GLOBAL_REFERENCE_CEILINGS = {
     # 真实自由全局为 0；钉 3 防真·自由全局引用增长。
     "canvas-annotations.js": 3,
     "canvas-undo.js": 7,  # 正则修正 6->7（+1）
-    "canvas-agent-tui.js": 39,
+    "canvas-agent-tui.js": 36,
     "canvas-agent-navigation.js": 0,  # #421 新模块，自由全局引用实测为 0。
     # #324 新建跨项目搜索面板：同上 2 处 `window.focusAndSelectNode`（未接口化，自由侧等于反向侧）。
     "canvas-search.js": 2,

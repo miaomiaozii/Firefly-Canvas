@@ -629,6 +629,8 @@
         "smart.phaseSaving": { zh: "写入画布", en: "Saving to canvas" },
         "smart.phaseFailed": { zh: "失败 · {label}", en: "Failed · {label}" },
         "smart.sentFailedLogToCanvas": { zh: "已将失败记录发送到画布，可直接重新生成", en: "Failed record sent to canvas — you can regenerate directly" },
+        "smart.historyModelFallback": { zh: "历史模型「{original}」已不可用，已切换为默认模型「{replacement}」。", en: "The original model “{original}” is unavailable. Switched to the default model “{replacement}”." },
+        "smart.historyModelUnavailable": { zh: "历史模型「{original}」已不可用，没有可替换的模型。", en: "The original model “{original}” is unavailable and has no replacement." },
         "smart.requestActual": { zh: "请求 {r} / 实际 {a}", en: "Requested {r} / actual {a}" },
         "smart.actualOnly": { zh: "实际 {a}", en: "Actual {a}" },
         "smart.imageUrlUnavailable": { zh: "图片地址不可用", en: "Image URL unavailable" },

@@ -89,7 +89,6 @@ CATEGORY_BY_NAME = {
     "rhBuildNodeInfoList": "util",
     "toast": "hub",
     "tr": "hub",
-    "trf": "hub",
     "nodeRect": "hub",
     "screenToWorld": "hub",
     "nodeById": "hub",
@@ -258,6 +257,7 @@ CATEGORY_BY_NAME = {
     "applyPreviewTransform": "hub",  # DOM 操作：应用预览 pan/zoom 变换
     "buildPromptRequest": "hub",  # prompt 服务：构建 prompt 请求（读 promptInput/loop ctx）
     "savePromptDraftForCurrent": "hub",  # draft 服务：存 prompt 草稿到 composer 主体
+    "parseRunningHubEntryKey": "util",  # 从历史参数读取已保存的 RunningHub 引用（不查询当前配置）。
     "runningHubSelectedModel": "hub",  # RunningHub 查询：选中模型（读 settings）
     "modelscopeImageModels": "hub",  # provider 查询：ModelScope 图像模型
     "smartCascadeAnyRunning": "hub",  # 级联查询：是否有级联在跑

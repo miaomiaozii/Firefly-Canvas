@@ -156,7 +156,7 @@ def seed_store(store: ProjectStore) -> dict[str, str]:
             "status": "succeeded",
             "prompt": "第二条历史提示词",
             "createdAt": 2000000,
-            "params": {"model": "offline-browser-model", "size": "1024x1024"},
+            "params": {"model": "removed-history-model", "size": "1024x1024"},
             "outputs": [{"asset_id": second_media["asset_id"], "kind": "image", "name": "second.png"}],
             "result_node_id": "second-generator",
         },
@@ -506,6 +506,7 @@ class HistoryBrowserServer:
 
 def launch(browser: Path, server: HistoryBrowserServer, viewport: tuple[int, int], fixture: dict[str, str]):
     before = len(server.results)
+    evidence_dir = os.environ.get("FIREFLY_HISTORY_EVIDENCE_DIR")
     query = urllib.parse.urlencode(
         {
             "historyProject": fixture["project_id"],
@@ -514,12 +515,12 @@ def launch(browser: Path, server: HistoryBrowserServer, viewport: tuple[int, int
             "secondAsset": fixture["second_asset"],
             "thirdAsset": fixture["third_asset"],
             "importedAsset": fixture["imported_asset"],
+            "captureEvidence": "1" if evidence_dir else "0",
         }
     )
     url = f"{server.base_url}/static/smart-canvas.html?id={urllib.parse.quote(fixture['project_id'])}&{query}"
     native_browser = NativeBrowser.launch(browser)
     server.release_purge.clear()
-    evidence_dir = os.environ.get("FIREFLY_HISTORY_EVIDENCE_DIR")
     try:
         native_browser.set_environment(viewport)
         native_browser.navigate(url)
@@ -528,7 +529,13 @@ def launch(browser: Path, server: HistoryBrowserServer, viewport: tuple[int, int
         while len(server.results) <= before:
             if time.monotonic() >= deadline:
                 raise RuntimeError(f"history drawer validation timed out at {viewport}, after {driven} inputs")
-            request = native_browser.evaluate("window.__historyInput || null")
+            pending = native_browser.evaluate("({input:window.__historyInput, screenshot:window.__historyScreenshot})")
+            request = pending.get("input")
+            screenshot = pending.get("screenshot")
+            if evidence_dir and screenshot:
+                filename = f"{viewport[0]}x{viewport[1]}-{screenshot}.png"
+                native_browser.capture_screenshot(Path(evidence_dir) / filename)
+                native_browser.evaluate("window.__historyScreenshot = null")
             if request and request["id"] > driven:
                 if evidence_dir and request.get("screenshot"):
                     filename = f"{viewport[0]}x{viewport[1]}-{request['screenshot']}.png"

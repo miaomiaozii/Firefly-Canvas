@@ -281,9 +281,27 @@
         await waitFor(() => nodeIds().length === initialNodes.length + 1, 1500);
         const [sentNodeId] = newNodeIds(initialNodes);
         assertion('reuse action creates one image node', nodeIds().length === initialNodes.length + 1 && Boolean(sentNodeId), {before:initialNodes, after:nodeIds()});
+        const toastText = () => document.querySelector('#toast.show')?.textContent.trim() || '';
+        assertion('configured history model only shows the existing send confirmation', toastText() === '已发送 1 张原图到画布', toastText());
+
         toggle.click();
         await waitFor(() => drawer.classList.contains('open') && historyCard('history-second')?.querySelector('.log-history-image'));
+        const beforeFallback = nodeIds();
+        await nativeClick(`${historySelector('history-second')} [data-history-send-all]`);
+        const fallbackNodes = newNodeIds(beforeFallback);
+        const [fallbackNodeId] = fallbackNodes;
+        assertion('sending a history record with a removed model creates exactly one node', fallbackNodes.length === 1, fallbackNodes);
+        const fallbackNotice = '历史模型「removed-history-model」已不可用，已切换为默认模型「gemini-3.1-flash-image-preview」。';
+        const fallbackShown = await waitFor(() => toastText() === fallbackNotice, 1000);
+        assertion('removed history model shows both the old and replacement model', fallbackShown, toastText());
+        if(fallbackShown && query.get('captureEvidence') === '1'){
+            await waitFor(() => getComputedStyle(document.getElementById('toast')).opacity === '1', 500);
+            window.__historyScreenshot = 'history-model-fallback';
+            if(!(await waitFor(() => window.__historyScreenshot === null, 2500))) throw new Error('fallback screenshot not captured');
+        }
 
+        toggle.click();
+        await waitFor(() => drawer.classList.contains('open') && historyCard('history-second')?.querySelector('.log-history-image'));
         const secondImage = historyCard('history-second').querySelector('.log-history-image');
         const secondCard = secondImage.closest('.log-media-card');
         const secondPoint = center(secondImage);
@@ -336,6 +354,10 @@
         const reusedImages = reusedNodes.map(node => node?.images?.[0]);
         const expectedAssets = [expected.firstAsset, expected.secondAsset, expected.firstAsset];
         assertion('reused and dragged originals persist as project media IDs without URLs', saveIsReady && new Set(reusedNodes.filter(Boolean).map(node => node.id)).size === 3 && reusedImages.every((image, index) => image?.asset_id === expectedAssets[index] && !Object.hasOwn(image, 'url')), {saveIsReady, state:saveState?.dataset.state, revision:savedAfterReuse.revision, reusedImages});
+        const fallbackNode = savedAfterReuse.nodes.find(node => node.id === fallbackNodeId);
+        assertion('send to canvas saves one node with the configured default model after fallback', saveIsReady && Boolean(fallbackNodeId) && fallbackNode?.historyId === 'history-second' && fallbackNode.runSettings?.model === 'gemini-3.1-flash-image-preview' && fallbackNode.runSettings?.size === '1024x1024', fallbackNode || null);
+        const originalHistory = savedAfterReuse.history.find(log => log.id === 'history-second');
+        assertion('fallback does not change the model in the history record', originalHistory?.params?.model === 'removed-history-model', originalHistory?.params);
         const reusedHistoryNode = reusedNodes[0];
         assertion('send to canvas carries the original prompt and generation settings', saveIsReady && reusedHistoryNode?.historyId === 'history-first' && reusedHistoryNode.runPrompt === '第一条历史提示词' && reusedHistoryNode.runSettings?.model === 'offline-browser-model' && reusedHistoryNode.runSettings?.size === '1024x1024' && reusedHistoryNode.runSettings?.resolution === '4k', reusedHistoryNode || null);
 

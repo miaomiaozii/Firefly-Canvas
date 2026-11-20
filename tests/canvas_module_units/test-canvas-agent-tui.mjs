@@ -17,13 +17,10 @@
 // 是所有未补测模块里最小的（对比已补好的 canvas-node-ops.js 17 处/14 名、
 // canvas-connections.js 12 处/9 名）。其中：
 //   - 由**加载真实模块**满足（不桩）：
-//       canvas-core.js  → tr / nodeScale / escapeHtml / escapeAttr / canvas(let) / canvasCore(Proxy)
+//       canvas-core.js  → tr / trf / nodeScale / escapeHtml / escapeAttr / canvas(let) / canvasCore(Proxy)
 //       canvas-node-types.js → NODE_TYPE_AGENT / NODE_TYPE_TASK
 //       canvas-state.js → canvasState
-//   - 11 个手写桩（全部来自 hub smart-canvas.js，按真实契约最小化）：
-//       trf → 值传递记录器（返回值 = 真实 tr(key) + 被代入值；无 StudioI18n 时 smart-canvas.js:
-//             314-316 的逐字 trf 返回 key 本身、代入值被丢弃，值传递路径不可观察，故刻意不用
-//             逐字镜像——也不重新实现模板替换，零产品逻辑）；
+//   - hub smart-canvas.js 手写桩（按真实契约最小化）：
 //       chatApiProviders / providerChatModels → 数据驱动（测试直接喂数组）；
 //       canvasId / sourceProjectId → 数据字段；
 //       imageLayout / nodeBodyHtml / render / centerViewportOnWorldPoint → 零逻辑记录器
@@ -196,10 +193,6 @@ function loadAgentTuiModule({
     // 注册真 #toast 元素让真 toast 跑通，断言走 element.textContent。
 
     // hub 自由名（见文件头桩预算）。
-    // trf 是零逻辑记录器：把翻译 key 和被代入的值都拼进返回值，让测试能断言
-    // 「调用方确实把 kind 传进去了」，不复制 smart-canvas.js:314-316 的模板替换逻辑。
-    ctx.trf = (key, values = {}) =>
-        ctx.tr(key) + (Object.keys(values).length ? `\u00b7${Object.values(values).join('\u00b7')}` : '');
     ctx.chatApiProviders = () => chatProviders;
     ctx.providerChatModels = providerId => modelsByProvider[providerId] || [];
     ctx.canvasId = 'canvas-id-1';
@@ -1174,6 +1167,7 @@ test('agentTaskStatusText: 五种已知状态走 i18n，未知状态原样回显
 
 test('agentTaskNodeBodyHtml: 结果节点链接/等待占位、错误块按有无 error 出现、文本全转义', () => {
     const { ctx } = loadAgentTuiModule();
+    ctx.StudioI18n = { t: key => key === 'smart.agentTaskTitle' ? `${key}·{kind}` : key };
     const card = fn(ctx, 'agentTaskNodeBodyHtml');
     const withResult = fromContext(card({
         id: 'n1', task_id: 't1', status: 'succeeded', kind: 'video',
@@ -1184,8 +1178,7 @@ test('agentTaskNodeBodyHtml: 结果节点链接/等待占位、错误块按有�
     assert.ok(withResult.includes('data-agent-task-card="t1"'), withResult);
     assert.ok(withResult.includes('&lt;img src=x&gt;'), 'prompt 必须转义');
     assert.ok(!withResult.includes('data-agent-task-error'), '无 error 不该渲染错误块');
-    // trf 桩是记录器（见文件头）：把被代入的 kind 拼回返回值，所以这里能断言
-    // 调用方确实把本地化后的 kind 传进了标题。
+    // 只替换翻译模板；真实 trf 必须把本地化后的 kind 填入标题。
     assert.ok(withResult.includes('smart.agentTaskTitle\u00b7smart.agentKindVideo'), withResult);
 
     const failed = fromContext(card({ id: 'n2', task_id: 't2', status: 'failed', error: '配额不足' }));

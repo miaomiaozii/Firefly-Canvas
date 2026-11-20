@@ -344,9 +344,6 @@ const IMAGE_RATIO_PRESETS = [
 ];
 const RES_LONG_SIDE = { '1k':1536, '2k':2048, '4k':3840 };
 const RES_PIXEL_LIMIT = { '1k':1572864, '2k':4194304, '4k':8294400 };
-function trf(key, values={}){
-    return Object.entries(values).reduce((text, [name, value]) => text.replaceAll(`{${name}}`, String(value)), tr(key));
-}
 function copyTextWithCopyEvent(value){
     let handled = false;
     const onCopy = event => {

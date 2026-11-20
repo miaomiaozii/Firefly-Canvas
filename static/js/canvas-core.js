@@ -65,6 +65,9 @@ let canvas = null;
 // Pure authoritative copy shared by receive and undo; never a replayed view.
 let smartCanvasServerShadow = null;
 function tr(key){ return window.StudioI18n?.t ? window.StudioI18n.t(key) : key; }
+function trf(key, values={}){
+    return Object.entries(values).reduce((text, [name, value]) => text.replaceAll(`{${name}}`, String(value)), tr(key));
+}
 
 function uid(prefix){ return `${prefix}_${Math.random().toString(36).slice(2, 10)}${Date.now().toString(36).slice(-4)}`; }
 
@@ -156,12 +159,12 @@ function smartGenerationSubmissions(node){
 }
 
 // 提示条（#189 四道关卡下沉：canvas-generation-tasks.js 与 smart-canvas.js 都反向引用它，按 tests/test_canvas_core_layer.py 的守卫要求下沉到 core 层。只碰 #toast 元素与 setTimeout，无核心依赖。）
-function toast(text){
+function toast(text, duration=1800){
     const el = document.getElementById('toast');
     el.textContent = text;
     el.classList.add('show');
     clearTimeout(toast._timer);
-    toast._timer = setTimeout(() => el.classList.remove('show'), 1800);
+    toast._timer = setTimeout(() => el.classList.remove('show'), duration);
 }
 
 // #197: pending-action persistence support (used by canvas-generation-tasks.js).

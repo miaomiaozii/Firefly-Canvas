@@ -1138,6 +1138,15 @@ function smartHistoryImageOutputs(log){
     }).filter(Boolean);
 }
 
+function smartHistorySettingsModel(source){
+    if(source?.engine === 'modelscope') return source.msCustomModel || '';
+    if(source?.engine === 'runninghub'){
+        const ref = canvasCore.parseRunningHubEntryKey(source.rhConfigKey);
+        if(ref) return ref.kind === 'model' ? ref.id : '';
+    }
+    return (source?.apiKind === 'video' ? source.videoModel : source?.model) || '';
+}
+
 function sendSmartHistoryOutputsToCanvas(historyId, outputIndex=null, dropPoint=null){
     const log = smartHistoryEntryById(historyId);
     let outputs = smartHistoryImageOutputs(log);
@@ -1147,6 +1156,7 @@ function sendSmartHistoryOutputsToCanvas(historyId, outputIndex=null, dropPoint=
     const point = dropPoint || screenToWorld({clientX:rect.left + rect.width / 2, clientY:rect.top + rect.height / 2});
     const failed = log?.status === 'failed' || !outputs.length;
     const runMeta = smartHistoryRunMeta(log);
+    const originalModel = smartHistorySettingsModel(runMeta.settings);
     pushUndo();
     const node = createImageNodeAt(point, outputs.map(output => {
         const clean = {...output};
@@ -1161,9 +1171,19 @@ function sendSmartHistoryOutputsToCanvas(historyId, outputIndex=null, dropPoint=
         generationState:failed ? 'ready' : 'complete'
     });
     node.runStatus = failed ? 'failed' : 'succeeded';
+    // #453: resolve the selected node's settings before reporting the result, using
+    // the same fallback as the composer rather than guessing from the history label.
+    if(originalModel && canvasCore.activeComposerNode()?.id === node.id) canvasCore.renderDynamicParams();
+    const appliedModel = smartHistorySettingsModel(node.runSettings);
     canvasCore.scheduleSave();
     closeSmartCanvasLog();
-    toast(outputs.length ? tr('canvas.sentToCanvas').replace('{n}', outputs.length) : tr('smart.sentFailedLogToCanvas'));
+    if(originalModel && originalModel !== appliedModel){
+        toast(appliedModel
+            ? trf('smart.historyModelFallback', {original:originalModel, replacement:appliedModel})
+            : trf('smart.historyModelUnavailable', {original:originalModel}), 5000);
+    } else {
+        toast(outputs.length ? tr('canvas.sentToCanvas').replace('{n}', outputs.length) : tr('smart.sentFailedLogToCanvas'));
+    }
     return node;
 }
 
