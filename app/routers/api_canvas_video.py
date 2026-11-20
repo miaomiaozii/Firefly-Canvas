@@ -18,6 +18,5 @@ router = APIRouter()
 @router.post('/api/canvas-video')
 async def canvas_video(payload: CanvasVideoRequest):
     require_canvas_video_project_media_scope(payload)
-    # #349：前端没选平台时传空，按主平台走（记日志）；传了但认不出米直接 400，不换平台。
-    provider = _app_main.get_api_provider_required(payload.provider_id)
+    provider = _app_main.get_api_provider_required(payload.provider_id, allow_primary_when_empty=False)
     return await execute_canvas_video(payload, provider)

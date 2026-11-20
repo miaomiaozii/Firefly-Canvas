@@ -229,8 +229,14 @@ async def project_conversation_adapter(request: Dict[str, Any]) -> Dict[str, Any
         audio_references = [{'asset_id': str(item['asset_id']).strip(), 'kind': 'audio', 'name': str(item.get('name') or item['asset_id']).strip()[:160], 'url': _svc.media_adapter_data_url(project_media_adapter_reference(project_id, item['asset_id']), 'audio', max_bytes=_svc._main('PROJECT_CONVERSATION_MEDIA_MAX_FILE_BYTES'))} for item in references if str(item.get('kind') or '').strip().lower() == 'audio' and item.get('asset_id')]
     finally:
         PROJECT_MEDIA_ADAPTER_PROJECT.reset(scope_token)
-    # 空配置交给发送边界按当前默认平台解析，不写死平台名。
-    payload = CanvasLLMRequest(message=current_message, system_prompt=str(request.get('system_prompt') or ''), model=str(request.get('model') or ''), messages=llm_messages, provider=str(request.get('provider') or ''), ms_model=str(request.get('ms_model') or ''), images=images, videos=videos, audios=[item['url'] for item in audio_references], audio_references=audio_references)
+    # #381：项目对话的空配置表示沿用当前主平台；#349 的公开请求仍须指定平台。
+    provider = str(request.get('provider') or '').strip()
+    if not provider:
+        try:
+            provider = str(_svc._main('get_api_provider_required')(provider, allow_primary_when_empty=True)['id'])
+        except HTTPException as exc:
+            raise HTTPException(status_code=400, detail='没有可用的默认 API 平台，请在设置中启用服务商。') from exc
+    payload = CanvasLLMRequest(message=current_message, system_prompt=str(request.get('system_prompt') or ''), model=str(request.get('model') or ''), messages=llm_messages, provider=provider, ms_model=str(request.get('ms_model') or ''), images=images, videos=videos, audios=[item['url'] for item in audio_references], audio_references=audio_references)
     result = await _svc._main('canvas_llm')(payload)
     return {'text': str(result.get('text') or '接口返回了空回复。'), 'model': result.get('model') or str(request.get('model') or ''), 'raw_usage': result.get('raw_usage')}
 

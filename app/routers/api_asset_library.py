@@ -425,7 +425,7 @@ async def register_asset_library_avatar(item_id: str, payload: AssetAvatarRegist
     target_item = find_asset_item_in_library(lib, item_id, payload.library_id)
     if not target_item:
         raise HTTPException(status_code=404, detail='资产不存在')
-    provider = _app_main.get_api_provider_required(payload.provider_id)
+    provider = _app_main.get_api_provider_required(payload.provider_id, allow_primary_when_empty=False)
     platform = avatar_platform_for_provider(provider)
     if platform not in AVATAR_SUPPORTED_PLATFORMS:
         name = (provider or {}).get('name') or (provider or {}).get('id') or '该平台'
@@ -464,7 +464,7 @@ async def check_asset_library_avatar(item_id: str, payload: AssetAvatarRegisterR
     if not target_item:
         raise HTTPException(status_code=404, detail='资产不存在')
     regs = target_item.get('registrations') if isinstance(target_item.get('registrations'), dict) else {}
-    provider = _app_main.get_api_provider_required(payload.provider_id or '')
+    provider = _app_main.get_api_provider_required(payload.provider_id, allow_primary_when_empty=False)
     platform = avatar_platform_for_provider(provider)
     if platform not in AVATAR_SUPPORTED_PLATFORMS:
         raise HTTPException(status_code=400, detail='该平台暂不支持数字人/真人认证审核。')

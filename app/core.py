@@ -1195,7 +1195,7 @@ class ImageTaskQueryRequest(BaseModel):
 
 class CanvasVideoRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=VIDEO_PROMPT_MAX_LENGTH)
-    provider_id: str = ''  # #349：空值 = 显式“没选”，后端按主平台走并记日志；认不出的名字直接 400
+    provider_id: str = ''
     model: str = 'veo3-fast'
     duration: int = 5
     width: Optional[int] = None

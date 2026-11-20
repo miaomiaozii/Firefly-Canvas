@@ -431,7 +431,6 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings, resultN
         const trustedSource = trustedMode ? (['library','cloud','manual'].includes(runSettings.videoTrustedSource) ? runSettings.videoTrustedSource : 'library') : 'none';
         // 仅「素材库链接」来源才走 asset:// 认证地址 + 后端可信素材路由；上传云端/手动网址走普通直链。
         const useAssetUris = trustedSource === 'library';
-        // #349：这里以前写死 || 'comfly'，对不选平台的场景会拿 comfly 去比平台。空值下结果本来也是 ''，改成直传。
         const targetPlatform = videoProviderPlatform(runSettings.videoProvider || '');
         let mismatchedAsset = false;
         const effUrl = ref => {
@@ -458,7 +457,7 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings, resultN
         if(mismatchedAsset) toast(tr('smart.assetPlatformMismatch'));
         const payload = {
             prompt,
-            provider_id: runSettings.videoProvider || '',  // #349：不再默认 comfly；没选就交给后端主平台（会记日志）
+            provider_id: runSettings.videoProvider || '',
             model: runSettings.videoModel || 'veo3-fast',
             size:videoSize.size,
             width:videoSize.width,

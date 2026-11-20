@@ -56,14 +56,7 @@ async def canvas_llm(payload: CanvasLLMRequest):
     finally:
         if project_scope is not None:
             PROJECT_MEDIA_ADAPTER_PROJECT.reset(project_scope)
-    # 空配置在发送时解析当前默认；固定解析结果，避免后续重查时默认平台发生变化。
-    requested_provider = (payload.provider or '').strip()
-    try:
-        _provider = _app_main.get_api_provider_required(requested_provider)
-    except HTTPException as exc:
-        if not requested_provider:
-            raise HTTPException(status_code=400, detail='没有可用的默认 API 平台，请在设置中启用服务商。') from exc
-        raise
+    _provider = _app_main.get_api_provider_required(payload.provider, allow_primary_when_empty=False)
     payload.provider = str(_provider['id'])
     logger.info('[canvas-llm] selected provider=%s', payload.provider)
     audio_references = [item for item in payload.audio_references or [] if isinstance(item, dict) and str(item.get('asset_id') or item.get('url') or '').strip()]
@@ -81,7 +74,6 @@ async def canvas_llm(payload: CanvasLLMRequest):
         return {'text': text, 'model': model, 'raw_usage': None, 'raw': raw}
     _need_vision = bool((payload.images or []) or (payload.videos or []))
     chat_base, chat_hdrs, model = _app_main.resolve_chat_provider(payload.provider, payload.model, payload.ms_model, need_vision=_need_vision)
-    # #349：上面已经严格解析过一次，这里直接复用，不再拿原值重查（重查会再走一次默认值）。
     _llm_provider = _provider if payload.provider not in ('modelscope',) else {}
     _is_apimart = is_apimart_provider(_llm_provider)
     system_prompt = (payload.system_prompt or '').strip()
