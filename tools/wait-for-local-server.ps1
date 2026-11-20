@@ -9,6 +9,8 @@ param(
     [string]$Uri = 'http://127.0.0.1:3000/',
     [int]$TimeoutSec = 60,
     [string]$LogDir = '',
+    [string]$StderrPath = '',
+    [int]$ServerProcessId,
     [switch]$NoBrowser,
     [switch]$NoPopup
 )
@@ -23,8 +25,14 @@ if (Test-Path -LiteralPath $helper) {
 }
 
 $deadline = (Get-Date).AddSeconds($TimeoutSec)
+$server = if ($ServerProcessId) { Get-Process -Id $ServerProcessId }
+$exited = $false
 
 while ((Get-Date) -lt $deadline) {
+    if ($ServerProcessId -and (-not $server -or $server.HasExited)) {
+        $exited = $true
+        break
+    }
     try {
         $response = Invoke-WebRequest -UseBasicParsing -TimeoutSec 2 -Uri $Uri
         if ($response.StatusCode -eq 200) {
@@ -38,13 +46,17 @@ while ((Get-Date) -lt $deadline) {
 }
 
 if (Test-Path -LiteralPath $helper) {
-    $tail = Get-FireflyBootLogTail -LogDir $LogDir -Lines 15
+    $tail = Get-FireflyBootLogTail -LogDir $LogDir -StderrPath $StderrPath -Lines 15
     $hint = '可能原因和处理办法：'
-    $lines = @()
-    $lines += "Firefly Canvas 启动失败：$TimeoutSec 秒内本地服务没有就绪（$Uri）。"
+    $lines = if ($exited) {
+        @("Firefly Canvas 启动失败：服务进程在就绪前退出（$Uri）。")
+    } else {
+        @("Firefly Canvas 启动失败：$TimeoutSec 秒内本地服务没有就绪（$Uri）。")
+    }
+    $logHint = if ($StderrPath) { $StderrPath } else { "$LogDir\boot-<时间戳>.stderr.log" }
     $lines += ''
     if ($tail) {
-        $lines += "最近一次启动的报错尾部（$LogDir\boot-<时间戳>.stderr.log）："
+        $lines += "启动报错尾部（$logHint）："
         $lines += '----'
         $lines += $tail
         $lines += '----'
@@ -52,7 +64,7 @@ if (Test-Path -LiteralPath $helper) {
             $lines += '看起来是 Python 依赖缺失：双击「安装依赖.bat」，装完再双击 run.bat。'
         }
     } else {
-        $lines += "（$LogDir 里没有 boot-*.stderr.log，说明进程连启动输出都没落到日志。）"
+        $lines += "（没有可读取的启动错误输出：$logHint。）"
     }
     $lines += ''
     $lines += $hint

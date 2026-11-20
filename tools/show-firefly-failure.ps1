@@ -14,15 +14,19 @@
 function Get-FireflyBootLogTail {
     param(
         [Parameter(Mandatory = $true)][string]$LogDir,
-        [int]$Lines = 15
+        [int]$Lines = 15,
+        [string]$StderrPath = ''
     )
-    if (-not (Test-Path -LiteralPath $LogDir)) { return '' }
-    $latest = Get-ChildItem -LiteralPath $LogDir -Filter 'boot-*.stderr.log' -ErrorAction SilentlyContinue |
-        Sort-Object -Property LastWriteTime -Descending |
-        Select-Object -First 1
-    if (-not $latest) { return '' }
+    if (-not $StderrPath) {
+        if (-not (Test-Path -LiteralPath $LogDir)) { return '' }
+        $latest = Get-ChildItem -LiteralPath $LogDir -Filter 'boot-*.stderr.log' -ErrorAction SilentlyContinue |
+            Sort-Object -Property LastWriteTime -Descending |
+            Select-Object -First 1
+        if (-not $latest) { return '' }
+        $StderrPath = $latest.FullName
+    }
     try {
-        return (@(Get-Content -LiteralPath $latest.FullName -Tail $Lines -Encoding UTF8) -join [Environment]::NewLine)
+        return (@(Get-Content -LiteralPath $StderrPath -Tail $Lines -Encoding UTF8 -ErrorAction Stop) -join [Environment]::NewLine)
     } catch {
         return ''
     }

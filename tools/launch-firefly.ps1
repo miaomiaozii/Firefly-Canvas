@@ -1,14 +1,17 @@
 ﻿param(
     [string]$PythonPath = '',
-    # 票 #363：自动化测试里不能真弹窗，也不能挨在用户的 3000 端口上。
-    # 默认值就是原来的行为（双击 run.bat 时两者都不传）。
     [switch]$NoPopup,
-    [int]$Port = 3000
+    [switch]$NoBrowser,
+    [ValidateRange(1, 65535)][int]$Port = $(if ($env:FIREFLY_PORT) { [int]$env:FIREFLY_PORT } else { 3000 })
 )
 
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $uri = "http://127.0.0.1:$Port/"
+$env:FIREFLY_PORT = [string]$Port
+$server = $null
+$stderr = ''
+$logDir = Join-Path $root 'logs'
 
 $failureHelper = Join-Path $PSScriptRoot 'show-firefly-failure.ps1'
 if (Test-Path -LiteralPath $failureHelper) {
@@ -38,8 +41,7 @@ if ($PythonPath -eq 'python') {
 }
 
 if (-not (Test-FireflyServer)) {
-    # issue #363：依赖没装齐时，服务在隐藏窗口里崩，用户什也看不到（票面：缺 Pillow 等依赖时
-    # wait-for-local-server.ps1 等 60 秒后静默退出）。先跑一遍依赖体检，缺就直接点名，不要等超时。
+    # #363：先点名无法导入的依赖，不把它们当成普通的就绪超时。
     $checkScript = Join-Path $root 'tools\check_dependencies.py'
     $missingNames = @()
     $checkExit = 0
@@ -78,28 +80,38 @@ if (-not (Test-FireflyServer)) {
     # boot 日志：它只兜「Python 日志配置生效之前就崩」的现场（导 ImportError 之类）。
     # 服务自己的日志走 logs\server.log，UTF-8、追加写、7 天 / 100MB 轮转，见 firefly_server_log.py；
     # 这对 boot 日志超过 7 天由服务启动时自己清（prune_boot_logs）。
-    $logDir = Join-Path $root 'logs'
-    New-Item -ItemType Directory -Force -Path $logDir | Out-Null
-    $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')
-    $stdout = Join-Path $logDir ("boot-$stamp.stdout.log")
-    $stderr = Join-Path $logDir ("boot-$stamp.stderr.log")
-    # 不设 UTF-8，Windows 子进程按 GBK 码页写，中文日志全成乱码（票面 #364）。
-    $env:PYTHONUTF8 = '1'
-    $env:PYTHONIOENCODING = 'utf-8'
-    # The Python helper executes runpy.run_path('main.py', run_name='__main__').
-    Start-Process -FilePath $PythonPath `
-        -ArgumentList @('tools\run-server.py') `
-        -WorkingDirectory $root `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput $stdout `
-        -RedirectStandardError $stderr | Out-Null
+    try {
+        New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+        $stamp = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss')
+        $stdout = Join-Path $logDir ("boot-$stamp.stdout.log")
+        $stderr = Join-Path $logDir ("boot-$stamp.stderr.log")
+        $env:PYTHONUTF8 = '1'
+        $env:PYTHONIOENCODING = 'utf-8'
+        # The Python helper executes runpy.run_path('main.py', run_name='__main__').
+        $server = Start-Process -FilePath $PythonPath `
+            -ArgumentList @('tools\run-server.py') `
+            -WorkingDirectory $root `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $stdout `
+            -RedirectStandardError $stderr -PassThru
+    } catch {
+        Show-FireflyFailure -Message "Firefly Canvas 启动失败：无法启动服务进程。$($_.Exception.Message)`n请检查 Python 路径及日志目录的写入权限：$logDir" -NoPopup:$NoPopup
+        exit 1
+    }
 }
 
 # Browser opening is also detached. The batch file may close immediately and
 # the server process above continues independently until it is stopped by the
 # user or the OS.
-$waitScript = Join-Path $root 'tools\wait-for-local-server.ps1'
-Start-Process -FilePath 'powershell.exe' `
-    -ArgumentList @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $waitScript) `
-    -WorkingDirectory $root `
-    -WindowStyle Hidden | Out-Null
+$waitArgs = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass',
+    '-File', 'tools\wait-for-local-server.ps1', '-Uri', $uri, '-LogDir', ('"' + $logDir + '"'))
+if ($server) { $waitArgs += @('-ServerProcessId', $server.Id, '-StderrPath', ('"' + $stderr + '"')) }
+if ($NoPopup) { $waitArgs += '-NoPopup' }
+if ($NoBrowser) { $waitArgs += '-NoBrowser' }
+try {
+    Start-Process -FilePath 'powershell.exe' -ArgumentList $waitArgs `
+        -WorkingDirectory $root -WindowStyle Hidden | Out-Null
+} catch {
+    Show-FireflyFailure -Message "Firefly Canvas 无法检查服务是否就绪。$($_.Exception.Message)`n请查看日志：$logDir" -NoPopup:$NoPopup
+    exit 1
+}

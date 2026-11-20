@@ -22,8 +22,9 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
+import importlib
 import sys
+from contextlib import redirect_stdout
 
 # (requirements.txt 里的包名, 导入名（可多个，任一存在即算装过）, 是否必需)
 DEPENDENCIES: list[tuple[str, tuple[str, ...], bool]] = [
@@ -49,10 +50,12 @@ REMEDY_LINES = [
 
 
 def _module_present(name: str) -> bool:
-    """导入名在不在。find_spec 对坏包会抛异常，抛了就算不在。"""
+    """实际导入才能发现缺 DLL 等问题；PIL.Image 会加载 Pillow 的原生模块。"""
     try:
-        return importlib.util.find_spec(name) is not None
-    except (ImportError, ValueError, TypeError):
+        with redirect_stdout(sys.stderr):
+            importlib.import_module("PIL.Image" if name == "PIL" else name)
+        return True
+    except Exception:
         return False
 
 

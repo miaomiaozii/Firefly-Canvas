@@ -118,6 +118,18 @@ class CheckDependenciesBehaviorTests(unittest.TestCase):
         for line in lines:
             self.assertTrue(line.isascii(), line)
 
+    def test_installed_but_unimportable_pillow_is_reported(self):
+        with tempfile.TemporaryDirectory(prefix="ff363-broken-import-") as tmp:
+            package = Path(tmp) / "PIL"
+            package.mkdir()
+            (package / "__init__.py").write_text("raise ImportError('broken Pillow')\n", encoding="utf-8")
+            result = subprocess.run(
+                [sys.executable, str(CHECK_SCRIPT), "--names-only"],
+                cwd=ROOT, env={**os.environ, "PYTHONPATH": tmp}, capture_output=True, timeout=60,
+            )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn(b"pillow (PIL)", result.stdout.splitlines())
+
     def test_optional_module_missing_does_not_block_startup(self):
         # httpx[socks] 本机没装也照样跑；把它算成致命缺失会让正常机器的启动器一直红。
         result = self._run("--extra-modules", "firefly_definitely_not_installed_xyz")
@@ -345,6 +357,24 @@ class LauncherGuardsTests(unittest.TestCase):
             self.assertIn(marker, text, "boot 日志的报错要原样出现在提示里")
             self.assertIn("依赖缺失", text)
             self.assertIn("导入中文也正常", text, "UTF-8 日志读进来不能再变乱码")
+
+    @unittest.skipUnless(IS_WINDOWS and _powershell(), "需要 Windows + PowerShell")
+    def test_wait_script_reports_only_the_explicit_boot_log(self):
+        with tempfile.TemporaryDirectory(prefix="ff363-exact-log-") as tmp:
+            log_dir = Path(tmp)
+            expected = log_dir / "boot-expected.stderr.log"
+            expected.write_text("这一轮报错\n", encoding="utf-8")
+            (log_dir / "boot-unrelated.stderr.log").write_text("另一轮报错\n", encoding="utf-8")
+            result = subprocess.run(
+                [_powershell(), "-NoProfile", "-File", str(ROOT / "tools" / "wait-for-local-server.ps1"),
+                 "-Uri", "http://127.0.0.1:3178/", "-TimeoutSec", "0", "-LogDir", tmp,
+                 "-StderrPath", str(expected), "-NoPopup", "-NoBrowser"],
+                cwd=ROOT, capture_output=True, timeout=20,
+            )
+        text = _decode(result.stdout)
+        self.assertEqual(result.returncode, 1, text)
+        self.assertIn("这一轮报错", text)
+        self.assertNotIn("另一轮报错", text)
 
     @unittest.skipUnless(IS_WINDOWS and _powershell(), "需要 Windows + PowerShell")
     def test_detached_launcher_refuses_to_start_when_dependencies_are_missing(self):
