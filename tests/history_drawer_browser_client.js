@@ -45,8 +45,46 @@
         const rect = element.getBoundingClientRect();
         return {x:rect.left + rect.width / 2, y:rect.top + rect.height / 2};
     }
-    function historyCard(historyId){
-        return document.querySelector(`[data-canvas-history-id="${CSS.escape(historyId)}"]`);
+    const historySelector = historyId => `[data-canvas-history-id="${CSS.escape(historyId)}"]`;
+    const historyCard = historyId => document.querySelector(historySelector(historyId));
+    const deleteSelector = historyId => `${historySelector(historyId)} [data-history-delete="media"]`;
+    const dangerConfirm = '.ff-dialog-card[role="alertdialog"][aria-modal="true"] .ff-dialog-btn-danger';
+    const dialogCancel = '.ff-dialog-card[role="alertdialog"] .ff-dialog-actions button:not(.ff-dialog-btn-danger)';
+    const projectApi = `/api/project-library/${encodeURIComponent(expected.projectId)}`;
+    const canvasApi = `/api/canvases/${encodeURIComponent(expected.projectId)}`;
+    let inputId = 0;
+    async function nativeClick(selector, screenshot){
+        // The Python driver reads this request and supplies real Chrome mouse input.
+        let clicked = false;
+        const observeClick = event => { if(event.isTrusted && event.target.closest(selector)) clicked = true; };
+        document.addEventListener('click', observeClick, true);
+        window.__historyInput = {id:++inputId, selector, screenshot};
+        try {
+            if(!(await waitFor(() => clicked, 8000))) throw new Error(`trusted click not received: ${selector}`);
+        } finally {
+            document.removeEventListener('click', observeClick, true);
+            window.__historyInput = null;
+        }
+    }
+    async function readJson(url){
+        const response = await fetch(url);
+        if(!response.ok) throw new Error(`${url} returned ${response.status}`);
+        return response.json();
+    }
+    const counts = () => readJson('/__history_request_counts');
+    const trashItems = () => readJson(`${projectApi}/trash/media`).then(data => data.items);
+    const mediaStatus = assetId => fetch(`${projectApi}/media/${encodeURIComponent(assetId)}`).then(response => response.status);
+    async function runConfirmedAction(selector, screenshot, {cancel=false, requestKey='history_delete_with_media'}={}){
+        const before = (await counts())[requestKey];
+        await nativeClick(selector);
+        if(!(await waitFor(() => document.querySelector(dangerConfirm), 3000))) throw new Error(`no app confirmation: ${selector}`);
+        const dialog = document.querySelector(dangerConfirm).closest('[role="alertdialog"]');
+        const message = dialog.querySelector('.ff-dialog-message')?.textContent.trim();
+        const beforeAnswer = (await counts())[requestKey];
+        assertion('destructive action asks for app confirmation before any request', Boolean(message) && beforeAnswer === before, {selector, message, before, beforeAnswer});
+        await nativeClick(cancel ? dialogCancel : dangerConfirm, screenshot);
+        if(!(await waitFor(() => !dialog.isConnected, 3000))) throw new Error(`app confirmation did not close: ${selector}`);
+        return before;
     }
     async function postResult(){
         result.pass = result.errors.length === 0 && result.assertions.every(item => item.pass);
@@ -75,7 +113,6 @@
                 }
             });
         } catch(_) {}
-        window.confirm = () => true;
     }
     async function run(){
         installClipboardProbe();
@@ -236,22 +273,27 @@
         assertion('copy prompt exposes the recorded prompt to the clipboard boundary', window.__historyCopiedText === '第一条历史提示词', window.__historyCopiedText);
 
         const world = document.getElementById('world');
-        const initialNodes = world.querySelectorAll('.image-node').length;
-        historyCard('history-first')?.querySelector('[data-history-send-all]')?.click();
-        await waitFor(() => world.querySelectorAll('.image-node').length === initialNodes + 1, 1500);
-        assertion('reuse action creates one image node', world.querySelectorAll('.image-node').length === initialNodes + 1, world.querySelectorAll('.image-node').length);
+        const nodeIds = () => [...world.querySelectorAll('.image-node[data-id]')].map(node => node.dataset.id);
+        const newNodeIds = before => nodeIds().filter(id => !before.includes(id));
+        const initialNodes = nodeIds();
+        const initialRevision = (await readJson(canvasApi)).canvas.revision;
+        await nativeClick(`${historySelector('history-first')} [data-history-send-all]`, 'send-to-canvas');
+        await waitFor(() => nodeIds().length === initialNodes.length + 1, 1500);
+        const [sentNodeId] = newNodeIds(initialNodes);
+        assertion('reuse action creates one image node', nodeIds().length === initialNodes.length + 1 && Boolean(sentNodeId), {before:initialNodes, after:nodeIds()});
         toggle.click();
-        await waitFor(() => drawer.classList.contains('open') && document.querySelectorAll('.log-history-image').length >= 2);
+        await waitFor(() => drawer.classList.contains('open') && historyCard('history-second')?.querySelector('.log-history-image'));
 
-        const secondImage = document.querySelectorAll('.log-history-image')[1];
+        const secondImage = historyCard('history-second').querySelector('.log-history-image');
         const secondCard = secondImage.closest('.log-media-card');
         const secondPoint = center(secondImage);
-        const beforePointerDrag = world.querySelectorAll('.image-node').length;
+        const beforePointerDrag = nodeIds();
         pointer(secondImage, 'pointerdown', secondPoint.x, secondPoint.y, 21);
         pointer(secondImage, 'pointermove', secondPoint.x + 8, secondPoint.y, 21);
         pointer(secondImage, 'pointerup', 96, 116, 21);
-        await waitFor(() => world.querySelectorAll('.image-node').length === beforePointerDrag + 1, 1500);
-        assertion('8px PointerEvent drag creates exactly one node', world.querySelectorAll('.image-node').length === beforePointerDrag + 1, world.querySelectorAll('.image-node').length - beforePointerDrag);
+        await waitFor(() => nodeIds().length === beforePointerDrag.length + 1, 1500);
+        const [pointerNodeId] = newNodeIds(beforePointerDrag);
+        assertion('8px PointerEvent drag creates exactly one node', nodeIds().length === beforePointerDrag.length + 1 && Boolean(pointerNodeId), nodeIds().length - beforePointerDrag.length);
         assertion('pointer drag does not select the dragged image', !secondCard.classList.contains('is-selected'), secondCard.dataset.historySelected || 'not-selected');
 
         toggle.click();
@@ -268,62 +310,87 @@
 
         if(!drawer.classList.contains('open')) toggle.click();
         await waitFor(() => drawer.classList.contains('open') && document.querySelectorAll('.log-history-image').length >= 2);
-        const nativeImage = document.querySelector('.log-history-image');
+        const nativeImage = historyCard('history-first').querySelector('.log-history-image');
         const nativePoint = center(nativeImage);
-        const beforeNativeDrag = world.querySelectorAll('.image-node').length;
+        const beforeNativeDrag = nodeIds();
         const transfer = new DataTransfer();
         nativeImage.dispatchEvent(new DragEvent('dragstart', {bubbles:true, cancelable:true, dataTransfer:transfer, clientX:nativePoint.x, clientY:nativePoint.y}));
         shell.dispatchEvent(new DragEvent('dragover', {bubbles:true, cancelable:true, dataTransfer:transfer, clientX:118, clientY:132}));
         shell.dispatchEvent(new DragEvent('drop', {bubbles:true, cancelable:true, dataTransfer:transfer, clientX:118, clientY:132}));
         nativeImage.dispatchEvent(new DragEvent('dragend', {bubbles:true, cancelable:true, dataTransfer:transfer, clientX:118, clientY:132}));
-        await waitFor(() => world.querySelectorAll('.image-node').length === beforeNativeDrag + 1, 1500);
-        assertion('DragEvent image drop creates exactly one node', world.querySelectorAll('.image-node').length === beforeNativeDrag + 1, world.querySelectorAll('.image-node').length - beforeNativeDrag);
+        await waitFor(() => nodeIds().length === beforeNativeDrag.length + 1, 1500);
+        const [dragNodeId] = newNodeIds(beforeNativeDrag);
+        assertion('DragEvent image drop creates exactly one node', nodeIds().length === beforeNativeDrag.length + 1 && Boolean(dragNodeId), nodeIds().length - beforeNativeDrag.length);
         assertion('only the image element is draggable', nativeImage.draggable === true && nativeImage.closest('.log-media-card').draggable === false, {image:nativeImage.draggable, card:nativeImage.closest('.log-media-card').draggable});
 
-        const requestCountsBeforeImportedDelete = await fetch('/__history_request_counts').then(response => response.json());
-        historyCard('history-imported')?.querySelector('[data-history-delete="media"]')?.click();
-        const importedRecordDeleted = await waitFor(() => !historyCard('history-imported'), 1800);
-        const importedMediaStatus = await fetch(`/api/project-library/${encodeURIComponent(expected.projectId)}/media/${encodeURIComponent(expected.importedAsset)}`).then(response => response.status).catch(() => 0);
-        const requestCountsAfterImportedDelete = await fetch('/__history_request_counts').then(response => response.json());
-        assertion('deleting an imported history record keeps user media', importedRecordDeleted && importedMediaStatus === 200 && Number(requestCountsAfterImportedDelete.history_delete_with_media || 0) === Number(requestCountsBeforeImportedDelete.history_delete_with_media || 0) + 1, {recordDeleted:importedRecordDeleted, mediaStatus:importedMediaStatus, requestCountsAfterImportedDelete});
+        // The product autosaves after a 3-second quiet period. Check durability
+        // before deletion (which can itself flush a pending save or reset these nodes).
+        const saveState = document.querySelector('#projectSaveState');
+        const saveIsReady = await waitFor(async () => {
+            if(saveState?.dataset.state !== 'saved') return false;
+            const status = await readJson(`${projectApi}/save-status`);
+            return status.saved === true && status.saved_revision > initialRevision;
+        });
+        const savedAfterReuse = (await readJson(canvasApi)).canvas;
+        const reusedNodes = [sentNodeId, pointerNodeId, dragNodeId].map(id => savedAfterReuse.nodes.find(node => node.id === id));
+        const reusedImages = reusedNodes.map(node => node?.images?.[0]);
+        const expectedAssets = [expected.firstAsset, expected.secondAsset, expected.firstAsset];
+        assertion('reused and dragged originals persist as project media IDs without URLs', saveIsReady && new Set(reusedNodes.filter(Boolean).map(node => node.id)).size === 3 && reusedImages.every((image, index) => image?.asset_id === expectedAssets[index] && !Object.hasOwn(image, 'url')), {saveIsReady, state:saveState?.dataset.state, revision:savedAfterReuse.revision, reusedImages});
+        const reusedHistoryNode = reusedNodes[0];
+        assertion('send to canvas carries the original prompt and generation settings', saveIsReady && reusedHistoryNode?.historyId === 'history-first' && reusedHistoryNode.runPrompt === '第一条历史提示词' && reusedHistoryNode.runSettings?.model === 'offline-browser-model' && reusedHistoryNode.runSettings?.size === '1024x1024' && reusedHistoryNode.runSettings?.resolution === '4k', reusedHistoryNode || null);
 
-        await sleep(800);
-        const savedAfterReuse = await fetch(`/api/canvases/${encodeURIComponent(expected.projectId)}`).then(response => response.json()).catch(() => ({}));
-        const persistedProjectImage = (savedAfterReuse.canvas?.nodes || []).flatMap(node => node.images || []).find(image => image.asset_id === expected.firstAsset || image.asset_id === expected.secondAsset);
-        assertion('reused and dragged originals persist as project media IDs without URLs', Boolean(persistedProjectImage?.asset_id) && !persistedProjectImage.url, persistedProjectImage || null);
-        const reusedHistoryNode = (savedAfterReuse.canvas?.nodes || []).find(node => node.historyId === 'history-first');
-        assertion('send to canvas carries the original prompt and generation settings', reusedHistoryNode?.runPrompt === '第一条历史提示词' && reusedHistoryNode?.runSettings?.model === 'offline-browser-model' && reusedHistoryNode?.runSettings?.size === '1024x1024', reusedHistoryNode || null);
-        const h2Card = historyCard('history-second');
-        h2Card?.querySelector('[data-history-delete="media"]')?.click();
-        await waitFor(() => !historyCard('history-second'), 1800);
-        const removedSecondMediaStatus = expected.secondAsset ? (await fetch(`/api/project-library/${encodeURIComponent(expected.projectId)}/media/${encodeURIComponent(expected.secondAsset)}`)).status : 0;
-        assertion('deleting a history record removes its generated media', !historyCard('history-second') && removedSecondMediaStatus === 404, {card:!!historyCard('history-second'), mediaStatus:removedSecondMediaStatus});
+        if(!drawer.classList.contains('open')) await nativeClick('#smartHistoryToggle');
+        const beforeCancel = await runConfirmedAction(deleteSelector('history-imported'), 'cancel-imported-delete', {cancel:true});
+        const cancelCounts = await counts();
+        const cancelCanvas = (await readJson(canvasApi)).canvas;
+        assertion('canceling combined delete changes neither the history nor the original', Boolean(historyCard('history-imported')) && cancelCanvas.revision === savedAfterReuse.revision && cancelCanvas.history.some(log => log.id === 'history-imported') && await mediaStatus(expected.importedAsset) === 200 && cancelCounts.history_delete_with_media === beforeCancel, {revision:cancelCanvas.revision, beforeCancel, cancelCounts});
 
-        const h1Card = historyCard('history-first');
-        const countsBeforeGeneratedDelete = await fetch('/__history_request_counts').then(response => response.json());
-        h1Card?.querySelector('[data-history-delete="media"]')?.click();
-        const firstRecordDeleted = await waitFor(() => !historyCard('history-first'), 1800);
-        const deletedMediaStatus = expected.firstAsset ? (await fetch(`/api/project-library/${encodeURIComponent(expected.projectId)}/media/${encodeURIComponent(expected.firstAsset)}`)).status : 0;
-        const savedCanvas = await fetch(`/api/canvases/${encodeURIComponent(expected.projectId)}`).then(response => response.json()).catch(() => ({}));
-        const generator = (savedCanvas.canvas?.nodes || []).find(node => node.id === 'generator');
-        const deletedCounts = await fetch('/__history_request_counts').then(response => response.json());
-        assertion('delete button removes the history record and all generated media in one action', firstRecordDeleted && deletedMediaStatus === 404 && Number(deletedCounts.history_delete_with_media || 0) === Number(countsBeforeGeneratedDelete.history_delete_with_media || 0) + 1, {recordDeleted:firstRecordDeleted, mediaStatus:deletedMediaStatus, counts:deletedCounts});
+        async function deleteHistory(historyId, assetId, screenshot){
+            const before = await runConfirmedAction(deleteSelector(historyId), screenshot);
+            const cardRemoved = await waitFor(() => !historyCard(historyId), 5000);
+            const canvas = (await readJson(canvasApi)).canvas;
+            const after = await counts();
+            const status = await mediaStatus(assetId);
+            return {recordDeleted:cardRemoved && !canvas.history.some(log => log.id === historyId), mediaStatus:status, before, after, canvas};
+        }
+        const imported = await deleteHistory('history-imported', expected.importedAsset);
+        const importedTrash = await trashItems();
+        assertion('deleting an imported history record keeps user media', imported.recordDeleted && imported.mediaStatus === 200 && imported.after.history_delete_with_media === imported.before + 1 && !importedTrash.some(item => item.asset_id === expected.importedAsset), {recordDeleted:imported.recordDeleted, mediaStatus:imported.mediaStatus, counts:imported.after, trash:importedTrash});
+        const second = await deleteHistory('history-second', expected.secondAsset);
+        assertion('deleting a history record removes its generated media', second.recordDeleted && second.mediaStatus === 404 && second.after.history_delete_with_media === second.before + 1, {recordDeleted:second.recordDeleted, mediaStatus:second.mediaStatus, counts:second.after});
+
+        const first = await deleteHistory('history-first', expected.firstAsset, 'confirm-generated-delete');
+        const generator = first.canvas.nodes.find(node => node.id === 'generator');
+        assertion('delete button removes the history record and all generated media in one action', first.recordDeleted && first.mediaStatus === 404 && first.after.history_delete_with_media === first.before + 1 && first.after.original_delete === cancelCounts.original_delete, {recordDeleted:first.recordDeleted, mediaStatus:first.mediaStatus, counts:first.after});
         assertion('combined deletion leaves the generator ready to regenerate', generator?.needsRegeneration === true && generator?.generationState === 'ready' && generator?.runPrompt === '第一条历史提示词', generator || null);
-        assertion('combined deletion marks downstream references without losing output', Boolean(world.querySelector('.image-node[data-id="downstream"] .node-upstream-deleted-marker')) && (savedCanvas.canvas?.nodes || []).find(node => node.id === 'downstream')?.images?.length === 1, world.querySelector('.image-node[data-id="downstream"] .node-upstream-deleted-marker')?.textContent || 'missing');
-        const purgeTrash = document.getElementById('smartHistoryPurgeTrash');
-        await waitFor(() => purgeTrash && !purgeTrash.hidden, 1200);
-        assertion('combined deletion exposes the project-trash control', purgeTrash?.hidden === false, purgeTrash?.hidden);
-        purgeTrash?.click();
-        assertion('emptying project trash exposes its in-flight state', purgeTrash?.getAttribute('aria-busy') === 'true' && purgeTrash?.disabled === true, {busy:purgeTrash?.getAttribute('aria-busy'), disabled:purgeTrash?.disabled});
-        await waitFor(() => purgeTrash?.getAttribute('aria-busy') === 'false' && purgeTrash?.disabled === false, 1800);
-        const purgedMediaStatus = await fetch(`/api/project-library/${encodeURIComponent(expected.projectId)}/media/${encodeURIComponent(expected.firstAsset)}`).then(response => response.status).catch(() => 0);
-        assertion('explicitly emptying project trash permanently removes the deleted original', purgedMediaStatus === 404 && purgeTrash?.hidden === true, {mediaStatus:purgedMediaStatus, trashHidden:purgeTrash?.hidden});
-        if(!drawer.classList.contains('open')) toggle.click();
-        await waitFor(() => historyCard('history-third')?.querySelector('[data-history-delete="media"]'));
-        historyCard('history-third')?.querySelector('[data-history-delete="media"]')?.click();
-        const thirdRecordDeleted = await waitFor(() => !historyCard('history-third'), 1800);
-        const thirdMediaAfterDelete = await fetch(`/api/project-library/${encodeURIComponent(expected.projectId)}/media/${encodeURIComponent(expected.thirdAsset)}`).then(response => response.status).catch(() => 0);
-        assertion('a second generated record uses the same combined delete transaction', thirdRecordDeleted && thirdMediaAfterDelete === 404, {recordDeleted:thirdRecordDeleted, mediaStatus:thirdMediaAfterDelete});
+        const downstreamMarker = world.querySelector('.image-node[data-id="downstream"] .node-upstream-deleted-marker');
+        const downstreamAfter = first.canvas.nodes.find(node => node.id === 'downstream')?.images;
+        const downstreamBefore = savedAfterReuse.nodes.find(node => node.id === 'downstream')?.images;
+        assertion('combined deletion marks downstream references without losing output', Boolean(downstreamMarker) && downstreamAfter?.length === 1 && downstreamAfter[0].asset_id === downstreamBefore?.[0]?.asset_id, {marker:downstreamMarker?.textContent, images:downstreamAfter});
+        const purgeSelector = '#smartHistoryPurgeTrash';
+        const purgeTrash = document.querySelector(purgeSelector);
+        await waitFor(() => purgeTrash && !purgeTrash.hidden, 3000);
+        const trashedAssets = (await trashItems()).map(item => item.asset_id);
+        assertion('combined deletion exposes the project-trash control', purgeTrash?.hidden === false && trashedAssets.length === 2 && trashedAssets.includes(expected.firstAsset) && trashedAssets.includes(expected.secondAsset), {hidden:purgeTrash?.hidden, trashedAssets});
+        const purgeBefore = await counts();
+        const beforePurgeClick = await runConfirmedAction(purgeSelector, 'confirm-trash-purge', {requestKey:'trash_purge'});
+        let purgeRequested = false;
+        try {
+            purgeRequested = await waitFor(async () => (await counts()).trash_purge > beforePurgeClick, 3000);
+            const current = await counts();
+            const pendingAssets = (await trashItems()).map(item => item.asset_id);
+            assertion('emptying project trash exposes its in-flight state', purgeRequested && current.trash_purge === beforePurgeClick + 1 && purgeTrash.getAttribute('aria-busy') === 'true' && purgeTrash.disabled === true && current.trash_items_purged === purgeBefore.trash_items_purged && pendingAssets.includes(expected.firstAsset), {busy:purgeTrash.getAttribute('aria-busy'), disabled:purgeTrash.disabled, pendingAssets, counts:current});
+        } finally {
+            const release = await fetch('/__history_release_purge', {method:'POST'});
+            if(!release.ok) throw new Error(`could not release trash purge: ${release.status}`);
+        }
+        const purgeComplete = await waitFor(() => purgeTrash.getAttribute('aria-busy') === 'false' && !purgeTrash.disabled && purgeTrash.hidden, 5000);
+        const trashAfterPurge = await trashItems();
+        const purgeAfter = await counts();
+        const purgedMediaStatus = await mediaStatus(expected.firstAsset);
+        assertion('explicitly emptying project trash permanently removes the deleted original', purgeRequested && purgeComplete && trashAfterPurge.length === 0 && purgeAfter.trash_items_purged === purgeBefore.trash_items_purged + trashedAssets.length && purgedMediaStatus === 404, {mediaStatus:purgedMediaStatus, trashHidden:purgeTrash.hidden, trashAfterPurge, counts:purgeAfter});
+        const third = await deleteHistory('history-third', expected.thirdAsset);
+        assertion('a second generated record uses the same combined delete transaction', third.recordDeleted && third.mediaStatus === 404 && third.after.history_delete_with_media === third.before + 1, {recordDeleted:third.recordDeleted, mediaStatus:third.mediaStatus, counts:third.after});
         assertion('history is limited to the current project', ![...document.querySelectorAll('.log-item')].some(item => item.textContent.includes(expected.otherPrompt)), [...document.querySelectorAll('.log-item')].map(item => item.textContent.trim().slice(0, 80)));
     }
     run().catch(error => result.errors.push(error?.stack || String(error))).finally(postResult);

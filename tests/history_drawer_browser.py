@@ -68,8 +68,8 @@ def image_bytes(label: str, color: tuple[int, int, int]) -> bytes:
 
 
 def seed_store(store: ProjectStore) -> dict[str, str]:
-    first_project = store.create_project("浏览器历史项目")
-    other_project = store.create_project("另一个浏览器项目")
+    first_project = store.create_project("e2e-tabbit-浏览器历史项目")
+    other_project = store.create_project("e2e-tabbit-另一个浏览器项目")
 
     first_media = store.import_media(
         first_project["id"],
@@ -241,8 +241,11 @@ class HistoryBrowserServer:
     def __init__(self, store: ProjectStore):
         self.store = store
         self.results: list[dict] = []
-        self.request_counts = {"history_delete_with_media": 0, "original_delete": 0, "original_restore": 0}
-        self.condition = threading.Condition()
+        self.request_counts = {
+            "history_delete_with_media": 0, "original_delete": 0, "original_restore": 0,
+            "trash_purge": 0, "trash_items_purged": 0,
+        }
+        self.release_purge = threading.Event()
         owner = self
 
         class Handler(http.server.SimpleHTTPRequestHandler):
@@ -293,15 +296,17 @@ class HistoryBrowserServer:
                     return
                 parts = [urllib.parse.unquote(item) for item in parsed.path.split("/") if item]
                 if parts == ["api", "config"]:
+                    # Keep the default distinct so the reuse assertion detects fallback.
+                    image_models = ["gemini-3.1-flash-image-preview", "offline-browser-model"]
                     self.send_json({
                         "api_providers": [{
                             "id": "history-provider",
                             "name": "comfly",
-                            "image_models": ["gemini-3.1-flash-image-preview"],
+                            "image_models": image_models,
                             "model_names": {"gemini-3.1-flash-image-preview": "Nano Banana 2"},
                         }],
                         "chat_models": [],
-                        "image_models": ["gemini-3.1-flash-image-preview"],
+                        "image_models": image_models,
                         "video_models": [],
                     })
                     return
@@ -320,9 +325,14 @@ class HistoryBrowserServer:
                 if parts == ["api", "global-settings", "preferences"]:
                     self.send_json({"preferences": {"theme": "light", "language": "zh"}})
                     return
-                if parts[:2] == ["api", "canvases"] and len(parts) == 3:
+                if parts[:2] == ["api", "canvases"] and (len(parts) == 3 or parts[3:] == ["meta"]):
                     try:
-                        self.send_json({"canvas": owner.store.canvas(parts[2])})
+                        canvas = owner.store.canvas(parts[2])
+                        # The fixture has no WebSocket. After a failed upgrade the page
+                        # treats a meta 404 as project deletion and disables autosave.
+                        data = ({key: canvas.get(key) for key in ("id", "updated_at", "title", "icon", "kind")}
+                                if parts[3:] == ["meta"] else {"canvas": canvas})
+                        self.send_json(data)
                     except ProjectNotFound as exc:
                         self.api_error(str(exc), 404)
                     return
@@ -358,6 +368,12 @@ class HistoryBrowserServer:
                     except (ProjectNotFound, OSError) as exc:
                         self.api_error(str(exc), 404)
                     return
+                if project_id and parts[3:] == ["save-status"]:
+                    try:
+                        self.send_json(owner.store.save_status(project_id))
+                    except ProjectNotFound as exc:
+                        self.api_error(str(exc), 404)
+                    return
                 if project_id and parts[3:] == ["trash", "media"]:
                     try:
                         self.send_json({"items": owner.store.list_deleted_media(project_id)})
@@ -369,10 +385,11 @@ class HistoryBrowserServer:
             def do_POST(self):
                 parsed = urllib.parse.urlparse(self.path)
                 if parsed.path == "/__history_browser_results":
-                    payload = self.read_json()
-                    with owner.condition:
-                        owner.results.append(payload)
-                        owner.condition.notify_all()
+                    owner.results.append(self.read_json())
+                    self.send_json({"ok": True})
+                    return
+                if parsed.path == "/__history_release_purge":
+                    owner.release_purge.set()
                     self.send_json({"ok": True})
                     return
                 parts = [urllib.parse.unquote(item) for item in parsed.path.split("/") if item]
@@ -386,6 +403,7 @@ class HistoryBrowserServer:
                             body["history_id"],
                             base_revision=body["base_revision"],
                         )
+                        owner.store.flush(project_id)
                         self.send_json({"ok": True, **deleted})
                         return
                     if project_id and len(parts) == 5 and parts[3] == "history" and parts[4] == "delete":
@@ -418,9 +436,6 @@ class HistoryBrowserServer:
                     if project_id and len(parts) == 4 and parts[3] == "flush":
                         self.send_json(owner.store.flush(project_id))
                         return
-                    if project_id and len(parts) == 4 and parts[3] == "save-status":
-                        self.send_json(owner.store.save_status(project_id))
-                        return
                 except RevisionConflict as exc:
                     self.send_json({"detail": {"message": str(exc), "canvas": exc.canvas}}, 409)
                     return
@@ -437,8 +452,14 @@ class HistoryBrowserServer:
                 parts = [urllib.parse.unquote(item) for item in parsed.path.split("/") if item]
                 project_id = self.project_id_from_parts(parts)
                 if project_id and parts[3:] == ["trash", "media"]:
+                    # Keep the request in flight until the browser checks its pending UI.
+                    owner.request_counts["trash_purge"] += 1
+                    if not owner.release_purge.wait(timeout=12):
+                        self.api_error("browser did not release trash purge", 504)
+                        return
                     try:
                         removed = owner.store.purge_deleted_media(project_id)
+                        owner.request_counts["trash_items_purged"] += removed
                         self.send_json({"ok": True, "removed": removed})
                     except ProjectNotFound as exc:
                         self.api_error(str(exc), 404)
@@ -482,16 +503,6 @@ class HistoryBrowserServer:
         self.httpd.server_close()
         self.thread.join(timeout=5)
 
-    def wait_for_result(self, start_count: int, timeout: float = 60):
-        deadline = time.monotonic() + timeout
-        with self.condition:
-            while len(self.results) <= start_count:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise RuntimeError("browser history drawer validation timed out")
-                self.condition.wait(remaining)
-            return self.results[start_count]
-
 
 def launch(browser: Path, server: HistoryBrowserServer, viewport: tuple[int, int], fixture: dict[str, str]):
     before = len(server.results)
@@ -507,14 +518,38 @@ def launch(browser: Path, server: HistoryBrowserServer, viewport: tuple[int, int
     )
     url = f"{server.base_url}/static/smart-canvas.html?id={urllib.parse.quote(fixture['project_id'])}&{query}"
     native_browser = NativeBrowser.launch(browser)
+    server.release_purge.clear()
+    evidence_dir = os.environ.get("FIREFLY_HISTORY_EVIDENCE_DIR")
     try:
         native_browser.set_environment(viewport)
         native_browser.navigate(url)
-        result = server.wait_for_result(before)
-        if not result.get("pass"):
-            raise RuntimeError(json.dumps(result, ensure_ascii=False, indent=2))
+        deadline = time.monotonic() + 60
+        driven = 0
+        while len(server.results) <= before:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"history drawer validation timed out at {viewport}, after {driven} inputs")
+            request = native_browser.evaluate("window.__historyInput || null")
+            if request and request["id"] > driven:
+                if evidence_dir and request.get("screenshot"):
+                    filename = f"{viewport[0]}x{viewport[1]}-{request['screenshot']}.png"
+                    native_browser.capture_screenshot(Path(evidence_dir) / filename)
+                native_browser.native_click(request["selector"])
+                driven = request["id"]
+            else:
+                time.sleep(0.035)
+        result = {**server.results[before], "native_clicks": native_browser.operations}
+        result["relevant_network"] = [
+            item for item in native_browser.request_summaries
+            if item["url"].endswith(("/meta", "/canvas", "/media/import", "/flush"))
+        ]
+        if not result["pass"]:
+            result["uncaught_browser_errors"] = [
+                item["params"]["exceptionDetails"] for item in native_browser.console_errors
+                if item["method"] == "Runtime.exceptionThrown"
+            ]
         return result
     finally:
+        server.release_purge.set()
         native_browser.close()
 
 
