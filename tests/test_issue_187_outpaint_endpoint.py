@@ -86,6 +86,7 @@ class OutpaintEndpointRoutingTests(unittest.TestCase):
         return {
             "prompt": "扩图：向四周补全场景",
             "routing_mode": "auto",
+            "provider_id": self.providers[0]["id"],
             "size": "",
             "width": None,
             "height": None,
@@ -102,11 +103,13 @@ class OutpaintEndpointRoutingTests(unittest.TestCase):
 
     def assert_rejected(self, project, *, aspect_ratio, resolution, parameter):
         task_ids_before = set(main.CANVAS_TASKS.keys())
-        with patch.object(main, "load_api_providers", return_value=self.providers):
+        with patch.object(main, "load_api_providers", return_value=self.providers), \
+             patch.object(main, "generate_ai_image", new_callable=AsyncMock) as upstream:
             response = self.client.post(
                 f"/api/project-library/{project['id']}/image-generation-tasks",
                 json=self.outpaint_payload(project, aspect_ratio=aspect_ratio, resolution=resolution),
             )
+        upstream.assert_not_called()
         self.assertEqual(response.status_code, 400, response.text)
         detail = response.json().get("detail") or {}
         self.assertEqual(detail.get("code"), "no_compatible_image_model")

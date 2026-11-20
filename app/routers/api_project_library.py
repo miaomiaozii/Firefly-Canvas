@@ -26,6 +26,7 @@ from app.core import _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _
 from app.services.agent_host import agent_host_manager
 from app.services.agent_errors import agent_error
 from app.services.agent_refs import with_role_prefix
+from app.services.canvas_image_selection import require_canvas_image_provider, route_canvas_image
 from app.services.misc import run_routed_image_candidate
 from app.core import is_registered_conversation_user_message
 from app.project_activity import (
@@ -88,8 +89,6 @@ def project_image_request(payload: ProjectImageGenerationRequest) -> ImageGenera
         raise HTTPException(status_code=400, detail={'code': 'unsupported_media_type', 'message': '图片生成任务的媒体类型必须是 image', 'incompatible_parameters': ['media_type']})
     if payload.routing_mode not in {'auto', 'manual'}:
         raise HTTPException(status_code=400, detail='路由模式必须是 auto 或 manual')
-    if payload.routing_mode == 'manual' and (not (payload.provider_id or payload.model)):
-        raise HTTPException(status_code=400, detail='手动路由至少需要固定服务商或模型')
     if payload.n < 1 or payload.n > 8:
         raise HTTPException(status_code=400, detail='单次生图数量必须在 1 到 8 之间')
     if len(payload.reference_asset_ids) > ONLINE_IMAGE_REFERENCE_MAX:
@@ -555,6 +554,7 @@ def recover_project_image_task(
     outputs=(),
     termination_reason: str = 'service_restart_unknown',
     termination_error: str = '服务重启后无法确认任务是否已调用在线模型；为避免重复计费，任务已终止，请显式重试',
+    for_retry: bool = False,
 ) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
     """Reconcile one durable task under the project lock after registry loss."""
     with project_lifecycle_lock(project_id):
@@ -563,6 +563,9 @@ def recover_project_image_task(
         durable = durable_project_image_task(canvas, task_id)
         if durable is None:
             return opened, None
+        if for_retry and not task_id.startswith('agent_img_') and durable['status'] in {'pending', 'failed'}:
+            # A provider-less snapshot cannot be retried; don't write a recovery record first.
+            require_canvas_image_provider(durable['request_payload'].get('provider_id'))
         if write is None and task_id.startswith('agent_img_') and canvas_has_project_image_pending(canvas, task_id):
             from app.routers.api_agent_tools import recovered_generation_writer
             write = recovered_generation_writer(project_id, durable)
@@ -1589,19 +1592,26 @@ async def retry_project_image_task(project_id: str, task_id: str, request: Reque
         raise HTTPException(status_code=404, detail='项目生图任务不存在')
     if not current:
         try:
-            opened, current = await asyncio.to_thread(recover_project_image_task, project_id, str(task_id))
+            opened, current = await asyncio.to_thread(recover_project_image_task, project_id, str(task_id), for_retry=True)
         except ProjectNotFound as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ModelRoutingError as exc:
+            raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
         if current is None:
             raise HTTPException(status_code=404, detail='项目生图任务不存在')
     else:
-        opened = await asyncio.to_thread(_app_main.project_store_call, 'open_project', project_id)
+        opened = None
     if task_id.startswith('agent_img_'):
         raise HTTPException(status_code=409, detail='请从 Agent 重新发起生成并确认')
     if current.get('status') != 'failed':
         raise HTTPException(status_code=409, detail='只有失败的任务可以重试')
     request_payload = copy.deepcopy(current.get('request_payload') or {})
-
+    try:
+        require_canvas_image_provider(request_payload.get('provider_id'))
+    except ModelRoutingError as exc:
+        raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
+    if opened is None:
+        opened = await asyncio.to_thread(_app_main.project_store_call, 'open_project', project_id)
     request_payload['base_revision'] = int(opened.get('canvas', {}).get('revision') or 0)
     request_payload['idempotency_key'] = f'retry:{task_id}'
     retry_payload = ProjectImageGenerationRequest(**request_payload)
@@ -1653,7 +1663,10 @@ async def create_project_image_task(project_id: str, payload: ProjectImageGenera
 async def create_project_image_task_core(project_id: str, payload: ProjectImageGenerationRequest, *, prepared=None, hooks=None):
     """Admit browser and Agent requests before any provider work. Internal hooks may journal the writes."""
     try:
+        require_canvas_image_provider(payload.provider_id)
         opened = await asyncio.to_thread(_app_main.project_store_call, 'open_project', project_id)
+    except ModelRoutingError as exc:
+        raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
     except ProjectNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     idempotency_key = str(payload.idempotency_key or '').strip()
@@ -1691,7 +1704,9 @@ async def create_project_image_task_core(project_id: str, payload: ProjectImageG
         request_snapshot = prepared[0] if prepared else project_image_request(payload)
         for asset_id in payload.reference_asset_ids:
             await asyncio.to_thread(_app_main.project_store_call, 'media_record', project_id, asset_id)
-        route = prepared[1] if prepared else _app_main.route_image_generation(request_snapshot, _app_main.load_api_providers(), provider_id=payload.provider_id if payload.routing_mode == 'manual' else '', model=payload.model if payload.routing_mode == 'manual' else '')
+        route = prepared[1] if prepared else route_canvas_image(
+            request_snapshot, payload, _app_main.load_api_providers(), _app_main.route_image_generation,
+        )
         project_image_executed_prompt(payload)
     except ModelRoutingError as exc:
         raise HTTPException(status_code=400, detail=exc.to_dict()) from exc

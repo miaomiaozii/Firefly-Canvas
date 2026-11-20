@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
 
 import main
 from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK
-from app.routers import api_agent_tools
+from app.routers import api_agent_tools, api_project_library
 from firefly_projects import ProjectStore
 
 # Issue #175: the quality gate builds its isolated execution workspace from
@@ -29,15 +29,22 @@ from firefly_projects import ProjectStore
 # config instead; see AgentGenerateToolsIsolationTests for the guard.
 FIXTURE_PROVIDERS = [
     {
+        "id": "test-other",
+        "name": "Other Test Provider",
+        "base_url": "https://other.example.invalid/v1",
+        "protocol": "openai",
+        "enabled": True,
+        "image_models": ["other-image-model"],
+    },
+    {
         "id": "test-offline",
         "name": "Offline Test Provider",
-        # Loopback + discard port: routing succeeds, and the background
-        # generation attempt fails fast without touching any real provider.
-        "base_url": "http://127.0.0.1:9/v1",
+        "base_url": "https://offline.example.invalid/v1",
         "protocol": "openai",
         "enabled": True,
         "image_models": ["test-image-model"],
-    }
+        "available_models": {"image_models": ["discovered-only"]},
+    },
 ]
 
 
@@ -53,6 +60,9 @@ class AgentGenerateToolsTests(unittest.TestCase):
         providers_file = temp_dir / "api_providers.json"
         providers_file.write_text(json.dumps(FIXTURE_PROVIDERS), encoding="utf-8")
         self.enterContext(patch.object(main, "API_PROVIDERS_FILE", str(providers_file)))
+        # Run the real task lifecycle without making provider requests.
+        self.enterContext(patch.object(api_project_library, "run_routed_image_candidate",
+                                       side_effect=RuntimeError("Offline test provider failure")))
         self.confirm = self.enterContext(patch.object(
             api_agent_tools, "request_confirmation_core", return_value={"approved": True},
         ))
@@ -63,7 +73,7 @@ class AgentGenerateToolsTests(unittest.TestCase):
             self.project_id,
             [
                 {"op": "upsert_node", "node": {"id": "prompt-1", "type": "smart-prompt", "title": "Test Prompt", "text": "A glowing firefly", "x": 100, "y": 100}},
-                {"op": "upsert_node", "node": {"id": "image-1", "type": "smart-image", "title": "Test Image", "prompt": "A beautiful landscape", "x": 300, "y": 100}},
+                {"op": "upsert_node", "node": {"id": "image-1", "type": "smart-image", "title": "Test Image", "prompt": "A beautiful landscape", "x": 300, "y": 100, "runSettings": {"provider_id": "test-offline"}}},
                 {"op": "upsert_edge", "edge": {"id": "edge-1", "from": "prompt-1", "to": "image-1", "kind": "flow"}},
                 {"op": "upsert_node", "node": {"id": self.actor_id, "type": "smart-agent"}},
             ],
@@ -103,43 +113,29 @@ class AgentGenerateToolsTests(unittest.TestCase):
         self.assertEqual(data["node_id"], "image-1")
 
     def test_trigger_generation_uses_model_routing(self):
-        """#134: generate.trigger routes through model routing (ADR 0006), not a hardcoded provider/size."""
-        from firefly_generation import GenerationRoute
-
-        captured = {}
-
-        def fake_route(request, providers, *, provider_id="", model=""):
-            captured['request'] = request
-            captured['provider_id'] = provider_id
-            captured['model'] = model
-            return GenerationRoute(
-                provider_id='routed-provider',
-                provider_name='Routed',
-                model='routed-model',
-                protocol='openai',
-                adapter='http',
-                reason='test',
-                request=request.to_dict(),
-            )
-
-        # Node with non-default generation params to prove they are not hardcoded.
+        """#134/#465: route saved parameters within the selected provider (ADR 0006)."""
         revision = int(self.store.open_project(self.project_id)["canvas"].get("revision") or 0)
         self.store.apply_mutations(
             self.project_id,
-            [{"op": "upsert_node", "node": {"id": "img-routed", "type": "smart-image", "prompt": "a test subject", "x": 0, "y": 0, "generation_size": "2048x2048", "aspect_ratio": "16:9", "generation_resolution": "2k"}}],
+            [{"op": "upsert_node", "node": {
+                "id": "img-routed", "type": "smart-image", "prompt": "a test subject", "x": 0, "y": 0,
+                "runSettings": {"provider_id": "test-offline", "routingMode": "auto", "ratio": "wide", "resolution": "2k"},
+            }}],
             base_revision=revision,
         )
 
-        with patch.object(main, 'route_image_generation', side_effect=fake_route):
+        with patch.object(main, 'route_image_generation', wraps=main.route_image_generation) as router:
             response = self._post_tool("generate/trigger", {"node_id": "img-routed"})
         self.assertEqual(response.status_code, 200, response.text)
 
-        # Auto routing: no pinned provider/model.
-        self.assertEqual(captured['provider_id'], "")
-        self.assertEqual(captured['model'], "")
-        # The node's generation parameters were passed to the router (not hardcoded).
-        req = captured['request']
-        self.assertEqual(req.size, "2048x2048")
+        # Auto routes within the selected provider's checked models, without a model pin.
+        router.assert_called_once()
+        req, providers = router.call_args.args
+        self.assertEqual([p["id"] for p in providers], ["test-offline"])
+        self.assertEqual(providers[0]["image_models"], ["test-image-model"])
+        self.assertNotIn("available_models", providers[0])
+        self.assertEqual(router.call_args.kwargs, {"provider_id": "", "model": ""})
+        self.assertEqual(req.size, "2048x1152")
         self.assertEqual(req.aspect_ratio, "16:9")
         self.assertEqual(req.resolution, "2k")
         self.assertEqual(req.prompt, "a test subject")
@@ -148,7 +144,7 @@ class AgentGenerateToolsTests(unittest.TestCase):
         """generate.trigger returns 400 if node has no prompt."""
         self.store.apply_mutations(
             self.project_id,
-            [{"op": "upsert_node", "node": {"id": "empty-1", "type": "smart-image", "x": 0, "y": 0}}],
+            [{"op": "upsert_node", "node": {"id": "empty-1", "type": "smart-image", "x": 0, "y": 0, "runSettings": {"provider_id": "test-offline"}}}],
             base_revision=1,
         )
         response = self._post_tool("generate/trigger", {"node_id": "empty-1"})

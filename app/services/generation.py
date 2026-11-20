@@ -1845,7 +1845,7 @@ def _provider_diagnostic_sensitive_values(prompt, provider_id, preserve_model=Fa
     return values
 
 
-async def generate_ai_image(prompt, size, quality, model, reference_images=None, provider_id='', *, preserve_model=False, image_parameters=None, progress_callback=None):  # #381：默认不再是 comfly
+async def generate_ai_image(prompt, size, quality, model, reference_images=None, provider_id='', *, preserve_model=False, image_parameters=None, progress_callback=None, lock_model=False):
     """Provider-boundary diagnostics span around the image generation pipeline.
 
     Emits one provider.request event and exactly one terminal event
@@ -1860,7 +1860,7 @@ async def generate_ai_image(prompt, size, quality, model, reference_images=None,
         result = await _generate_ai_image_impl(
             prompt, size, quality, model, reference_images, provider_id=provider_id,
             preserve_model=preserve_model, image_parameters=image_parameters,
-            progress_callback=progress_callback,
+            progress_callback=progress_callback, lock_model=lock_model,
         )
     except Exception:
         _diag_emit(
@@ -2212,7 +2212,7 @@ class _FalQueueResponse:
         return self._payload
 
 
-async def _generate_ai_image_impl(prompt, size, quality, model, reference_images=None, provider_id='', *, preserve_model=False, image_parameters=None, progress_callback=None):  # #381：默认不再是 comfly
+async def _generate_ai_image_impl(prompt, size, quality, model, reference_images=None, provider_id='', *, preserve_model=False, image_parameters=None, progress_callback=None, lock_model=False):
     def report_progress(phase, **details):
         if not callable(progress_callback):
             return
@@ -2254,12 +2254,10 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
         return await generate_minimax_provider_image(prompt, size, model, reference_images, provider, image_parameters=image_parameters, progress_callback=progress_callback)
     is_comfly_provider = 'comfly' in str((provider.get('base_url') or _svc._main('AI_BASE_URL') or '')).strip().lower() or 'comfly' in str(provider.get('id') or '').strip().lower()
     inline_base64 = is_comfly_provider
+    image_route = route_openai_image_request(provider, model, size, lock_model=lock_model)
     if preserve_model:
         route_params = {key: value for key, value in (image_parameters or {}).items() if key in {'aspect_ratio', 'resolution'} and value not in (None, '')}
-        image_route = route_openai_image_request(provider, selected_model(model, IMAGE_MODEL), size)
         image_route['params'].update(route_params)
-    else:
-        image_route = route_openai_image_request(provider, model, size)
     if preserve_model and image_route['params'].get('resolution') and (banana_model_family(image_route['model']) or looks_like_gemini_image_model(image_route['model'])):
         image_route['params']['image_size'] = str(image_route['params']['resolution']).upper()
     model = image_route['model']

@@ -455,19 +455,8 @@
         clickPill('model-control');
         const optionsShown = await waitFor(() => document.querySelectorAll('#dynamicParams [data-model-option]').length >= 2, 8000);
         const modelOptionIds = [...document.querySelectorAll('#dynamicParams [data-model-option]')].map(el => String(el.dataset.modelOption || ''));
-        // #214: generic OpenAI-compatible providers merge model_specs.json's adapted image
-        // models into the configured list (mergeSpecModels), so the contract is "2 configured
-        // fake models + every spec id not already listed" — compute the expected total from
-        // /api/model-specs instead of hard-coding 2.
-        let expectedModelCount = 2;
-        try {
-            const specJson = await fetch('/api/model-specs').then(r => (r.ok ? r.json() : null));
-            const specImageIds = Array.isArray(specJson?.image_model_ids) ? specJson.image_model_ids : [];
-            const configured = ['browser-image-model', 'browser-image-model-2'];
-            expectedModelCount = configured.length + specImageIds.filter(id => id && !configured.some(m => String(m).toLowerCase() === String(String(id)).toLowerCase())).length;
-        } catch(_){}
-        const configuredListed = ['browser-image-model', 'browser-image-model-2'].every(id => modelOptionIds.some(m => String(m).toLowerCase() === id));
-        assertion('model popover lists configured models plus spec-adapted models', optionsShown && modelOptionIds.length === expectedModelCount && configuredListed, {optionCount:modelOptionIds.length, expectedModelCount, modelOptionIds});
+        const expectedModels = ['browser-image-model', 'browser-image-model-2'];
+        assertion('model popover lists only models checked for the selected provider', optionsShown && JSON.stringify(modelOptionIds) === JSON.stringify(expectedModels), {modelOptionIds, expectedModels});
         const modelPopoverRect = document.querySelector('#dynamicParams .model-control .smart-popover')?.getBoundingClientRect();
         assertion('composer popover stays inside the viewport without horizontal overflow', Boolean(modelPopoverRect) && modelPopoverRect.left >= 8 && modelPopoverRect.right <= layoutViewportWidth - 8, modelPopoverRect ? {left:modelPopoverRect.left, right:modelPopoverRect.right, viewport:layoutViewportWidth} : 'missing');
 
@@ -705,18 +694,25 @@
             n.pending = false;
             n.queued = false;
             delete n.runFinishedAt;
-            n.runSettings = {engine: 'api', apiKind: 'image', routingMode: 'auto', ratio: 'square', resolution: '1k', quality: 'auto', count: 1};
+            n.runSettings = {engine: 'api', apiKind: 'image', model: 'legacy-unchecked-model', routingMode: 'auto', ratio: 'square', resolution: '1k', quality: 'auto', count: 1};
             return true;
         }`)();
         const reSelect = await evalFn(`(p) => {
             const n = canvasState.nodes.find(n => n.id === 'gen-conn');
             if(!n) return false;
             canvasState.selectedId = n.id;
+            canvasState.lastComposerNodeId = '';
             updateComposer();
             renderDynamicParams();
             return true;
         }`)();
         await sleep(300);
+        const missingNotice = document.querySelector('#dynamicParams .image-provider-notice')?.textContent || '';
+        const legacySettings = nodeById('gen-conn')?.runSettings;
+        assertion('provider-less node requires a choice and preserves saved settings',
+            missingNotice.includes('请先选择服务商') && !document.querySelector('#dynamicParams [data-model-option]')
+                && !Object.hasOwn(legacySettings || {}, 'provider_id') && legacySettings?.model === 'legacy-unchecked-model',
+            {missingNotice, legacySettings});
         const promptEl2 = document.querySelector('#composer [data-prompt-text], #composer textarea, #composer [contenteditable="true"], #promptInput');
         if(promptEl2){
             promptEl2.textContent = '自动路由测试提示词';
@@ -725,6 +721,13 @@
         }
         await sleep(300);
         const runBtn2 = document.querySelector('#runBtn');
+        const beforeBlocked = (await (await fetch('/__captured_requests')).json()).length;
+        assertion('provider-less Run is disabled with prompt present', runBtn2?.disabled, runBtn2?.title);
+        runBtn2?.click();
+        await sleep(100);
+        const afterBlocked = (await (await fetch('/__captured_requests')).json()).length;
+        assertion('blocked click never reaches the image adapter', beforeBlocked === afterBlocked, {beforeBlocked, afterBlocked});
+        document.querySelector('#dynamicParams [data-smart-param="provider_id"][data-smart-value="browser-image"]')?.click();
         const autoRunClickable = await waitFor(() => !runBtn2?.disabled, 10000);
         assertion('auto run button enabled', autoReset && reSelect && autoRunClickable, {autoReset, reSelect, disabled: runBtn2?.disabled});
         runBtn2?.click();

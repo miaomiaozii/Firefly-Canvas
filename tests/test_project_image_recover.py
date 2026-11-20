@@ -14,7 +14,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -25,10 +25,10 @@ if str(ROOT) not in sys.path:
 
 import main
 from app.routers import api_image_task_query
-from app.routers import api_project_library
 from firefly_projects import ProjectStore
 
 UPSTREAM_TASK_ID = 'upstream-task-abc-123'
+PROVIDER_ID = 'fake-http'
 
 
 def tiny_png_base64(color=(240, 120, 60)):
@@ -59,9 +59,11 @@ class ProjectImageRecoverContractTests(unittest.TestCase):
         self.previous_store = main.FIREFLY_PROJECT_STORE
         main.FIREFLY_PROJECT_STORE = self.store
         self.client = TestClient(main.app, base_url='http://127.0.0.1', headers={'origin': 'http://127.0.0.1'})
+        self.task_ids = set()
         self.providers = [
             {
-                'id': 'fake-http',
+                'id': PROVIDER_ID,
+                'base_url': 'https://recover.example.invalid/v1',
                 'name': '假在线服务',
                 'enabled': True,
                 'protocol': 'openai',
@@ -76,6 +78,9 @@ class ProjectImageRecoverContractTests(unittest.TestCase):
         self.client.close()
         self.store.close()
         main.FIREFLY_PROJECT_STORE = self.previous_store
+        with main.CANVAS_TASK_LOCK:
+            for task_id in self.task_ids:
+                main.CANVAS_TASKS.pop(task_id, None)
         main.PROJECT_IMAGE_GENERATION_ORPHANS.clear()
         self.temp_dir.cleanup()
 
@@ -101,7 +106,7 @@ class ProjectImageRecoverContractTests(unittest.TestCase):
         """提交一个 provider 首查必失败（携带上游任务 id）的任务，返回 (task_id, 终态任务)。"""
         failing_generate = AsyncMock(side_effect=UpstreamImageError(f'上游生图失败：task_id={UPSTREAM_TASK_ID}'))
         payload = {
-            'prompt': '失败后取回', 'routing_mode': 'auto', 'size': '1024x1024',
+            'prompt': '失败后取回', 'routing_mode': 'auto', 'provider_id': PROVIDER_ID, 'size': '1024x1024',
             'width': 1024, 'height': 1024, 'aspect_ratio': '1:1', 'resolution': '1k',
             'reference_asset_ids': [], 'media_type': 'image', 'result_node_id': 'result-node',
             'base_revision': 1,
@@ -110,16 +115,22 @@ class ProjectImageRecoverContractTests(unittest.TestCase):
             response = self.client.post(f"/api/project-library/{project['id']}/image-generation-tasks", json=payload)
             self.assertEqual(response.status_code, 202, response.text)
             task_id = response.json()['task_id']
+            self.task_ids.add(task_id)
             task = self.wait_for_task(task_id)
+        failing_generate.assert_awaited_once()
         self.assertEqual(task['status'], 'failed', task)
         return task_id, task
 
-    def get_project_task(self, project_id, task_id, query_mock=None):
+    def get_project_task(self, project_id, task_id, query_mock, *, providers=None, expected_provider=None):
         url = f'/api/project-library/{project_id}/image-generation-tasks/{task_id}'
-        if query_mock is None:
-            return self.client.get(url)
-        with patch.object(api_image_task_query, 'fetch_image_task_payload', query_mock):
-            return self.client.get(url)
+        with patch.object(main, 'load_api_providers', return_value=self.providers if providers is None else providers), \
+             patch.object(main, 'generate_ai_image', new_callable=AsyncMock) as generate, \
+             patch.object(api_image_task_query, 'fetch_image_task_payload', query_mock):
+            response = self.client.get(url)
+        generate.assert_not_called()
+        query_mock.assert_awaited_once_with(ANY, UPSTREAM_TASK_ID,
+                                           self.providers[0] if expected_provider is None else expected_provider)
+        return response
 
     def canvas_node(self, project_id, node_id='result-node'):
         canvas = self.store.open_project(project_id)['canvas']
@@ -133,7 +144,9 @@ class ProjectImageRecoverContractTests(unittest.TestCase):
         """层3：失败后内存任务与持久化历史都携带上游任务 id（前端按钮/重启取回的根）。"""
         project = self.create_failing_project()
         task_id, _ = self.submit_failing_task(project)
-        response = self.client.get(f"/api/project-library/{project['id']}/image-generation-tasks/{task_id}")
+        with patch.object(api_image_task_query, 'fetch_image_task_payload', new_callable=AsyncMock) as query:
+            response = self.client.get(f"/api/project-library/{project['id']}/image-generation-tasks/{task_id}?recover=0")
+        query.assert_not_called()
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
         self.assertEqual(body['status'], 'failed')
@@ -155,7 +168,6 @@ class ProjectImageRecoverContractTests(unittest.TestCase):
         self.assertEqual(body['result']['result_node_id'], 'result-node')
         self.assertEqual(body['result']['final_node']['id'], 'result-node')
         self.assertEqual(len(body['result']['final_node']['images']), 1)
-        query_mock.assert_awaited_once()
         # 落画布持久化：节点带上成品，历史写回 succeeded 终态（含 outputs）
         node = self.canvas_node(project['id'])
         self.assertEqual(len(node['images']), 1)
@@ -170,19 +182,46 @@ class ProjectImageRecoverContractTests(unittest.TestCase):
         project = self.create_failing_project()
         task_id, _ = self.submit_failing_task(project)
         self.store.flush(project['id'])
-        # 模拟服务重启：内存注册表清空，只剩持久化 store
-        main.CANVAS_TASKS.clear()
+        # 重开磁盘 store，不能靠内存任务记录或当前已勾选的模型取回。
+        with main.CANVAS_TASK_LOCK:
+            main.CANVAS_TASKS.pop(task_id)
+        self.store.close()
+        self.store = main.FIREFLY_PROJECT_STORE = ProjectStore(self.store_root, snapshot_delay=0)
+        unchecked_provider = {**self.providers[0], 'image_models': []}
         query_mock = AsyncMock(return_value=upstream_success_payload())
-        response = self.get_project_task(project['id'], task_id, query_mock)
+        response = self.get_project_task(project['id'], task_id, query_mock,
+                                         providers=[unchecked_provider], expected_provider=unchecked_provider)
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
         self.assertEqual(body['status'], 'succeeded', body)
         self.assertEqual(len(body['result']['images']), 1)
-        query_mock.assert_awaited_once()
         node = self.canvas_node(project['id'])
         self.assertEqual(len(node['images']), 1)
         succeeded = [item for item in self.history_records(project['id'], task_id) if item.get('status') == 'succeeded']
         self.assertEqual(len(succeeded), 1)
+
+    def test_legacy_snapshot_without_requested_provider_recovers_from_actual_provider(self):
+        """历史请求没有显式选服务商时，按已提交任务记下的实际服务商取回，不走新生成准入。"""
+        project_id = self.create_failing_project()['id']
+        task_id = 'project_img_legacy_recovery'
+        self.task_ids.add(task_id)
+        self.store.fail_image_generation(project_id, 'result-node', task_id, {
+            'id': 'legacy-failure', 'task_id': task_id, 'status': 'failed',
+            'type': 'online-image', 'result_node_id': 'result-node',
+            'actual_provider_id': PROVIDER_ID, 'actual_model': 'fake-square',
+            'upstream_task_id': UPSTREAM_TASK_ID,
+            'request_payload': {'prompt': '旧任务', 'provider_id': ''},
+        })
+        other_primary = {'id': 'other', 'primary': True, 'image_models': ['fake-square']}
+        query_mock = AsyncMock(return_value=upstream_success_payload())
+        response = self.get_project_task(project_id, task_id, query_mock,
+                                         providers=[other_primary, *self.providers])
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body['status'], 'succeeded', body)
+        self.assertEqual(body['request_payload']['provider_id'], '')
+        self.assertEqual(body['result']['provider_id'], PROVIDER_ID)
+        self.assertEqual(len(self.canvas_node(project_id)['images']), 1)
 
     def test_recovery_keeps_failed_when_upstream_still_running(self):
         """负向：上游仍在生成中——保持 failed 记录，不落半程终态。"""
@@ -192,7 +231,7 @@ class ProjectImageRecoverContractTests(unittest.TestCase):
         response = self.get_project_task(project['id'], task_id, query_mock)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()['status'], 'failed')
-        query_mock.assert_awaited_once()
+        self.assertEqual(response.json()['recover']['status'], 'running')
         self.assertEqual(len(self.canvas_node(project['id']).get('images') or []), 0)
         self.assertEqual([item for item in self.history_records(project['id'], task_id) if item.get('status') == 'succeeded'], [])
 
@@ -204,7 +243,7 @@ class ProjectImageRecoverContractTests(unittest.TestCase):
         response = self.get_project_task(project['id'], task_id, query_mock)
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()['status'], 'failed')
-        query_mock.assert_awaited_once()
+        self.assertEqual(response.json()['recover']['status'], 'failed')
         self.assertEqual([item for item in self.history_records(project['id'], task_id) if item.get('status') == 'succeeded'], [])
 
     def test_image_task_query_endpoint_still_saves_to_global_library(self):
@@ -216,7 +255,7 @@ class ProjectImageRecoverContractTests(unittest.TestCase):
         query_mock = AsyncMock(return_value=upstream_success_payload())
         with patch.object(api_image_task_query, 'fetch_image_task_payload', query_mock), \
              patch.object(main, 'load_api_providers', return_value=self.providers):
-            response = self.client.post('/api/image-task-query', json={'provider_id': 'fake-http', 'task_id': UPSTREAM_TASK_ID})
+            response = self.client.post('/api/image-task-query', json={'provider_id': PROVIDER_ID, 'task_id': UPSTREAM_TASK_ID})
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
         self.assertEqual(body['status'], 'succeeded', body)

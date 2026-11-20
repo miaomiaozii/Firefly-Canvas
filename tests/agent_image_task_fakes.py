@@ -5,6 +5,10 @@ from unittest.mock import patch
 from app.routers import api_project_library
 
 
+def stub_providers(provider_id='mock', model='mock'):
+    return [{'id': provider_id, 'name': provider_id, 'image_models': [model]}]
+
+
 def route_stub(provider_id='mock', model='mock'):
     return SimpleNamespace(provider_id=provider_id, provider_name=provider_id, model=model,
                            reason='test', to_dict=lambda: {'provider_id': provider_id, 'model': model})

@@ -12,7 +12,7 @@ const ctx = vm.createContext({
     withProjectMediaImportSlot:operation=>operation(),
     promptInput:{innerHTML:input.promptHtml ?? target.promptDraftHtml ?? target.prompt}, settings:target.runSettings,
     console:{info(){}}, tr:key => key, nowMs:Date.now, uid:() => '396',
-    apiProviderById:id => input.providers.find(p => p.id === id), modelSpecs:{},
+    apiProviders:input.providers, modelSpecs:{},
     validOutpaintSize:n => n?.outpaintSize || null,
     mediaKindForItem:r => r.kind || 'image', imageRefsOnly:refs => refs.filter(r => (r.kind || 'image') === 'image'),
     beginSmartPendingHistoryLog:() => '396', smartGenerationSubmissions:() => [],
@@ -39,7 +39,8 @@ for (const name of ['SIZE_MAP', 'IMAGE_RATIO_PRESETS', 'RES_LONG_SIDE', 'RES_PIX
 }
 for (const name of ['parseSizeValue', 'parseRatioValue', 'apiImageSize', 'apiImageAllowedAspectRatios', 'ratioLog',
     'alignRatioToModel', 'apiImageUsesExplicitResolution', 'sizeForRun', 'isGptImageAutoSizeModel',
-    'imageReferenceInput']) {
+    'imageReferenceInput', 'imageProviders', 'primaryProviderId', 'volcengineProvider', 'orderedProviderModels',
+    'apiProviderById', 'imageProviderSelection']) {
     vm.runInContext(body(smart, name + '('), ctx);
 }
 for (const name of ['fetchImageReferenceResolution', 'importProjectMediaReference']) {
@@ -47,6 +48,7 @@ for (const name of ['fetchImageReferenceResolution', 'importProjectMediaReferenc
 }
 vm.runInContext(fs.readFileSync('static/js/canvas-generation-tasks.js', 'utf8'), ctx);
 ctx.canvasCore = {alignRatioToModel:ctx.alignRatioToModel, parseSizeValue:ctx.parseSizeValue,
+    imageProviderSelection:ctx.imageProviderSelection,
     canvasId:input.project, importProjectMediaReference:ctx.importProjectMediaReference,
     scheduleSave(){}, async acceptProjectGenerationRegistration(){}};
 ctx.target = target;

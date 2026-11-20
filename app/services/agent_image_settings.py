@@ -4,7 +4,7 @@ import re
 
 from app.services.agent_errors import agent_error
 from app.services.agent_node_state import _RATIO_PRESETS, _saved_ratio
-from firefly_generation import COMMON_IMAGE_SIZES, GEMINI_FLASH_IMAGE_ASPECT_RATIOS
+from firefly_generation import COMMON_IMAGE_SIZES, GEMINI_FLASH_IMAGE_ASPECT_RATIOS, checked_image_model
 
 RUN_SETTINGS_PROPERTIES = {
     "model": {"type": "string"},
@@ -102,6 +102,12 @@ def _size(ratio, key, resolution, settings):
     return COMMON_IMAGE_SIZES.get(resolution, COMMON_IMAGE_SIZES["1k"])[_SIZE_RATIOS.index(ratio) if ratio in _SIZE_RATIOS else 0]
 
 
+def node_image_provider_id(node):
+    # Canvas defaults can supply parameters, but cannot bind a node to a provider.
+    settings = node.get('runSettings')
+    return str(settings.get('provider_id') or '').strip() if isinstance(settings, dict) else ''
+
+
 def image_settings(node, canvas, providers, model_spec_for):
     node_settings = node.get("runSettings")
     defaults = canvas.get("settings")
@@ -118,18 +124,20 @@ def image_settings(node, canvas, providers, model_spec_for):
         return dict(size=str(node.get("generation_size") or "1024x1024"), width=node.get("width"),
                     height=node.get("height"), aspect_ratio=str(node.get("aspect_ratio") or "1:1"),
                     resolution=str(node.get("generation_resolution") or "1k"))
-    provider_id, model = (str(settings.get(key) or "").strip() for key in ("provider_id", "model"))
-    provider = next((p for p in providers if p.get("id") == provider_id), {})
-    capabilities = (provider.get("image_model_capabilities") or {}).get(model)
+    provider_id = node_image_provider_id(node)
+    model = str(settings.get("model") or "").strip() if provider_id else ""
+    provider = next((p for p in providers if p.get("id") == provider_id.lower()), {})
+    parameter_model = checked_image_model(provider, model)
+    capabilities = (provider.get("image_model_capabilities") or {}).get(parameter_model)
     allowed = (capabilities or {}).get("aspect_ratios") or (
-        (model_spec_for(model) or {}).get("parameters", {}).get("aspect_ratio", {}).get("options"))
+        (model_spec_for(parameter_model) or {}).get("parameters", {}).get("aspect_ratio", {}).get("options"))
     ratio = outpaint or saved_ratio(settings)
     key = "custom" if outpaint else settings.get("ratio")
     if key not in ("custom", "source"):
         ratio = _align(ratio, allowed) if ratio in _RATIOS else ratio or "1:1"
         key = _RATIO_KEY.get(ratio, "custom")
     explicit = capabilities is None or capabilities.get("arbitrary_resolution") is True or bool(capabilities.get("resolutions"))
-    compact_model = re.sub(r"[^a-z0-9]", "", model.lower())
+    compact_model = re.sub(r"[^a-z0-9]", "", parameter_model.lower())
     default_resolution = "4k" if compact_model.startswith("gptimage2") or compact_model.endswith("gptimage2") else "1k"
     resolution = str(settings.get("resolution") or "")
     size = _size(ratio, key, resolution or default_resolution, settings) if explicit and not outpaint else ""
@@ -143,6 +151,6 @@ def image_settings(node, canvas, providers, model_spec_for):
     manual = settings.get("routingMode") == "manual"
     return dict(size=size, aspect_ratio=ratio or "", resolution=resolution if explicit else "",
                 n=_count(settings.get("count")), routing_mode="manual" if manual else "auto",
-                provider_id=provider_id if manual else "", model=model if manual else "",
+                provider_id=provider_id, model=model,
                 quality=str(settings.get("quality") or "auto"), output_format=str(settings.get("outputFormat") or ""),
                 angle_preset=str(settings.get("anglePreset") or "none"))

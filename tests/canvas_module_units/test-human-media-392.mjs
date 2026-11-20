@@ -58,7 +58,7 @@ function failedLoopEditor(historyNodes){
         imageNode('slot',{images:[{url:'/prior.png',kind:'image'}]}),
         ...historyNodes,{id:'loop',type:'smart-loop',images:[]},
     ]);
-    evaluate(e.ctx,`canvas.format='classic';settings={engine:'api',apiKind:'image',provider_id:'unit-provider',model:'unit-model'};`);
+    evaluate(e.ctx,`canvas.format='classic';settings={engine:'api',apiKind:'image',provider_id:'unit-provider',model:'unit-model'};apiProviders=[{id:'unit-provider',image_models:['unit-model']}];`);
     const create=e.ctx.document.createElement;
     e.ctx.document.createElement=tag=>{const el=create(tag);if(tag==='div'){Object.defineProperty(el,'innerHTML',{get(){return this._html||'';},set(value){this._html=value;this.childNodes=[{nodeType:3,textContent:value}];}});}return el;};
     e.ctx.Node={TEXT_NODE:3,ELEMENT_NODE:1};
@@ -317,6 +317,31 @@ test('grid split and history-to-canvas create new N/time, preserve the source, a
     assert.deepEqual(ownership(sent),{createdBy:'user',agentNodeId:null,userTouchedAt:null,promptEditedByUser:false,created_at:1234});
     assert.deepEqual(fromContext(e.node('a')),source);
     await e.ctx.performUndo();assert.equal(e.node(sent.id),undefined);
+});
+
+test('history reuse only replaces stale image models within the recorded provider and redoes that exact model',async()=>{
+    const e=mediaEditor([imageNode('a')]);
+    e.ctx.shell=e.harness.makeElement();
+    evaluate(e.ctx,`apiProviders=[
+        {id:'primary',image_models:['other-provider-model','stale-model']},
+        {id:'recorded',image_models:['first-eligible','preferred'],recommended_models:{image:'preferred'}},
+        {id:'empty',image_models:[]}
+    ];`);
+    for(const [provider,expected] of [['recorded','preferred'],[undefined,'stale-model'],['empty','stale-model']]){
+        const params={provider_id:provider,model:'stale-model',size:'1024x1024'};
+        e.ctx.fixtureHistory={id:'history-result',status:'succeeded',outputs:[{url:'/result.png'}],params};
+        evaluate(e.ctx,'canvas.history=[fixtureHistory];');
+        const node=e.ctx.sendSmartHistoryOutputsToCanvas('history-result',0,{x:100,y:100});
+        assert.equal(node.runSettings.model,expected);
+        assert.equal(node.runSettings.provider_id,provider);
+        assert.equal(node.runSettings.size,params.size);
+        assert.equal(evaluate(e.ctx,'canvas.history[0].params.model'),'stale-model');
+        await e.ctx.performUndo();
+        assert.equal(e.node(node.id),undefined);
+        await e.ctx.performRedo();
+        assert.equal(e.node(node.id).runSettings.model,expected);
+        assert.equal(e.node(node.id).runSettings.provider_id,provider);
+    }
 });
 
 for(const failure of ['one tile','all tiles']){

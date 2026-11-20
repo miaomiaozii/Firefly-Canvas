@@ -94,6 +94,26 @@ import { createCanvasContext, loadModules, globalFunction, evaluate, fromContext
 // 不触碰 ctx 的 harness 定时器——那些必须由测试显式 advanceTimers() 驱动。
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 
+function loadHostFunctions(ctx, source, names){
+    for(const name of names){
+        const start = source.indexOf(`function ${name}(`);
+        assert.ok(start >= 0, name);
+        evaluate(ctx, source.slice(start, source.indexOf('\n}', start) + 2));
+    }
+}
+
+function loadImageSizing(ctx, source){
+    for(const name of ['IMAGE_RATIO_PRESETS', 'SIZE_MAP', 'RES_LONG_SIDE', 'RES_PIXEL_LIMIT']){
+        const declaration = source.match(new RegExp(`^const ${name} = [\\s\\S]*?;`, 'm'));
+        assert.ok(declaration, name);
+        evaluate(ctx, declaration[0]);
+    }
+    ctx.modelSpecs = {};
+    loadHostFunctions(ctx, source, ['parseSizeValue', 'parseRatioValue', 'ratioLog', 'apiImageAllowedAspectRatios',
+        'alignRatioToModel', 'apiImageUsesExplicitResolution', 'apiImageSize', 'isGptImageAutoSizeModel',
+        'defaultSmartApiResolution', 'sizeForRun']);
+}
+
 // 加载真实底层模块 + 被测模块（按 HTML 相对顺序，harness 会排序）：
 // canvas-node-types.js → canvas-core.js → canvas-state.js → canvas-generation-tasks.js。
 // 外部名在 loadModules 之前用全局属性桩好即可（canvasCore Proxy 是惰性解析，
@@ -101,6 +121,10 @@ const tick = () => new Promise(resolve => setTimeout(resolve, 0));
 function loadGenerationTasksModule({ nodes = [], canvasPayload = null } = {}) {
     const { ctx, harness } = createCanvasContext();
     const calls = [];
+    const source = readFileSync('static/js/smart-canvas.js', 'utf8');
+    loadHostFunctions(ctx, source, ['imageProviders', 'primaryProviderId', 'volcengineProvider', 'orderedProviderModels',
+        'apiProviderById', 'imageProviderSelection', 'imageGenerationSelectionError', 'isApiLikeEngine']);
+    ctx.apiProviders = [{id:'p1', image_models:['m1']}];
     // --- 数据驱动注册表：测试显式喂数据，桩零逻辑（防「第二套假核心」） ---
     harness.flushResult = true;                 // flushProjectCanvasBeforeGeneration 返回值
     harness.imageRefs = [];                     // imageRefsOnly(refs) 返回值
@@ -263,6 +287,7 @@ for (const scenario of [
     {name:'video cancellation without output', server:true, kind:'video', cancelled:true},
     {name:'group image source restored on cancellation', server:true, group:true, source:true, cancelled:true},
     {name:'group image source restored on video cancellation', server:true, group:true, source:true, kind:'video', cancelled:true},
+    {name:'uses the aligned ratio for pending geometry and persisted run metadata', retry:true, align:true},
     {name:'transient network error retries to success', retry:true},
     {name:'transient network error retries to terminal failure', retry:true, retryFail:true},
 ]) test(`foreground ${scenario.name}`, async () => {
@@ -272,7 +297,7 @@ for (const scenario of [
     let recoverableChecks = 0;
     Object.assign(ctx, {
         selectedNode:()=>node, buildPromptRequest:()=>({prompt:'test', displayPrompt:'test', refs:[]}),
-        smartNodeInFlight:()=>false, cloneSmartSettings:s=>({...s}), smartSettingsForNode:()=>({engine:'api', apiKind:scenario.kind || 'image', count:1}),
+        smartNodeInFlight:()=>false, cloneSmartSettings:s=>({...s}), smartSettingsForNode:()=>({engine:'api', apiKind:scenario.kind || 'image', provider_id:'p1', count:1}),
         smartRunNeedsPrompt:()=>true, isApiLikeEngine:e=>e === 'api', snapshotRunMeta:()=>({}),
         smartRunSnapshot:()=>({}), rememberRecentSmartSettings:()=>{}, isSmartGroupNode:()=>!!scenario.group,
         isSmartImageNode:()=>!!scenario.source, imagesForNode:()=>node.images, stripRunInputMeta:meta=>meta,
@@ -301,6 +326,23 @@ for (const scenario of [
     ctx.__taskIds = scenario.mixed ? ['task-1', 'task-2'] : ['task-1'];
     evaluate(ctx, "settings = {engine:'api', apiKind:'image', count:1}; runApiGeneration = async () => ({taskIds:__taskIds, count:1}); runApiVideoGeneration = runApiGeneration;");
     const source = readFileSync('static/js/smart-canvas.js', 'utf8');
+    let originalRunSettings;
+    if(scenario.align){
+        loadImageSizing(ctx, source);
+        ctx.promptPlainText = () => 'test';
+        ctx.promptInput = {innerHTML:'test'};
+        ctx.promptHtmlWithMentionTokens = () => '';
+        ctx.stripImageGenerationMeta = image => image;
+        evaluate(ctx, source.slice(source.indexOf('function snapshotRunMeta('), source.indexOf('function stripRunInputMeta(')));
+        ctx.apiProviders[0].image_model_capabilities = {m1:{aspect_ratios:['1:1', '9:21'], resolutions:['1k']}};
+        originalRunSettings = {engine:'api', apiKind:'image', provider_id:'p1', model:'m1', ratio:'portrait14', resolution:'1k'};
+        node.runSettings = originalRunSettings;
+        ctx.smartSettingsForNode = () => ({...node.runSettings});
+        ctx.pendingBoxSize = (_count, {node:pendingNode}) => {
+            assert.deepEqual(fromContext(pendingNode._generationAspect), {w:544, h:1280});
+            return {w:100, h:100};
+        };
+    }
     const start = source.indexOf('async function runGeneration(){');
     const end = source.indexOf('// Local ComfyUI generation execution was removed.', start);
     assert.ok(start >= 0 && end > start);
@@ -324,6 +366,14 @@ for (const scenario of [
     for(let i=0; i<20 && !settled; i++){ harness.advanceTimers(); await tick(); }
     assert.ok(settled, 'foreground run settled');
     await promise;
+    if(scenario.align){
+        assert.equal(node.runSettings.ratio, 'ultratall', 'real attachRunMeta persists the aligned run ratio');
+        assert.equal(node.runSettings.provider_id, 'p1');
+        assert.equal(node.runSettings.model, 'm1');
+        assert.equal(node.runSettings.resolution, '1k');
+        assert.notEqual(node.runSettings, originalRunSettings, 'run metadata replaces rather than mutates the input settings');
+        assert.deepEqual(originalRunSettings, {engine:'api', apiKind:'image', provider_id:'p1', model:'m1', ratio:'portrait14', resolution:'1k'});
+    }
     assert.equal(harness.fetchLog.length, scenario.retry || scenario.mixed ? 2 : 1, 'real poll reached');
     const resultNode = scenario.group ? ctx.canvasState.nodes.find(item=>item.id === 'branch') : node;
     assert.ok(resultNode, 'foreground result node survives');
@@ -361,7 +411,7 @@ test('foreground resolution cannot write a pending run after the live graph chan
     const messages = [];
     Object.assign(ctx, {
         selectedNode:()=>node, smartNodeInFlight:()=>false, isSmartLayoutFrame:()=>false,
-        smartSettingsForNode:()=>({engine:'api', apiKind:'image'}), isApiLikeEngine:e=>e === 'api',
+        smartSettingsForNode:()=>({engine:'api', apiKind:'image', provider_id:'p1'}), isApiLikeEngine:e=>e === 'api',
         promptInput:{innerHTML:'initial prompt'}, smartLoopContext:null,
         toast:message=>messages.push(message),
         buildPromptRequest:()=>assert.fail('project image must use server refs'),
@@ -388,10 +438,11 @@ for(const taskPending of [true, false]) test(`mixed unrecorded failure real ledg
     const node = {id:'mixed-ledger', images:[]};
     const {ctx, harness} = loadGenerationTasksModule({nodes:[node]});
     loadModules(ctx, ['canvas-media-history.js']);
+    evaluate(ctx, "apiProviders = [{id:'p1', image_models:['m1']}]");
     Object.assign(ctx, {
         selectedNode:()=>node, buildPromptRequest:()=>({prompt:'test', displayPrompt:'test', refs:[]}),
         smartNodeInFlight:()=>false, cloneSmartSettings:s=>({...s}),
-        smartSettingsForNode:()=>({engine:'api', apiKind:'image', count:1}),
+        smartSettingsForNode:()=>({engine:'api', apiKind:'image', provider_id:'p1', count:1}),
         smartRunNeedsPrompt:()=>true, isApiLikeEngine:e=>e === 'api', snapshotRunMeta:()=>({}),
         smartRunSnapshot:()=>({nodeId:node.id, prompt:'test'}), rememberRecentSmartSettings:()=>{},
         isSmartGroupNode:()=>false, smartImageUsesWorkflowInput:()=>false, pushUndo:()=>{},
@@ -791,6 +842,120 @@ async function drainTwoAttempts(harness) {
     await tick();
 }
 
+for(const routingMode of ['auto', 'manual']) test(`#465 project image wire keeps explicit provider/model (${routingMode})`, async () => {
+    const node = {id:'img-465'};
+    const {ctx, harness} = loadGenerationTasksModule({nodes:[node]});
+    ctx.apiProviders = [{id:'other', primary:true, image_models:['old']}, {id:'p1', image_models:['m1']}];
+    harness.fetchResponder = () => fakeResponse({data:{task_id:'fake-465', route:{provider_id:'p1', model:'m1'}}});
+    const saved = {engine:'api', apiKind:'image', routingMode, provider_id:' P1 ', model:'m1'};
+    const before = {...saved};
+    await globalFunction(ctx, 'runApiGeneration')('test', [], saved, node);
+    assert.deepEqual(saved, before);
+    assert.equal(harness.fetchLog.length, 1);
+    const payload = JSON.parse(harness.fetchLog[0].options.body);
+    assert.deepEqual([payload.routing_mode, payload.provider_id, payload.model], [routingMode, 'p1', 'm1']);
+    assert.equal(harness.alignCalls[0].model, 'm1');
+});
+
+for(const {format, routingMode, model = ''} of [
+    {format:'firefly-canvas-v1', routingMode:'auto', model:'m1'},
+    {format:'firefly-canvas-v1', routingMode:'manual', model:'m1'},
+    {format:'classic', routingMode:'auto'},
+]) test(`image send derives dimensions from the aligned ratio (${format}, ${routingMode})`, async () => {
+    const node = {id:'img-465', runSettings:{engine:'api', apiKind:'image', routingMode,
+        provider_id:' P1 ', model, ratio:'portrait14', resolution:'1k'}};
+    const {ctx, harness} = loadGenerationTasksModule({nodes:[node]});
+    evaluate(ctx, `canvas.format = ${JSON.stringify(format)}`);
+    loadImageSizing(ctx, readFileSync('static/js/smart-canvas.js', 'utf8'));
+    ctx.apiProviders = [
+        {id:'other', primary:true, image_models:['m1'], image_model_capabilities:{m1:{aspect_ratios:['1:4']}}},
+        {id:'p1', image_models:['m1'], image_model_capabilities:{m1:{aspect_ratios:['1:1','9:21'], resolutions:['1k']}}},
+    ];
+    harness.fetchResponder = () => fakeResponse({data:{task_id:'task-465', route:{provider_id:'p1', model:'m1'}}});
+    const before = structuredClone(node.runSettings);
+    await globalFunction(ctx, 'runApiGeneration')('test', [], node.runSettings, node);
+
+    assert.deepEqual(node.runSettings, before);
+    assert.equal(harness.fetchLog.length, 1);
+    const [{url, options}] = harness.fetchLog;
+    const body = JSON.parse(options.body);
+    assert.deepEqual([body.provider_id, body.model, body.size], ['p1', 'm1', '544x1280']);
+    if(format === 'classic') assert.equal(url, '/api/canvas-image-tasks');
+    else {
+        assert.equal(url, '/api/project-library/proj-1/image-generation-tasks');
+        assert.deepEqual([body.aspect_ratio, body.width, body.height, body.routing_mode], ['9:21', '544', '1280', routingMode]);
+    }
+});
+
+test('image sizing does not borrow the primary provider ratio rules for an unbound node', () => {
+    const {ctx} = loadGenerationTasksModule();
+    loadImageSizing(ctx, readFileSync('static/js/smart-canvas.js', 'utf8'));
+    ctx.apiProviders = [{id:'p1', primary:true, image_models:['m1'], image_model_capabilities:{m1:{aspect_ratios:['1:1']}}}];
+    const saved = {engine:'api', apiKind:'image', model:'m1', ratio:'portrait14'};
+    assert.equal(ctx.alignRatioToModel(saved), '');
+    assert.equal(saved.ratio, 'portrait14');
+});
+
+test('normal image run button requires a nonblank prompt and clears its disabled state when filled', () => {
+    const node = {id:'image', runSettings:{engine:'api', apiKind:'image', provider_id:'p1', model:'m1'}};
+    const {ctx, harness} = loadGenerationTasksModule({nodes:[node]});
+    loadHostFunctions(ctx, readFileSync('static/js/smart-canvas.js', 'utf8'), ['smartRunNeedsPrompt', 'syncRunButtonState']);
+    // 输入面板可能仍绑定其他节点，按钮必须读取当前节点设置。
+    evaluate(ctx, "settings = {engine:'runninghub'};");
+    const runBtn = harness.element('runBtn');
+    runBtn.removeAttribute = name => { delete runBtn[name]; };
+    let prompt = '';
+    Object.assign(ctx, {runBtn, selectedNode:()=>node, isSmartRunnableNode:n=>n === node,
+        smartSettingsForNode:n=>n.runSettings, smartNodeInFlight:()=>false, smartCascadeIsLoopRunning:()=>false,
+        runningHubRunNeedsPrompt:()=>false, buildPromptRequestForNode:(subject, refs)=>{
+            assert.equal(subject, node);
+            assert.equal(refs, null);
+            return {prompt};
+        }});
+    for(const value of ['', ' \t\n ']){
+        prompt = value;
+        ctx.syncRunButtonState();
+        assert.equal(runBtn.disabled, true);
+        assert.equal(runBtn.title, 'smart.toastNeedPrompt');
+    }
+    prompt = 'make a cat';
+    ctx.syncRunButtonState();
+    assert.equal(runBtn.disabled, false);
+    assert.equal(runBtn.title, undefined);
+});
+
+for(const [saved, error] of [
+    [{provider_id:'p1', model:'old'}, 'smart.imageModelSwitchProvider'],
+    [{provider_id:'empty'}, 'smart.imageProviderNoModels'],
+    [{model:'old'}, 'smart.imageProviderRequired'],
+    [{provider_id:'  ', model:'m1', routingMode:'manual'}, 'smart.imageProviderRequired']
+]) test(`#465 invalid selection blocks all image request entry points (${error})`, async () => {
+    const node = {id:'img-465', runSettings:{engine:'api', apiKind:'image', ...saved}};
+    const {ctx, harness} = loadGenerationTasksModule({nodes:[node]});
+    ctx.apiProviders = [{id:'p1', image_models:['m1']}, {id:'empty', primary:true, image_models:[]}, {id:'other', image_models:['old']}];
+    Object.assign(ctx, {selectedNode:()=>node, smartSettingsForNode:()=>node.runSettings, smartNodeInFlight:()=>false,
+        pushUndo:()=>assert.fail('blocked generation wrote graph state')});
+    const source = readFileSync('static/js/smart-canvas.js', 'utf8');
+    const workflowStart = source.indexOf('async function resolveWorkflowImageRequest(');
+    const workflowEnd = source.indexOf('\nfunction updateSelectionBox(', workflowStart);
+    assert.ok(workflowStart >= 0 && workflowEnd > workflowStart);
+    evaluate(ctx, source.slice(workflowStart, workflowEnd));
+    loadHostFunctions(ctx, source, ['smartRunNeedsPrompt', 'syncRunButtonState']);
+    Object.assign(ctx, {runBtn:harness.element('runBtn'), isSmartRunnableNode:()=>true,
+        buildPromptRequestForNode:()=>({prompt:'Ready'}), smartCascadeIsLoopRunning:()=>false});
+    const before = structuredClone(node);
+    ctx.syncRunButtonState();
+    assert.equal(ctx.runBtn.disabled, true);
+    assert.equal(ctx.runBtn.title, error);
+    await globalFunction(ctx, 'runGeneration')();
+    assert.equal(harness.element('toast').textContent, error);
+    await assert.rejects(globalFunction(ctx, 'resolveWorkflowImageRequest')(node, {runSettings:node.runSettings}), new RegExp(error));
+    await assert.rejects(globalFunction(ctx, 'runApiGeneration')('test', [], node.runSettings, node), new RegExp(error));
+    assert.deepEqual(node, before);
+    assert.equal(harness.fetchLog.length, 0);
+    assert.equal(harness.pendingHistoryLogs.length, 0);
+});
+
 test('runApiGeneration: flush failure keeps the marker, save-settle replay reuses the SAME idempotency_key (#189)', async () => {
     const node = { id: 'img-1', type: 'smart-image' };
     const nodes = [node];
@@ -828,13 +993,14 @@ test('runApiGeneration: flush failure keeps the marker, save-settle replay reuse
         }
         throw new Error('unexpected fetch ' + url);
     };
+    evaluate(ctx, 'canvas.revision = 8');
     settle(nodes);
     await tick();
     assert.equal(harness.fetchLog.length, 1, 'save settle 触发重放 POST');
     const postBody = JSON.parse(harness.fetchLog[0].options.body);
     assert.equal(postBody.idempotency_key, key, '重放必须使用同一个 idempotency_key');
     assert.equal(postBody.result_node_id, 'img-1');
-    assert.equal(postBody.base_revision, 7);
+    assert.deepEqual(postBody, {...fromContext(payload), base_revision:8}, 'replay preserves the durable request except for the current revision');
     assert.equal(node.generationSubmissions, undefined, '注册成功清除提交标记');
     assert.equal(harness.acceptedResults.length, 1);
     assert.deepEqual(fromContext(harness.acceptedResults[0].taskIds), ['project_img_9']);

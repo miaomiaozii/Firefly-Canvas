@@ -578,11 +578,17 @@ function syncSmartSelectedImageResolution(root=null){
         });
     }, SMART_SELECTED_HIGH_RES_DELAY);
 }
-function settingsForStorage(source=settings){
+function settingsForStorage(source=settings, preserveImageSettings=false){
     const clean = cloneSmartSettings(source);
-    clean.engine = normalizeSmartOnlineEngine(clean.engine);
-    clean.videoTempShLinks = (clean.videoTempShLinks || []).filter(item => item?.manual === true);
+    if(!preserveImageSettings) clean.engine = normalizeSmartOnlineEngine(clean.engine);
+    if(!preserveImageSettings || Array.isArray(clean.videoTempShLinks)){
+        clean.videoTempShLinks = (clean.videoTempShLinks || []).filter(item => item?.manual === true);
+    }
     return clean;
+}
+function hasApiImageRunSettings(node){
+    return isSmartRunnableNode(node) && node.runSettings && node.runSettings.apiKind !== 'video'
+        && isApiLikeEngine(normalizeSmartOnlineEngine(node.runSettings.engine));
 }
 function normalizeSmartVideoModeSettings(target, preferMultimodal=false){
     if(!target || typeof target !== 'object') return target;
@@ -730,7 +736,7 @@ function canvasForStorage({preserveLegacyDockCollapsed=false, source=canvas}={})
         // 正常保存始终剥离；这个选项不作用于 live node。
         if(!preserveLegacyDockCollapsed) delete node.dockCollapsed;
         if(Array.isArray(node.images)) node.images = node.images.map(mediaItemForStorage);
-        if(node.runSettings) node.runSettings = settingsForStorage(node.runSettings);
+        if(node.runSettings) node.runSettings = settingsForStorage(node.runSettings, hasApiImageRunSettings(node));
         if(node.type === NODE_TYPE_CONVERSATION) delete node.conversationSending;
         if(node.type === NODE_TYPE_LOCAL_EDIT) delete node._leBusy;
     });
@@ -865,7 +871,6 @@ function applyRecentSmartSettingsForCurrentMode(){
 }
 function clearVolcengineSelectionOutsideVolcengine(target=settings){
     if(!target || typeof target !== 'object' || target.engine === 'volcengine') return target;
-    if(target.provider_id === 'volcengine') target.provider_id = '';
     if(target.videoProvider === 'volcengine') target.videoProvider = '';
     return target;
 }
@@ -944,6 +949,9 @@ function smartSettingsForNode(node){
         ...recentSettings,
         ...nodeSettings
     };
+    base.engine = normalizeSmartOnlineEngine(base.engine);
+    // #465：已有的生图节点不能继承服务商，必须由用户明确选择。
+    if(node && base.engine === 'api' && base.apiKind !== 'video') base.provider_id = nodeSettings.provider_id || '';
     normalizeSmartVideoModeSettings(base, true);
     return withOutpaintDisplaySettings(node, base);
 }
@@ -983,7 +991,7 @@ function beginSmartSettingsHumanEdit(keys, node=activeComposerNode(), nodeFields
 }
 function smartHumanSettingKeys(key){
     const related = {
-        provider_id:['model'], videoProvider:['videoModel'], model:['routingMode','ratio'], videoModel:['videoRoutingMode'],
+        provider_id:['model'], videoProvider:['videoModel'], model:['provider_id','routingMode','ratio'], videoModel:['videoRoutingMode'],
         videoMultimodal:['_videoMultimodalUserSet','videoUseFrameRoles'], videoUseFrameRoles:['videoMultimodal'],
         resolution:['ratio'], ratio:['customRatio','customRatioWidth','customRatioHeight'], msResolution:['msRatio'], msRatio:['msCustomRatio','msCustomRatioWidth','msCustomRatioHeight'],
         customRatioWidth:['customRatio','ratio'], customRatioHeight:['customRatio','ratio'], msCustomRatioWidth:['msCustomRatio','msRatio'], msCustomRatioHeight:['msCustomRatio','msRatio'],
@@ -2389,16 +2397,16 @@ function toggleZoomPreview(){
     else enterZoomPreview();
 }
 function imageProviders(){
-    return (apiProviders || []).filter(p => p.enabled !== false && p.id !== 'modelscope' && p.id !== 'volcengine' && (p.image_models || []).length);
+    return (apiProviders || []).filter(p => p.enabled !== false && (p.image_models || []).length);
+}
+function primaryProviderId(){
+    // Match get_primary_provider_id (including providers with no image models).
+    const providers = apiProviders || [];
+    return (providers.find(p => p.primary && p.enabled !== false)
+        || providers.find(p => p.enabled !== false) || providers[0])?.id || 'volcengine';
 }
 function volcengineProvider(){
-    return (apiProviders || []).find(p => p.id === 'volcengine' && p.enabled !== false) || {
-        id:'volcengine',
-        name:'火山引擎',
-        image_models:[],
-        video_models:DEFAULT_VIDEO_MODELS,
-        enabled:true
-    };
+    return (apiProviders || []).find(p => p.id === 'volcengine') || {id:'volcengine', name:'火山引擎'};
 }
 function runningHubProvider(){
     return (apiProviders || []).find(p => p.id === 'runninghub' && p.enabled !== false) || null;
@@ -2500,7 +2508,7 @@ function chatApiProviders(){
     return (apiProviders || []).filter(p => p.enabled !== false && (p.chat_models || []).length);
 }
 function orderedProviderModels(provider, field, kind){
-    if(!provider) return [];
+    if(!provider || provider.enabled === false) return [];
     const models = Array.isArray(provider[field]) ? provider[field].filter(Boolean) : [];
     const recommended = provider.recommended_models?.[kind];
     // A fetched recommendation is only a default hint. It must already be
@@ -2531,7 +2539,7 @@ function resolveChatProviderId(providerId=''){
 
 function providerChatModels(providerId){
     const provider = chatApiProviders().find(p => p.id === providerId);
-    return mergeSpecModels('chat', orderedProviderModels(provider, 'chat_models', 'chat'), provider);
+    return orderedProviderModels(provider, 'chat_models', 'chat');
 }
 function resolveChatModel(model='', providerId=''){
     const models = providerChatModels(resolveChatProviderId(providerId));
@@ -2545,16 +2553,40 @@ function chatModelOptions(selectedModel='', providerId=''){
     const selectedProvider = resolveChatProviderId(providerId);
     const models = providerChatModels(selectedProvider);
     const selected = resolveChatModel(selectedModel, selectedProvider);
-    return [...new Set([selected, ...models].filter(Boolean))].map(model => `<option value="${escapeHtml(model)}" ${model === selected ? 'selected' : ''}>${escapeHtml(model)}</option>`).join('');
+    return models.map(model => `<option value="${escapeHtml(model)}" ${model === selected ? 'selected' : ''}>${escapeHtml(model)}</option>`).join('');
 }
 function apiProviderById(providerId){
-    if(providerId === 'volcengine') return volcengineProvider();
-    return (apiProviders || []).find(p => p.id === providerId) || imageProviders()[0] || null;
+    const id = String(providerId || '').trim().toLowerCase() || primaryProviderId();
+    return (apiProviders || []).find(p => p.id === id) || null;
 }
-// 认证素材 asset:// 是平台绑定的：返回某 provider 所属的认证平台键（与后端一致）
-function providerImageModels(providerId){
-    const provider = providerId === 'volcengine' ? volcengineProvider() : (apiProviders || []).find(p => p.id === providerId);
-    return mergeSpecModels('image', orderedProviderModels(provider, 'image_models', 'image'), provider);
+function imageProviderSelection(sourceSettings=settings){
+    // The dedicated Volcengine engine is an explicit provider choice, like
+    // the RunningHub/ModelScope selections translated by their own adapters.
+    const providerId = sourceSettings.engine === 'volcengine' ? 'volcengine' : String(sourceSettings.provider_id || '').trim().toLowerCase();
+    const missingProvider = providerId ? '' : tr('smart.imageProviderRequired');
+    const provider = providerId ? apiProviderById(providerId) : null;
+    const providerName = provider?.name || (providerId === 'volcengine' ? volcengineProvider().name : providerId);
+    const models = orderedProviderModels(provider, 'image_models', 'image');
+    const savedModel = sourceSettings.model || '';
+    const selectedModel = models.includes(savedModel) ? savedModel : '';
+    const matchingProviders = savedModel && !selectedModel
+        ? [...new Set(imageProviders().filter(p => p.image_models.includes(savedModel)).map(p => p.name || p.id))]
+        : [];
+    const staleModel = providerId && savedModel && !selectedModel
+        ? trf(matchingProviders.length ? 'smart.imageModelSwitchProvider' : 'smart.imageModelNotEnabled', {model:savedModel, providers:matchingProviders.join(' / ')})
+        : '';
+    const noModels = providerId && !models.length ? trf('smart.imageProviderNoModels', {provider:providerName}) : '';
+    const error = [missingProvider, staleModel, noModels].filter(Boolean).join(' ');
+    return {providerId, providerName, missingProvider, models, selectedModel, staleModel, noModels, error};
+}
+function smartHistoryImageModelSelection(sourceSettings){
+    const engine = normalizeSmartOnlineEngine(sourceSettings.engine);
+    if(!isApiLikeEngine(engine) || sourceSettings.apiKind === 'video') return null;
+    return imageProviderSelection({...sourceSettings, engine});
+}
+function imageGenerationSelectionError(runSettings){
+    if(isApiLikeEngine(runSettings.engine) && runSettings.apiKind !== 'video') return imageProviderSelection(runSettings).error;
+    return '';
 }
 function sanitizeSmartApiSelection(target=settings){
     if(!target || typeof target !== 'object') return target;
@@ -2563,18 +2595,10 @@ function sanitizeSmartApiSelection(target=settings){
             target.videoProvider = 'volcengine';
             const models = volcengineVideoModels();
             if(!models.includes(target.videoModel)) target.videoModel = models[0] || '';
-        } else {
-            target.provider_id = 'volcengine';
-            const models = providerImageModels('volcengine');
-            if(!models.includes(target.model)) target.model = models[0] || '';
         }
         return target;
     }
     clearVolcengineSelectionOutsideVolcengine(target);
-    if(target.provider_id){
-        const models = providerImageModels(target.provider_id);
-        if(models.length && !models.includes(target.model)) target.model = models[0] || '';
-    }
     if((target.engine || 'api') === 'api' && (target.apiKind || 'image') !== 'video'){
         const allowAuto = isGptImageAutoSizeModel(target.model);
         if(!target.resolution) target.resolution = allowAuto ? defaultSmartApiResolution(target.model) : '1k';
@@ -2592,11 +2616,8 @@ function modelscopeProvider(){
 function modelscopeImageModels(){
     return modelscopeProvider()?.image_models || [];
 }
-const DEFAULT_VIDEO_MODELS = ['veo3-fast','veo3','sora','runway','kling','pika','minimax-video','wan-v2','seedance-1.0-pro'];
 function videoApiProviders(){
-    const fromConfig = (apiProviders || []).filter(p => p.enabled !== false && p.id !== 'volcengine' && (p.video_models || []).length);
-    if(fromConfig.length) return fromConfig;
-    return [{id:'comfly', name:'Comfly', video_models:DEFAULT_VIDEO_MODELS, enabled:true}];
+    return (apiProviders || []).filter(p => p.enabled !== false && p.id !== 'volcengine' && (p.video_models || []).length);
 }
 function videoProviderById(providerId){
     if(providerId === 'volcengine') return volcengineProvider();
@@ -2605,14 +2626,10 @@ function videoProviderById(providerId){
 function providerVideoModels(providerId){
     if(providerId === 'volcengine') return volcengineVideoModels();
     const provider = videoApiProviders().find(p => p.id === providerId);
-    const models = provider?.video_models || DEFAULT_VIDEO_MODELS;
-    return mergeSpecModels('video', orderedProviderModels(provider, 'video_models', 'video'), provider);
+    return orderedProviderModels(provider, 'video_models', 'video');
 }
 function volcengineVideoModels(){
-    const provider = (apiProviders || []).find(p => p.id === 'volcengine');
-    return orderedProviderModels(provider, 'video_models', 'video').length
-        ? orderedProviderModels(provider, 'video_models', 'video')
-        : DEFAULT_VIDEO_MODELS;
+    return orderedProviderModels(apiProviderById('volcengine'), 'video_models', 'video');
 }
 function renderVideoProviderControl(providers){
     const current = (providers || []).find(p => p.id === settings.videoProvider) || videoProviderById(settings.videoProvider);
@@ -2770,8 +2787,9 @@ function apiImageSize(ratioValue, resolutionValue, customRatioValue='', customSi
 // 当前模型实际支持的宽高比：服务商能力表优先，其次 model_specs.json，都缺失时返回 null（不过滤）。
 function apiImageAllowedAspectRatios(sourceSettings=settings){
     const model = String(sourceSettings?.model || '').trim();
-    if(!model) return null;
-    const providerId = String(sourceSettings?.provider_id || '').trim();
+    const providerId = sourceSettings?.engine === 'volcengine' ? 'volcengine' : String(sourceSettings?.provider_id || '').trim();
+    // #465：未绑定服务商的节点不能继承主服务商的模型能力。
+    if(!model || !providerId) return null;
     const provider = apiProviderById(providerId) || {};
     const fromProvider = (provider?.image_model_capabilities || {})[model]?.aspect_ratios;
     if(Array.isArray(fromProvider) && fromProvider.length) return fromProvider.map(item => String(item || '').trim()).filter(Boolean);
@@ -2823,7 +2841,7 @@ function alignRatioToModel(sourceSettings=settings){
     sourceSettings.ratio = nearest.value;
     const change = `${current}→${nearest.ratio}`;
     // 比例被当场改掉必须留下痕迹：用户只看到比例跳了一格时， Console 能回答「为什么改我选的」。
-    // 记在函数内而不是各调用点，四个入口（面板渲染、切模型、两条发图路径）行为一致。
+    // 记在函数内而不是各调用点，让面板和请求共用同一条日志。
     console.info(`[ratio] ${change}`);
     return change;
 }
@@ -2959,7 +2977,7 @@ function renderDynamicParams(){
     }
     else if(settings.engine === 'volcengine'){
         if(settings.apiKind === 'video') renderVolcengineVideoParams();
-        else renderVolcengineParams();
+        else renderApiParams();
     }
     else if(settings.engine === 'modelscope') renderMsParams();
     else if(settings.engine === 'runninghub') renderRunningHubParams();
@@ -2968,33 +2986,41 @@ function renderDynamicParams(){
     restoreOpenControl(keepOpen);
     restoreDynamicParamsScroll(scrollState);
     updatePromptPlaceholder();
-    persistActiveSmartSettings();
+    if(!isApiLikeEngine(settings.engine) || settings.apiKind === 'video') persistActiveSmartSettings();
     if(activeComposerNode()?.id) requestAnimationFrame(() => positionComposerForNode(activeComposerNode()));
 }
 function renderApiParams(){
-    const providers = imageProviders();
-    if(!settings.provider_id || !providers.some(p => p.id === settings.provider_id)) settings.provider_id = providers[0]?.id || '';
-    const models = providerImageModels(settings.provider_id);
-    if(!settings.model || !models.includes(settings.model)) settings.model = models[0] || '';
-    // 切换平台/模型时保留用户已选的分辨率（记忆），normalizeApiSizeSettings 只会修正非法的 auto。
-    normalizeApiSizeSettings('');
-    const outpaintLocked = settings.outpaintResolutionLocked === true;
-    dynamicParams.innerHTML = `
-        ${renderImageRoutingControl()}
-        ${renderProviderControl(providers)}
-        ${renderModelControl(models)}
-        ${renderCountVisualControl()}
-        ${renderSizePickerControl('', true)}
-        ${renderAnglePresetControl()}
-        ${renderQualityControl()}
-        ${renderOutputFormatControl()}
-    `;
+    const selection = imageProviderSelection();
+    const {models} = selection;
+    const volcengine = settings.engine === 'volcengine';
+    const providers = volcengine ? [volcengineProvider()] : imageProviders();
+    const notices = [selection.missingProvider, selection.staleModel, selection.noModels].filter(Boolean);
+    // Size/ratio rendering normalizes its inputs. Use a view-only copy so
+    // neither a refresh nor opening the node changes its saved selection.
+    const savedSettings = settings;
+    settings = {...settings, provider_id:selection.providerId, model:selection.selectedModel};
+    try {
+        normalizeApiSizeSettings('');
+        dynamicParams.innerHTML = `
+            ${renderImageRoutingControl()}
+            ${renderProviderControl(providers, selection.providerName)}
+            ${renderModelControl(models)}
+            ${renderCountVisualControl()}
+            ${renderSizePickerControl('', true)}
+            ${renderAnglePresetControl()}
+            ${renderQualityControl()}
+            ${volcengine ? '' : renderOutputFormatControl()}
+            ${notices.length ? `<div class="image-provider-notice" role="status">${notices.map(text => `<div>${escapeHtml(text)}</div>`).join('')}</div>` : ''}
+        `;
+    } finally {
+        settings = savedSettings;
+    }
 }
 function renderApiVideoParams(){
     const providers = videoApiProviders();
     if(!settings.videoProvider || !providers.some(p => p.id === settings.videoProvider)) settings.videoProvider = providers[0]?.id || '';  // #349：末尾的 'comfly' 拿掉；没真平台就留空由后端按主平台走
     const models = providerVideoModels(settings.videoProvider);
-    if(!settings.videoModel || !models.includes(settings.videoModel)) settings.videoModel = models[0] || 'veo3-fast';
+    if(!settings.videoModel || !models.includes(settings.videoModel)) settings.videoModel = models[0] || '';
     dynamicParams.innerHTML = `
         ${renderVideoRoutingControl()}
         ${renderVideoProviderControl(providers)}
@@ -3013,30 +3039,12 @@ function renderApiVideoParams(){
         ${renderVideoTrustedAssetControl()}
     `;
 }
-function renderVolcengineParams(){
-    const provider = volcengineProvider();
-    const providers = [provider];
-    const models = providerImageModels('volcengine');
-    settings.provider_id = 'volcengine';
-    if(!settings.model || !models.includes(settings.model)) settings.model = models[0] || '';
-    normalizeApiSizeSettings('');
-    const outpaintLocked = settings.outpaintResolutionLocked === true;
-    dynamicParams.innerHTML = `
-        ${renderImageRoutingControl()}
-        ${renderProviderControl(providers)}
-        ${renderModelControl(models)}
-        ${renderCountVisualControl()}
-        ${renderSizePickerControl('', true)}
-        ${renderAnglePresetControl()}
-        ${renderQualityControl()}
-    `;
-}
 function renderVolcengineVideoParams(){
     const provider = volcengineProvider();
     const providers = [provider];
     const models = volcengineVideoModels();
     settings.videoProvider = 'volcengine';
-    if(!settings.videoModel || !models.includes(settings.videoModel)) settings.videoModel = models[0] || 'seedance-1.0-pro';
+    if(!settings.videoModel || !models.includes(settings.videoModel)) settings.videoModel = models[0] || '';
     dynamicParams.innerHTML = `
         ${renderVideoProviderControl(providers)}
         ${renderVideoModelControl(models)}
@@ -3218,10 +3226,9 @@ function videoAspectIconClass(value){
     if(value === 'keep_ratio' || value === 'adaptive') return 'r-source';
     return '';
 }
-function renderProviderControl(providers){
-    const current = (providers || []).find(p => p.id === settings.provider_id) || apiProviderById(settings.provider_id);
+function renderProviderControl(providers, providerName){
     return `<div class="smart-control provider-control">
-        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-plug-zap"/></svg><span class="sub">${escapeHtml(current?.name || settings.provider_id || tr('smart.platform'))}</span></button>
+        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-plug-zap"/></svg><span class="sub">${escapeHtml(providerName || tr('smart.platform'))}</span></button>
         <div class="smart-popover compact-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.apiPlatform'))}</div>
             <div class="model-list">
@@ -3231,8 +3238,7 @@ function renderProviderControl(providers){
     </div>`;
 }
 function renderImageRoutingControl(){
-    // 自动路由为默认无感行为：按请求尺寸/分辨率自动选择兼容模型（1K/2K/4K）。
-    // 不再渲染显式切换开关；用户主动点选服务商或模型时即切换为固定（manual）。
+    // 自动档只在当前服务商内匹配模型；点选模型才切换为固定（#465）。
     return '';
 }
 function renderAnglePresetControl(){
@@ -3254,7 +3260,7 @@ function renderAnglePresetControl(){
     </div>`;
 }
 function renderModelControl(models){
-    const labelFor = providerModelNameLookup(settings.provider_id === 'volcengine' ? volcengineProvider() : (apiProviders || []).find(p => p.id === settings.provider_id));
+    const labelFor = providerModelNameLookup(apiProviderById(settings.provider_id));
     return `<div class="smart-control model-control">
         <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-generate"/></svg><span class="sub">${escapeHtml(labelFor(settings.model) || tr('smart.model'))}</span></button>
         <div class="smart-popover compact-popover">
@@ -3807,17 +3813,25 @@ function smartRandomValue(field){
 }
 function setDynamicSetting(key, value, {human=false}={}){
     if(human && !smartHumanSettingsEditable()) return;
+    if(key === 'provider_id' && settings.provider_id === value
+        && (settings.model || '') === (imageProviderSelection(settings).models[0] || '')){
+        // #465：重复选择不能把编辑区的默认值合进已有节点。
+        renderDynamicParams();
+        return;
+    }
     const action = human ? beginSmartSettingsHumanEdit(smartHumanSettingKeys(key), activeComposerNode(), ['outpaintSize']) : null;
     const numericKeys = new Set(['count','width','height','videoDuration','enhanceStrength','enhanceUpscaleRes','editUpscaleRes','customRatioWidth','customRatioHeight','customWidth','customHeight','msCustomRatioWidth','msCustomRatioHeight','msCustomWidth','msCustomHeight']);
     const layoutKeys = new Set(['routingMode','anglePreset','provider_id','model','resolution','ratio','msgenModel','msCustomModel','msResolution','msRatio','videoRoutingMode','videoProvider','videoModel','videoAspect','videoResolution','quality','outputFormat','count','rhConfigKey','rhPayment','rhInstanceType']);
+    const previousProvider = settings.provider_id;
     settings[key] = numericKeys.has(key) && value !== '' ? Number(value) : value;
-    if(key === 'provider_id') settings.model = '';
+    if(key === 'provider_id'){
+        const selection = imageProviderSelection(settings);
+        // Keep the saved model when switching to a provider that offers it (#465).
+        settings.model = (previousProvider !== settings.provider_id && selection.selectedModel) || selection.models[0] || '';
+    }
     if(key === 'videoProvider') settings.videoModel = '';
-    // 模型选择器在自动路由下也可见；用户明确点选模型时，将这次生成切到固定模型，
-    // 这样 UI 选择和实际请求不会出现“看起来选了但 payload 仍是 auto”的错觉。
-    if(key === 'model' && settings.routingMode !== 'manual') settings.routingMode = 'manual';
-    // 换模型后当前比例可能不被支持，立刻收敛到支持的最近比例（见 alignRatioToModel）。
     if(key === 'model') alignRatioToModel(settings);
+    if(key === 'model' && settings.routingMode !== 'manual') settings.routingMode = 'manual';
     if(key === 'videoModel' && settings.videoRoutingMode !== 'manual') settings.videoRoutingMode = 'manual';
     if(key === 'videoMultimodal') settings._videoMultimodalUserSet = true;
     if(key === 'videoMultimodal' && settings.videoMultimodal) settings.videoUseFrameRoles = false;
@@ -3859,17 +3873,17 @@ function setDynamicSetting(key, value, {human=false}={}){
         settings.rhParams = {};
         settings.rhRandomActive = {};
     }
-    // Compare the settled provider/model pair, not the renderer's temporary empty model.
-    if(human && (key === 'provider_id' || key === 'videoProvider')){
+    // Compare the settled video provider/model pair for ownership tracking.
+    if(human && key === 'videoProvider'){
         const normalized = sanitizeSmartApiSelection({...settings});
-        const modelKey = key === 'provider_id' ? 'model' : 'videoModel';
-        settings[key] = normalized[key];
-        settings[modelKey] = normalized[modelKey];
+        settings.videoProvider = normalized.videoProvider;
+        settings.videoModel = normalized.videoModel;
     }
     persistActiveSmartSettings();
     rememberRecentSmartSettings(settings, activeSettingsSubject());
     if(action) finishSmartNodeHumanEdit(action);
     if(layoutKeys.has(key)) renderDynamicParams();
+    if(key === 'provider_id' || key === 'model' || key === 'apiKind' || key === 'engine') syncRunButtonState();
     scheduleSave();
 }
 function closeAllSmartPopovers(){
@@ -4114,31 +4128,6 @@ async function loadConfig(){
     }
 }
 
-// 从 model_specs.json 取某类别的适配模型 ID 列表。
-function specModelIds(kind){
-    const map = {chat:'chat_model_ids', image:'image_model_ids', video:'video_model_ids'};
-    const arr = modelSpecs?.[map[kind]];
-    return Array.isArray(arr) ? arr : [];
-}
-// 取某模型在 spec 中的定义（参数选项/能力）。未适配返回 null。
-// 判断是否为通用 OpenAI 兼容 provider（非 codex/runninghub/volcengine/gemini-cli 专属）。
-// spec 模型是针对这类网关的；provider 专属入口沿用各自的模型来源。
-function isGenericOpenAIProvider(provider){
-    if(!provider) return false;
-    const proto = String(provider.protocol || 'openai').toLowerCase();
-    const id = String(provider.id || '').toLowerCase();
-    const specific = ['codex','runninghub','volcengine','gemini-cli','comfyui'];
-    return !specific.includes(proto) && !specific.includes(id);
-}
-// 将 spec 的适配模型合并进 provider 模型列表（additive：保留原序，补入缺失的 spec 模型）。
-function mergeSpecModels(kind, providerModels, provider){
-    const base = [...new Set((providerModels || []).filter(Boolean))];
-    if(!isGenericOpenAIProvider(provider)) return base;
-    for(const id of specModelIds(kind)){
-        if(id && !base.some(m => String(m).toLowerCase() === String(id).toLowerCase())) base.push(id);
-    }
-    return base;
-}
 async function refreshSmartConfigFromSettings(){
     await loadConfig();
     renderDynamicParams();
@@ -5119,16 +5108,14 @@ function smartNodeAllowsOverlappingRun(node){
 }
 function syncRunButtonState(node=selectedNode()){
     if(!runBtn) return;
-    // 只在“当前选中节点自己”忙时禁用运行：节点正在生成/排队，或它本身是正在跑的循环。
-    // 不再因为“画布上有任意循环/级联在跑”就全局禁用——跑循环时仍可对其他节点点生成。
-    let missingPrompt = false;
-    if(isSmartRunnableNode(node)){
-        const request = buildPromptRequestForNode(node, null);
-        missingPrompt = !request.prompt.trim() && smartRunNeedsPrompt(settings);
-    }
+    // 忙状态只限制当前节点，其他节点的循环或级联不能全局阻止生成。
+    const runnable = isSmartRunnableNode(node);
+    const runSettings = runnable ? smartSettingsForNode(node) : null;
+    const selectionError = runnable ? imageGenerationSelectionError(runSettings) : '';
+    const missingPrompt = runnable && !buildPromptRequestForNode(node, null).prompt.trim() && smartRunNeedsPrompt(runSettings);
     const flightLocked = smartNodeInFlight(node) && !smartNodeAllowsOverlappingRun(node);
-    runBtn.disabled = !isSmartRunnableNode(node) || flightLocked || smartCascadeIsLoopRunning(node?.id) || missingPrompt;
-    if(missingPrompt) runBtn.title = tr('smart.toastNeedPrompt');
+    runBtn.disabled = !runnable || flightLocked || smartCascadeIsLoopRunning(node?.id) || missingPrompt || Boolean(selectionError);
+    if(selectionError || missingPrompt) runBtn.title = selectionError || tr('smart.toastNeedPrompt');
     else runBtn.removeAttribute('title');
 }
 function terminalSmartGenerationTaskIds(...logLists){
@@ -6876,7 +6863,8 @@ async function loadCanvas(){
         }
         normalizeSmartVideoModeSettings(settings, true);
         canvasState.nodes.forEach(node => {
-            if(node.runSettings){
+            // #465：生图节点只在使用时解析旧设置，打开画布不能把默认值写回节点。
+            if(node.runSettings && !hasApiImageRunSettings(node)){
                 node.runSettings.engine = normalizeSmartOnlineEngine(node.runSettings.engine);
                 normalizeSmartVideoModeSettings(node.runSettings, true);
             }
@@ -14855,6 +14843,8 @@ function usesServerImageReferences(runSettings){
 }
 
 async function resolveWorkflowImageRequest(node, options){
+    const selectionError = imageGenerationSelectionError(options.runSettings);
+    if(selectionError) throw new Error(selectionError);
     if(!usesServerImageReferences(options.runSettings)) return null;
     const projectId = canvas.project_id || canvas.project || canvasId;
     const currentInput = () => imageReferenceInput(node, {innerHTML:options.draftHtml()}, options.ctx, options);
@@ -14872,6 +14862,8 @@ async function runGeneration(){
     const node = selectedNode();
     if(!node || isSmartLayoutFrame(node) || (smartNodeInFlight(node) && !smartNodeAllowsOverlappingRun(node))) return;
     const runSettings = smartSettingsForNode(node);
+    const selectionError = imageGenerationSelectionError(runSettings);
+    if(selectionError){ toast(selectionError); return; }
     let request;
     if(usesServerImageReferences(runSettings)){
         const projectId = canvas.project_id || canvas.project || canvasId;
@@ -14883,7 +14875,7 @@ async function runGeneration(){
             toast(error?.message || tr('smart.errRunFailed'));
             return;
         }
-        // Don't apply pending/output changes to a different graph, editor or project after the read.
+        // 异步读取期间图、编辑器或项目可能切换，不能把结果写入另一份状态。
         if((canvas?.project_id || canvas?.project || canvasId) !== projectId || selectedNode() !== node
             || imageReferenceInput(node, promptInput, smartLoopContext) !== input || JSON.stringify(smartSettingsForNode(node)) !== settingsAtClick){
             toast(tr('smart.projectConflict'));
@@ -14904,12 +14896,15 @@ async function runGeneration(){
     }
     const outpaintSize = validOutpaintSize(node);
     if(outpaintSize && isApiLikeEngine(settings.engine) && settings.apiKind !== 'video'){
-        // 扩图时只设置比例，不设置自定义分辨率（保留用户选择的 4K/2K/1K）
+        // #187：扩图几何不能覆盖用户选择的分辨率档位。
         settings = {
             ...settings,
             ratio:'custom',
             customRatio:outpaintSize.aspectRatio
         };
+    } else if(isApiLikeEngine(settings.engine) && settings.apiKind !== 'video'){
+        // 占位图和运行快照必须与最终请求使用同一比例。
+        alignRatioToModel(settings);
     }
     const meta = snapshotRunMeta(prompt, node.id, request.displayPrompt, refs);
     const logKind = isApiLikeEngine(settings.engine) && settings.apiKind === 'video' ? 'video' : 'image';
@@ -14955,10 +14950,7 @@ async function runGeneration(){
     if(extracted) pendingNode._runMetaTargetId = extracted.id;
     if(!branchNode){
         const frameBox = layoutFrameContainingNode(pendingNode.id) ? nodeRect(pendingNode) : null;
-        // 新一轮生成开始：框内已有上一轮残留图片（且没有仍在飞行的任务）时，
-        // 先把旧图归档到候选池再清空，按本轮真实并发数(1-8)重建占位框。
-        // 否则旧图会占用占位格、写回的新图只能追加在旧图之后，8 并发时后半截图
-        // 写不进去、节点永远停在“生成中”。
+        // 残留旧图会占满占位格并阻止新图写入；只有没有在途任务时才能归档清空。
         const leftoverImages = (pendingNode.images || []).filter(img => img?.url);
         if(leftoverImages.length && !priorPendingTasks.length){
             const history = ensureHistoryGroupForNode(pendingNode);
@@ -15078,14 +15070,11 @@ async function runGeneration(){
             if(!taskIds.length) throw new Error(tr('smart.errRunFailed'));
             const newTasks = taskIds.map((taskId, index) => ({taskId, kind:'image', count:outImages.count || 1, providerId:outImages.providerId, model:outImages.model, prompt, size:sizeForRun(settings) || '', createdAt:runLogStart, pendingHistoryId:index === 0 ? pendingHistoryId : ''}));
             pendingNode.pendingTasks = [...smartPendingTasks(pendingNode).filter(task => !taskIds.includes(task.taskId)), ...newTasks];
-            // 提交时就固化目标比例：占位/逐张写入/完成三个阶段共用同一个格子比例，
-            // 任何阶段都不再按真实图重算，彻底消除「上传方形、写入跳回」的跳变。
-            // 扩图激活时，使用扩图的比例
+            // 占位、逐张写入和完成必须共用目标比例，不能按真实图片重算而跳变。
             const outpaintForWriteback = validOutpaintSize(node);
             pendingNode._generationAspect = outpaintForWriteback 
                 ? {w: outpaintForWriteback.width, h: outpaintForWriteback.height}
                 : parseSizeAspect(String(sizeForRun(settings) || '')) || parseSizeAspect('1:1');
-            // 节点尺寸已在上方 pendingBoxSize 处固化，这里不再重复设置
             ensureSmartPendingHistoryLogs(pendingNode, newTasks, {prompt, kind:'image'});
             pendingNode.pending = Math.max(pendingNode.pendingTasks.length, pendingNode.pendingTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0));
             pendingNode.runTimerHidden = false;
@@ -15127,8 +15116,7 @@ async function runGeneration(){
     } catch(e) {
         settings = previousSettings;
         if(e?.smartSavePendingResume){
-            // #189: the pre-generation flush failed. The request stays pending and is replayed
-            // automatically once the canvas save settles (see markAutosaveSaved).
+            // #189：保存未确认不等于提交失败，保留待提交态供落盘后自动重放。
             pendingNode.running = false;
             pendingNode.pending = Math.max(1, Number(pendingNode.pending || 0), smartGenerationSubmissions(pendingNode).length);
             scheduleSave();
@@ -15146,8 +15134,7 @@ async function runGeneration(){
         pendingNode.pending = remainingTasks.length
             ? Math.max(remainingTasks.length, remainingTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0))
             : 0;
-        // A terminal task failure stores its retry state on the result branch.
-        // Removing that branch here would discard both the state and its UI.
+        // 终态失败的重试信息保存在结果分支，删除分支会一并丢掉重试状态和入口。
         if(branchNode && !(liveNode(pendingNode).failedGenerationTasks || []).length){
             canvasState.nodes = canvasState.nodes.filter(n => n.id !== branchNode.id); if(canvas) canvas.nodes = canvasState.nodes;
             canvas.connections = (canvas.connections || []).filter(c => c.from !== branchNode.id && c.to !== branchNode.id);

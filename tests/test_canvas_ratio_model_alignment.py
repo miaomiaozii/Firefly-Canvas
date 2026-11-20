@@ -15,7 +15,6 @@ import json
 import re
 import shutil
 import subprocess
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -219,10 +218,18 @@ console.log(JSON.stringify({{
 
     def test_generation_request_paths_align_ratio_before_size_is_derived(self):
         source = (REPO_ROOT / "static" / "js" / "canvas-generation-tasks.js").read_text(encoding="utf-8")
-        calls = list(re.finditer(r"alignRatioToModel\(runSettings\);", source))
-        self.assertEqual(len(calls), 2, "both image send paths must align before building the payload")
-        for match in calls:
-            self.assertIn("sizeForRun(runSettings)", source[match.end():match.end() + 1200])
+        # The two send paths share a preflight now. Assert ordering on both
+        # branches; test-canvas-generation-tasks.mjs verifies the actual wire sizes.
+        match = re.search(r"^async function runApiGeneration\([^\n]+\{\n(.*?)^\}", source, re.M | re.S)
+        self.assertIsNotNone(match)
+        body = match.group(1)
+        shared, project = body.split("if(projectCanvas){", 1)
+        project, classic = project.split("return taskResult;\n    }", 1)
+        self.assertNotIn("sizeForRun(", shared)
+        self.assertRegex(shared, r"runSettings = \{\.\.\.runSettings, provider_id:selection\.providerId, model\};\s*canvasCore\.alignRatioToModel\(runSettings\);")
+        self.assertIn("sizeForRun(runSettings)", project)
+        self.assertIn("aspect_ratio:aspectRatioForRun(runSettings)", project)
+        self.assertIn("size:sizeForRun(runSettings)", classic)
 
     def test_changed_frontend_files_get_a_fresh_cache_buster(self):
         html = (REPO_ROOT / "static" / "smart-canvas.html").read_text(encoding="utf-8")

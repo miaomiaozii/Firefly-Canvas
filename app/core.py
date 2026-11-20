@@ -4415,7 +4415,7 @@ def route_image_from_spec(requested_model, size, spec):
         route['omit'] = omit
     return route
 
-def route_openai_image_request(provider, model, size):
+def route_openai_image_request(provider, model, size, *, lock_model=False):
     requested_model = selected_model(model, IMAGE_MODEL)
     family = banana_model_family(requested_model)
     # SPEC-FIRST: model_specs.json is the authoritative registry for adapted
@@ -4427,7 +4427,10 @@ def route_openai_image_request(provider, model, size):
             return route_image_from_spec(requested_model, size, spec)
     params = {}
     routed_model = requested_model
-    if family:
+    if lock_model and (family or looks_like_gemini_image_model(requested_model)):
+        # #465: canvas has already routed against the checked catalog; do not pick a second variant here.
+        params = banana_image_request_params(size)
+    elif family:
         available = image_provider_model_ids(provider)
         _, resolution = apimart_size_resolution(size)
         requested_variant = requested_model != family

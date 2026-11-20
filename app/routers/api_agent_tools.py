@@ -1528,6 +1528,7 @@ def _node_prompt_fields(node):
 async def prepare_generation(project_id, node_id, *, canvas=None, prompt_override=None):
     from app.routers.api_project_library import project_image_executed_prompt, project_image_request
     from app.services.canvas_image_refs import ReferenceGraph
+    from app.services.canvas_image_selection import require_canvas_image_provider, route_canvas_image
 
     agent_refs.identifier(node_id, "node_id")
     store = _app_main.FIREFLY_PROJECT_STORE
@@ -1560,6 +1561,11 @@ async def prepare_generation(project_id, node_id, *, canvas=None, prompt_overrid
     if not prompt:
         raise agent_error(400, "NODE_NOT_GENERATABLE", f"Node {node_id} has no prompt",
                           "先给节点写 prompt，再触发生成。")
+    # #391：无提示词属于节点不可生成；服务商准入只检查已有提示词的请求。
+    try:
+        require_canvas_image_provider(agent_image_settings.node_image_provider_id(node))
+    except ModelRoutingError as exc:
+        raise agent_error(400, 'INVALID_ARGUMENT', exc.message, details={'routing': exc.to_dict()}) from exc
     providers = _app_main.load_api_providers()
     try:
         wire = ProjectImageGenerationRequest(
@@ -1570,7 +1576,7 @@ async def prepare_generation(project_id, node_id, *, canvas=None, prompt_overrid
             result_node_id=node_id, base_revision=canvas.get("revision", 0),
         )
         request = project_image_request(wire)
-        route = _app_main.route_image_generation(request, providers, provider_id=wire.provider_id, model=wire.model)
+        route = route_canvas_image(request, wire, providers, _app_main.route_image_generation)
         project_image_executed_prompt(wire)
     except ModelRoutingError as exc:
         raise agent_error(400, "INVALID_ARGUMENT", exc.to_dict()["message"],

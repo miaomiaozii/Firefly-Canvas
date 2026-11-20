@@ -1157,6 +1157,10 @@ function sendSmartHistoryOutputsToCanvas(historyId, outputIndex=null, dropPoint=
     const failed = log?.status === 'failed' || !outputs.length;
     const runMeta = smartHistoryRunMeta(log);
     const originalModel = smartHistorySettingsModel(runMeta.settings);
+    const selection = originalModel ? canvasCore.smartHistoryImageModelSelection(runMeta.settings) : null;
+    const stale = Boolean(selection?.staleModel);
+    // #453/#465：创建时确定模型，让按钮和撤销差量看到同一值；不改历史或补选服务商。
+    if(stale && selection.models.length) runMeta.settings.model = selection.models[0];
     pushUndo();
     const node = createImageNodeAt(point, outputs.map(output => {
         const clean = {...output};
@@ -1171,14 +1175,12 @@ function sendSmartHistoryOutputsToCanvas(historyId, outputIndex=null, dropPoint=
         generationState:failed ? 'ready' : 'complete'
     });
     node.runStatus = failed ? 'failed' : 'succeeded';
-    // #453: resolve the selected node's settings before reporting the result, using
-    // the same fallback as the composer rather than guessing from the history label.
-    if(originalModel && canvasCore.activeComposerNode()?.id === node.id) canvasCore.renderDynamicParams();
+    if(originalModel && !selection) canvasCore.updateComposer();
     const appliedModel = smartHistorySettingsModel(node.runSettings);
     canvasCore.scheduleSave();
     closeSmartCanvasLog();
-    if(originalModel && originalModel !== appliedModel){
-        toast(appliedModel
+    if(originalModel && (originalModel !== appliedModel || stale)){
+        toast(appliedModel && originalModel !== appliedModel
             ? trf('smart.historyModelFallback', {original:originalModel, replacement:appliedModel})
             : trf('smart.historyModelUnavailable', {original:originalModel}), 5000);
     } else {

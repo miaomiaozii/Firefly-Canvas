@@ -153,6 +153,7 @@ class V1PathCount8Tests(unittest.TestCase):
         request = {
             "prompt": "八张并发生成测试",
             "routing_mode": "auto",
+            "provider_id": FAKE_PROVIDER['id'],
             "size": "1024x1024",
             "width": 1024,
             "height": 1024,
@@ -198,9 +199,7 @@ class LegacyPathCount8Tests(unittest.IsolatedAsyncioTestCase):
             headers={"origin": "http://127.0.0.1"},
         )
         self._patches = [
-            patch.object(main, "get_api_provider", return_value=FAKE_PROVIDER),
-            # #381：legacy 这条路现在按 required 解析，桩要跟着接缝改名
-            patch.object(main, "get_api_provider_required", return_value=FAKE_PROVIDER),
+            patch.object(main, "load_api_providers", return_value=[FAKE_PROVIDER]),
             patch.object(main.manager, "broadcast_new_image", new=AsyncMock()),
             patch.object(misc, "GLOBAL_LOOP", None),
             patch.object(services, "save_ai_image_to_output", new=AsyncMock(return_value="/output/fake-online.png")),

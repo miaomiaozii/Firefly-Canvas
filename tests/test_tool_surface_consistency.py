@@ -39,7 +39,7 @@ from app.services import agent_ops_delta, agent_tools_manifest
 from app.services.agent_ops_journal import AgentOpsJournal, record_sides
 from app.services.agent_errors import translate_detail
 from app.services.agent_host import AgentSession, agent_host_manager
-from tests.agent_image_task_fakes import route_stub
+from tests.agent_image_task_fakes import route_stub, stub_providers
 from tests.fake_agent_host import install_stub_pi_cli, restore_stub_pi_cli
 
 
@@ -165,8 +165,11 @@ class DualPathEquivalenceTests(unittest.TestCase):
     ACTOR = "agent-consistency"
     TURN = "turn-consistency"
     SEED = [
-        {"op": "upsert_node", "node": {"id": "prompt-1", "type": "smart-prompt", "title": "Test Prompt", "text": "A glowing firefly", "x": 100, "y": 100}},
-        {"op": "upsert_node", "node": {"id": "image-1", "type": "smart-image", "title": "Test Image", "x": 300, "y": 100}},
+        {"op": "upsert_node", "node": {"id": "prompt-1", "type": "smart-prompt", "title": "Test Prompt",
+                                       "text": "A glowing firefly", "x": 100, "y": 100,
+                                       "runSettings": {"provider_id": "offline"}}},
+        {"op": "upsert_node", "node": {"id": "image-1", "type": "smart-image", "title": "Test Image",
+                                       "x": 300, "y": 100, "runSettings": {"provider_id": "offline"}}},
         {"op": "upsert_edge", "edge": {"id": "edge-1", "from": "prompt-1", "to": "image-1", "kind": "flow"}},
         # #350：MCP 不再自动物化 agent 节点——归属节点两项目同种，终态全等比较。
         {"op": "upsert_node", "node": {"id": "agent-consistency", "type": "smart-agent",
@@ -222,6 +225,7 @@ class DualPathEquivalenceTests(unittest.TestCase):
             patch("app.routers.api_project_library.run_routed_image_candidate",
                   new=AsyncMock(side_effect=RuntimeError("Offline equivalence fixture"))),
             patch.object(main, "route_image_generation", return_value=route_stub("offline", "stub-model")),
+            patch.object(main, "load_api_providers", return_value=stub_providers("offline", "stub-model")),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)

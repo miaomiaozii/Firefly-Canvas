@@ -23,6 +23,8 @@ import main
 from app.routers import api_project_library
 from firefly_projects import ProjectStore
 
+FAKE_PROVIDER_ID = "fake-http"
+
 
 def tiny_png_base64(color=(38, 190, 133)):
     buffer = io.BytesIO()
@@ -40,10 +42,11 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         self.client = TestClient(main.app, base_url="http://127.0.0.1", headers={"origin": "http://127.0.0.1"})
         self.providers = [
             {
-                "id": "fake-http",
+                "id": FAKE_PROVIDER_ID,
                 "name": "假在线服务",
                 "enabled": True,
                 "protocol": "openai",
+                "base_url": "https://provider.invalid/v1",
                 "image_models": ["fake-square", "fake-wide-4k"],
                 "image_model_capabilities": {
                     "fake-square": {"sizes": ["1024x1024"], "aspect_ratios": ["1:1"], "resolutions": ["1k"], "max_reference_images": 0},
@@ -117,6 +120,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         request = {
             "prompt": "产品放在木桌上",
             "routing_mode": "auto",
+            "provider_id": FAKE_PROVIDER_ID,
             "size": "3840x1648",
             "width": 3840,
             "height": 1648,
@@ -225,6 +229,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
                 json={
                     "prompt": "宽高比拒绝",
                     "routing_mode": "auto",
+                    "provider_id": FAKE_PROVIDER_ID,
                     "size": "1024x1024",
                     "width": None,
                     "height": None,
@@ -262,6 +267,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         payload = {
             "prompt": "preserve exact bytes",
             "routing_mode": "auto",
+            "provider_id": FAKE_PROVIDER_ID,
             "size": "1024x1024",
             "aspect_ratio": "1:1",
             "resolution": "1k",
@@ -322,6 +328,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         request = {
             "prompt": "刷新后继续显示阶段",
             "routing_mode": "auto",
+            "provider_id": FAKE_PROVIDER_ID,
             "size": "1024x1024",
             "width": 1024,
             "height": 1024,
@@ -379,6 +386,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
             return {
                 "prompt": prompt,
                 "routing_mode": "auto",
+                "provider_id": FAKE_PROVIDER_ID,
                 "size": "1024x1024",
                 "aspect_ratio": "1:1",
                 "resolution": "1k",
@@ -472,6 +480,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
                     json={
                         "prompt": "stop snapshot",
                         "routing_mode": "auto",
+                        "provider_id": FAKE_PROVIDER_ID,
                         "size": "1024x1024",
                         "aspect_ratio": "1:1",
                         "resolution": "1k",
@@ -571,6 +580,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
                     json={
                         "prompt": "cancel despite flush failure",
                         "routing_mode": "auto",
+                        "provider_id": FAKE_PROVIDER_ID,
                         "n": 1,
                         "media_type": "image",
                         "result_node_id": "result-node",
@@ -630,6 +640,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
                     json={
                         "prompt": "cancel despite websocket failure",
                         "routing_mode": "auto",
+                        "provider_id": FAKE_PROVIDER_ID,
                         "n": 1,
                         "media_type": "image",
                         "result_node_id": "result-node",
@@ -666,6 +677,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         payload = {
             "prompt": "one paid call",
             "routing_mode": "auto",
+            "provider_id": FAKE_PROVIDER_ID,
             "size": "1024x1024",
             "aspect_ratio": "1:1",
             "resolution": "1k",
@@ -728,6 +740,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         payload = {
             "prompt": "第一次请求",
             "routing_mode": "auto",
+            "provider_id": FAKE_PROVIDER_ID,
             "n": 1,
             "media_type": "image",
             "result_node_id": "stable-node",
@@ -783,6 +796,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         payload = {
             "prompt": "must not invoke provider",
             "routing_mode": "auto",
+            "provider_id": FAKE_PROVIDER_ID,
             "n": 1,
             "media_type": "image",
             "result_node_id": "result-node",
@@ -825,6 +839,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         payload = {
             "prompt": "must not invoke provider when scheduling fails",
             "routing_mode": "auto",
+            "provider_id": FAKE_PROVIDER_ID,
             "n": 1,
             "media_type": "image",
             "result_node_id": "result-node",
@@ -884,6 +899,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
                 json={
                     "prompt": "failure survives broadcast outage",
                     "routing_mode": "auto",
+                    "provider_id": FAKE_PROVIDER_ID,
                     "n": 1,
                     "media_type": "image",
                     "result_node_id": "result-node",
@@ -929,6 +945,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
                 json={
                     "prompt": "reconcile failed commit",
                     "routing_mode": "auto",
+                    "provider_id": FAKE_PROVIDER_ID,
                     "n": 1,
                     "media_type": "image",
                     "result_node_id": "result-node",
@@ -976,6 +993,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
                     json={
                         "prompt": "shutdown must cancel",
                         "routing_mode": "auto",
+                        "provider_id": FAKE_PROVIDER_ID,
                         "n": 1,
                         "media_type": "image",
                         "result_node_id": "result-node",
@@ -1032,6 +1050,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
                 json={
                     "prompt": "success remains success",
                     "routing_mode": "auto",
+                    "provider_id": FAKE_PROVIDER_ID,
                     "n": 1,
                     "media_type": "image",
                     "result_node_id": "result-node",
@@ -1104,6 +1123,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
                 json={
                     "prompt": "cancelled remains cancelled",
                     "routing_mode": "auto",
+                    "provider_id": FAKE_PROVIDER_ID,
                     "n": 1,
                     "media_type": "image",
                     "result_node_id": "result-node",
@@ -1151,6 +1171,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
                 json={
                     "prompt": "paid success",
                     "routing_mode": "auto",
+                    "provider_id": FAKE_PROVIDER_ID,
                     "n": 1,
                     "media_type": "image",
                     "result_node_id": "result-node",
@@ -1416,6 +1437,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         payload = {
             "prompt": "retry once",
             "routing_mode": "auto",
+            "provider_id": FAKE_PROVIDER_ID,
             "size": "1024x1024",
             "aspect_ratio": "1:1",
             "resolution": "1k",
@@ -1484,15 +1506,21 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
             main.project_media_adapter_reference(project["id"], own["asset_id"]),
             f"/api/project-library/{project['id']}/media/{own['asset_id']}",
         )
-        for endpoint in ("/api/online-image", "/api/canvas-image-tasks"):
-            for forged in forged_values:
-                with self.subTest(endpoint=endpoint, reference=forged), patch.object(main, "generate_ai_image", adapter):
-                    response = self.client.post(endpoint, json={
-                        "prompt": "不能公开读取项目图片",
-                        "reference_images": [{"url": forged, "kind": "image"}],
-                    })
-                self.assertEqual(response.status_code, 400, response.text)
-                self.assertEqual(response.json()["detail"]["code"], "project_media_handle_requires_project_task")
+        endpoints = {
+            "/api/online-image": {},
+            "/api/canvas-image-tasks": {"provider_id": FAKE_PROVIDER_ID, "model": "fake-wide-4k"},
+        }
+        with patch.object(main, "load_api_providers", return_value=self.providers), patch.object(main, "generate_ai_image", adapter):
+            for endpoint, selection in endpoints.items():
+                for forged in forged_values:
+                    with self.subTest(endpoint=endpoint, reference=forged):
+                        response = self.client.post(endpoint, json={
+                            "prompt": "不能公开读取项目图片",
+                            "reference_images": [{"url": forged, "kind": "image"}],
+                            **selection,
+                        })
+                        self.assertEqual(response.status_code, 400, response.text)
+                        self.assertEqual(response.json()["detail"]["code"], "project_media_handle_requires_project_task")
         adapter.assert_not_awaited()
 
         self.store.apply_mutations(
@@ -1503,6 +1531,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         payload = {
             "prompt": "跨项目图片",
             "routing_mode": "auto",
+            "provider_id": FAKE_PROVIDER_ID,
             "size": "3840x1648",
             "width": 3840,
             "height": 1648,
@@ -1524,7 +1553,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
         project = self.store.create_project("路由错误")
         fake_generate = AsyncMock()
         payload = {
-            "prompt": "宽幅画面", "routing_mode": "manual", "provider_id": "fake-http", "model": "fake-square",
+            "prompt": "宽幅画面", "routing_mode": "manual", "provider_id": FAKE_PROVIDER_ID, "model": "fake-square",
             "size": "3840x1648", "width": 3840, "height": 1648, "aspect_ratio": "21:9", "resolution": "4k",
             "reference_asset_ids": [], "media_type": "image", "result_node_id": "new-result",
             "base_revision": 0,
@@ -1625,7 +1654,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
             return ({"type": "b64", "value": encoded, "mime_type": "image/png"}, {})
 
         payload = {
-            "prompt": "等待期间移动其他节点", "routing_mode": "auto", "size": "3840x1648",
+            "prompt": "等待期间移动其他节点", "routing_mode": "auto", "provider_id": FAKE_PROVIDER_ID, "size": "3840x1648",
             "width": 3840, "height": 1648, "aspect_ratio": "21:9", "resolution": "4k",
             "reference_asset_ids": [], "media_type": "image", "result_node_id": "result", "base_revision": 1,
         }
@@ -1655,7 +1684,7 @@ class ProjectImageGenerationContractTests(unittest.TestCase):
             {},
         ))
         payload = {
-            "prompt": "失败也要记录", "routing_mode": "auto", "size": "3840x1648",
+            "prompt": "失败也要记录", "routing_mode": "auto", "provider_id": FAKE_PROVIDER_ID, "size": "3840x1648",
             "width": 3840, "height": 1648, "aspect_ratio": "21:9", "resolution": "4k",
             "reference_asset_ids": [], "media_type": "image", "result_node_id": "result",
             "base_revision": 1,

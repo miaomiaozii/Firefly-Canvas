@@ -9,6 +9,8 @@ import time
 import uuid
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from app.core import (CANVAS_TASKS, CANVAS_TASK_LOCK, HTTPException, OnlineImageRequest, _os, _sys, asyncio, extract_task_id_from_text, image_generation_task_timeout_seconds, re, require_online_image_project_media_scope, time, uuid)
+from app.services.canvas_image_selection import require_canvas_image_provider, select_canvas_image_model
+from firefly_generation import ModelRoutingError, checked_image_models
 _from_main_names = ['build_online_image_result', 'run_canvas_image_task']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -24,14 +26,14 @@ def extract_task_id_from_text(text):
     match = re.search('(?:task_id|taskId|task id)\\s*[=:：]\\s*([A-Za-z0-9_.:-]+)', value, re.IGNORECASE)
     return match.group(1) if match else ''
 
-async def run_canvas_image_task(task_id: str, payload: OnlineImageRequest):
+async def run_canvas_image_task(task_id: str, payload: OnlineImageRequest, *, canvas_selection):
     with CANVAS_TASK_LOCK:
         if task_id in CANVAS_TASKS:
             CANVAS_TASKS[task_id]['status'] = 'running'
             CANVAS_TASKS[task_id]['updated_at'] = time.time()
     try:
         # #41: 任务级硬超时——provider 挂起时也必须到达终态（timeout），不能无限 running。
-        result = await asyncio.wait_for(build_online_image_result(payload), timeout=image_generation_task_timeout_seconds())
+        result = await asyncio.wait_for(build_online_image_result(payload, canvas_selection=canvas_selection), timeout=image_generation_task_timeout_seconds())
         with CANVAS_TASK_LOCK:
             CANVAS_TASKS[task_id].update({'status': 'succeeded', 'result': result, 'error': '', 'updated_at': time.time()})
     except (TimeoutError, asyncio.TimeoutError):
@@ -47,11 +49,18 @@ async def run_canvas_image_task(task_id: str, payload: OnlineImageRequest):
 
 @router.post('/api/canvas-image-tasks')
 async def create_canvas_image_task(payload: OnlineImageRequest):
+    try:
+        provider_id = require_canvas_image_provider(payload.provider_id)
+        provider, model = select_canvas_image_model(_app_main.load_api_providers(), provider_id, payload.model)
+    except ModelRoutingError as exc:
+        raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
     require_online_image_project_media_scope(payload)
+    # Legacy canvas sends a manual request with no routing parameters beyond size.
+    model = model or checked_image_models(provider)[0]
     task_id = f'canvas_img_{uuid.uuid4().hex}'
     with CANVAS_TASK_LOCK:
-        CANVAS_TASKS[task_id] = {'id': task_id, 'type': 'online-image', 'status': 'queued', 'created_at': time.time(), 'updated_at': time.time(), 'result': None, 'error': '', 'provider_id': payload.provider_id, 'model': payload.model}
-    asyncio.create_task(run_canvas_image_task(task_id, payload))
+        CANVAS_TASKS[task_id] = {'id': task_id, 'type': 'online-image', 'status': 'queued', 'created_at': time.time(), 'updated_at': time.time(), 'result': None, 'error': '', 'provider_id': provider['id'], 'model': model}
+    asyncio.create_task(run_canvas_image_task(task_id, payload, canvas_selection=(provider, model)))
     return {'task_id': task_id, 'status': 'queued'}
 
 @router.get('/api/canvas-image-tasks/{task_id}')

@@ -519,6 +519,26 @@ test('R1d: first classic creation is journaled from the real loaded server ancho
     assert.equal(e.live().nodes.find(node=>node.id==='first-new')?.text,'new after load');
 });
 
+test('#465: loading and serializing legacy image nodes leaves their saved settings unchanged', async()=>{
+    const initial=seed();
+    initial.nodes.push(
+        {id:'unbound-image',type:'smart-image',runSettings:{model:'old',routingMode:'auto'}},
+        {id:'bound-image',type:'smart-image',runSettings:{engine:'api',apiKind:'image',provider_id:'other',model:'old'}},
+    );
+    const e=editor(initial);
+    Object.assign(e.ctx,{
+        composer:null, loadRecentSmartSettings(){}, applyRecentSmartSettingsForCurrentMode(){}, updateProviderModels(){},
+        frameSmartCanvasContentIfNeeded(){}, resumeConversationTasks(){}, startCanvasMetaPoll(){},
+        restorePersistedAnnotations(){}, openCanvasRecoveryWizard(){throw new Error('unexpected recovery wizard');},
+        loadProjectViewport(){return {x:0,y:0,scale:1};}, projectSaveState:null,
+    });
+    e.ctx.fetch=async()=>({ok:true,status:200,json:async()=>({canvas:copy(initial)})});
+    assert.equal(await e.call('loadCanvas'),true,JSON.stringify(e.harness.toasts));
+    const imageSettings = canvas => canvas.nodes.filter(node => node.type==='smart-image').map(node => node.runSettings);
+    assert.deepEqual(imageSettings(e.state()), imageSettings(initial));
+    assert.deepEqual(imageSettings(fromContext(e.call('canvasForStorage'))), imageSettings(initial));
+});
+
 test('R1e: pending media creation is hydrated after receive while storage and server shadow remain references',async()=>{
     const e=editor();e.live().nodes.push({id:'copied',type:'smart-image',images:[{
         output_id:'out',asset_id:'asset-copy',kind:'image',url:'/api/project-library/e2e-tabbit-a2/media/asset-copy',name:'copied',

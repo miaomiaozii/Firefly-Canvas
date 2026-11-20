@@ -164,7 +164,8 @@ class WriteBroadcastTests(unittest.IsolatedAsyncioTestCase):
     async def test_generation_response_includes_root_and_child_touched_nodes(self):
         from app.services import agent_ops_context
         self.store.apply_mutations(self.pid, [{'op': 'upsert_node', 'node': {
-            'id': 'source', 'type': 'prompt', 'text': 'draw'}}], base_revision=0)
+            'id': 'source', 'type': 'prompt', 'text': 'draw',
+            'runSettings': {'provider_id': 'mock'}}}], base_revision=0)
         self.store.flush(self.pid)
         workers = []
         create = agent_ops_context.create_agent_ops_task
@@ -174,9 +175,9 @@ class WriteBroadcastTests(unittest.IsolatedAsyncioTestCase):
             return task
         async def fail(_):
             raise RuntimeError('provider failure')
-        from tests.agent_image_task_fakes import patch_candidate, route_stub
+        from tests.agent_image_task_fakes import patch_candidate, route_stub, stub_providers
         with patch.object(main, 'route_image_generation', return_value=route_stub()), \
-             patch.object(main, 'load_api_providers', return_value=[]), patch_candidate(fail), \
+             patch.object(main, 'load_api_providers', return_value=stub_providers()), patch_candidate(fail), \
              patch.object(agent_ops_context, 'create_agent_ops_task', side_effect=track):
             with agent_ops_scope(project_id=self.pid, agent_node_id='actor', tool='generate.trigger', args={}):
                 result = await tools.trigger_generation_core(self.pid, 'source', agent_node_id='actor')

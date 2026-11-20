@@ -139,7 +139,15 @@ async function postProjectImageTaskWithReplay(projectId, payload){
     throw unknown;
 }
 
+function requireImageProviderSelection(runSettings){
+    const selection = canvasCore.imageProviderSelection(runSettings);
+    if(selection.error) throw new Error(selection.error);
+    return selection;
+}
+
 async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=null, runOptions={}){
+    const selection = requireImageProviderSelection(runSettings);
+    const projectCanvas = canvas?.format === 'firefly-canvas-v1';
     const count = Math.max(1, Math.min(8, Number(runSettings.count || 1)));
     const pendingHistoryId = runOptions.pendingHistoryId || beginSmartPendingHistoryLog(resultNode, {
             prompt,
@@ -148,7 +156,7 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
             model:runSettings.model || '',
             runSettings
         });
-    if(canvas?.format === 'firefly-canvas-v1' && !runOptions.registrationQueued){
+    if(projectCanvas && !runOptions.registrationQueued){
         if(!resultNode?.id) throw new Error(tr('smart.projectImageMissingResult'));
         return queueSmartGenerationRegistration(resultNode.id, () => runApiGeneration(prompt, refs, runSettings, resultNode, {
             ...runOptions,
@@ -156,37 +164,34 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
             registrationQueued:true
         }));
     }
-    if(canvas?.format === 'firefly-canvas-v1'){
+    // 经典画布入口没有自动路由；未固定模型时用当前服务商的第一个已勾选模型。
+    const model = selection.selectedModel || (projectCanvas ? '' : selection.models[0]);
+    // 两条发送路径都按对齐后的副本计算尺寸，不能改写节点保存的设置。
+    runSettings = {...runSettings, provider_id:selection.providerId, model};
+    canvasCore.alignRatioToModel(runSettings);
+    if(projectCanvas){
         if(!resultNode?.id) throw new Error(tr('smart.projectImageMissingResult'));
         const outpaintSize = validOutpaintSize(resultNode);
-        // #187: resolution 不得被 !outpaintSize 门掉——扩图参数面板保留用户选择的
-        // 分辨率预设（4K/2K/1K），请求必须照发同一值，否则服务商按默认档位出图（1K），
-        // 界面承诺与请求实态不一致（ADR 0006：用户输入不得静默降级）。
-        // 节点可能残留上一个模型支持、当前模型不支持的比例（banana 的 1:4 切到
-        // gpt-image 家族）：发送前先收敛到该模型支持的最接近比例，否则 aspect_ratio 与
-        // 由它推导的 size 双双超能力，请求在路由预检被拒（不兼容参数：aspect_ratio）。
-        canvasCore.alignRatioToModel(runSettings);
         const usesExplicitResolution = apiImageUsesExplicitResolution(runSettings);
-        // 扩图时不发送 size/width/height，只发送 aspect_ratio 和 resolution：
-        // 扩图几何由 outpaintSize 的 aspect_ratio 表达，服务商契约按「比例 + 分辨率档位」
-        // 推导像素尺寸（见 app/services/generation.py：aspect_ratio 存在时 body 不写 size）。
+        // #187：扩图几何由 outpaintSize 的比例表达，不发像素尺寸，但仍保留用户的分辨率档位。
         const sendsExplicitSize = usesExplicitResolution && !outpaintSize;
-        const size = sendsExplicitSize ? sizeForRun(runSettings) : '';
-        const parsed = sendsExplicitSize ? canvasCore.parseSizeValue(size) : null;
-        if(sendsExplicitSize && !parsed) throw new Error(tr('smart.imageSizeInvalid'));
+        const size = sendsExplicitSize && runSettings.resolution !== 'auto' ? sizeForRun(runSettings) : '';
+        const parsed = size ? canvasCore.parseSizeValue(size) : null;
+        if(size && !parsed) throw new Error(tr('smart.imageSizeInvalid'));
         const imageRefs = imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX);
         const ownedRefs = await Promise.all(imageRefs.map(canvasCore.importProjectMediaReference));
         const reference_asset_ids = ownedRefs.filter(Boolean).map(item => item.asset_id).filter(Boolean);
         if(reference_asset_ids.length !== imageRefs.length) throw new Error(tr('smart.refsNotInProject'));
-        // Send positions in the actual upload list; Agent and browser share server prompt formatting (#396).
+        // #396：角色位置必须对应实际上传顺序，Agent 和浏览器共用服务端提示词格式。
         const roles = imageRefs.map(ref => ref.agentRefRole || null);
         const projectId = canvas.project_id || canvas.project || canvasCore.canvasId;
         const payload = {
             prompt,
             ...(roles.some(Boolean) ? {reference_roles:roles} : {}),
             routing_mode:runSettings.routingMode === 'manual' ? 'manual' : 'auto',
-            provider_id:runSettings.routingMode === 'manual' ? (runSettings.provider_id || '') : '',
-            model:runSettings.routingMode === 'manual' ? (runSettings.model || '') : '',
+            // 自动路由仍校验保存的模型；只有手动路由固定使用它。
+            provider_id:selection.providerId,
+            model:runSettings.model,
             size,
             width:parsed?.width || null,
             height:parsed?.height || null,
@@ -212,23 +217,15 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
         });
         canvasCore.scheduleSave();
         if(!await flushProjectCanvasBeforeGeneration()){
-            // #189: a failed pre-generation flush no longer cancels the request. Keep the durable
-            // submission marker and let the debounced autosave carry it to disk; once the canvas
-            // save settles, markAutosaveSaved() replays the same idempotency key, so the task
-            // registers exactly once (the server dedupes by key) and the node moves straight
-            // into the generating state instead of failing.
-            // The pending state is tracked in the module-level key set (not a marker field)
-            // because a 409 rebase (applyMergedServerCanvas) can swap the canvas nodes for
-            // server copies and wipe in-memory marker annotations before they are persisted.
+            // #189：保存未确认时保留提交标记，落盘后用同一幂等键重放，避免取消或重复注册。
+            // 等待键独立于节点，因为 409 rebase 会替换节点并丢掉尚未落盘的内存标记。
             smartPendingPersistenceKeys.add(payload.idempotency_key);
             canvasCore.scheduleSave();
             const pendingError = new Error(tr('smart.canvasSavePendingResume'));
             pendingError.smartSavePendingResume = true;
             throw pendingError;
         }
-        // The durable submission marker was saved at the previous revision.
-        // A first-time replay uses the latest revision; duplicate resolution
-        // ignores this mutable field and still returns the original task.
+        // 提交标记保存于前一 revision；首次注册要用最新版本，重复请求仍按幂等键返回原任务。
         payload.base_revision = Number(canvas.revision || payload.base_revision || 0);
         if(submission) submission.requestPayload = {...payload};
         const task = await postProjectImageTaskWithReplay(projectId, payload);
@@ -245,8 +242,6 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
         canvasCore.scheduleSave();
         return taskResult;
     }
-    canvasCore.alignRatioToModel(runSettings);
-    if(!runSettings.provider_id || !runSettings.model) throw new Error(tr('smart.errNoApiModel'));
     const payload = {prompt, provider_id:runSettings.provider_id, model:runSettings.model, size:sizeForRun(runSettings), quality:runSettings.quality || 'auto', n:1, reference_images:imageRefsOnly(refs).slice(0, SMART_REFERENCE_IMAGE_MAX)};
     const tasks = await Promise.all(Array.from({length:count}, () => fetch('/api/canvas-image-tasks', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)}).then(async r => {
         if(!r.ok) throw new Error(await r.text());
@@ -283,6 +278,7 @@ function expandEachRuns({refNodes, prompt, ctx = {}} = {}){
 async function runEachImageGeneration(refNodes, prompt, runSettings = {}){
     const items = expandEachRuns({refNodes, prompt, ctx:{nodeRect:node => canvasCore.nodeRect(node)}});
     if(!items.length) return {runs:[]};
+    requireImageProviderSelection(runSettings);
     pushUndo();
     const runs = [];
     for(const item of items){

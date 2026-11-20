@@ -44,7 +44,8 @@ import app.services as services  # noqa: E402
 import app.services.misc as misc  # noqa: E402
 from firefly_projects import ProjectStore  # noqa: E402
 
-PROVIDER_INVALID_URL = "https://provider.invalid/v1/images/generations"
+PROVIDER_INVALID_BASE_URL = "https://provider.invalid/v1"
+PROVIDER_INVALID_URL = f"{PROVIDER_INVALID_BASE_URL}/images/generations"
 
 
 def tiny_png_base64():
@@ -154,6 +155,7 @@ FAKE_PROVIDER = {
     "name": "假在线服务",
     "enabled": True,
     "protocol": "openai",
+    "base_url": PROVIDER_INVALID_BASE_URL,
     "image_models": ["fake-square", "fake-wide-4k"],
     "image_model_capabilities": {
         "fake-square": {"sizes": ["1024x1024"], "aspect_ratios": ["1:1"], "resolutions": ["1k"], "max_reference_images": 0},
@@ -202,6 +204,7 @@ class V1BurstStateMachineTests(unittest.TestCase):
         request = {
             "prompt": "八张并发生成测试",
             "routing_mode": "auto",
+            "provider_id": FAKE_PROVIDER["id"],
             "size": "1024x1024",
             "width": 1024,
             "height": 1024,
@@ -234,6 +237,7 @@ class V1BurstStateMachineTests(unittest.TestCase):
                 request = {
                     "prompt": prompt,
                     "routing_mode": "auto",
+                    "provider_id": FAKE_PROVIDER["id"],
                     "size": "1024x1024",
                     "width": 1024,
                     "height": 1024,
@@ -328,9 +332,7 @@ class LegacyBurstStateMachineTests(unittest.IsolatedAsyncioTestCase):
             headers={"origin": "http://127.0.0.1"},
         )
         self._patches = [
-            patch.object(main, "get_api_provider", return_value=FAKE_PROVIDER),
-            # #381：legacy 这条路现在按 required 解析，桩要跟着接缝改名
-            patch.object(main, "get_api_provider_required", return_value=FAKE_PROVIDER),
+            patch.object(main, "load_api_providers", return_value=[FAKE_PROVIDER]),
             patch.object(main.manager, "broadcast_new_image", new=AsyncMock()),
             patch.object(misc, "GLOBAL_LOOP", None),
             patch.object(services, "save_ai_image_to_output", new=AsyncMock(return_value="/output/fake-online.png")),
@@ -352,7 +354,7 @@ class LegacyBurstStateMachineTests(unittest.IsolatedAsyncioTestCase):
     def _payload(self, n):
         return {
             "prompt": "并发生成测试",
-            "provider_id": "fake-http",
+            "provider_id": FAKE_PROVIDER["id"],
             "model": "fake-square",
             "size": "1024x1024",
             "quality": "auto",

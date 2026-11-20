@@ -175,10 +175,8 @@ REVERSE_REFERENCE_CEILINGS = {
     # #453：trf 下沉到 canvas-core，六个模块按实测净值收紧。
     "canvas-generation-cascade.js": 151,  # 147 -> 155 -> 153 -> 152：#236 即梦退役删
     # cascade 里即梦相关发图路径引用，净 -1 核心引用（2026-10-29 实测，棘轮随之收紧）。
-    "canvas-media-history.js": 102,  # 83 -> 98 -> 99 -> 103：#260 Upscale 菜单（2K/4K/8K 档位）在本模块
-    # 新增对核心档位/尺寸层的引用 +4（2026-10-28 实测），走的是「核心调模块」既有方向，无新自由耦合。
-    # smartVideoFallbackHtml/mediaDisplaySrc）从宿主上移到本模块，紧邻 smartMediaPreviewUrl 档位逻辑；
-    # +1 可归因到这次搬迁（displayMediaUrl 经 canvasCore 接口），无自由新耦合。
+    # #465：API 复用走模型策略接口，其他引擎刷新输入面板，不从历史模块读取选择器内部状态。
+    "canvas-media-history.js": 102,
     "canvas-generation-tasks.js": 98,  # #453: trf 下沉；#396: 复用已截断的参考图列表，引用 -1。
     # jimeng 发图/发视频/轮询/取回整块（-15 核心引用，2026-10-29 实测），棘轮随之收紧。
     # 101 -> 103：#237 stop≠error 中性终态在本模块新增 scheduleStateSave/scheduleSave/

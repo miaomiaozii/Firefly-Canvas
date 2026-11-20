@@ -121,15 +121,20 @@ async def run_routed_image_candidate(provider_id, model, prompt, size, quality, 
                                      image_parameters, **kwargs):
     return await _svc._main('run_provider_generation_with_backoff')(
         provider_id, _svc._main('generate_ai_image'), prompt, size, quality, model,
-        references, provider_id, preserve_model=True, image_parameters=image_parameters, **kwargs,
+        references, provider_id, preserve_model=True, image_parameters=image_parameters, lock_model=True, **kwargs,
     )
 
 
-async def build_online_image_result(payload: OnlineImageRequest):
+async def build_online_image_result(payload: OnlineImageRequest, *, canvas_selection=None):
     require_online_image_project_media_scope(payload)
-    provider = _svc._main('get_api_provider_required')(payload.provider_id)
-    default_model = (provider.get('image_models') or [IMAGE_MODEL])[0]
-    model = selected_model(payload.model, default_model)
+    if canvas_selection is None:
+        provider = _svc._main('get_api_provider_required')(payload.provider_id)
+        default_model = (provider.get('image_models') or [IMAGE_MODEL])[0]
+        model = selected_model(payload.model, default_model)
+        dispatch_options = {}
+    else:
+        provider, model = canvas_selection
+        dispatch_options = {'lock_model': True}
     request_size = snap_size_to_multiple(payload.size, 16)
     refs = [ref.model_dump() for ref in payload.reference_images if ref.url]
     image_refs = image_references(refs)
@@ -138,7 +143,7 @@ async def build_online_image_result(payload: OnlineImageRequest):
     async def generate_one():
         image_data, raw_item = await _svc._main('run_provider_generation_with_backoff')(
             provider['id'], _svc._main('generate_ai_image'),
-            payload.prompt, request_size, payload.quality, model, image_refs, provider['id'],
+            payload.prompt, request_size, payload.quality, model, image_refs, provider['id'], **dispatch_options,
         )
         try:
             image_items = extract_images(raw_item) if isinstance(raw_item, dict) else [image_data]

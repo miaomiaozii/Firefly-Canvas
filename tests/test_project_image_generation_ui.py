@@ -44,10 +44,13 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         self.assertIn("smart.modelSelectionNote", (ROOT / "static" / "js" / "i18n" / "smart-canvas.js").read_text(encoding="utf-8"))
 
     def test_run_button_requires_a_prompt_for_normal_image_generation(self):
-        self.assertIn("let missingPrompt = false;", self.source)
-        self.assertIn("buildPromptRequestForNode(node, null)", self.source)
-        self.assertIn("smartRunNeedsPrompt(settings)", self.source)
-        self.assertIn("tr('smart.toastNeedPrompt')", self.source)
+        match = re.search(r"^function syncRunButtonState\(node=selectedNode\(\)\)\{(.*?)^\}", self.source, re.M | re.S)
+        self.assertIsNotNone(match)
+        body = match.group(1)
+        self.assertIn("const runSettings = runnable ? smartSettingsForNode(node) : null;", body)
+        self.assertIn("const missingPrompt = runnable && !buildPromptRequestForNode(node, null).prompt.trim() && smartRunNeedsPrompt(runSettings);", body)
+        self.assertRegex(body, r"runBtn\.disabled = [^;]+\bmissingPrompt\b")
+        self.assertIn("runBtn.title = selectionError || tr('smart.toastNeedPrompt');", body)
         self.assertIn("syncRunButtonState(selectedNode());", self.source)
 
     def test_prompt_validation_does_not_replace_live_editor_during_ime_input(self):
@@ -136,7 +139,8 @@ class ProjectImageGenerationUiContractTests(unittest.TestCase):
         self.assertIn("if(!await flushProjectCanvasBeforeGeneration())", self.source)
         self.assertIn("async function postProjectImageTaskWithReplay(projectId, payload)", self.source)
         self.assertIn("unknown.smartSubmissionUnknown = true", self.source)
-        self.assertIn("async function resumeSmartGenerationSubmission(node, submission)", self.source)
+        self.assertIn("async function resumeSmartGenerationSubmission(node, submission, registeredRetry)", self.source)
+        self.assertIn("registeredRetry?.task || await postProjectImageTaskWithReplay(projectId, payload)", self.source)
         self.assertIn("idempotency_key:idempotencyKey", self.source)
         self.assertIn("smartGenerationSubmissions(node).forEach", self.source)
 

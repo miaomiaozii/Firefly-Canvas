@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import main
 from app.routers import api_agent_tools as routes, api_mcp, api_project_library
-from tests.agent_image_task_fakes import image_candidate, route_stub
+from tests.agent_image_task_fakes import image_candidate, route_stub, stub_providers
 from app.services.agent_ops_journal import PendingOperation
 from app.services.agent_ops_store import get_operation
 from tests.test_agent_ops_media_e2e_393 import env, png, scope, setup_image
@@ -176,12 +176,14 @@ def test_upload_rechecks_under_lock_after_start(env, events, monkeypatch):
 @pytest.mark.parametrize('node_id,prompt', [('missing', 'new'), ('a', 'old')])
 def test_batch_noop_or_missing_source_reports_no_touched(env, events, monkeypatch, node_id, prompt):
     store, project, db = env
-    store.apply_mutations(project, [{'op': 'upsert_node', 'node': {'id': 'a', 'type': 'prompt', 'prompt': 'old'}}],
-                          base_revision=store.canvas(project)['revision'])
+    store.apply_mutations(project, [{'op': 'upsert_node', 'node': {
+        'id': 'a', 'type': 'prompt', 'prompt': 'old', 'runSettings': {'provider_id': 'mock'}}}],
+        base_revision=store.canvas(project)['revision'])
     store.flush(project)
     def fail(*args, **kwargs):
         raise RuntimeError('no generation')
     monkeypatch.setattr(main, 'route_image_generation', fail)
+    monkeypatch.setattr(main, 'load_api_providers', stub_providers)
     async def run():
         with scope(project, 'canvas.batch_edit') as context:
             with pytest.raises((HTTPException, RuntimeError)):
@@ -195,11 +197,12 @@ def test_batch_noop_or_missing_source_reports_no_touched(env, events, monkeypatc
 @pytest.mark.parametrize('transport', ['rest', 'mcp'])
 def test_batch_source_lifecycle_http(env, events, monkeypatch, transport):
     store, project, db = env
-    store.apply_mutations(project, [{'op': 'upsert_node', 'node': {'id': 'a', 'type': 'prompt', 'prompt': 'old'}}],
-                          base_revision=store.canvas(project)['revision'])
+    store.apply_mutations(project, [{'op': 'upsert_node', 'node': {
+        'id': 'a', 'type': 'prompt', 'prompt': 'old', 'runSettings': {'provider_id': 'mock'}}}],
+        base_revision=store.canvas(project)['revision'])
     store.flush(project)
     monkeypatch.setattr(main, 'route_image_generation', lambda *a, **k: route_stub())
-    monkeypatch.setattr(main, 'load_api_providers', lambda: [])
+    monkeypatch.setattr(main, 'load_api_providers', stub_providers)
     monkeypatch.setattr(routes, 'confirm_batch_prompt', AsyncMock())
     monkeypatch.setattr(api_mcp, 'resolve_project', lambda p: p)
     async def provider(_):
@@ -236,11 +239,12 @@ def test_batch_source_lifecycle_http(env, events, monkeypatch, transport):
 
 def test_batch_source_uses_one_root_lifecycle(env, events, monkeypatch):
     store, project, db = env
-    store.apply_mutations(project, [{'op': 'upsert_node', 'node': {'id': n, 'type': 'prompt', 'prompt': 'old'}}
-                                    for n in ('a', 'b')], base_revision=store.canvas(project)['revision'])
+    store.apply_mutations(project, [{'op': 'upsert_node', 'node': {
+        'id': n, 'type': 'prompt', 'prompt': 'old', 'runSettings': {'provider_id': 'mock'}}}
+        for n in ('a', 'b')], base_revision=store.canvas(project)['revision'])
     store.flush(project)
     monkeypatch.setattr(main, 'route_image_generation', lambda *a, **k: route_stub())
-    monkeypatch.setattr(main, 'load_api_providers', lambda: [])
+    monkeypatch.setattr(main, 'load_api_providers', stub_providers)
     async def provider(_):
         raise RuntimeError('provider failure')
     monkeypatch.setattr(api_project_library, 'run_routed_image_candidate', image_candidate(provider))

@@ -16,7 +16,7 @@ from app.services.agent_ops_store import list_operations
 from app.services.agent_ops_undo import undo_ops
 from firefly_opsdb import OpsDb
 from firefly_projects import ProjectStore
-from tests.agent_image_task_fakes import patch_archive, patch_candidate, route_stub
+from tests.agent_image_task_fakes import patch_archive, patch_candidate, route_stub, stub_providers
 
 
 class GenerationJournalTests(unittest.IsolatedAsyncioTestCase):
@@ -27,11 +27,12 @@ class GenerationJournalTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.store.close)
         self.pid = self.store.create_project('generation')['id']
         self.store.apply_mutations(self.pid, [{'op': 'upsert_node', 'node': {
-            'id': 'source', 'type': 'prompt', 'text': 'draw'}}], base_revision=0)
+            'id': 'source', 'type': 'prompt', 'text': 'draw',
+            'runSettings': {'provider_id': 'mock'}}}], base_revision=0)
         self.store.flush(self.pid)
         self.enterContext(patch.object(main, 'FIREFLY_PROJECT_STORE', self.store))
         self.enterContext(patch.object(main, 'route_image_generation', return_value=route_stub()))
-        self.enterContext(patch.object(main, 'load_api_providers', return_value=[]))
+        self.enterContext(patch.object(main, 'load_api_providers', return_value=stub_providers()))
         self.enterContext(patch.object(main.manager, 'broadcast_canvas_updated', new=AsyncMock()))
         self.db = OpsDb(self.store.root)
         self.workers = []

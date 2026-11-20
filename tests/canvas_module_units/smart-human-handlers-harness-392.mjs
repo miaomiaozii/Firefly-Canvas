@@ -33,7 +33,7 @@ export function editor(nodes, setupHarness = () => {}){
         persistedCoreSnapshot:null,persistedDurableSnapshot:null,smartCanvasServerShadow:null,smartSaveButton:null,
         pendingRemoteUpdatedAt:0,pendingAgentMergeFingerprint:'',pendingAgentMergeUndo:false,smartClientId:'unit-392',projectMediaImportCache:new Map(),activeProjectMediaImports:0,projectMediaImportWaiters:[],assetLibraryOpen:false,
         promptNodeFlowView:{mode:'idle'},composerPromptView:{mode:'manual'},longContentSession:{mode:'idle'},smartLoopPromptVisiting:new Set(),smartLoopContext:null,
-        promptInput:harness.makeElement(),composer:harness.makeElement(),world:harness.makeElement(),dynamicParams:harness.makeElement(),
+        promptInput:harness.makeElement(),runBtn:null,composer:harness.makeElement(),world:harness.makeElement(),dynamicParams:harness.makeElement(),
         recentSmartSettingsByMode:{},transientSmartCloudLinks:[],rhConfigs:[],modelSpecs:{},smartRhRandomValues:{},
         render(){renders.push(fromContext(ctx.canvasForStorage()));},refreshIcons(){},updateNodeElementDuringResize(){},
         toast(message){harness.toasts.push(String(message));},scheduleConnectionLayerRefresh(){},

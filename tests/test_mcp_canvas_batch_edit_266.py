@@ -23,7 +23,7 @@ import main  # noqa: F401
 from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK
 from app.routers import api_agent_tools, api_mcp
 from tests.test_mcp_endpoint import McpTestBase
-from tests.agent_image_task_fakes import patch_candidate, route_stub
+from tests.agent_image_task_fakes import patch_candidate, route_stub, stub_providers
 
 PROMPT = "a glowing firefly in the forest"
 
@@ -65,14 +65,16 @@ class BatchEditBehaviorTests(McpTestBase):
         self.store.apply_mutations(
             self.project_id,
             [
-                {"op": "upsert_node", "node": {"id": "img-a", "type": "smart-image", "title": "A", "x": 0, "y": 0, "prompt": "old-a"}},
-                {"op": "upsert_node", "node": {"id": "img-b", "type": "smart-image", "title": "B", "x": 0, "y": 20, "prompt": "old-b"}},
+                {"op": "upsert_node", "node": {"id": "img-a", "type": "smart-image", "title": "A", "x": 0, "y": 0,
+                                               "prompt": "old-a", "runSettings": {"provider_id": "fake"}}},
+                {"op": "upsert_node", "node": {"id": "img-b", "type": "smart-image", "title": "B", "x": 0, "y": 20,
+                                               "prompt": "old-b", "runSettings": {"provider_id": "fake"}}},
             ],
             base_revision=int(canvas.get("revision") or 0))
         self.previous_route = main.route_image_generation
         self.previous_providers = main.load_api_providers
         main.route_image_generation = lambda *a, **k: route_stub('fake', 'fake')
-        main.load_api_providers = lambda: []
+        main.load_api_providers = lambda: stub_providers('fake', 'fake')
         self.enterContext(patch_candidate(self._fake_provider))
         # #350：batch_edit 在 MCP 层过确认门与会话限额——本组测试只钉 266 行为，
         # 门/限额语义在 test_agent_generation_gate_limit_351 另有钉，这里直接放行。

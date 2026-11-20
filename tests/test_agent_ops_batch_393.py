@@ -20,7 +20,7 @@ from app.services.agent_ops_store import list_operations
 from app.services.agent_ops_undo import undo_ops
 from firefly_opsdb import OpsDb
 from firefly_projects import ProjectStore
-from tests.agent_image_task_fakes import patch_candidate, route_stub
+from tests.agent_image_task_fakes import patch_candidate, route_stub, stub_providers
 
 
 class BatchJournalTests(unittest.IsolatedAsyncioTestCase):
@@ -31,7 +31,7 @@ class BatchJournalTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.store.close)
         self.pid = self.store.create_project('batch')['id']
         self.store.apply_mutations(self.pid, [
-            {'op': 'upsert_node', 'node': {'id': n, 'type': 'prompt', 'prompt': 'old'}}
+            {'op': 'upsert_node', 'node': {'id': n, 'type': 'prompt', 'prompt': 'old', 'runSettings': {'provider_id': 'mock'}}}
             for n in ('a', 'b')], base_revision=0)
         self.store.flush(self.pid)
         self.db = OpsDb(self.store.root)
@@ -47,7 +47,7 @@ class BatchJournalTests(unittest.IsolatedAsyncioTestCase):
         session._current_turn_id = 'actual-turn'
         patches = [patch.object(main, 'FIREFLY_PROJECT_STORE', self.store),
                    patch.object(main, 'route_image_generation', return_value=route_stub()),
-                   patch.object(main, 'load_api_providers', return_value=[]),
+                   patch.object(main, 'load_api_providers', return_value=stub_providers()),
                    patch.object(main.manager, 'broadcast_canvas_updated', new=AsyncMock()),
                    patch.object(routes, 'confirm_batch_prompt', new=AsyncMock()),
                    patch.object(api_mcp, 'resolve_project', side_effect=lambda p: p),

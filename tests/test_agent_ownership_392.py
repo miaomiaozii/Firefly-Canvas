@@ -271,12 +271,12 @@ class Ownership392Tests(unittest.TestCase):
             self.assertEqual(current, {k: v for k, v in original.items() if k != "prompt"})
 
     def test_trigger_real_core_results_follow_context_not_source_ownership(self):
-        self.seed(node("source", prompt="generate", **{
+        self.seed(node("source", prompt="generate", runSettings={"provider_id": "offline"}, **{
             **ownership("source-owner"), "userTouchedAt": 111, "promptEditedByUser": True,
         }))
         source = copy.deepcopy(self.nodes()["source"])
         from app.routers import api_project_library
-        from tests.agent_image_task_fakes import route_stub
+        from tests.agent_image_task_fakes import route_stub, stub_providers
         async def exercise():
             results = [await self.tools.trigger_generation_core(self.pid, "source", context)
                        for context in ("context-owner", "")]
@@ -284,7 +284,7 @@ class Ownership392Tests(unittest.TestCase):
             await asyncio.gather(*(task for task in pending if task is not None))
             return results
         with patch.object(self.main, "route_image_generation", return_value=route_stub('offline', 'stub-model')) as route, \
-             patch.object(self.main, "load_api_providers", return_value=[]), \
+             patch.object(self.main, "load_api_providers", return_value=stub_providers('offline', 'stub-model')), \
              patch.object(api_project_library, "run_project_image_task", new=AsyncMock()) as worker, \
              patch.object(self.store, "begin_image_generation", wraps=self.store.begin_image_generation) as begin:
             results = run(exercise())

@@ -250,6 +250,7 @@ CATEGORY_BY_NAME = {
     "addNodeToSmartGroup": "hub",  # 画布操作：节点加入/吸收进智能分组
     "applyThumbDisplaySizeToElement": "hub",  # DOM 操作：应用缩略图显示尺寸到元素
     "previewDownloadGroupItems": "hub",  # 画布查询：预览组下载项（读 previewNavState）
+    "smartHistoryImageModelSelection": "hub",  # 历史复用策略：按历史引擎和原服务商读取可选图片模型。
     "renderDynamicParams": "hub",  # UI 操作：渲染动态参数面板（读写 settings）
     "activeComposerNode": "hub",  # 节点查询：composer 绑定节点
     "updatePreviewMetaHint": "hub",  # UI 操作：更新预览 meta 提示
@@ -311,6 +312,7 @@ CATEGORY_BY_NAME = {
     # 耦合债：它跟 IMAGE_RATIO_PRESETS/ratioLog/apiImageAllowedAspectRatios 是一簇，
     # 整簇待从核心抽出（见 #203）。
     "alignRatioToModel": "hub",
+    "imageProviderSelection": "hub",  # #465：画布生成预检与参数面板共用服务商选择。
     "promptNodePromptItems": "util",  # 纯：node -> 拆分后的 prompt 列表
     "parseSizeAspect": "util",  # 纯：尺寸/比例串 -> {w,h}
     "nodeBodyHtml": "util",  # 纯 builder：node+layout -> body HTML（分派纯子 builder）

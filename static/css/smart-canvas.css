@@ -1153,6 +1153,7 @@ video.node-img { object-fit:cover; background:var(--panel); }
 .model-search-input::placeholder { color:var(--faint); }
 .model-search-count { flex:0 0 auto; color:var(--faint); font-size:10px; font-variant-numeric:tabular-nums; }
 .model-selection-note { margin-top:8px; color:var(--faint); font-size:10px; line-height:1.35; }
+.dynamic-params .image-provider-notice { flex-basis:100%; min-width:0; color:var(--muted); font-size:var(--ctrl-font); line-height:1.4; overflow-wrap:anywhere; }
 .model-search-empty { padding:8px 4px; color:var(--faint); font-size:10px; text-align:center; }
 .model-list { min-width:0; max-height:172px; overflow:auto; padding-right:4px; scrollbar-width:thin; scrollbar-color:color-mix(in srgb, var(--muted) 42%, var(--transparent)) transparent; display:flex; flex-direction:column; gap:2px; }
 .direct-picker { display:grid; grid-template-columns:84px minmax(0,1fr); gap:7px; }

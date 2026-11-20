@@ -25,8 +25,10 @@ def canvas():
         store.apply_mutations(project, [
             {'op': 'upsert_node', 'node': node} for node in (
                 {'id': 'actor', 'type': 'smart-agent', 'autonomy': 'autonomous'},
-                {'id': 'a', 'type': 'smart-prompt', 'text': 'red apple', 'promptEditedByUser': True},
-                {'id': 'b', 'type': 'smart-prompt', 'text': 'blue berry'},
+                {'id': 'a', 'type': 'smart-prompt', 'text': 'red apple', 'promptEditedByUser': True,
+                 'runSettings': {'provider_id': 'fake'}},
+                {'id': 'b', 'type': 'smart-prompt', 'text': 'blue berry',
+                 'runSettings': {'provider_id': 'fake'}},
             )
         ], base_revision=0)
         host = AgentHostManager()
@@ -152,10 +154,11 @@ def test_legacy_rest_requires_agent_project_header(canvas):
 def test_legacy_batch_uses_same_confirmation_before_any_write_or_task(canvas, mcp, approved):
     client, store, project, host = canvas
     from app.routers import api_agent_tools as routes
+    from tests.agent_image_task_fakes import stub_providers
     before = store.canvas(project)
     seen = confirmation(client, host, project, approved)
     fake_task = AsyncMock(return_value={'task_id': 'synthetic'})
-    with patch.object(main, 'load_api_providers', return_value=[]), \
+    with patch.object(main, 'load_api_providers', return_value=stub_providers('fake', 'fake')), \
          patch.object(main, 'route_image_generation', return_value=SimpleNamespace(provider_id='fake', model='fake')), \
          patch.object(routes, 'trigger_generation_core', new=fake_task):
         result = tool(client, project, {'node_ids': ['a', 'b'], 'prompt': 'replacement'}, mcp=mcp, name='batch_edit')

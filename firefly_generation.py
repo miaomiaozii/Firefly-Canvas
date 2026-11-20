@@ -227,6 +227,7 @@ class ModelRoutingError(ValueError):
         code: str = "no_compatible_image_model",
     ) -> None:
         self.code = code
+        self.message = message
         incompatible = set(incompatible_parameters)
         ordered = [name for name in ROUTED_PARAMETER_NAMES if name in incompatible]
         self.incompatible_parameters = ordered
@@ -497,7 +498,7 @@ def _inferred_image_model_capabilities(model: str) -> dict[str, Any]:
     return capability
 
 
-def _resolve_display_model_name(provider: Mapping[str, Any], model: str) -> str:
+def _resolve_display_model_name(provider: Mapping[str, Any], model: str, *, allowed: Sequence[str] | None = None) -> str:
     """Map a friendly display name (provider.model_names) back to the raw model id.
 
     The canvas renders model options with provider display names (e.g. "Nano
@@ -512,9 +513,23 @@ def _resolve_display_model_name(provider: Mapping[str, Any], model: str) -> str:
     if not target:
         return ""
     for raw_id, label in names.items():
-        if str(label or "").strip().lower() == target:
-            return str(raw_id).strip()
+        model_id = str(raw_id).strip()
+        if (allowed is None or model_id in allowed) and str(label or "").strip().lower() == target:
+            return model_id
     return ""
+
+
+def checked_image_models(provider: Mapping[str, Any]) -> list[str]:
+    return _string_list(provider.get("image_models"))
+
+
+def checked_image_model(provider: Mapping[str, Any], model: str) -> str:
+    """Canonical ID for a checked model or its provider-local display alias."""
+    model = str(model or "").strip()
+    checked = checked_image_models(provider)
+    if model in checked:
+        return model
+    return _resolve_display_model_name(provider, model, allowed=checked)
 
 
 def route_image_generation(

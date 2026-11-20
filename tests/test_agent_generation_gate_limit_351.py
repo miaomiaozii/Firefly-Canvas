@@ -24,7 +24,7 @@ if str(ROOT) not in sys.path:
 import main
 from firefly_projects import ProjectStore
 from app.routers import api_agent_tools, api_mcp
-from tests.agent_image_task_fakes import patch_candidate
+from tests.agent_image_task_fakes import patch_candidate, stub_providers
 
 
 def _png_bytes():
@@ -37,6 +37,7 @@ def _png_bytes():
 
 class _Base(unittest.TestCase):
     def setUp(self):
+        self.enterContext(patch.object(main, 'load_api_providers', return_value=stub_providers('p1', 'm1')))
         self.temp_dir = tempfile.TemporaryDirectory(prefix="firefly-351-")
         self.store = ProjectStore(Path(self.temp_dir.name) / "projects", snapshot_delay=0)
         self._prev_store = main.FIREFLY_PROJECT_STORE
@@ -51,7 +52,8 @@ class _Base(unittest.TestCase):
         self.pid = pid
         self.store.apply_mutations(pid, [
             {"op": "upsert_node", "node": {"id": "prompt-1", "type": "smart-prompt",
-                                           "title": "P", "prompt": "一只萤火虫", "x": 0, "y": 0}},
+                                           "title": "P", "prompt": "一只萤火虫", "x": 0, "y": 0,
+                                           "runSettings": {"provider_id": "p1"}}},
             {"op": "upsert_node", "node": {"id": "agent-1", "type": "smart-agent",
                                            "title": "Agent", "x": -200, "y": 0}},
         ], base_revision=0)
@@ -239,13 +241,16 @@ class McpGeneration351Tests(_Base):
         api_agent_tools.GENERATION_SESSION_LIMIT = 3
         self.store.apply_mutations(self.pid, [
             {"op": "upsert_node", "node": {"id": "prompt-2", "type": "smart-prompt",
-                                           "prompt": "y", "x": 0, "y": 100}}],
+                                           "prompt": "y", "x": 0, "y": 100,
+                                           "runSettings": {"provider_id": "p1"}}}],
             base_revision=int(self.store.canvas(self.pid).get("revision") or 0))
         self._run_impl("canvas.batch_edit", {"node_ids": ["prompt-1", "prompt-2"], "prompt": "z"})
         self._run_impl("generate.trigger", {"node_id": "prompt-1"})  # 2+1=3 恰好达上限
         from fastapi import HTTPException
-        with self.assertRaises(HTTPException):
+        with self.assertRaises(HTTPException) as cm:
             self._run_impl("generate.trigger", {"node_id": "prompt-1"})  # 第 4 张超上限→拒
+        self.assertEqual(cm.exception.status_code, 429)
+        self.assertEqual(cm.exception.detail["code"], "BUDGET_EXCEEDED")
 
     def test_node_delete_resets_generation_count(self):
         self._approve()

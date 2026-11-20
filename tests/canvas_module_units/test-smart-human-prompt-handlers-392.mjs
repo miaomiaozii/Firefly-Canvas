@@ -308,7 +308,7 @@ test('provider picker compares settled image/video model values before its first
         const e=editor([{id:'image',type:'smart-image',...identity,runSettings:{engine:'api',apiKind,[key]:'p',[modelKey]:'m1',routingMode:'manual',videoRoutingMode:'manual',resolution:'1k',ratio:'square'}}]);
         const {ctx}=e;
         const source=readFileSync(path.join(JS_DIR,'smart-canvas.js'),'utf8');
-        for(const name of ['IMAGE_RATIO_PRESETS','IMAGE_RATIO_PRESET_KEYS_BY_RATIO','DEFAULT_VIDEO_MODELS']){
+        for(const name of ['IMAGE_RATIO_PRESETS','IMAGE_RATIO_PRESET_KEYS_BY_RATIO']){
             const declaration=source.match(new RegExp(`^const ${name} = [\\s\\S]*?;`,'m'))?.[0];
             assert.ok(declaration,name);vm.runInContext(declaration,ctx);
         }
@@ -318,7 +318,7 @@ test('provider picker compares settled image/video model values before its first
         ctx.dynamicParams=e.form({'[data-smart-param]':[picker]});
         const publications=[];let markup='';
         Object.defineProperty(ctx.dynamicParams,'innerHTML',{get:()=>markup,set:value=>{markup=value;publications.push(e.stored());}});
-        evaluate(ctx,'normalizeSmartVideoModeSettings(settings)');
+        evaluate(ctx,'normalizeSmartVideoModeSettings(canvasState.nodes[0].runSettings);normalizeSmartVideoModeSettings(settings)');
         ctx.renderDynamicParams();const before=e.stored();publications.length=0;
         picker.onclick(event(picker));
         assert.deepEqual(e.stored(),before,`${apiKind}: same provider and settled first model is not an edit`);
