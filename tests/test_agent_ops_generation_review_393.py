@@ -3,6 +3,7 @@ import threading
 from unittest.mock import patch
 
 from tests import test_agent_ops_generation_route_393 as generation_tests
+from tests.agent_image_task_fakes import patch_archive, patch_candidate
 from tests.test_agent_ops_store import record
 from app.routers import api_agent_tools as routes
 from app.services import agent_ops_store
@@ -16,7 +17,7 @@ class GenerationReviewTests(generation_tests.GenerationJournalTests):
             entered.set()
             await release.wait()
             raise RuntimeError('done')
-        with patch.object(routes, 'build_online_image_result', side_effect=provider):
+        with patch_candidate(provider):
             result = await self.start()
             await asyncio.wait_for(entered.wait(), 5)
             count = len(self.records())
@@ -94,7 +95,7 @@ class GenerationReviewTests(generation_tests.GenerationJournalTests):
             entered.set()
             await release.wait()
             raise RuntimeError('done')
-        with patch.object(routes, 'build_online_image_result', side_effect=provider):
+        with patch_candidate(provider):
             with agent_ops_scope(project_id=self.pid, agent_node_id='actor', turn_id=None,
                                  tool='generate.trigger', args={'node_id': 'source'}):
                 result = await routes.trigger_generation_core(self.pid, 'source', agent_node_id='actor')
@@ -117,8 +118,7 @@ class GenerationReviewTests(generation_tests.GenerationJournalTests):
             return {'image_items': [{'url': 'mock://image'}]}
         async def archive(*args):
             return {'asset_id': media['asset_id'], 'kind': 'image'}
-        with patch.object(routes, 'build_online_image_result', side_effect=provider), \
-             patch('app.services.archive_project_generated_image', side_effect=archive), \
+        with patch_candidate(provider), patch_archive(archive), \
              patch.object(self.store, 'complete_image_generation', side_effect=injected):
             result = await self.start()
             await asyncio.wait_for(self.workers[-1], 5)
@@ -140,8 +140,7 @@ class GenerationReviewTests(generation_tests.GenerationJournalTests):
             return {'image_items': [{'url': 'mock://image'}]}
         async def archive(*args):
             return {'asset_id': media['asset_id'], 'kind': 'image'}
-        with patch.object(routes, 'build_online_image_result', side_effect=provider), \
-             patch('app.services.archive_project_generated_image', side_effect=archive), \
+        with patch_candidate(provider), patch_archive(archive), \
              patch.object(self.store, 'complete_image_generation', side_effect=blocked):
             result = await self.start()
             worker = self.workers[-1]

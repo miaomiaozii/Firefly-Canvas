@@ -6,6 +6,7 @@ import main
 from app.routers import api_agent_tools as routes
 from app.services.agent_host import agent_host_manager
 from tests.test_agent_ops_generation_route_393 import GenerationJournalTests
+from tests.agent_image_task_fakes import patch_candidate
 
 
 class GenerationShutdownTests(GenerationJournalTests):
@@ -15,7 +16,7 @@ class GenerationShutdownTests(GenerationJournalTests):
             raise RuntimeError('provider failed')
         try:
             with patch.object(agent_ops_store, 'MAX_OPERATIONS', 3), \
-                 patch.object(routes, 'build_online_image_result', side_effect=provider):
+                 patch_candidate(provider):
                 result = await self.start()
                 await asyncio.wait_for(self.workers[-1], 5)
                 status = await routes.get_task_status(self.pid, result['task_id'])
@@ -35,13 +36,15 @@ class GenerationShutdownTests(GenerationJournalTests):
             raise OSError('disk unavailable')
         async def provider(_):
             raise RuntimeError('provider failed')
-        def close_store(method, *args):
+        store_call = main.project_store_call
+        def close_store(method, *args, **kwargs):
             nonlocal closed
-            self.assertEqual(method, 'close')
-            closed = True
-            self.store.close()
+            self.assertFalse(closed, f'{method} accessed store after close')
+            if method == 'close':
+                closed = True
+            return store_call(method, *args, **kwargs)
         try:
-            with patch.object(routes, 'build_online_image_result', side_effect=provider), \
+            with patch_candidate(provider), \
                  patch.object(self.store, 'fail_image_generation', side_effect=fail), \
                  patch.object(main, 'PROJECT_CONVERSATION_RUNNER', None), \
                  patch.object(main._r_api_project_library, 'shutdown_project_generation_tasks', new=AsyncMock()), \

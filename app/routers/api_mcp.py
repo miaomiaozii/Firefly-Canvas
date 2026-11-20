@@ -430,12 +430,18 @@ async def _impl_search_projects(project_id, agent_node_id, args):
     return await asyncio.to_thread(get_searcher(store).search, query, limit=limit)
 
 
-async def _impl_trigger(project_id, agent_node_id, args):
-    from app.routers.api_agent_tools import enforce_generation_limit, prepare_generation
+async def _prepare_trigger(project_id, args):
+    from app.routers.api_agent_tools import prepare_generation
     from app.services.agent_refs import require_object
     require_object(args, "generate.trigger", required=("node_id",))
+    return await prepare_generation(project_id, args["node_id"])
+
+
+async def _impl_trigger(project_id, agent_node_id, args, *, plan=None):
+    from app.routers.api_agent_tools import enforce_generation_limit
+    if plan is None:
+        plan = await _prepare_trigger(project_id, args)
     node_id = args["node_id"]
-    plan = await prepare_generation(project_id, node_id)
     count = plan.request.count
     await _confirm_gate(project_id, agent_node_id, "generate.trigger", {"node_id": node_id, "n": count},
                         f"节点 {node_id} 生成 {count} 张图片（消耗外部生成额度）")
@@ -719,6 +725,8 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
                 turn_id = agent_host_manager.get_current_turn_id(project_id, node_param)
                 if not turn_id:
                     raise ValueError("hosted write requires an active turn")
+        # Reject unowned input before even creating an external carrier or reserving a turn (#454).
+        trigger_plan = await _prepare_trigger(project_id, args) if name == 'generate.trigger' else None
         # #350: explicit node binds attribution; reads must not materialize external nodes.
         if node_param:
             node_id = node_param
@@ -742,7 +750,9 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
         try:
             with agent_ops_scope(project_id=project_id, agent_node_id=node_id or None,
                                  turn_id=turn_id, tool=name, args=args):
-                if name in LAYOUT_TOOLS:
+                if trigger_plan is not None:
+                    result = await TOOL_IMPLS[name](project_id, node_id, args, plan=trigger_plan)
+                elif name in LAYOUT_TOOLS:
                     result = await TOOL_IMPLS[name](project_id, node_id, args, hosted=caller == 'hosted')
                 elif name == "canvas.batch_prompt_edit":
                     binding = ("agent", node_param) if node_param else ("mcp", sid)

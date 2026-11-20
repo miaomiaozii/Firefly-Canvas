@@ -274,16 +274,18 @@ class Ownership392Tests(unittest.TestCase):
             **ownership("source-owner"), "userTouchedAt": 111, "promptEditedByUser": True,
         }))
         source = copy.deepcopy(self.nodes()["source"])
+        from app.routers import api_project_library
+        from tests.agent_image_task_fakes import route_stub
         async def exercise():
             results = [await self.tools.trigger_generation_core(self.pid, "source", context)
                        for context in ("context-owner", "")]
-            await asyncio.sleep(0)  # Let the stub background tasks finish before closing the loop.
+            pending = [self.tools.PROJECT_IMAGE_GENERATION_FUTURES.get(result['task_id']) for result in results]
+            await asyncio.gather(*(task for task in pending if task is not None))
             return results
-        with patch.object(self.main, "route_image_generation", return_value=SimpleNamespace(
-            provider_id="offline", model="stub-model",
-        )) as route, patch.object(self.main, "load_api_providers", return_value=[]), patch.object(
-            self.tools, "_run_agent_generation", new=AsyncMock(),
-        ) as worker, patch.object(self.store, "begin_image_generation", return_value={}) as begin:
+        with patch.object(self.main, "route_image_generation", return_value=route_stub('offline', 'stub-model')) as route, \
+             patch.object(self.main, "load_api_providers", return_value=[]), \
+             patch.object(api_project_library, "run_project_image_task", new=AsyncMock()) as worker, \
+             patch.object(self.store, "begin_image_generation", wraps=self.store.begin_image_generation) as begin:
             results = run(exercise())
         self.assertEqual(route.call_count, 2)
         self.assertEqual(worker.await_count, 2)
@@ -291,7 +293,7 @@ class Ownership392Tests(unittest.TestCase):
         for context, result in zip(("context-owner", ""), results):
             self.assert_metadata(self.nodes()[result["result_node_id"]], ownership(context))
             task = self.tools.CANVAS_TASKS[result["task_id"]]
-            self.assertEqual((task["project_id"], task["node_id"], task["result_node_id"]),
+            self.assertEqual((task["project_id"], task["source_node_id"], task["result_node_id"]),
                              (self.pid, "source", result["result_node_id"]))
         self.assertEqual(self.nodes()["source"], source)
         self.assertEqual(len(self.nodes()), 3)

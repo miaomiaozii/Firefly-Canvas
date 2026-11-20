@@ -174,9 +174,9 @@ class WriteBroadcastTests(unittest.IsolatedAsyncioTestCase):
             return task
         async def fail(_):
             raise RuntimeError('provider failure')
-        with patch.object(main, 'route_image_generation', return_value=SimpleNamespace(provider_id='mock', model='mock')), \
-             patch.object(main, 'load_api_providers', return_value=[]), \
-             patch.object(tools, 'build_online_image_result', side_effect=fail), \
+        from tests.agent_image_task_fakes import patch_candidate, route_stub
+        with patch.object(main, 'route_image_generation', return_value=route_stub()), \
+             patch.object(main, 'load_api_providers', return_value=[]), patch_candidate(fail), \
              patch.object(agent_ops_context, 'create_agent_ops_task', side_effect=track):
             with agent_ops_scope(project_id=self.pid, agent_node_id='actor', tool='generate.trigger', args={}):
                 result = await tools.trigger_generation_core(self.pid, 'source', agent_node_id='actor')

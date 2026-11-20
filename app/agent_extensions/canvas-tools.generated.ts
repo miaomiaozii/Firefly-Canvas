@@ -148,7 +148,7 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     },
     {
         name: "generate.trigger",
-        description: "按节点保存的 runSettings 和 Agent input 连线生图，返回 task_id。按本次请求图片张数确认和计入会话额度（阻塞最长 90s，autonomous 自动放行）；结果写入项目历史。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        description: "按节点保存的 runSettings 和画布参考图生图，返回 task_id。参考图必须已归档到当前项目。按本次请求图片张数确认和计入会话额度（阻塞最长 90s，autonomous 自动放行）；结果写入项目历史。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
         parameters: Type.Object({ node_id: Type.String() }),
     },
     {

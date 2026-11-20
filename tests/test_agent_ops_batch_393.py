@@ -21,6 +21,7 @@ from app.services.agent_ops_store import list_operations
 from app.services.agent_ops_undo import undo_ops
 from firefly_opsdb import OpsDb
 from firefly_projects import ProjectStore
+from tests.agent_image_task_fakes import patch_candidate, route_stub
 
 
 class BatchJournalTests(unittest.IsolatedAsyncioTestCase):
@@ -46,7 +47,7 @@ class BatchJournalTests(unittest.IsolatedAsyncioTestCase):
         session = await self.host.get_or_create_session(self.pid, 'actor')
         session._current_turn_id = 'actual-turn'
         patches = [patch.object(main, 'FIREFLY_PROJECT_STORE', self.store),
-                   patch.object(main, 'route_image_generation', return_value=SimpleNamespace(provider_id='mock', model='mock')),
+                   patch.object(main, 'route_image_generation', return_value=route_stub()),
                    patch.object(main, 'load_api_providers', return_value=[]),
                    patch.object(main.manager, 'broadcast_canvas_updated', new=AsyncMock()),
                    patch.object(routes, 'confirm_batch_prompt', new=AsyncMock()),
@@ -77,7 +78,7 @@ class BatchJournalTests(unittest.IsolatedAsyncioTestCase):
             await release.wait()
             raise RuntimeError('provider failure')
         original = deepcopy(self.store.canvas(self.pid)['nodes'])
-        with patch.object(routes, 'build_online_image_result', side_effect=provider):
+        with patch_candidate(provider):
             result = await self.call()
             await asyncio.wait_for(entered.wait(), 5)
             records = self.records()
@@ -111,8 +112,7 @@ class BatchJournalTests(unittest.IsolatedAsyncioTestCase):
             entered.set()
             await release.wait()
             raise RuntimeError('second generation failed')
-        with patch.object(routes, 'build_online_image_result', side_effect=provider), \
-             patch.object(main, 'output_file_from_url', return_value=image):
+        with patch_candidate(provider), patch.object(main, 'output_file_from_url', return_value=image):
             result = await self.call()
             await asyncio.wait_for(entered.wait(), 5)
             await asyncio.wait_for(self.workers[0], 5)
@@ -130,7 +130,7 @@ class BatchJournalTests(unittest.IsolatedAsyncioTestCase):
     async def test_unchanged_prompt_root_is_first_generated_node(self):
         async def provider(_):
             raise RuntimeError('failed')
-        with patch.object(routes, 'build_online_image_result', side_effect=provider):
+        with patch_candidate(provider):
             with agent_ops_scope(project_id=self.pid, agent_node_id='actor', turn_id='actual-turn',
                                  tool='canvas.batch_edit', args={'node_ids': ['a'], 'prompt': 'old'}):
                 result = await routes.batch_edit_core(self.pid, ['a'], 'old', 'actor')
@@ -142,7 +142,7 @@ class BatchJournalTests(unittest.IsolatedAsyncioTestCase):
     async def test_conflict_preserves_whole_tree(self):
         async def provider(_):
             raise RuntimeError('failed')
-        with patch.object(routes, 'build_online_image_result', side_effect=provider):
+        with patch_candidate(provider):
             result = await self.call()
             await asyncio.gather(*self.workers)
         canvas = self.store.canvas(self.pid)
@@ -158,7 +158,7 @@ class BatchJournalTests(unittest.IsolatedAsyncioTestCase):
     async def test_partial_failure_reports_root_and_started_task(self):
         async def provider(_):
             raise RuntimeError('failed')
-        with patch.object(routes, 'build_online_image_result', side_effect=provider):
+        with patch_candidate(provider):
             with self.assertRaises(HTTPException) as caught:
                 await self.call(('a', 'missing'))
             await asyncio.gather(*self.workers)
@@ -219,7 +219,7 @@ class BatchJournalTests(unittest.IsolatedAsyncioTestCase):
                     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=main.app),
                                                  base_url='http://127.0.0.1:3000') as client:
                         with patch.object(agent_ops_store, '_reserve', side_effect=fail_reservation), \
-                             patch.object(routes, 'build_online_image_result', side_effect=provider):
+                             patch_candidate(provider):
                             if transport == 'rest':
                                 response = await client.post(f'/api/projects/{self.pid}/canvas/batch_edit?agent_node_id=actor',
                                                              headers={'X-Agent-Project': self.pid}, json=args)
@@ -263,8 +263,7 @@ class BatchJournalTests(unittest.IsolatedAsyncioTestCase):
                 raise OSError('sidecar unavailable after canvas replacement')
             return append(db, pid, record)
         original = deepcopy(self.store.canvas(self.pid)['nodes'])
-        with patch.object(agent_ops_store, 'append_operation', side_effect=fail_append), \
-             patch.object(routes, 'build_online_image_result', side_effect=provider):
+        with patch.object(agent_ops_store, 'append_operation', side_effect=fail_append), patch_candidate(provider):
             try:
                 result = await self.call()
                 self.assertEqual(len(result['tasks']), 2)
@@ -296,8 +295,7 @@ class BatchJournalTests(unittest.IsolatedAsyncioTestCase):
                 raise OSError('registration failed')
             return register(journal, pid, record, delta)
         original = deepcopy(self.store.canvas(self.pid)['nodes'])
-        with patch.object(routes, '_batch_register_reserved', side_effect=fail_register), \
-             patch.object(routes, 'build_online_image_result', side_effect=provider):
+        with patch.object(routes, '_batch_register_reserved', side_effect=fail_register), patch_candidate(provider):
             with self.assertRaises(HTTPException) as caught:
                 await self.call()
             root = caught.exception.detail['details']['op_id']
@@ -324,8 +322,7 @@ class BatchJournalTests(unittest.IsolatedAsyncioTestCase):
                 if kwargs['phase'] == 'start' and kwargs['touched_node_ids'] != ['a'] and not failed:
                     failed = True
                     raise RuntimeError('trigger broadcast failed')
-        with patch.object(routes, 'build_online_image_result', side_effect=provider), \
-             patch.object(routes, '_broadcast_canvas_updated', side_effect=broadcast):
+        with patch_candidate(provider), patch.object(routes, '_broadcast_canvas_updated', side_effect=broadcast):
             with self.assertRaises(HTTPException) as caught:
                 await self.call(('a',))
             details = caught.exception.detail['details']
@@ -362,7 +359,7 @@ class BatchJournalTests(unittest.IsolatedAsyncioTestCase):
         mcp = Request({'type': 'http', 'method': 'POST', 'path': '/api/mcp',
                        'query_string': urlencode({'project': self.pid, 'node': 'actor', 'caller': 'hosted'}).encode(),
                        'headers': []})
-        with patch.object(routes, 'build_online_image_result', side_effect=provider):
+        with patch_candidate(provider):
             rest = await routes.canvas_batch_edit(self.pid, request)
             await asyncio.gather(*self.workers)
             response = await api_mcp._tools_call({'params': {'name': 'canvas.batch_edit', 'arguments': args}}, 1, 'sid', mcp)

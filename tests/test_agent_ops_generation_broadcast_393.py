@@ -9,6 +9,7 @@ from app.routers import api_agent_tools as routes, api_mcp
 from app.services.agent_ops_context import agent_ops_scope
 from starlette.requests import Request
 from tests import test_agent_ops_generation_route_393 as generation_tests
+from tests.agent_image_task_fakes import patch_archive, patch_candidate
 
 
 class GenerationBroadcastTests(generation_tests.GenerationJournalTests):
@@ -26,7 +27,7 @@ class GenerationBroadcastTests(generation_tests.GenerationJournalTests):
             await release.wait()
             raise RuntimeError('provider failed')
         with patch.object(routes._app_main.manager, 'broadcast_canvas_updated', side_effect=broadcast), \
-             patch.object(routes, 'build_online_image_result', side_effect=provider):
+             patch_candidate(provider):
             result = await self.start()
             await asyncio.wait_for(entered.wait(), 5)
             self.assertEqual(events[0]['op_id'], result['op_id'])
@@ -59,8 +60,7 @@ class GenerationBroadcastTests(generation_tests.GenerationJournalTests):
                 if kwargs.get('phase'):
                     events.append(kwargs.copy())
             with patch.object(routes._app_main.manager, 'broadcast_canvas_updated', side_effect=broadcast), \
-                 patch.object(routes, 'build_online_image_result', side_effect=provider), \
-                 patch('app.services.archive_project_generated_image', side_effect=archive), \
+                 patch_candidate(provider), patch_archive(archive), \
                  patch.object(self.store, 'complete_image_generation', side_effect=blocked):
                 result = await self.start()
                 worker = self.workers[-1]
@@ -96,7 +96,7 @@ class GenerationBroadcastTests(generation_tests.GenerationJournalTests):
             return result
         provider = AsyncMock()
         with patch.object(routes._app_main.manager, 'broadcast_canvas_updated', side_effect=broadcast), \
-             patch.object(routes, 'build_online_image_result', provider), \
+             patch_candidate(provider), \
              patch.object(self.store, 'flush', side_effect=injected):
             with self.assertRaisesRegex(RuntimeError, 'after write'):
                 await self.start()
@@ -106,7 +106,7 @@ class GenerationBroadcastTests(generation_tests.GenerationJournalTests):
         self.assertEqual(events[0]['touched_node_ids'], events[1]['touched_node_ids'])
         events.clear()
         with patch.object(routes._app_main.manager, 'broadcast_canvas_updated', side_effect=broadcast), \
-             patch.object(routes, 'build_online_image_result', provider):
+             patch_candidate(provider):
             with agent_ops_scope(project_id=self.pid, agent_node_id='actor', turn_id='turn',
                                  tool='generate.trigger', args={}):
                 with self.assertRaises(Exception):
@@ -121,7 +121,7 @@ class GenerationBroadcastTests(generation_tests.GenerationJournalTests):
                 events.append(kwargs)
         provider = AsyncMock()
         with patch.object(routes._app_main.manager, 'broadcast_canvas_updated', side_effect=broadcast), \
-             patch.object(routes, 'build_online_image_result', provider), \
+             patch_candidate(provider), \
              patch.object(self.store, 'apply_mutations', side_effect=RuntimeError('before write')):
             with self.assertRaisesRegex(RuntimeError, 'before write'):
                 await self.start()
@@ -138,7 +138,7 @@ class GenerationBroadcastTests(generation_tests.GenerationJournalTests):
         async def provider(_):
             raise RuntimeError('failure')
         with patch.object(routes._app_main.manager, 'broadcast_canvas_updated', side_effect=broadcast), \
-             patch.object(routes, 'build_online_image_result', side_effect=provider):
+             patch_candidate(provider):
             result = await self.start()
             await asyncio.wait_for(end_entered.wait(), 5)
             self.assertTrue(routes.agent_generation_is_running(self.store, self.pid, result['op_id']))
@@ -165,7 +165,7 @@ class GenerationBroadcastTests(generation_tests.GenerationJournalTests):
         async def provider(_):
             raise RuntimeError('provider failure')
         with patch.object(routes._app_main.manager, 'broadcast_canvas_updated', side_effect=broadcast), \
-             patch.object(routes, 'build_online_image_result', side_effect=provider), \
+             patch_candidate(provider), \
              patch.object(agent_ops_store, 'append_operation', side_effect=injected):
             result = await self.start()
             await asyncio.wait_for(self.workers[-1], 5)
@@ -192,7 +192,7 @@ class GenerationBroadcastTests(generation_tests.GenerationJournalTests):
         mcp = Request({'type': 'http', 'method': 'POST', 'path': '/api/mcp',
                        'query_string': f'project={self.pid}&node=actor&turn_id=turn'.encode(), 'headers': []})
         with patch.object(routes._app_main.manager, 'broadcast_canvas_updated', side_effect=broadcast), \
-             patch.object(routes, 'build_online_image_result', side_effect=provider), \
+             patch_candidate(provider), \
              patch.object(routes, '_server_confirm_gate', new=AsyncMock()), \
              patch.object(api_mcp, '_confirm_gate', new=AsyncMock()), \
              patch.object(api_mcp, 'resolve_project', side_effect=lambda p: p):
@@ -219,7 +219,7 @@ class GenerationBroadcastTests(generation_tests.GenerationJournalTests):
             await release.wait()
             raise RuntimeError('failed')
         with patch.object(routes._app_main.manager, 'broadcast_canvas_updated', side_effect=broadcast), \
-             patch.object(routes, 'build_online_image_result', side_effect=provider):
+             patch_candidate(provider):
             with agent_ops_scope(project_id=self.pid, agent_node_id='actor', turn_id='turn',
                                  tool='canvas.batch_edit', args={}):
                 result = await routes.batch_edit_core(self.pid, ['source'], 'changed', 'actor')

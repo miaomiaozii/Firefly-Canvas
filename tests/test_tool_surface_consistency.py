@@ -21,7 +21,6 @@ import time
 import unittest
 import uuid
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from fastapi import HTTPException
@@ -41,6 +40,7 @@ from app.services import agent_ops_delta, agent_tools_manifest
 from app.services.agent_ops_journal import AgentOpsJournal, record_sides
 from app.services.agent_errors import translate_detail
 from app.services.agent_host import agent_host_manager
+from tests.agent_image_task_fakes import route_stub
 from tests.fake_agent_host import FakeAgentProcess, install_stub_pi_cli, restore_stub_pi_cli
 
 
@@ -218,9 +218,9 @@ class DualPathEquivalenceTests(unittest.TestCase):
         main.FIREFLY_PROJECT_STORE = store
         # All generation in this equivalence suite is offline and deterministic.
         for patcher in (
-            patch("app.routers.api_agent_tools._run_agent_generation", new=AsyncMock()),
-            patch.object(main, "route_image_generation", return_value=SimpleNamespace(
-                provider_id="offline", model="stub-model")),
+            patch("app.routers.api_project_library.run_routed_image_candidate",
+                  new=AsyncMock(side_effect=RuntimeError("Offline equivalence fixture"))),
+            patch.object(main, "route_image_generation", return_value=route_stub("offline", "stub-model")),
         ):
             patcher.start()
             self.addCleanup(patcher.stop)

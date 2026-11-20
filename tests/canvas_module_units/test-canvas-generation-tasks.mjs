@@ -304,6 +304,7 @@ for (const scenario of [
     const start = source.indexOf('async function runGeneration(){');
     const end = source.indexOf('// Local ComfyUI generation execution was removed.', start);
     assert.ok(start >= 0 && end > start);
+    ctx.usesServerImageReferences = () => false; // foreground lifecycle test, not reference resolution
     evaluate(ctx, source.slice(start, end));
     let polls = 0;
     harness.fetchResponder = url => {
@@ -349,6 +350,38 @@ for (const scenario of [
     }
 });
 
+test('foreground resolution cannot write a pending run after the live graph changes', async () => {
+    const node = {id:'live', images:[{url:'/original.png'}]};
+    const {ctx, harness} = loadGenerationTasksModule({nodes:[node]});
+    const smart = readFileSync('static/js/smart-canvas.js', 'utf8');
+    const start = smart.indexOf('function imageReferenceInput(');
+    const end = smart.indexOf('// Local ComfyUI generation execution was removed.', start);
+    evaluate(ctx, 'let canvasUsesConnections = true');
+    evaluate(ctx, smart.slice(start, end));
+    const messages = [];
+    Object.assign(ctx, {
+        selectedNode:()=>node, smartNodeInFlight:()=>false, isSmartLayoutFrame:()=>false,
+        smartSettingsForNode:()=>({engine:'api', apiKind:'image'}), isApiLikeEngine:e=>e === 'api',
+        promptInput:{innerHTML:'initial prompt'}, smartLoopContext:null,
+        toast:message=>messages.push(message),
+        buildPromptRequest:()=>assert.fail('project image must use server refs'),
+        pushUndo:()=>assert.fail('stale resolution cannot write pending state')
+    });
+    evaluate(ctx, "settings = {engine:'api', apiKind:'image'};");
+    let release;
+    harness.fetchResponder = url => {
+        assert.match(url, /image-reference-resolution$/);
+        return new Promise(resolve => { release = resolve; });
+    };
+    const run = globalFunction(ctx, 'runGeneration')();
+    ctx.promptInput.innerHTML = 'edit while resolving';
+    release(fakeResponse({data:{prompt:'initial prompt', refs:[]}}));
+    await run;
+    assert.deepEqual(messages, ['smart.projectConflict']);
+    assert.deepEqual(node.images, [{url:'/original.png'}]);
+    assert.equal(harness.fetchLog.length, 1);
+});
+
 // Exercise the actual foreground caller and ledger for both the normal per-task
 // pending entries and a missing task entry (legacy fallback to logTaskFailure).
 for(const taskPending of [true, false]) test(`mixed unrecorded failure real ledger taskPending=${taskPending}`, async () => {
@@ -382,6 +415,7 @@ for(const taskPending of [true, false]) test(`mixed unrecorded failure real ledg
     const start = source.indexOf('async function runGeneration(){');
     const end = source.indexOf('// Local ComfyUI generation execution was removed.', start);
     assert.ok(start >= 0 && end > start);
+    ctx.usesServerImageReferences = () => false; // foreground lifecycle test, not reference resolution
     evaluate(ctx, source.slice(start, end));
     harness.fetchResponder = url => url.endsWith('/task-1')
         ? fakeResponse({data:{status:'failed', error:'provider failed', result:{history_recorded:false}}})

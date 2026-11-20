@@ -1292,6 +1292,48 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
     def canvas(self, canvas_id: str) -> Dict[str, Any]:
         return self.open_project(canvas_id)["canvas"]
 
+    def image_reference_snapshot(self, project_id: str, *, include_canvas: bool = True):
+        """Read generation inputs without triggering open_project's on-disk repairs/migrations."""
+        project_id = _clean_project_id(project_id)
+        with self._lock:
+            directory = self._project_directory(project_id)
+            if not self._safe_project_path(directory, 'project.json').is_file():
+                raise ProjectNotFound('项目不存在')
+            canvas = None
+            if include_canvas:
+                canvas = self._canvases.get(project_id)
+                if canvas is None:
+                    try:
+                        canvas = _read_json(self._safe_project_path(directory, 'canvas.json'))
+                    except (OSError, ValueError) as exc:
+                        raise ProjectStoreError('画布不可读；请先在浏览器中打开项目恢复') from exc
+                if canvas.get('id') != project_id or canvas.get('project_id') != project_id:
+                    raise ProjectStoreError('画布不属于请求的项目')
+            catalog = {}
+            for asset_id, record in self._load_media_index(project_id)['items'].items():
+                if isinstance(record, dict):
+                    catalog[asset_id] = {
+                        'name': record.get('name'),
+                        'kind': record.get('kind') or self._media_kind(record.get('mime_type') or '', record.get('filename') or ''),
+                    }
+            return copy.deepcopy(canvas), catalog
+
+    def check_image_reference_files(self, project_id: str, asset_ids) -> None:
+        """Validate only selected owned assets, without reading media bytes or rewriting the index."""
+        with self._lock:
+            directory = self._project_directory(project_id)
+            media_root = self._safe_project_path(directory, 'media')
+            items = self._load_media_index(project_id)['items']
+            for asset_id in set(asset_ids):
+                record = items.get(asset_id)
+                if not isinstance(record, dict):
+                    raise ProjectNotFound('项目媒体不存在')
+                path = (media_root / str(record.get('filename') or '')).resolve()
+                if not path_is_within(media_root, path) or not path.is_file():
+                    raise ProjectNotFound('项目媒体不存在')
+                if (record.get('kind') or self._media_kind(record.get('mime_type') or '', path.name)) != 'image':
+                    raise ProjectStoreError('参考图不是项目图片')
+
     def import_media(
         self,
         project_id: str,

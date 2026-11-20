@@ -7,12 +7,11 @@ Spike 结论（.pipeline/batches/issue-266b-result.md）：trigger_generation_co
 app/services/generation.py（会话B领地，禁改），本票只复用其 core。
 
 Mock 边界：无网络 / 无 provider —— monkeypatch main.route_image_generation /
-load_api_providers + api_agent_tools._run_agent_generation（后台运行体），
+load_api_providers + project image worker's provider adapter,
 不触碰真实生成管线。错误文案带下一步建议（#266 票面规范）。
 """
 import json
 import sys
-import types
 import unittest
 from pathlib import Path
 
@@ -24,6 +23,7 @@ import main  # noqa: F401
 from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK
 from app.routers import api_agent_tools, api_mcp
 from tests.test_mcp_endpoint import McpTestBase
+from tests.agent_image_task_fakes import patch_candidate, route_stub
 
 PROMPT = "a glowing firefly in the forest"
 
@@ -71,11 +71,9 @@ class BatchEditBehaviorTests(McpTestBase):
             base_revision=int(canvas.get("revision") or 0))
         self.previous_route = main.route_image_generation
         self.previous_providers = main.load_api_providers
-        self.previous_provider_call = api_agent_tools.build_online_image_result
-        main.route_image_generation = lambda *a, **k: types.SimpleNamespace(
-            provider_id="fake", model="fake")
+        main.route_image_generation = lambda *a, **k: route_stub('fake', 'fake')
         main.load_api_providers = lambda: []
-        api_agent_tools.build_online_image_result = self._fake_provider
+        self.enterContext(patch_candidate(self._fake_provider))
         # #350：batch_edit 在 MCP 层过确认门与会话限额——本组测试只钉 266 行为，
         # 门/限额语义在 test_agent_generation_gate_limit_351 另有钉，这里直接放行。
         self._prev_conf = api_agent_tools.request_confirmation_core
@@ -92,7 +90,6 @@ class BatchEditBehaviorTests(McpTestBase):
     def tearDown(self):
         main.route_image_generation = self.previous_route
         main.load_api_providers = self.previous_providers
-        api_agent_tools.build_online_image_result = self.previous_provider_call
         api_agent_tools.request_confirmation_core = self._prev_conf
         api_agent_tools.GENERATION_SESSION_LIMIT = self._prev_limit
         with CANVAS_TASK_LOCK:
@@ -119,7 +116,7 @@ class BatchEditBehaviorTests(McpTestBase):
             for node_id, task_id in by_node.items():
                 task = CANVAS_TASKS.get(task_id)
                 self.assertIsNotNone(task, f"task {task_id} missing from CANVAS_TASKS")
-                self.assertEqual(task["node_id"], node_id)
+                self.assertEqual(task["source_node_id"], node_id)
                 self.assertEqual(task["project_id"], self.project_id)
         # batch prompt 写入各节点（trigger_generation_core 读节点自身 prompt）
         canvas = self.store.canvas(self.project_id)

@@ -6,6 +6,7 @@ from app.routers import api_agent_tools as routes
 from app.services import agent_ops_context
 from app.services.agent_ops_context import agent_ops_scope
 from tests import test_agent_ops_generation_route_393 as generation_tests
+from tests.agent_image_task_fakes import patch_candidate
 
 
 class GenerationLifecycleReviewTests(generation_tests.GenerationJournalTests):
@@ -95,7 +96,7 @@ class GenerationLifecycleReviewTests(generation_tests.GenerationJournalTests):
                     self.assertFalse(any(n.get('pendingTasks') for n in self.store.open_project(pid)['canvas']['nodes']))
                     for record in self.records():
                         self.assertEqual(self.undo(record['op_id'])['status'], 'generating')
-        with patch.object(routes, 'build_online_image_result', side_effect=provider), \
+        with patch_candidate(provider), \
              patch.object(self.store, 'fail_image_generation', side_effect=fail_once), \
              patch.object(routes._app_main.manager, 'broadcast_canvas_updated', side_effect=broadcast):
             result = await self.start()
@@ -118,7 +119,7 @@ class GenerationLifecycleReviewTests(generation_tests.GenerationJournalTests):
         async def broadcast(pid, timestamp, **kwargs):
             if kwargs.get('phase'):
                 events.append(kwargs['phase'])
-        with patch.object(routes, 'build_online_image_result', side_effect=provider), \
+        with patch_candidate(provider), \
              patch.object(self.store, 'fail_image_generation', side_effect=fail), \
              patch.object(routes._app_main.manager, 'broadcast_canvas_updated', side_effect=broadcast):
             result = await self.start()
@@ -146,7 +147,7 @@ class GenerationLifecycleReviewTests(generation_tests.GenerationJournalTests):
             return original(*args, **kwargs)
         async def provider(_):
             raise RuntimeError('provider failed')
-        with patch.object(routes, 'build_online_image_result', side_effect=provider), \
+        with patch_candidate(provider), \
              patch.object(self.store, 'fail_image_generation', side_effect=fail_once):
             result = await self.start()
             await asyncio.wait_for(self.workers[-1], 5)

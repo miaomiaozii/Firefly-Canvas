@@ -29,8 +29,7 @@ from app.constants import NODE_TYPE_AGENT, NODE_TYPE_GROUP
 from app.services import agent_batch_prompt, agent_frame, agent_image_settings, agent_layout, agent_refs
 from app.services.agent_errors import agent_error
 from app.services.agent_tools_manifest import LAYOUT_TOOLS, UPDATABLE_NODE_FIELDS as _UPDATABLE_NODE_FIELDS
-from app.core import AIReference, ONLINE_IMAGE_REFERENCE_MAX, PROJECT_MEDIA_ADAPTER_PROJECT, ProjectImageGenerationRequest
-from app.services.misc import RoutedOnlineImageRequest, build_online_image_result
+from app.core import ONLINE_IMAGE_REFERENCE_MAX, PROJECT_IMAGE_GENERATION_FUTURES, ProjectImageGenerationRequest
 from firefly_generation import ImageGenerationRequest, ModelRoutingError
 from firefly_projects import ProjectStoreError
 
@@ -1509,29 +1508,11 @@ async def _generation_finish(store, project_id, task_id, guarded, lifecycle):
     return True
 
 
-def _schedule_generation_worker(create_task, *args, pre_cancel=False):
-    lifecycle = args[-1]
-    task = create_task(_run_agent_generation(*args, pre_cancel=pre_cancel))
-    def recover_unstarted(done):
-        if done.cancelled() and not lifecycle.get('worker_entered'):
-            with _LIFETIME_LOCK:
-                stopping = done.get_loop() in _LIFETIME_STOPPING
-            if stopping:
-                task_id = args[0]
-                with CANVAS_TASK_LOCK:
-                    if task_id in CANVAS_TASKS:
-                        CANVAS_TASKS[task_id].update(status='cleanup_pending',
-                            error='Generation cleanup interrupted by shutdown; outcome uncertain', updated_at=time.time())
-            else:
-                _schedule_generation_worker(create_task, *args, pre_cancel=True)
-    task.add_done_callback(recover_unstarted)
-    return _track_lifetime_task(task)
-
-
 @dataclass(frozen=True)
 class _PreparedGeneration:
     request: ImageGenerationRequest
-    payload: RoutedOnlineImageRequest
+    payload: ProjectImageGenerationRequest
+    route: object
     node_type: str
     original_prompt: tuple
 
@@ -1543,58 +1524,65 @@ def _node_prompt_fields(node):
 
 async def prepare_generation(project_id, node_id, *, canvas=None, prompt_override=None):
     from app.routers.api_project_library import project_image_executed_prompt, project_image_request
+    from app.services.canvas_image_refs import ReferenceGraph
 
-    _validate_project(project_id)
     agent_refs.identifier(node_id, "node_id")
+    store = _app_main.FIREFLY_PROJECT_STORE
+    if store is None:
+        raise agent_error(500, 'SERVER_NOT_READY', 'Project store not initialized')
+    try:
+        saved, catalog = await asyncio.to_thread(store.image_reference_snapshot, project_id, include_canvas=canvas is None)
+    except ProjectNotFound as exc:
+        raise agent_error(404, 'PROJECT_NOT_FOUND', f'Project not found: {project_id}') from exc
+    except ProjectStoreError as exc:
+        raise agent_error(400, 'INVALID_ARGUMENT', str(exc), '请先在浏览器中打开画布。') from exc
     if canvas is None:
-        canvas = _app_main.FIREFLY_PROJECT_STORE.canvas(project_id)
+        canvas = saved
     node = _snapshot_node(canvas, node_id)
-    prompt = prompt_override if prompt_override is not None else str(node.get("prompt") or node.get("text") or "").strip()
+    graph = ReferenceGraph(canvas, project_id, catalog)
+    selection = graph.resolve(node_id, prompt_override=prompt_override)
+    refs = list(graph.owned_image_ids(selection))
+    if any(not asset for asset, _ in refs):
+        raise agent_error(400, 'REF_NOT_IN_PROJECT', 'Selected reference image has not been archived in this project',
+                          '请先将参考图导入或归档到此项目，再重新挂图。')
+    if len(refs) > ONLINE_IMAGE_REFERENCE_MAX:
+        raise agent_image_settings.invalid('Selected reference images exceed the application safety limit')
+    if refs:
+        try:
+            await asyncio.to_thread(store.check_image_reference_files, project_id, [asset for asset, _ in refs])
+        except ProjectStoreError as exc:
+            raise agent_error(400, 'ASSET_NOT_FOUND', str(exc),
+                              '参考图资产不可用；请先导入或归档，再重新挂图。') from exc
+    prompt = selection['prompt']
     if not prompt:
         raise agent_error(400, "NODE_NOT_GENERATABLE", f"Node {node_id} has no prompt",
                           "先给节点写 prompt，再触发生成。")
-    refs = agent_refs.generation_refs(canvas, node_id, ONLINE_IMAGE_REFERENCE_MAX)
     providers = _app_main.load_api_providers()
     try:
         wire = ProjectImageGenerationRequest(
             **agent_image_settings.image_settings(node, canvas, providers, _app_main.model_spec_for),
             prompt=prompt,
-            reference_asset_ids=[ref['asset_id'] for ref in refs],
-            reference_roles=[ref['role'] for ref in refs],
+            reference_asset_ids=[asset for asset, _ in refs],
+            reference_roles=[role for _, role in refs] if any(role for _, role in refs) else [],
             result_node_id=node_id, base_revision=canvas.get("revision", 0),
         )
         request = project_image_request(wire)
         route = _app_main.route_image_generation(request, providers, provider_id=wire.provider_id, model=wire.model)
-        executed_prompt = project_image_executed_prompt(wire)
-        payload = RoutedOnlineImageRequest(
-            prompt=executed_prompt, provider_id=route.provider_id, model=route.model, size=wire.size,
-            quality=request.quality, n=request.count,
-            image_parameters={"width": request.width, "height": request.height, "aspect_ratio": request.aspect_ratio,
-                              "resolution": request.resolution, "media_type": request.media_type, "output_format": wire.output_format},
-        )
+        project_image_executed_prompt(wire)
     except ModelRoutingError as exc:
         raise agent_error(400, "INVALID_ARGUMENT", exc.to_dict()["message"],
                           "换一个可用的 provider/model 或调整参数后重试。",
                           details={"routing": exc.to_dict()}) from exc
     except ValueError as exc:
         raise agent_image_settings.invalid(str(exc)) from exc
-    if wire.reference_asset_ids:
-        try:
-            ref_records = await asyncio.to_thread(_app_main.project_image_references, project_id, wire.reference_asset_ids)
-        except ProjectStoreError as exc:
-            raise agent_error(400, "ASSET_NOT_FOUND", str(exc),
-                              "参考图资产不可用；先调用 media.list 确认 asset id。") from exc
-        payload.reference_images = [AIReference(**ref) for ref in ref_records]
-    return _PreparedGeneration(request, payload, str(node.get("type", "")), _node_prompt_fields(node))
+    return _PreparedGeneration(request, wire, route, str(node.get("type", "")), _node_prompt_fields(node))
 
 
 async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: str = "", *, plan=None) -> dict:
     if plan is None:
         plan = await prepare_generation(project_id, node_id)
     creation = ownership_fields(agent_node_id)
-    payload = plan.payload
     prompt = plan.request.prompt
-    node_type = plan.node_type
 
     task_id = f"agent_img_{uuid.uuid4().hex}"
     result_node_id = f"node-{uuid.uuid4().hex[:12]}"
@@ -1625,165 +1613,25 @@ async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: 
         result_node = agent_frame.next_to_source(source, result_node, nodes.values(), memberships)
         return [{"op": "upsert_node", "node": result_node}]
 
-    from app.services.agent_ops_context import current_agent_ops_context, create_agent_ops_task
-    from app.services.agent_ops_async import run_blocking_to_completion
+    from app.routers.api_project_library import create_project_image_task_core
+    from app.services.agent_ops_context import current_agent_ops_context
+
     context = current_agent_ops_context()
     batch = _BATCH_GENERATION.get()
     if not (context and context.project_id == project_id and context.agent_node_id
-            and (context.tool == "generate.trigger" or
-                 (context.tool == "canvas.batch_edit" and batch is not None))):
+            and (context.tool == 'generate.trigger' or
+                 (context.tool == 'canvas.batch_edit' and batch is not None))):
         context = None
-    store = _app_main.FIREFLY_PROJECT_STORE
-    guarded = set()
-    started = False
-    recovery_required = False
-    start_cancel = None
+    hooks = _AgentImageLifecycle(project_id, task_id, node_id, result_node_id, context, build_result)
+    payload = plan.payload.model_copy(update={'result_node_id': result_node_id, 'idempotency_key': task_id})
+    await create_project_image_task_core(project_id, payload, prepared=(plan.request, plan.route), hooks=hooks)
     if context:
-        lifecycle = {'op_id': context.op_id, 'node_id': result_node_id, 'persisted': False, 'pending': False, 'updated_at': None}
-        def persisted_listener(pid, canvas):
-            if pid != project_id:
-                return
-            if lifecycle['persisted'] or any(n.get('id') == result_node_id for n in canvas.get('nodes', [])):
-                pending = any(item.get('taskId') == task_id for node in canvas.get('nodes', [])
-                              for item in node.get('pendingTasks', []) if isinstance(item, dict))
-                lifecycle.update(persisted=True, pending=pending, updated_at=canvas.get('updated_at'))
-        lifecycle['listener'] = persisted_listener
-        store.add_persisted_canvas_listener(persisted_listener)
-        if batch is not None:
-            with store._lock:
-                batch["tokens"].add(task_id)
-                for op_id in batch["ids"]:
-                    set_agent_generation_running(store, project_id, op_id, task_id, True)
-
-        def cleanup_start_error(exc):
-            store.flush(project_id)
-            node = store.find_canvas_node(project_id, result_node_id) or {}
-            if any(item.get('taskId') == task_id for item in node.get('pendingTasks', [])):
-                failure = {"id": f"generation-{uuid.uuid4().hex}", "task_id": task_id,
-                           "type": "online-image", "status": "failed", "prompt": prompt,
-                           "created_at": _app_main.now_ms(), "completed_at": _app_main.now_ms(),
-                           "outputs": [], "result_node_id": result_node_id,
-                           "source_node_id": node_id, "error": str(exc)}
-                _generation_child(store, project_id, context, task_id, guarded,
-                    lambda: store.fail_image_generation(project_id, result_node_id, task_id,
-                                                        failure, require_pending=True))
-            if not _generation_release(store, project_id, task_id, guarded, release=False):
-                raise _JournalUnsettled("generation cleanup has unsettled journal entries")
-
-        async def recover_start_error(exc):
-            from app.core import logger as _logger
-            while True:
-                try:
-                    await run_blocking_to_completion(cleanup_start_error, exc)
-                    if await _generation_finish(store, project_id, task_id, guarded, lifecycle):
-                        with CANVAS_TASK_LOCK:
-                            CANVAS_TASKS[task_id].update(status="failed", error=str(exc), updated_at=time.time())
-                        return
-                    raise _JournalUnsettled('generation cleanup not persisted')
-                except (OSError, sqlite3.Error, _JournalUnsettled) as retry_error:
-                    _logger.warning("generation cleanup retry task=%s op=%s: %s", task_id, context.op_id, retry_error)
-                    await asyncio.sleep(1)
-
-        def start():
-            nonlocal started, recovery_required
-            try:
-                def create_result():
-                    canvas = store.canvas(project_id)
-                    return store.apply_mutations(project_id, build_result(canvas), base_revision=canvas["revision"])
-                if batch is not None and batch["root_exists"]:
-                    _generation_child(store, project_id, context, task_id, guarded, create_result, lifecycle=lifecycle)
-                else:
-                    _generation_mutation(store, project_id, context, task_id, guarded, create_result)
-                _generation_child(store, project_id, context, task_id, guarded,
-                    lambda: store.begin_image_generation(project_id, result_node_id,
-                        {"taskId": task_id, "count": payload.n, "providerId": payload.provider_id,
-                         "model": payload.model, "prompt": prompt},
-                        base_revision=store.canvas(project_id)["revision"]))
-                started = True
-            except BaseException as exc:
-                exc.add_note(f"Generation operation {context.op_id} task {task_id}")
-                try:
-                    cleanup_start_error(exc)
-                except BaseException as cleanup_error:
-                    recovery_required = True
-                    exc.add_note(f"Generation operation {context.op_id} task {task_id} cleanup failed; guard retained: {cleanup_error}")
-                raise
-        try:
-            await run_blocking_to_completion(start)
-        except BaseException as exc:
-            try:
-                await _generation_archive_to_completion(_generation_event(project_id, lifecycle, 'start'))
-            except asyncio.CancelledError:
-                pass
-            if recovery_required:
-                with CANVAS_TASK_LOCK:
-                    CANVAS_TASKS[task_id] = {"id": task_id, "type": "agent-image", "status": "cleanup_pending",
-                        "project_id": project_id, "node_id": node_id, "result_node_id": result_node_id,
-                        "op_id": context.op_id, "created_at": time.time(), "updated_at": time.time(),
-                        "result": None, "error": str(exc)}
-                _track_lifetime_task(create_agent_ops_task(recover_start_error(exc)))
-                if not getattr(exc, '__notes__', None):
-                    exc.add_note(f"Generation operation {context.op_id} task {task_id} cleanup pending")
-            elif isinstance(exc, asyncio.CancelledError) and started:
-                with CANVAS_TASK_LOCK:
-                    CANVAS_TASKS[task_id] = {"id": task_id, "type": "agent-image", "status": "queued",
-                        "project_id": project_id, "node_id": node_id, "result_node_id": result_node_id,
-                        "created_at": time.time(), "updated_at": time.time(), "result": None, "error": ""}
-                _schedule_generation_worker(create_agent_ops_task, task_id, project_id, node_id, result_node_id,
-                                            payload, context, guarded, lifecycle)
-            else:
-                await _generation_finish(store, project_id, task_id, guarded, lifecycle)
-            raise
-        try:
-            await _generation_archive_to_completion(_generation_event(project_id, lifecycle, 'start'))
-        except (Exception, asyncio.CancelledError) as exc:
-            start_cancel = exc
-    else:
-        await _apply_mutations_from_snapshot(project_id, build_result)
-    with CANVAS_TASK_LOCK:
-        CANVAS_TASKS[task_id] = {
-            "id": task_id,
-            "type": "agent-image",
-            "status": "queued",
-            "project_id": project_id,
-            "node_id": node_id,
-            "node_type": node_type,
-            "result_node_id": result_node_id,
-            "op_id": context.op_id if context else None,
-            "created_at": time.time(),
-            "updated_at": time.time(),
-            "result": None,
-            "error": "",
-        }
-    if not context:
-        try:
-            rev = int(store.canvas(project_id).get("revision") or 0)
-            await run_blocking_to_completion(
-                store.begin_image_generation, project_id, result_node_id,
-                {"taskId": task_id, "count": payload.n, "providerId": payload.provider_id,
-                 "model": payload.model, "prompt": prompt}, base_revision=rev)
-            await run_blocking_to_completion(store.flush, project_id)
-        except (OSError, ProjectStoreError) as exc:
-            from app.core import logger as _logger
-            _logger.warning("begin_image_generation pending failed task=%s: %s", task_id, exc)
-
+        await _broadcast_canvas_updated(project_id, source='agent')
+    response = {'task_id': task_id, 'type': 'image', 'node_id': node_id,
+                'result_node_id': result_node_id, **_geometry(result_node)}
     if context:
-        _schedule_generation_worker(create_agent_ops_task, task_id, project_id, node_id, result_node_id,
-                                    payload, context, guarded, lifecycle)
-    else:
-        _track_lifetime_task(create_agent_ops_task(_run_agent_generation(task_id, project_id, node_id, result_node_id, payload)))
-    if batch is not None:
-        batch["tasks"].append({"node_id": node_id, "task_id": task_id})
-    if context:
-        await _broadcast_canvas_updated(project_id, source="agent")
-    if start_cancel is not None:
-        start_cancel.add_note(f"Generation operation {context.op_id} task {task_id}")
-        raise start_cancel
-    response = {"task_id": task_id, "type": "image", "node_id": node_id,
-                "result_node_id": result_node_id, **_geometry(result_node)}
-    if context:
-        response["op_id"] = context.op_id
-        response["touched_node_ids"] = _operation_touched(store, project_id, guarded | {context.op_id})
+        response['op_id'] = context.op_id
+        response['touched_node_ids'] = _operation_touched(hooks.store, project_id, hooks.guarded | {context.op_id})
     return response
 
 
@@ -1820,231 +1668,278 @@ async def wait_for_task_core(project_id: str, task_id: str, timeout: int = 120) 
     }
 
 
-async def _run_agent_generation(task_id: str, project_id: str, node_id: str,
-                                result_node_id: str, payload: RoutedOnlineImageRequest, context=None, guarded=None, lifecycle=None,
-                                *, pre_cancel=False):
-    """Run generation in the background and update task status.
+class _AgentImageLifecycle:
+    """A3 adapter for the project image task; owns attribution, not generation."""
 
-    #351：成功后把图归档进项目媒体并挂到结果节点（complete_image_generation），
-    写项目生成历史；失败走 fail_image_generation 清理 pendingTasks + 失败历史记录。
-    """
-    from app.services.agent_ops_async import run_blocking_to_completion
-    started_at = _app_main.now_ms()
-    store = _app_main.FIREFLY_PROJECT_STORE
-    completed = False
-    with CANVAS_TASK_LOCK:
-        task_state = CANVAS_TASKS.get(task_id, {'id': task_id, 'status': 'cleanup_pending'})
-    if context:
-        lifecycle['worker_entered'] = True
-    try:
-        if pre_cancel:
-            raise asyncio.CancelledError()
-        if context:
-            await run_blocking_to_completion(_generation_child, store, project_id, context, task_id, guarded,
-                                             lambda: None, effects=("external image generation attempted",))
-        scope = PROJECT_MEDIA_ADAPTER_PROJECT.set(project_id)
-        try:
-            result = await build_online_image_result(payload)
-        finally:
-            PROJECT_MEDIA_ADAPTER_PROJECT.reset(scope)
-        from app.services import archive_project_generated_image as archive
-        items = []
-        for idx, raw_item in enumerate(result.get("image_items") or []):
-            try:
-                if context:
-                    await run_blocking_to_completion(_generation_child, store, project_id, context, task_id, guarded,
-                                                     lambda: None, effects=("generated media archive attempted",))
-                items.append(await _generation_archive_to_completion(archive(
-                    project_id,
-                    {"type": "url",
-                     "value": str(raw_item.get("url") or ""),
-                     "mime_type": str(raw_item.get("mime_type") or "image/png")},
-                    idx)))
-            except Exception as exc:  # noqa: BLE001
-                from app.core import logger as _logger
-                _logger.warning("#351 归档失败 task=%s idx=%s: %s", task_id, idx, exc)
-        if context and not items:
-            raise RuntimeError("Generation produced no archivable images")
-        timestamp = _app_main.now_ms()
-        history_record = {
-            "id": f"generation-{uuid.uuid4().hex}",
-            "task_id": task_id,
-            "type": "online-image",
-            "status": "succeeded",
-            "prompt": payload.prompt,
-            "created_at": started_at,
-            "createdAt": started_at,
-            "completed_at": timestamp,
-            "runMs": max(0, timestamp - started_at),
-            "actual_provider_id": result.get("provider_id", ""),
-            "actual_provider_name": result.get("provider_name", ""),
-            "actual_model": result.get("model", ""),
-            "model": result.get("model", ""),
-            "params": {**payload.image_parameters, "n": payload.n, "size": payload.size, "quality": payload.quality},
-            "outputs": [{"asset_id": it["asset_id"], "kind": "image"} for it in items],
-            "result_node_id": result_node_id,
-            "source_node_id": node_id,
-        }
-        store = _app_main.FIREFLY_PROJECT_STORE
-        # #375：目标结果卡可能已被用户 Ctrl+Z 撤掉。store.complete_*_generation 对
-        # 缺失节点会在 (0,0) 新建幽灵卡；写回前先确认节点还在，不在就按「用户已
-        # 丢弃结果」收场（cancelled + 明确 error），不把生成本身判死。
-        if items and store.find_canvas_node(project_id, result_node_id) is None:
-            with CANVAS_TASK_LOCK:
-                task_state.update({
-                    "status": "cleanup_pending" if context else "cancelled",
-                    "_terminal_status": "cancelled",
-                    "error": "目标结果卡已被移除，生成结果未写回",
-                    "updated_at": time.time(),
-                })
-            return
-        if items:
-            def complete():
-                nonlocal completed
-                def apply():
-                    nonlocal completed
-                    canvas = store.complete_image_generation(project_id, result_node_id, items,
-                        history_record, task_id=task_id, require_pending=True)
-                    completed = True
-                    return canvas
-                if context:
-                    return _generation_child(store, project_id, context, task_id, guarded, apply)
-                canvas = apply()
-                store.flush(project_id)
-                return canvas
-            canvas = await run_blocking_to_completion(complete)
-            await _app_main.manager.broadcast_canvas_updated(
-                project_id, int(canvas.get("updated_at") or timestamp), source="agent")
-            result["result_node_id"] = result_node_id
-            result["project_asset_ids"] = [it["asset_id"] for it in items]
-            result["history_recorded"] = True
-        with CANVAS_TASK_LOCK:
-            task_state.update({
-                "status": "cleanup_pending" if context else "succeeded",
-                "_terminal_status": "succeeded",
-                "result": result,
-                "error": "",
-                "updated_at": time.time(),
-            })
-    except (Exception, asyncio.CancelledError) as exc:
-        cancelled = isinstance(exc, asyncio.CancelledError)
-        if cancelled and not context:
-            raise
-        if context and not completed:
-            with store._lock:
-                completed = any(h.get('task_id') == task_id and h.get('status') == 'succeeded'
-                                for h in store._histories.get(project_id, []))
-        if completed:
-            result.update(result_node_id=result_node_id,
-                          project_asset_ids=[it['asset_id'] for it in items], history_recorded=True)
-            with CANVAS_TASK_LOCK:
-                task_state.update(status="cleanup_pending", _terminal_status="succeeded",
-                                             result=result, error="", updated_at=time.time())
-            if cancelled:
-                raise
-            return
-        failure_time = _app_main.now_ms()
-        try:
-            failure_record = {
-                "id": f"generation-{uuid.uuid4().hex}",
-                "task_id": task_id,
-                "type": "online-image",
-                "status": "failed",
-                "prompt": payload.prompt,
-                "created_at": started_at,
-                "createdAt": started_at,
-                "completed_at": failure_time,
-                "runMs": max(0, failure_time - started_at),
-                "outputs": [],
-                "result_node_id": result_node_id,
-                "source_node_id": node_id,
-                "error": str(exc),
-            }
-            def fail():
-                def apply():
-                    return store.fail_image_generation(project_id, result_node_id, task_id, failure_record,
-                                                       require_pending=bool(context))
-                if context:
-                    return _generation_child(store, project_id, context, task_id, guarded, apply)
-                canvas = apply()
-                store.flush(project_id)
-                return canvas
-            if not completed:
-                failed_canvas = await run_blocking_to_completion(fail)
-                await _app_main.manager.broadcast_canvas_updated(
-                    project_id, int(failed_canvas.get("updated_at") or failure_time), source="agent")
-        except asyncio.CancelledError as inner:
-            if not context:
-                raise
-            cancelled = True
-            exc = inner
-        except Exception as inner:  # noqa: BLE001
-            from app.core import logger as _logger
-            _logger.warning("#351 fail_image_generation cleanup failed task=%s: %s", task_id, inner)
-        with CANVAS_TASK_LOCK:
-            task_state.update({
-                "status": "cleanup_pending" if context else ("cancelled" if cancelled else "failed"),
-                "_terminal_status": "cancelled" if cancelled else "failed",
-                "error": str(exc),
-                "updated_at": time.time(),
-            })
-        if cancelled:
-            raise exc
-    finally:
-        if context:
-            async def settle():
-                def cleanup():
-                    store.flush(project_id)
-                    with store._lock:
-                        node = store.find_canvas_node(project_id, result_node_id) or {}
-                        pending = any(item.get('taskId') == task_id for item in node.get('pendingTasks', [])
-                                      if isinstance(item, dict))
-                        if pending:
-                            failure = {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id,
-                                       'type': 'online-image', 'status': 'failed', 'prompt': payload.prompt,
-                                       'created_at': started_at, 'completed_at': _app_main.now_ms(), 'outputs': [],
-                                       'result_node_id': result_node_id, 'source_node_id': node_id,
-                                       'error': 'Generation cleanup required'}
-                            _generation_child(store, project_id, context, task_id, guarded,
-                                lambda: store.fail_image_generation(project_id, result_node_id, task_id,
-                                                                    failure, require_pending=True))
-                await run_blocking_to_completion(cleanup)
-                return await _generation_finish(store, project_id, task_id, guarded, lifecycle)
+    def __init__(self, project_id, task_id, node_id, result_id, context, build_result):
+        self.project_id, self.task_id, self.result_id = project_id, task_id, result_id
+        self.store = _app_main.FIREFLY_PROJECT_STORE
+        self.context, self.build_result = context, build_result
+        self.metadata = {'source_node_id': node_id, 'op_id': context.op_id if context else None}
+        self.guarded = set()
+        self.event = {'op_id': self.metadata['op_id'], 'node_id': result_id,
+                      'persisted': False, 'pending': False, 'updated_at': None, 'listener': self.persisted}
+        self.registered = self.start_error = self.failure_record = None
+        self.archived = []
 
-            async def recover():
-                from app.core import logger as _logger
-                while True:
-                    try:
-                        if await settle():
-                            with CANVAS_TASK_LOCK:
-                                task_state.update(status=task_state.pop('_terminal_status', 'failed'), updated_at=time.time())
-                            return
-                        raise _JournalUnsettled('generation cleanup has unsettled journal entries')
-                    except (OSError, sqlite3.Error, _JournalUnsettled) as error:
-                        _logger.warning('generation cleanup retry task=%s op=%s: %s', task_id, context.op_id, error)
-                        with CANVAS_TASK_LOCK:
-                            task_state.update(error=f'Generation operation {context.op_id} cleanup pending: {error}',
-                                                         updated_at=time.time())
-                        await asyncio.sleep(1)
-            async def finalize():
-                try:
-                    settled = await _generation_finish(store, project_id, task_id, guarded, lifecycle)
-                    if not settled:
-                        settled = await settle()
-                except Exception:
-                    # Keep undo guarded and hand off cleanup even if finalization raised after replacement.
-                    settled = False
-                if settled:
-                    with CANVAS_TASK_LOCK:
-                        task_state.update(status=task_state.pop('_terminal_status', 'failed'), updated_at=time.time())
+    def persisted(self, pid, canvas):
+        if pid == self.project_id and (self.event['persisted'] or any(n.get('id') == self.result_id for n in canvas.get('nodes', []))):
+            from app.routers.api_project_library import canvas_has_project_image_pending
+            self.event.update(persisted=True, pending=canvas_has_project_image_pending(canvas, self.task_id),
+                              updated_at=canvas.get('updated_at'))
+
+    async def register(self, task_record):
+        from app.services.agent_ops_async import run_blocking_to_completion
+
+        def create_result():
+            canvas = self.store.canvas(self.project_id)
+            return self.store.apply_mutations(self.project_id, self.build_result(canvas), base_revision=canvas['revision'])
+
+        def register():
+            batch = _BATCH_GENERATION.get()
+            if self.context:
+                self.store.add_persisted_canvas_listener(self.persisted)
+                if batch is not None:
+                    with self.store._lock:
+                        batch['tokens'].add(self.task_id)
+                        for op_id in batch['ids']:
+                            set_agent_generation_running(self.store, self.project_id, op_id, self.task_id, True)
+                if batch is not None and batch['root_exists']:
+                    _generation_child(self.store, self.project_id, self.context, self.task_id,
+                                      self.guarded, create_result, lifecycle=self.event)
                 else:
-                    from app.services.agent_ops_context import create_agent_ops_task
-                    with CANVAS_TASK_LOCK:
-                        task_state.setdefault('_terminal_status', task_state['status'])
-                        task_state.update(status='cleanup_pending', error=f'Generation operation {context.op_id} cleanup pending',
-                                    updated_at=time.time())
-                    _track_lifetime_task(create_agent_ops_task(recover()))
-            await _generation_archive_to_completion(finalize())
+                    _generation_mutation(self.store, self.project_id, self.context, self.task_id,
+                                         self.guarded, create_result)
+            else:
+                with self.store._lock:
+                    create_result()
+            with self.store._lock:
+                self.registered = self.write('begin_image_generation', self.project_id, self.result_id,
+                                             task_record, base_revision=self.store.canvas(self.project_id)['revision'])
+            return self.registered
+
+        return await run_blocking_to_completion(register)
+
+    def write(self, method, *args, **kwargs):
+        def apply():
+            return getattr(self.store, method)(*args, **kwargs)
+        if self.context:
+            return _generation_child(self.store, self.project_id, self.context, self.task_id, self.guarded, apply)
+        canvas = apply()
+        self.store.flush(self.project_id)
+        return canvas
+
+    async def mutate(self, method, *args, **kwargs):
+        from app.services.agent_ops_async import run_blocking_to_completion
+        if method == 'fail_image_generation':
+            self.failure_record = args[-1]
+        return await run_blocking_to_completion(self.write, method, *args, **kwargs)
+
+    async def effect(self, description):
+        from app.services.agent_ops_async import run_blocking_to_completion
+        if self.context:
+            await run_blocking_to_completion(_generation_child, self.store, self.project_id, self.context,
+                                             self.task_id, self.guarded, lambda: None, effects=(description,))
+
+    async def archive(self, archive, *args):
+        await self.effect('generated media archive attempted')
+        async def save():
+            item = await archive(*args)
+            self.archived.append(item)
+            return item
+        return await _generation_archive_to_completion(save())
+
+    async def start_event(self):
+        if self.context:
+            try:
+                await _generation_archive_to_completion(_generation_event(self.project_id, self.event, 'start'))
+            except (Exception, asyncio.CancelledError) as exc:
+                self.start_error = self.start_error or exc
+        batch = _BATCH_GENERATION.get()
+        if batch is not None:
+            batch['tasks'].append({'node_id': self.metadata['source_node_id'], 'task_id': self.task_id})
+
+    def update(self, **fields):
+        with CANVAS_TASK_LOCK:
+            task = CANVAS_TASKS.get(self.task_id)
+            if task is not None:
+                task.update(fields, updated_at=time.time())
+
+    async def settle(self, error, *, registration=False):
+        from app.routers.api_project_library import recover_project_image_task, durable_project_image_result
+        from app.services.agent_ops_async import run_blocking_to_completion
+        cancelled = isinstance(error, asyncio.CancelledError)
+        if registration:
+            reason, detail = 'registration_failed', f'任务注册未完成，未调用在线模型：{error}'
+        elif cancelled:
+            reason, detail = 'cancelled', '任务已取消'
+        else:
+            reason, detail = 'failure_commit_unknown', str(error or 'Generation terminal not persisted')
+
+        def reconcile():
+            self.store.flush(self.project_id)
+            return recover_project_image_task(self.project_id, self.task_id, write=self.write,
+                                              terminal_status='cancelled' if cancelled else 'failed',
+                                              terminal_record=self.failure_record if not cancelled else None,
+                                              outputs=self.archived, termination_reason=reason, termination_error=detail)
+
+        opened, durable = await run_blocking_to_completion(reconcile)
+        if self.context:
+            if not await _generation_finish(self.store, self.project_id, self.task_id, self.guarded, self.event):
+                raise _JournalUnsettled('Generation journal not settled')
+        elif durable:
+            await _broadcast_canvas_updated(self.project_id, source='agent', updated_at=opened['canvas']['updated_at'])
+        if durable:
+            result = durable_project_image_result(self.project_id, opened['canvas'], durable)
+            with CANVAS_TASK_LOCK:
+                current = (CANVAS_TASKS.get(self.task_id) or {}).get('result')
+                if current and current.get('history_record', {}).get('status') == durable['status']:
+                    result = current
+            self.update(status=durable['status'], error=durable['error'], result=result, agent_settled=True)
+        elif registration:
+            with CANVAS_TASK_LOCK:
+                CANVAS_TASKS.pop(self.task_id, None)
+        else:
+            # #375: the user removed the pending result card. Never resurrect it.
+            self.update(status='cancelled', error='目标结果卡已被移除，生成结果未写回', agent_settled=True)
+
+    async def finalize(self, error, *, registration=False):
+        from app.core import logger
+        from app.services.agent_ops_context import create_agent_ops_task
+
+        async def recover():
+            while True:
+                try:
+                    await self.settle(error, registration=registration)
+                    return
+                except Exception as exc:
+                    logger.warning('Agent generation cleanup task=%s: %s', self.task_id, exc)
+                    await asyncio.sleep(1)
+
+        try:
+            await self.settle(error, registration=registration)
+        except Exception as exc:
+            logger.warning('Agent generation cleanup handed off task=%s: %s', self.task_id, exc)
+            self.update(status='cleanup_pending', error=f'Generation operation {self.metadata["op_id"]} cleanup pending')
+            _track_lifetime_task(create_agent_ops_task(recover()))
+
+    async def registration_failed(self, error):
+        self.update(**self.metadata)
+        error.add_note(f'Generation operation {self.metadata["op_id"]} task {self.task_id}')
+        await _generation_archive_to_completion(self.finalize(error, registration=True))
+
+    def schedule(self, run, *, pre_cancel=False):
+        from app.services.agent_ops_context import create_agent_ops_task
+        entered = False
+
+        async def supervise():
+            nonlocal entered
+            entered = True
+            error = None
+            try:
+                if pre_cancel:
+                    raise asyncio.CancelledError()
+                await run()
+            except asyncio.CancelledError as exc:
+                error = exc
+                if not pre_cancel:
+                    raise
+            except Exception as exc:
+                error = exc
+            finally:
+                await _generation_archive_to_completion(self.finalize(error))
+
+        coro = supervise()
+        try:
+            task = create_agent_ops_task(coro)
+        except Exception:
+            coro.close()
+            raise
+
+        def recover_unstarted(done):
+            if entered or not done.cancelled():
+                return
+            with _LIFETIME_LOCK:
+                stopping = done.get_loop() in _LIFETIME_STOPPING
+            if stopping:
+                self.update(status='cleanup_pending', error='Generation interrupted by shutdown; outcome uncertain')
+                return
+            with CANVAS_TASK_LOCK:
+                PROJECT_IMAGE_GENERATION_FUTURES[self.task_id] = self.schedule(run, pre_cancel=True)
+
+        def forget(done):
+            with CANVAS_TASK_LOCK:
+                if PROJECT_IMAGE_GENERATION_FUTURES.get(self.task_id) is done:
+                    PROJECT_IMAGE_GENERATION_FUTURES.pop(self.task_id, None)
+
+        task.add_done_callback(recover_unstarted)
+        task.add_done_callback(forget)
+        return _track_lifetime_task(task)
+
+
+def recovered_generation_writer(project_id, durable):
+    """Use journal evidence of the admitted task, not current Agent settings."""
+    from functools import partial
+    from types import SimpleNamespace
+    from app.services.agent_ops_store import list_operation_tree
+    from firefly_opsdb import OpsDb
+
+    store = _app_main.FIREFLY_PROJECT_STORE
+    op_id = durable.get('op_id')
+    if not op_id:
+        return _app_main.project_store_call if 'source_node_id' in durable and 'op_id' in durable else None
+    task_id, result_id = durable['id'], durable['result_node_id']
+    with store._lock:
+        try:
+            family = list_operation_tree(OpsDb(store.root), project_id, op_id)
+        except (OSError, sqlite3.Error):
+            return None
+        root = next((record for record in family if record['op_id'] == op_id and not record['undone']), None)
+        if root is None or root['tool'] not in {'generate.trigger', 'canvas.batch_edit'}:
+            return None
+        if not any(change['id'] == result_id and change['path'] == ['pendingTasks']
+                   and any(item.get('taskId') == task_id for item in change['after'].get('value', []))
+                   for record in family if not record['undone'] for change in record['after']):
+            return None
+        context = SimpleNamespace(**root)
+
+    def write(method, *args, **kwargs):
+        guarded = {op_id}
+        with store._lock:
+            set_agent_generation_running(store, project_id, op_id, task_id, True)
+            canvas = _generation_child(store, project_id, context, task_id, guarded,
+                                       partial(getattr(store, method), *args, **kwargs))
+            _generation_release(store, project_id, task_id, guarded)
+        return canvas
+    return write
+
+
+async def cancel_shared_agent_image_task(project_id, task_id):
+    with CANVAS_TASK_LOCK:
+        task = CANVAS_TASKS.get(task_id)
+        future = PROJECT_IMAGE_GENERATION_FUTURES.get(task_id)
+        if not task or task.get('project_id') != project_id:
+            raise HTTPException(status_code=404, detail='项目生图任务不存在')
+        if task['status'] == 'cancelled':
+            return {'task_id': task_id, 'status': 'cancelled', 'result': task.get('result')}
+        if task['status'] not in {'queued', 'running'} or future is None:
+            raise HTTPException(status_code=409, detail='任务已结束，无法取消')
+        future.cancel()
+    # The supervisor owns the terminal CAS; a cancelled HTTP waiter must not interrupt it.
+    while future is not None:
+        await asyncio.shield(asyncio.gather(future, return_exceptions=True))
+        with CANVAS_TASK_LOCK:
+            successor = PROJECT_IMAGE_GENERATION_FUTURES.get(task_id)
+            future = successor if successor is not future else None
+    with CANVAS_TASK_LOCK:
+        current = CANVAS_TASKS[task_id]
+        if current['status'] != 'cancelled':
+            raise HTTPException(status_code=409, detail='任务已结束或仍在清理')
+        current['cancelled_by_user'] = True
+        result = current['result']
+        return {'task_id': task_id, 'status': 'cancelled', 'result': result,
+                'project_revision': result.get('project_revision') if result else None,
+                'result_node_id': current['result_node_id']}
 
 
 @generate_router.get("/tasks/{task_id}")
@@ -2056,13 +1951,35 @@ async def get_task_status(project_id: str, task_id: str, x_agent_project: str = 
     with CANVAS_TASK_LOCK:
         task = dict(CANVAS_TASKS.get(task_id) or {})
 
+    shared = task_id.startswith('agent_img_')
+    if shared and task and task.get('project_id') != project_id:
+        task = {}
+    elif shared and not task:
+        from app.routers.api_project_library import recover_project_image_task, durable_project_image_result
+        opened, durable = await asyncio.to_thread(recover_project_image_task, project_id, task_id)
+        if durable and 'source_node_id' in durable:
+            task = {**durable, 'agent_settled': True,
+                    'result': durable_project_image_result(project_id, opened['canvas'], durable)}
     if task:
-        # Normalize the response
-        result = task.get("result")
+        status = task.get('status', 'unknown')
+        result = task.get('result')
+        if shared and task.get('type') == 'project-online-image':
+            if task.get('agent_settled') is False and status in {'succeeded', 'failed', 'timeout', 'cancelled'}:
+                status = 'cleanup_pending'
+                result = None
+            if status == 'succeeded' and result:
+                history = result.get('history_record') or {}
+                params = task.get('request_payload') or {}
+                result = {**result, 'type': 'online', 'prompt': history.get('executed_prompt') or result['prompt'],
+                          'timestamp': (history.get('completed_at') or 0) / 1000,
+                          'provider_id': task.get('provider_id'), 'model': task.get('model'),
+                          'provider_name': history.get('actual_provider_name') or result.get('provider_name'),
+                          'params': {key: params.get(key) for key in ('provider_id', 'model', 'size', 'quality', 'n')},
+                          'project_asset_ids': [item['asset_id'] for item in result['image_items']]}
         return {
             "task_id": task_id,
-            "status": task.get("status", "unknown"),
-            "type": task.get("type", ""),
+            "status": status,
+            "type": 'agent-image' if shared else task.get("type", ""),
             "error": task.get("error", ""),
             "result": result,
             "op_id": task.get("op_id"),

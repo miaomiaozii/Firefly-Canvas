@@ -109,9 +109,12 @@ def image_settings(node, canvas, providers, model_spec_for):
                 **(node_settings if isinstance(node_settings, dict) else {})}
     if isinstance(node_settings, dict) and "aspect_ratio" in node_settings and "ratio" not in node_settings:
         settings.pop("ratio", None)
-    if node.get("outpaintSize") or settings.get("apiKind") == "video" or settings.get("engine", "api") not in ("", "api"):
-        raise invalid("Use browser generation for outpaint and non-image-API settings")
-    if not settings:
+    from app.services.canvas_image_refs import outpaint_geometry
+
+    outpaint = outpaint_geometry(node)
+    if (settings.get("apiKind") == "video" and not outpaint) or settings.get("engine", "api") not in ("", "api"):
+        raise invalid("Use browser generation for non-image-API settings")
+    if not settings and not outpaint:
         return dict(size=str(node.get("generation_size") or "1024x1024"), width=node.get("width"),
                     height=node.get("height"), aspect_ratio=str(node.get("aspect_ratio") or "1:1"),
                     resolution=str(node.get("generation_resolution") or "1k"))
@@ -120,8 +123,8 @@ def image_settings(node, canvas, providers, model_spec_for):
     capabilities = (provider.get("image_model_capabilities") or {}).get(model)
     allowed = (capabilities or {}).get("aspect_ratios") or (
         (model_spec_for(model) or {}).get("parameters", {}).get("aspect_ratio", {}).get("options"))
-    ratio = saved_ratio(settings)
-    key = settings.get("ratio")
+    ratio = outpaint or saved_ratio(settings)
+    key = "custom" if outpaint else settings.get("ratio")
     if key not in ("custom", "source"):
         ratio = _align(ratio, allowed) if ratio in _RATIOS else ratio or "1:1"
         key = _RATIO_KEY.get(ratio, "custom")
@@ -129,8 +132,8 @@ def image_settings(node, canvas, providers, model_spec_for):
     compact_model = re.sub(r"[^a-z0-9]", "", model.lower())
     default_resolution = "4k" if compact_model.startswith("gptimage2") or compact_model.endswith("gptimage2") else "1k"
     resolution = str(settings.get("resolution") or "")
-    size = _size(ratio, key, resolution or default_resolution, settings) if explicit else ""
-    if explicit and (resolution == "auto" or not re.fullmatch(r"\d+\s*[xX*]\s*\d+", size)):
+    size = _size(ratio, key, resolution or default_resolution, settings) if explicit and not outpaint else ""
+    if explicit and not outpaint and (resolution == "auto" or not re.fullmatch(r"\d+\s*[xX*]\s*\d+", size)):
         raise invalid("Saved image size cannot be submitted as a project image task")
     if not ratio and key in ("custom", "source") and size:
         w, h = map(int, re.split(r"[xX*]", size))

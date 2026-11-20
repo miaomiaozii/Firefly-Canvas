@@ -3531,9 +3531,9 @@ function rhParamValue(field, media=null, sourceSettings=settings, fields=null, r
     if(rhFieldRole(field) === 'prompt') return param?.value ?? (media?.prompt || rhDefaultValue(field));
     return param?.value ?? rhDefaultValue(field);
 }
-function rhDefaultPromptSuggestion(){
-    if(settings.engine !== 'runninghub') return '';
-    const fields = rhActiveFields().filter(field => rhFieldRole(field) === 'prompt');
+function rhDefaultPromptSuggestion(sourceSettings=settings){
+    if(sourceSettings.engine !== 'runninghub') return '';
+    const fields = rhActiveFields(sourceSettings).filter(field => rhFieldRole(field) === 'prompt');
     for(const field of fields){
         const value = rhDefaultValue(field).trim();
         if(value) return value;
@@ -10367,7 +10367,7 @@ function bindLoopNodeControls(el, node){
                 requestSmartCascadeStop(loopId);
                 return;
             }
-            runSmartCascadeFromLoop(loopId);
+            runSmartCascadeFromLoop(loopId, resolveWorkflowImageRequest);
         };
     });
 }
@@ -12572,7 +12572,11 @@ function loadPromptDraft(subject){
         if(rebuilt) promptInput.innerHTML = rebuilt;
         else setPromptText(subject.runPrompt);
     } else {
-        setPromptText('');
+        // Agent-created image nodes may only have a plain saved prompt (#454).
+        const savedText = subject?.promptDraftText || (subject?.promptDraftHtml == null ? (subject?.prompt || subject?.text) : '');
+        const rebuilt = promptHtmlWithMentionTokens(savedText, subject?.runPromptRefs || []);
+        if(rebuilt) promptInput.innerHTML = rebuilt;
+        else setPromptText(savedText || '');
     }
     loadPromptDraft.current = {nodeId:subject?.id || '', html:promptInput.innerHTML, text:promptPlainText()};
 }
@@ -14805,19 +14809,93 @@ function buildPromptRequest(node, overrideDefaultImages=null, consumeDefault=fal
     };
 }
 
-// Local ComfyUI task transport and workflow parameter serialization were removed.
+function imageReferenceInput(node, promptRoot=promptInput, ctx=null, {loopSourceId, selfSourceId, cascadeFallback, runSettings=settings}={}){
+    // Send live editor inputs, not a canvas-save payload. The server never applies these data to disk.
+    const fields = ['id', 'type', 'x', 'y', 'items', 'images', 'inputNodeIds', 'manualInputRefs', 'blockedInputRefs',
+        'outpaintSize', 'imageInput', 'loopStart', 'imageBatchSize', 'count', 'showPrompt', 'variablePrompt',
+        'variablePrompts', 'text', 'promptSplitEnabled', 'promptSeparator'];
+    const mediaFields = ['asset_id', 'url', 'name', 'kind', 'nodeId', 'imageIndex', 'asset_uris',
+        'originalLocalUrl', 'localUrl', 'sourceUrl', 'local_url', 'source_url', 'agentRefRole'];
+    const project = (obj, keys) => Object.fromEntries(keys.filter(key => obj?.[key] !== undefined).map(key => [key, obj[key]]));
+    const media = items => items.map(item => item && project(item, mediaFields));
+    const nodes = canvasState.nodes.map(source => {
+        const data = project(source, fields);
+        for(const key of ['images', 'manualInputRefs']){
+            if(Array.isArray(data[key])) data[key] = media(data[key]);
+        }
+        return data;
+    });
+    const connections = (canvas.connections || []).map(edge => project(edge,
+        ['id', 'kind', 'from', 'to', 'agentRef', 'enabled', 'order', 'asset_id', 'role']));
+    const context = ctx ? {
+        ...project(ctx, ['index', 'total', 'forceWorkflow', 'relayPromptNodeIds']),
+        ...(ctx.roundOutputs instanceof Map ? {roundOutputs:Object.fromEntries([...ctx.roundOutputs].map(([id, refs]) => [id, media(refs)]))} : {})
+    } : {};
+    context.english = tr('smart.refMapHeader') === 'Reference image map:';
+    if(runSettings.engine === 'runninghub') context.emptyPrompt = rhDefaultPromptSuggestion(runSettings);
+    return JSON.stringify({node_id:node.id, prompt_html:promptRoot?.innerHTML || '', context,
+        ...(loopSourceId ? {loop_source_id:loopSourceId} : {}),
+        ...(selfSourceId ? {self_source_id:selfSourceId} : {}),
+        ...(Array.isArray(cascadeFallback) ? {cascade_fallback:media(cascadeFallback)} : {}),
+        graph:{nodes, ...(canvasUsesConnections || connections.length ? {connections} : {}), legacy_inputs:!canvasUsesConnections}});
+}
+async function fetchImageReferenceResolution(projectId, input){
+    const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/image-reference-resolution`, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body:input
+    });
+    if(!response.ok) throw new Error(await smartResponseErrorMessage(response, tr('smart.errRunFailed')));
+    return response.json();
+}
+function usesServerImageReferences(runSettings){
+    return canvas?.format === 'firefly-canvas-v1' && (
+        (isApiLikeEngine(runSettings.engine) && runSettings.apiKind !== 'video')
+        || runSettings.engine === 'modelscope'
+        || (runSettings.engine === 'runninghub' && Boolean(runningHubSelectedModel(runSettings)))
+    );
+}
 
-// Local ComfyUI generation URL construction was removed.
+async function resolveWorkflowImageRequest(node, options){
+    if(!usesServerImageReferences(options.runSettings)) return null;
+    const projectId = canvas.project_id || canvas.project || canvasId;
+    const currentInput = () => imageReferenceInput(node, {innerHTML:options.draftHtml()}, options.ctx, options);
+    const input = currentInput();
+    const request = await fetchImageReferenceResolution(projectId, input);
+    if((canvas?.project_id || canvas?.project || canvasId) !== projectId
+        || ![node, options.resultNode].every(item => canvasState.nodes.find(n => n.id === item?.id) === item)
+        || currentInput() !== input){
+        throw new Error(tr('smart.projectConflict'));
+    }
+    return request;
+}
 
 async function runGeneration(){
     const node = selectedNode();
-    if(!node || isSmartLayoutFrame(node)) return;
-    const request = buildPromptRequest(node, null, true, smartLoopContext);
+    if(!node || isSmartLayoutFrame(node) || (smartNodeInFlight(node) && !smartNodeAllowsOverlappingRun(node))) return;
+    const runSettings = smartSettingsForNode(node);
+    let request;
+    if(usesServerImageReferences(runSettings)){
+        const projectId = canvas.project_id || canvas.project || canvasId;
+        const input = imageReferenceInput(node, promptInput, smartLoopContext);
+        const settingsAtClick = JSON.stringify(runSettings);
+        try {
+            request = await fetchImageReferenceResolution(projectId, input);
+        } catch(error){
+            toast(error?.message || tr('smart.errRunFailed'));
+            return;
+        }
+        // Don't apply pending/output changes to a different graph, editor or project after the read.
+        if((canvas?.project_id || canvas?.project || canvasId) !== projectId || selectedNode() !== node
+            || imageReferenceInput(node, promptInput, smartLoopContext) !== input || JSON.stringify(smartSettingsForNode(node)) !== settingsAtClick){
+            toast(tr('smart.projectConflict'));
+            return;
+        }
+        if(smartNodeInFlight(node) && !smartNodeAllowsOverlappingRun(node)) return;
+    } else {
+        request = buildPromptRequest(node, null, true, smartLoopContext);
+    }
     const prompt = request.prompt.trim();
-    if(smartNodeInFlight(node) && !smartNodeAllowsOverlappingRun(node)) return;
     const refs = request.refs;
     const previousSettings = cloneSmartSettings(settings);
-    const runSettings = smartSettingsForNode(node);
     settings = {...settings, ...cloneSmartSettings(runSettings || {})};
     if(!prompt && smartRunNeedsPrompt(settings)){
         settings = previousSettings;

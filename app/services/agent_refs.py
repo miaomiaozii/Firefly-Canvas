@@ -95,20 +95,6 @@ def with_role_prefix(prompt, roles):
     return f"{prefix}\n\n{prompt}" if prefix else prompt
 
 
-def generation_refs(canvas, target, limit):
-    node_ids = {node.get("id") for node in canvas.get("nodes", []) if isinstance(node, dict)}
-    edges = [edge for edge in managed_edges(canvas, target)
-             if isinstance(edge.get("from"), str) and edge["from"] in node_ids]
-    refs, seen = [], set()
-    for ref in numbered_refs(edges):
-        if ref["enabled"] and ref["asset_id"] not in seen:
-            seen.add(ref["asset_id"])
-            refs.append({**ref, "n": len(refs) + 1})
-            if len(refs) == limit:
-                break
-    return refs
-
-
 def ref_result(edges):
     refs = numbered_refs(edges)
     return {"refs": refs, "prefix_preview": role_prefix(ref["role"] for ref in refs if ref["enabled"]),

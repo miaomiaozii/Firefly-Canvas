@@ -184,12 +184,19 @@ def undo_ops(store, project_id, *, op_id=None, turn_id=None, is_running=None):
         if not active:
             result["status"] = "already_reverted"
             return result
-        running = [record["op_id"] for record in active if is_running is not None and
-                   is_running(project_id, record["op_id"])]
+        canvas = store.open_project(project_id)["canvas"]
+        # A process crash drops the in-memory tokens, not the admitted task. Do
+        # not undo a family (or just one of its children) before reconciliation.
+        pending = {task['op_id'] for node in canvas.get('nodes', [])
+                   for task in node.get('pendingTasks', []) if isinstance(task, dict)
+                   and str(task.get('taskId', '')).startswith('agent_img_')
+                   and isinstance(task.get('op_id'), str)}
+        running = [record['op_id'] for record in active
+                   if record['op_id'] in pending or record.get('parent_op_id') in pending
+                   or (is_running is not None and is_running(project_id, record['op_id']))]
         if running:
             result.update(status="generating", running=running, error="生成仍在进行")
             return result
-        canvas = store.open_project(project_id)["canvas"]
         deltas = [(record["op_id"], _delta(record)) for record in active]
         deltas = [(op, delta) for op, delta in deltas if delta]
         # Saved revisions can lag a successful replacement when a later flush step fails.

@@ -7,7 +7,8 @@ from fastapi import HTTPException
 from unittest.mock import AsyncMock
 
 import main
-from app.routers import api_agent_tools as routes, api_mcp
+from app.routers import api_agent_tools as routes, api_mcp, api_project_library
+from tests.agent_image_task_fakes import image_candidate, route_stub
 from app.services.agent_ops_journal import PendingOperation
 from app.services.agent_ops_store import get_operation
 from tests.test_agent_ops_media_e2e_393 import env, png, scope, setup_image
@@ -197,13 +198,13 @@ def test_batch_source_lifecycle_http(env, events, monkeypatch, transport):
     store.apply_mutations(project, [{'op': 'upsert_node', 'node': {'id': 'a', 'type': 'prompt', 'prompt': 'old'}}],
                           base_revision=store.canvas(project)['revision'])
     store.flush(project)
-    monkeypatch.setattr(main, 'route_image_generation', lambda *a, **k: SimpleNamespace(provider_id='mock', model='mock'))
+    monkeypatch.setattr(main, 'route_image_generation', lambda *a, **k: route_stub())
     monkeypatch.setattr(main, 'load_api_providers', lambda: [])
     monkeypatch.setattr(routes, 'confirm_batch_prompt', AsyncMock())
     monkeypatch.setattr(api_mcp, 'resolve_project', lambda p: p)
     async def provider(_):
         raise RuntimeError('provider failure')
-    monkeypatch.setattr(routes, 'build_online_image_result', provider)
+    monkeypatch.setattr(api_project_library, 'run_routed_image_candidate', image_candidate(provider))
     async def run():
         from app.services import agent_host
         host = agent_host.AgentHostManager()
@@ -238,11 +239,11 @@ def test_batch_source_parent_and_child_lifecycles(env, events, monkeypatch):
     store.apply_mutations(project, [{'op': 'upsert_node', 'node': {'id': n, 'type': 'prompt', 'prompt': 'old'}}
                                     for n in ('a', 'b')], base_revision=store.canvas(project)['revision'])
     store.flush(project)
-    monkeypatch.setattr(main, 'route_image_generation', lambda *a, **k: SimpleNamespace(provider_id='mock', model='mock'))
+    monkeypatch.setattr(main, 'route_image_generation', lambda *a, **k: route_stub())
     monkeypatch.setattr(main, 'load_api_providers', lambda: [])
     async def provider(_):
         raise RuntimeError('provider failure')
-    monkeypatch.setattr(routes, 'build_online_image_result', provider)
+    monkeypatch.setattr(api_project_library, 'run_routed_image_candidate', image_candidate(provider))
     async def run():
         with scope(project, 'canvas.batch_edit') as context:
             result = await routes.batch_edit_core(project, ['a', 'b'], 'new', 'actor')

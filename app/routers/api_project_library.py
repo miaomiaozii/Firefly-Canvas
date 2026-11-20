@@ -437,6 +437,7 @@ def durable_project_image_task(canvas: Mapping[str, Any], task_id: str) -> Optio
             'error': record.get('error') or '',
             'upstream_task_id': record.get('upstream_task_id') or '',
             'history_record': copy.deepcopy(record),
+            **{key: record[key] for key in ('source_node_id', 'op_id') if key in record},
         }
     for node in canvas.get('nodes') or []:
         if not isinstance(node, dict):
@@ -457,6 +458,7 @@ def durable_project_image_task(canvas: Mapping[str, Any], task_id: str) -> Optio
                 'request_payload': copy.deepcopy(pending.get('requestPayload') or {}),
                 'idempotency_key': pending.get('idempotencyKey') or clean_task_id,
                 'created_at': float(pending.get('createdAt') or pending.get('created_at') or time.time()),
+                **{key: pending[key] for key in ('source_node_id', 'op_id') if key in pending},
             }
     return None
 
@@ -547,6 +549,10 @@ def recover_project_image_task(
     project_id: str,
     task_id: str,
     *,
+    write=None,
+    terminal_status: str = 'failed',
+    terminal_record=None,
+    outputs=(),
     termination_reason: str = 'service_restart_unknown',
     termination_error: str = '服务重启后无法确认任务是否已调用在线模型；为避免重复计费，任务已终止，请显式重试',
 ) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
@@ -557,42 +563,47 @@ def recover_project_image_task(
         durable = durable_project_image_task(canvas, task_id)
         if durable is None:
             return opened, None
+        if write is None and task_id.startswith('agent_img_') and canvas_has_project_image_pending(canvas, task_id):
+            from app.routers.api_agent_tools import recovered_generation_writer
+            write = recovered_generation_writer(project_id, durable)
+            if write is None:
+                return opened, {**durable, 'status': 'cleanup_pending', 'error': 'Cannot prove Agent generation journal ancestry'}
+        write = write or _app_main.project_store_call
         if durable.get('status') == 'pending':
             request_payload = copy.deepcopy(durable.get('request_payload') or {})
             failed_at = _app_main.now_ms()
+            created_at = round(durable['created_at'] * 1000) if task_id.startswith('agent_img_') else failed_at
             failure_record = {
                 'id': f'generation-{uuid.uuid4().hex}',
                 'task_id': task_id,
                 'idempotency_key': durable.get('idempotency_key') or task_id,
                 'type': 'online-image',
-                'status': 'failed',
+                'status': terminal_status,
                 'prompt': request_payload.get('prompt') or '',
-                'created_at': failed_at,
-                'createdAt': failed_at,
+                'created_at': created_at,
+                'createdAt': created_at,
                 'completed_at': failed_at,
-                'runMs': 0,
+                'runMs': max(0, failed_at - created_at),
                 'request_payload': request_payload,
                 'route': copy.deepcopy(durable.get('route') or {}),
                 'result_node_id': durable.get('result_node_id') or '',
                 'termination_reason': termination_reason,
                 'error': termination_error,
-                'outputs': [],
+                'outputs': _history_output_entries(outputs, 'image'),
+                **{key: durable[key] for key in ('source_node_id', 'op_id') if key in durable},
             }
-            canvas = _app_main.project_store_call(
-                'fail_image_generation',
-                project_id,
-                durable.get('result_node_id') or '',
-                task_id,
-                failure_record,
-                require_pending=True,
-            )
+            if terminal_status == 'cancelled':
+                canvas = write('cancel_image_generation', project_id, durable['result_node_id'], task_id, failure_record)
+            else:
+                canvas = write('fail_image_generation', project_id, durable['result_node_id'], task_id,
+                               terminal_record or failure_record, require_pending=True)
             _app_main.project_store_call('flush', project_id)
             durable = durable_project_image_task(canvas, task_id)
             return {'canvas': canvas}, durable
         if canvas_has_project_image_pending(canvas, task_id):
             history_record = copy.deepcopy(durable.get('history_record') or {})
             if durable.get('status') == 'succeeded':
-                canvas = _app_main.project_store_call(
+                canvas = write(
                     'complete_image_generation',
                     project_id,
                     durable.get('result_node_id') or '',
@@ -602,7 +613,7 @@ def recover_project_image_task(
                     require_pending=True,
                 )
             elif durable.get('status') == 'cancelled':
-                canvas = _app_main.project_store_call(
+                canvas = write(
                     'cancel_image_generation',
                     project_id,
                     durable.get('result_node_id') or '',
@@ -610,7 +621,7 @@ def recover_project_image_task(
                     history_record,
                 )
             else:
-                canvas = _app_main.project_store_call(
+                canvas = write(
                     'fail_image_generation',
                     project_id,
                     durable.get('result_node_id') or '',
@@ -690,7 +701,9 @@ def project_image_executed_prompt(payload):
     return apply_angle_preset(with_role_prefix(payload.prompt, payload.reference_roles), payload.angle_preset)
 
 
-async def run_project_image_task(task_id: str, project_id: str, payload: ProjectImageGenerationRequest, request_snapshot: ImageGenerationRequest, route, registered_revision: int):
+async def run_project_image_task(task_id: str, project_id: str, payload: ProjectImageGenerationRequest, request_snapshot: ImageGenerationRequest, route, registered_revision: int, *, hooks=None):
+    mutate = hooks.mutate if hooks else functools.partial(asyncio.to_thread, _app_main.project_store_call)
+    metadata = hooks.metadata if hooks else {}
     started_at = _app_main.now_ms()
     generated_items = []
     preexisting_asset_ids = set()
@@ -736,6 +749,9 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
             # partial 逐张写回共用的 history id：running 进度记录与最终 succeeded 记录同 id 覆盖。
             progress_history_id = f'generation-{uuid.uuid4().hex}'
 
+            if hooks:
+                await hooks.effect('external image generation attempted')
+
             async def generate_one_candidate(candidate_index):
                 candidate_start = _app_main.now_ms()
                 raise_if_project_image_task_cancelled(task_id)
@@ -759,7 +775,10 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                     await set_candidate_phase(candidate_index, 'saving')
                     archive_start = _app_main.now_ms()
                     try:
-                        item = await archive_project_generated_image(project_id, candidate, len(generated_items))
+                        if hooks:
+                            item = await hooks.archive(archive_project_generated_image, project_id, candidate, len(generated_items))
+                        else:
+                            item = await archive_project_generated_image(project_id, candidate, len(generated_items))
                     except BaseException as exc:
                         raise _CandidateWriteFailure(exc) from exc
                     logger.info(f'[gen-task {task_id[:8]}] provider={provider_elapsed}ms archive={_app_main.now_ms() - archive_start}ms item={len(generated_items) + 1}/{payload.n}')
@@ -767,6 +786,8 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                     update_project_image_task_progress(task_id, 'saving', current=len(generated_items), total=payload.n)
                     # 逐张写回：图片一归档就落到节点上（保留 pendingTasks 让前端继续显示剩余占位），
                     # 前端可在任务运行中逐个看到已完成的结果；单张失败不中断整体任务（final 会带上全量）。
+                    if hooks:
+                        continue  # Keep Agent result publication atomic for undo.
                     partial_start = _app_main.now_ms()
                     partial_timestamp = partial_start
                     partial_record = {'id': progress_history_id, 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': 'running', 'prompt': payload.prompt, 'executed_prompt': executed_prompt, 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'updated_at': partial_timestamp, 'completed_at': partial_timestamp, 'runMs': max(0, partial_timestamp - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'outputs': _history_output_entries([item], 'image'), 'result_node_id': payload.result_node_id}
@@ -810,7 +831,9 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
             candidate_failures = [(index, result) for index, result in enumerate(candidate_results) if isinstance(result, BaseException)]
             hard_failures = [(index, failure) for index, failure in candidate_failures if not isinstance(failure, _CandidateWriteFailure)]
             retryable = [(index, failure) for index, failure in candidate_failures if isinstance(failure, _CandidateWriteFailure)]
-            if retryable and not project_image_task_cancel_requested(task_id):
+            if hooks:
+                hard_failures.extend(retryable)  # Local write failure must not start a new Agent provider call.
+            if retryable and not hooks and not project_image_task_cancel_requested(task_id):
                 for index, failure in retryable:
                     logger.warning(f'[gen-task {task_id[:8]}] candidate #{index} write-back failed ({type(failure).__name__}: {str(failure)[:140]}), compensating')
                 retry_results = await asyncio.gather(
@@ -821,7 +844,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                     if isinstance(result, BaseException):
                         hard_failures.append((index, result))
             candidate_failures = hard_failures
-            if candidate_failures:
+            if candidate_failures and (not hooks or not generated_items):
                 def _unwrap(failure):
                     return failure.cause if isinstance(failure, _CandidateWriteFailure) else failure
                 if not generated_items:
@@ -834,15 +857,18 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
             raise ProjectStoreError('在线模型没有返回图片')
         timestamp = _app_main.now_ms()
         history_record = {'id': progress_history_id, 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': 'succeeded', 'prompt': payload.prompt, 'executed_prompt': executed_prompt, 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': timestamp, 'runMs': max(0, timestamp - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'outputs': _history_output_entries(generated_items, 'image'), 'result_node_id': payload.result_node_id}
+        history_record.update(metadata)
         raise_if_project_image_task_cancelled(task_id)
         canvas = None
         last_complete_error = None
         for complete_attempt in range(3):
             try:
-                canvas = await asyncio.to_thread(_app_main.project_store_call, 'complete_image_generation', project_id, payload.result_node_id, generated_items, history_record, task_id=task_id, require_pending=True)
+                canvas = await mutate('complete_image_generation', project_id, payload.result_node_id, generated_items, history_record, task_id=task_id, require_pending=True)
                 break
             except Exception as exc:
                 last_complete_error = exc
+                if hooks:
+                    break  # Reconcile the durable terminal before attempting another mutation.
                 await asyncio.sleep(min(2.0, 0.4 * (complete_attempt + 1)))
         if canvas is None:
             raise last_complete_error
@@ -861,17 +887,19 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
             pass
         try:
             await cleanup_project_generation_orphans(project_id)
-            await manager.broadcast_canvas_updated(project_id, int(canvas.get('updated_at') or _app_main.now_ms()))
+            if not hooks:
+                await manager.broadcast_canvas_updated(project_id, int(canvas.get('updated_at') or _app_main.now_ms()))
         except Exception:
             pass
         return
     except asyncio.CancelledError:
         if not project_image_task_cancel_requested(task_id):
             raise
-        with CANVAS_TASK_LOCK:
-            orphan_ids = PROJECT_IMAGE_GENERATION_ORPHANS.setdefault(project_id, set())
-            orphan_ids.update((item.get('asset_id') for item in generated_items if item.get('asset_id') and item.get('asset_id') not in preexisting_asset_ids))
-        await cleanup_project_generation_orphans(project_id)
+        if not hooks:
+            with CANVAS_TASK_LOCK:
+                orphan_ids = PROJECT_IMAGE_GENERATION_ORPHANS.setdefault(project_id, set())
+                orphan_ids.update((item.get('asset_id') for item in generated_items if item.get('asset_id') and item.get('asset_id') not in preexisting_asset_ids))
+            await cleanup_project_generation_orphans(project_id)
     except Exception as exc:
         import traceback
         traceback.print_exc()
@@ -894,11 +922,12 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
         failure_result = None
         resolved_status = 'timeout' if isinstance(exc, ImageGenerationTaskTimeout) else 'failed'
         # 取回兑底：已归档成功的图写进失败记录 outputs，客户端可凭 task_id 重新取回。
-        failed_outputs = _history_output_entries(generated_items, 'image')
+        # A shielded Agent archive can commit while a candidate is being cancelled at the deadline.
+        failed_outputs = _history_output_entries(hooks.archived if hooks else generated_items, 'image')
         failure_record = {'id': f'generation-{uuid.uuid4().hex}', 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': resolved_status, 'prompt': payload.prompt, 'executed_prompt': project_image_executed_prompt(payload), 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': failure_time, 'runMs': max(0, failure_time - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'progress': failure_progress, 'outputs': failed_outputs, 'result_node_id': payload.result_node_id, 'error': str(detail), 'upstream_task_id': upstream_task_id}
+        failure_record.update(metadata)
         try:
-            failed_canvas = await asyncio.to_thread(
-                _app_main.project_store_call,
+            failed_canvas = await mutate(
                 'fail_image_generation',
                 project_id,
                 payload.result_node_id,
@@ -912,10 +941,13 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
             except Exception:
                 pass
             try:
-                await manager.broadcast_canvas_updated(project_id, int(failed_canvas.get('updated_at') or failure_time))
+                if not hooks:
+                    await manager.broadcast_canvas_updated(project_id, int(failed_canvas.get('updated_at') or failure_time))
             except Exception:
                 pass
         except Exception:
+            if hooks:
+                raise  # Agent supervision reconciles with the same journal writer.
             try:
                 opened, durable = await asyncio.to_thread(
                     recover_project_image_task,
@@ -932,7 +964,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
             except Exception:
                 pass
         with CANVAS_TASK_LOCK:
-            if resolved_status != 'succeeded':
+            if not hooks and resolved_status != 'succeeded':
                 orphan_ids = PROJECT_IMAGE_GENERATION_ORPHANS.setdefault(project_id, set())
                 orphan_ids.update((item.get('asset_id') for item in generated_items if item.get('asset_id') and item.get('asset_id') not in preexisting_asset_ids))
             CANVAS_TASKS[task_id].update({
@@ -1040,6 +1072,8 @@ async def shutdown_project_generation_tasks() -> None:
                 continue
             if task.get('status') not in {'registering', 'queued', 'running'}:
                 continue
+            if str(task_id).startswith('agent_img_'):
+                continue  # Agent lifetime drains first; never bypass its journal writer.
             task['cancel_requested'] = True
             task['updated_at'] = time.time()
             active_tasks.append((str(task_id), copy.deepcopy(task)))
@@ -1194,6 +1228,8 @@ async def _maybe_recover_project_image_task(project_id: str, task_id: str, task:
     同步内存注册表；仍在生成/失败/出错 → 保持原失败快照，响应附 recover 诊断。
     返回 None 表示未触发取回（调用方原样返回快照）。
     """
+    if task_id.startswith('agent_img_'):
+        return None  # Late retrieval cannot safely adopt an already-undone operation.
     if recover is not None and not int(recover):
         return None
     if str(task.get('status') or '') not in {'failed', 'timeout'}:
@@ -1349,6 +1385,9 @@ async def get_project_image_task(request: Request, project_id: str, task_id: str
         if current.get('type') != 'project-online-image' or str(current.get('project_id') or '') != str(project_id):
             raise HTTPException(status_code=404, detail='项目生图任务不存在')
         current['task_id'] = str(task_id)
+        if current.get('agent_settled') is False and current.get('status') in {'succeeded', 'failed', 'timeout', 'cancelled'}:
+            # #454: the Agent journal still owns the final write and blocks undo.
+            return {**current, 'status': 'cleanup_pending', 'result': None}
         recovered = await _maybe_recover_project_image_task(project_id, str(task_id), current, recover)
         return recovered if recovered is not None else current
 
@@ -1360,6 +1399,9 @@ async def get_project_image_task(request: Request, project_id: str, task_id: str
         raise HTTPException(status_code=404, detail='项目生图任务不存在')
     canvas = opened.get('canvas') or {}
     result = durable_project_image_result(project_id, canvas, durable)
+    if durable.get('status') == 'cleanup_pending':
+        # Do not cache a recovery that could not prove provenance; the sidecar may become readable again.
+        return {**durable, 'project_id': project_id, 'result': result}
     with CANVAS_TASK_LOCK:
         CANVAS_TASKS[str(task_id)] = {
             **copy.deepcopy(durable),
@@ -1381,6 +1423,9 @@ async def get_project_image_task(request: Request, project_id: str, task_id: str
 @router.post('/api/project-library/{project_id}/image-generation-tasks/{task_id}/cancel')
 async def cancel_project_image_task(project_id: str, task_id: str, request: Request):
     ensure_same_origin_request(request)
+    if task_id.startswith('agent_img_'):
+        from app.routers.api_agent_tools import cancel_shared_agent_image_task
+        return await cancel_shared_agent_image_task(project_id, task_id)
     with CANVAS_TASK_LOCK:
         current = CANVAS_TASKS.get(str(task_id))
         if (
@@ -1551,6 +1596,8 @@ async def retry_project_image_task(project_id: str, task_id: str, request: Reque
             raise HTTPException(status_code=404, detail='项目生图任务不存在')
     else:
         opened = await asyncio.to_thread(_app_main.project_store_call, 'open_project', project_id)
+    if task_id.startswith('agent_img_'):
+        raise HTTPException(status_code=409, detail='请从 Agent 重新发起生成并确认')
     if current.get('status') != 'failed':
         raise HTTPException(status_code=409, detail='只有失败的任务可以重试')
     request_payload = copy.deepcopy(current.get('request_payload') or {})
@@ -1572,9 +1619,39 @@ async def retry_project_image_task(project_id: str, task_id: str, request: Reque
     return JSONResponse(status_code=202, content=content)
 
 
+@router.post('/api/project-library/{project_id}/image-reference-resolution')
+async def resolve_project_image_references(project_id: str, request: Request):
+    """Evaluate the editor's live graph without saving it or importing media."""
+    from app.services.canvas_image_refs import ReferenceGraph
+
+    ensure_same_origin_request(request)
+    body = await request.json()
+    if not isinstance(body, dict) or not isinstance(body.get('graph'), dict) or not isinstance(body.get('node_id'), str):
+        raise HTTPException(status_code=400, detail='Invalid reference resolution request')
+    html = body.get('prompt_html')
+    if html is not None and not isinstance(html, str):
+        raise HTTPException(status_code=400, detail='Invalid prompt HTML')
+    try:
+        _, catalog = await asyncio.to_thread(_app_main.project_store_call, 'image_reference_snapshot', project_id, include_canvas=False)
+    except ProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    graph = ReferenceGraph(body['graph'], project_id, catalog)
+    if body['node_id'] not in graph.nodes:
+        raise HTTPException(status_code=404, detail='Reference target node not found')
+    context = body.get('context')
+    return graph.resolve(body['node_id'], html=html, ctx=context if isinstance(context, dict) else None,
+                         override_source=body.get('loop_source_id') or body.get('self_source_id'),
+                         cascade_fallback=body.get('cascade_fallback'))
+
+
 @router.post('/api/project-library/{project_id}/image-generation-tasks')
 async def create_project_image_task(project_id: str, payload: ProjectImageGenerationRequest, request: Request):
     ensure_same_origin_request(request)
+    return await create_project_image_task_core(project_id, payload)
+
+
+async def create_project_image_task_core(project_id: str, payload: ProjectImageGenerationRequest, *, prepared=None, hooks=None):
+    """Admit browser and Agent requests before any provider work. Internal hooks may journal the writes."""
     try:
         opened = await asyncio.to_thread(_app_main.project_store_call, 'open_project', project_id)
     except ProjectNotFound as exc:
@@ -1608,11 +1685,13 @@ async def create_project_image_task(project_id: str, payload: ProjectImageGenera
                 'project_revision': int(canvas.get('revision') or 0),
                 'registered_node': next((item for item in canvas.get('nodes') or [] if item.get('id') == existing.get('result_node_id')), None),
             })
+    if not hooks and idempotency_key.startswith('agent_img_'):
+        raise HTTPException(status_code=409, detail='Agent 生图请求不能通过浏览器重新提交')
     try:
-        request_snapshot = project_image_request(payload)
+        request_snapshot = prepared[0] if prepared else project_image_request(payload)
         for asset_id in payload.reference_asset_ids:
             await asyncio.to_thread(_app_main.project_store_call, 'media_record', project_id, asset_id)
-        route = _app_main.route_image_generation(request_snapshot, _app_main.load_api_providers(), provider_id=payload.provider_id if payload.routing_mode == 'manual' else '', model=payload.model if payload.routing_mode == 'manual' else '')
+        route = prepared[1] if prepared else _app_main.route_image_generation(request_snapshot, _app_main.load_api_providers(), provider_id=payload.provider_id if payload.routing_mode == 'manual' else '', model=payload.model if payload.routing_mode == 'manual' else '')
         project_image_executed_prompt(payload)
     except ModelRoutingError as exc:
         raise HTTPException(status_code=400, detail=exc.to_dict()) from exc
@@ -1620,7 +1699,7 @@ async def create_project_image_task(project_id: str, payload: ProjectImageGenera
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (ProjectStoreError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    task_id = f'project_img_{uuid.uuid4().hex}'
+    task_id = hooks.task_id if hooks else f'project_img_{uuid.uuid4().hex}'
     raced_existing = reserve_project_image_task(project_id, task_id, payload, route)
     if raced_existing is not None:
         if raced_existing.get('status') == 'registering':
@@ -1680,28 +1759,41 @@ async def create_project_image_task(project_id: str, payload: ProjectImageGenera
 
     try:
         task_record = {'taskId': task_id, 'kind': 'image', 'count': payload.n, 'providerId': route.provider_id, 'model': route.model, 'prompt': payload.prompt, 'size': payload.size, 'referenceAssetIds': list(payload.reference_asset_ids), 'idempotencyKey': stable_idempotency_key, 'requestPayload': copy.deepcopy(durable_request_payload), 'route': route.to_dict(), 'createdAt': time.time()}
-        try:
-            registered_canvas = await asyncio.to_thread(_app_main.project_store_call, 'begin_image_generation', project_id, payload.result_node_id, task_record, base_revision=payload.base_revision)
-        except RevisionConflict as conflict:
-            latest_canvas = conflict.canvas or {}
-            latest_revision = int(latest_canvas.get('revision') or 0)
-            if not latest_revision:
-                raise
-            registered_canvas = await asyncio.to_thread(_app_main.project_store_call, 'begin_image_generation', project_id, payload.result_node_id, task_record, base_revision=latest_revision)
-        await asyncio.to_thread(_app_main.project_store_call, 'flush', project_id)
+        if hooks:
+            task_record.update(hooks.metadata)
+            registered_canvas = await hooks.register(task_record)
+        else:
+            try:
+                registered_canvas = await asyncio.to_thread(_app_main.project_store_call, 'begin_image_generation', project_id, payload.result_node_id, task_record, base_revision=payload.base_revision)
+            except RevisionConflict as conflict:
+                latest_canvas = conflict.canvas or {}
+                latest_revision = int(latest_canvas.get('revision') or 0)
+                if not latest_revision:
+                    raise
+                registered_canvas = await asyncio.to_thread(_app_main.project_store_call, 'begin_image_generation', project_id, payload.result_node_id, task_record, base_revision=latest_revision)
+            await asyncio.to_thread(_app_main.project_store_call, 'flush', project_id)
         logger.info(f'[gen-task {task_id[:8]}] register payload.size={payload.size!r} record_size={task_record.get("size")!r} rp_size={task_record.get("requestPayload", {}).get("size")!r}')
-    except RevisionConflict as exc:
-        await compensate_registration_failure(str(exc))
-        await cleanup_project_generation_orphans(project_id)
-        raise HTTPException(status_code=409, detail={'message': str(exc), 'canvas': exc.canvas}) from exc
-    except (ProjectStoreError, ValueError) as exc:
-        await compensate_registration_failure(str(exc))
-        await cleanup_project_generation_orphans(project_id)
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except Exception as exc:
-        await compensate_registration_failure(str(exc))
-        await cleanup_project_generation_orphans(project_id)
-        raise
+    except (Exception, asyncio.CancelledError) as exc:
+        if hooks:
+            if not (isinstance(exc, asyncio.CancelledError) and hooks.registered is not None):
+                await hooks.registration_failed(exc)
+                raise
+            registered_canvas = hooks.registered
+            hooks.start_error = exc
+        else:
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            await compensate_registration_failure(str(exc))
+            await cleanup_project_generation_orphans(project_id)
+            if isinstance(exc, RevisionConflict):
+                raise HTTPException(status_code=409, detail={'message': str(exc), 'canvas': exc.canvas}) from exc
+            if isinstance(exc, (ProjectStoreError, ValueError)):
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            raise
+    if hooks:
+        with CANVAS_TASK_LOCK:
+            CANVAS_TASKS[task_id].update(hooks.metadata, agent_settled=False)
+        await hooks.start_event()
     with CANVAS_TASK_LOCK:
         current = CANVAS_TASKS.get(task_id)
         if isinstance(current, dict):
@@ -1710,7 +1802,9 @@ async def create_project_image_task(project_id: str, payload: ProjectImageGenera
     future = None
     try:
         current_loop = asyncio.get_running_loop()
-        if _app_main.GLOBAL_LOOP is current_loop:
+        if hooks:
+            future = hooks.schedule(functools.partial(run_project_image_task, task_id, project_id, payload, request_snapshot, route, registered_canvas['revision'], hooks=hooks))
+        elif _app_main.GLOBAL_LOOP is current_loop:
             future = current_loop.create_task(run_project_image_task(task_id, project_id, payload, request_snapshot, route, registered_canvas['revision']))
         else:
             executor = ensure_project_image_generation_executor()
@@ -1728,6 +1822,9 @@ async def create_project_image_task(project_id: str, payload: ProjectImageGenera
             future.cancel()
         with CANVAS_TASK_LOCK:
             PROJECT_IMAGE_GENERATION_FUTURES.pop(task_id, None)
+        if hooks:
+            await hooks.registration_failed(exc)
+            raise
         await compensate_registration_failure(
             str(exc),
             termination_reason='scheduling_failed',
@@ -1745,10 +1842,14 @@ async def create_project_image_task(project_id: str, payload: ProjectImageGenera
                 'task_id': task_id,
             },
         ) from exc
-    try:
-        await manager.broadcast_canvas_updated(project_id, int(registered_canvas.get('updated_at') or _app_main.now_ms()))
-    except Exception:
-        pass
+    if hooks:
+        if hooks.start_error is not None:
+            raise hooks.start_error
+    else:
+        try:
+            await manager.broadcast_canvas_updated(project_id, int(registered_canvas.get('updated_at') or _app_main.now_ms()))
+        except Exception:
+            pass
     return JSONResponse(status_code=202, content={'task_id': task_id, 'idempotency_key': stable_idempotency_key, 'status': 'queued', 'route': route.to_dict(), 'project_revision': registered_canvas['revision'], 'registered_node': next((item for item in registered_canvas.get('nodes') or [] if item.get('id') == payload.result_node_id), None)})
 
 def reserve_project_video_task(project_id: str, task_id: str, payload: ProjectVideoGenerationRequest, route):
@@ -2497,7 +2598,9 @@ def project_has_active_media_import(project_id: str) -> bool:
 
 def project_has_active_image_generation(project_id: str) -> bool:
     with CANVAS_TASK_LOCK:
-        return any((task.get('type') == 'project-online-image' and task.get('project_id') == project_id and (task.get('status') in {'registering', 'queued', 'running'}) for task in CANVAS_TASKS.values()))
+        return any(task.get('type') == 'project-online-image' and task.get('project_id') == project_id
+                   and (task.get('status') in {'registering', 'queued', 'running'} or task.get('agent_settled') is False)
+                   for task in CANVAS_TASKS.values())
 
 def project_has_active_video_generation(project_id: str) -> bool:
     with CANVAS_TASK_LOCK:

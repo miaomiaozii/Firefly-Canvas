@@ -23,6 +23,7 @@ if str(ROOT) not in sys.path:
 import main
 from firefly_projects import ProjectStore
 from app.routers import api_agent_tools, api_mcp
+from tests.agent_image_task_fakes import patch_candidate
 
 
 def _png_bytes():
@@ -55,7 +56,6 @@ class _Base(unittest.TestCase):
         ], base_revision=0)
         self._prev_core = api_agent_tools.request_confirmation_core
         self._prev_mcp_core = api_mcp.request_confirmation_core
-        self._prev_build = api_agent_tools.build_online_image_result
         self._prev_limit = api_agent_tools.GENERATION_SESSION_LIMIT
         self._prev_outdir = None
         from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK
@@ -66,7 +66,6 @@ class _Base(unittest.TestCase):
     def tearDown(self):
         api_agent_tools.request_confirmation_core = self._prev_core
         api_mcp.request_confirmation_core = self._prev_mcp_core
-        api_agent_tools.build_online_image_result = self._prev_build
         api_agent_tools.GENERATION_SESSION_LIMIT = self._prev_limit
         # 防泄漏：本测试造的生成任务不得残留在全局任务表（曾污染 test_global_tasks 空控制台钉）
         with self._tasks_lock:
@@ -98,7 +97,7 @@ class _Base(unittest.TestCase):
             return {"prompt": payload.prompt, "images": [f"/output/{name}"],
                     "image_items": [{"url": f"/output/{name}", "mime_type": "image/png"}],
                     "provider_id": "p1", "provider_name": "P1", "model": "m1"}
-        api_agent_tools.build_online_image_result = build
+        self.enterContext(patch_candidate(build))
 
     def _headers(self):
         return {"X-Agent-Project": self.pid}

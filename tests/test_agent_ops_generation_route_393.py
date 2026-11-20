@@ -16,6 +16,7 @@ from app.services.agent_ops_store import list_operations
 from app.services.agent_ops_undo import undo_ops
 from firefly_opsdb import OpsDb
 from firefly_projects import ProjectStore
+from tests.agent_image_task_fakes import patch_archive, patch_candidate, route_stub
 
 
 class GenerationJournalTests(unittest.IsolatedAsyncioTestCase):
@@ -29,7 +30,7 @@ class GenerationJournalTests(unittest.IsolatedAsyncioTestCase):
             'id': 'source', 'type': 'prompt', 'text': 'draw'}}], base_revision=0)
         self.store.flush(self.pid)
         self.enterContext(patch.object(main, 'FIREFLY_PROJECT_STORE', self.store))
-        self.enterContext(patch.object(main, 'route_image_generation', return_value=SimpleNamespace(provider_id='mock', model='mock')))
+        self.enterContext(patch.object(main, 'route_image_generation', return_value=route_stub()))
         self.enterContext(patch.object(main, 'load_api_providers', return_value=[]))
         self.enterContext(patch.object(main.manager, 'broadcast_canvas_updated', new=AsyncMock()))
         self.db = OpsDb(self.store.root)
@@ -67,8 +68,7 @@ class GenerationJournalTests(unittest.IsolatedAsyncioTestCase):
         from PIL import Image
         Image.new('RGB', (2, 2), 'red').save(image)
         provider = AsyncMock(return_value={'image_items': [{'url': '/output/test.png', 'mime_type': 'image/png'}]})
-        with patch.object(routes, 'build_online_image_result', provider), \
-             patch.object(main, 'output_file_from_url', return_value=image):
+        with patch_candidate(provider), patch.object(main, 'output_file_from_url', return_value=image):
             first = await self.start()
             await asyncio.wait_for(self.workers[-1], 5)
             second = await self.start()
@@ -99,7 +99,7 @@ class GenerationJournalTests(unittest.IsolatedAsyncioTestCase):
         self.store.apply_mutations(self.pid, [{'op': 'upsert_node', 'node': source}],
                                    base_revision=canvas['revision'])
         provider = AsyncMock(side_effect=RuntimeError('mock provider failed'))
-        with patch.object(routes, 'build_online_image_result', provider):
+        with patch_candidate(provider):
             first = await self.start()
             await asyncio.wait_for(self.workers[-1], 5)
             second = await self.start()
@@ -119,7 +119,7 @@ class GenerationJournalTests(unittest.IsolatedAsyncioTestCase):
         media = self.store.import_media(self.pid, b'image', 'image.png', 'image/png')
         async def archive(*args):
             return {'asset_id': media['asset_id'], 'kind': 'image'}
-        with patch.object(routes, 'build_online_image_result', side_effect=provider), patch('app.services.archive_project_generated_image', side_effect=archive):
+        with patch_candidate(provider), patch_archive(archive):
             result = await self.start()
             await asyncio.wait_for(entered.wait(), 5)
             records = self.records()
@@ -145,8 +145,7 @@ class GenerationJournalTests(unittest.IsolatedAsyncioTestCase):
         async def provider(_):
             return {'image_items': [{'url': '/output/generated.png', 'mime_type': 'image/png'}],
                     'provider_id': 'mock', 'model': 'mock'}
-        with patch.object(routes, 'build_online_image_result', side_effect=provider), \
-             patch.object(main, 'output_file_from_url', return_value=image):
+        with patch_candidate(provider), patch.object(main, 'output_file_from_url', return_value=image):
             result = await self.start()
             await asyncio.wait_for(self.workers[-1], 10)
         task = await routes.get_task_status(self.pid, result['task_id'])
@@ -159,7 +158,7 @@ class GenerationJournalTests(unittest.IsolatedAsyncioTestCase):
         from app.services import agent_ops_store
 
         provider = AsyncMock(side_effect=RuntimeError('mock provider failed'))
-        with patch.object(routes, 'build_online_image_result', provider), patch.object(
+        with patch_candidate(provider), patch.object(
             agent_ops_store, 'append_operation', side_effect=OSError('Agent journal offline')
         ), self.assertLogs('app.services.agent_ops_journal', 'WARNING'):
             result = await self.start()
@@ -174,7 +173,7 @@ class GenerationJournalTests(unittest.IsolatedAsyncioTestCase):
     async def test_provider_failure_records_failure_and_releases_guards(self):
         async def provider(_):
             raise RuntimeError('provider failed')
-        with patch.object(routes, 'build_online_image_result', side_effect=provider):
+        with patch_candidate(provider):
             result = await self.start()
             await asyncio.wait_for(self.workers[-1], 5)
         self.assertEqual((await routes.get_task_status(self.pid, result['task_id']))['status'], 'failed')
@@ -190,7 +189,7 @@ class GenerationJournalTests(unittest.IsolatedAsyncioTestCase):
             return original(*args, **kwargs)
         async def provider(_):
             raise RuntimeError('provider failed')
-        with patch.object(routes, 'build_online_image_result', side_effect=provider), patch.object(self.store, 'fail_image_generation', side_effect=blocked):
+        with patch_candidate(provider), patch.object(self.store, 'fail_image_generation', side_effect=blocked):
             result = await self.start()
             worker = self.workers[-1]
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
@@ -201,7 +200,8 @@ class GenerationJournalTests(unittest.IsolatedAsyncioTestCase):
             release.set()
             with self.assertRaises(asyncio.CancelledError):
                 await asyncio.wait_for(worker, 5)
-        self.assertEqual((await routes.get_task_status(self.pid, result['task_id']))['status'], 'cancelled')
+        # Cancellation does not overwrite a failure that won the durable CAS.
+        self.assertEqual((await routes.get_task_status(self.pid, result['task_id']))['status'], 'failed')
         self.assertEqual(self.undo(result['op_id'])['status'], 'reverted')
 
     async def test_cancellation_during_completion_waits_for_journal_settlement(self):
@@ -217,8 +217,7 @@ class GenerationJournalTests(unittest.IsolatedAsyncioTestCase):
             return {'image_items': [{'url': 'mock://image'}]}
         async def archive(*args):
             return {'asset_id': media['asset_id'], 'kind': 'image'}
-        with patch.object(routes, 'build_online_image_result', side_effect=provider), \
-             patch('app.services.archive_project_generated_image', side_effect=archive), \
+        with patch_candidate(provider), patch_archive(archive), \
              patch.object(self.store, 'complete_image_generation', side_effect=blocked):
             result = await self.start()
             worker = self.workers[-1]
@@ -241,7 +240,7 @@ class GenerationJournalTests(unittest.IsolatedAsyncioTestCase):
             entered.set()
             await release.wait()
             return {'asset_id': 'unused', 'kind': 'image'}
-        with patch.object(routes, 'build_online_image_result', side_effect=provider), patch('app.services.archive_project_generated_image', side_effect=archive):
+        with patch_candidate(provider), patch_archive(archive):
             result = await self.start()
             worker = self.workers[-1]
             await asyncio.wait_for(entered.wait(), 5)
@@ -264,7 +263,7 @@ class GenerationJournalTests(unittest.IsolatedAsyncioTestCase):
         mcp_request = Request({'type': 'http', 'method': 'POST', 'path': '/api/mcp',
                                'query_string': f'project={self.pid}&node=actor&turn_id=mcp-turn'.encode(),
                                'headers': []})
-        with patch.object(routes, 'build_online_image_result', side_effect=provider), \
+        with patch_candidate(provider), \
              patch.object(routes, '_server_confirm_gate', new=AsyncMock()), \
              patch.object(api_mcp, '_confirm_gate', new=AsyncMock()), \
              patch.object(api_mcp, 'resolve_project', side_effect=lambda p: p), \
@@ -298,7 +297,7 @@ class GenerationJournalTests(unittest.IsolatedAsyncioTestCase):
             provider_entered.set()
             await provider_release.wait()
             raise RuntimeError('done')
-        with patch.object(self.store, 'begin_image_generation', side_effect=blocked), patch.object(routes, 'build_online_image_result', side_effect=provider):
+        with patch.object(self.store, 'begin_image_generation', side_effect=blocked), patch_candidate(provider):
             starter = asyncio.create_task(self.start())
             self.assertTrue(await asyncio.to_thread(entered.wait, 5))
             starter.cancel()

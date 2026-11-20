@@ -597,7 +597,7 @@ function promptDraftHtmlForNode(node){
         if(draftHtml.includes('mention-image-token')) return draftHtml;
         return promptHtmlWithMentionTokens(node.promptDraftText || node.runPrompt || '', node.runPromptRefs || []) || draftHtml;
     }
-    const prompt = node?.promptDraftText || node?.runPrompt || '';
+    const prompt = node?.promptDraftText || node?.runPrompt || (node?.promptDraftHtml == null ? (node?.prompt || node?.text || '') : '');
     return promptHtmlWithMentionTokens(prompt, node?.runPromptRefs || []) || escapeHtml(prompt);
 }
 
@@ -671,24 +671,23 @@ async function generateUrlsForCurrentSettings(node, prompt, refs, runSettings=se
     return {urls:[], kind:'image'};
 }
 
-async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=canvasCore.smartLoopContext){
+async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=canvasCore.smartLoopContext, resolveImageRequest=null){
     const outputNode = targetNode || sourceNode;
     if(!sourceNode || !targetNode || !outputNode) return [];
     const requestNode = sourceNode?.type === NODE_TYPE_LOOP ? targetNode : sourceNode;
-    const previousSettings = cloneSmartSettings(settings);
     const runSettings = smartLoopRoundSettings({...cloneSmartSettings(settings), ...cloneSmartSettings(canvasCore.smartSettingsForNode(requestNode) || {})}, ctx);
-    settings = runSettings;
     const outpaintSize = validOutpaintSize(requestNode);
-    const selfRefs = sourceNode?.type === NODE_TYPE_LOOP ? [] : selfReferenceImagesForNode(sourceNode, false, ctx).filter(img => img?.url);
-    const sourceRefs = (selfRefs.length ? selfRefs : defaultReferenceImagesFor(requestNode, false, ctx)).filter(img => img?.url);
-    const refsForRequest = sourceRefs.length
-        ? sourceRefs
-        : (inputRefs && inputRefs.length ? inputRefs : null);
-    const request = buildPromptRequestForNode(
-        requestNode,
-        refsForRequest,
-        ctx
-    );
+    let request = resolveImageRequest && await resolveImageRequest(requestNode, {ctx, runSettings, resultNode:outputNode,
+        draftHtml:() => promptDraftHtmlForNode(requestNode),
+        selfSourceId:sourceNode?.type === NODE_TYPE_LOOP ? null : sourceNode.id, cascadeFallback:inputRefs || []});
+    const previousSettings = cloneSmartSettings(settings);
+    if(!request){
+        settings = runSettings;
+        const selfRefs = sourceNode?.type === NODE_TYPE_LOOP ? [] : selfReferenceImagesForNode(sourceNode, false, ctx).filter(img => img?.url);
+        const defaults = selfRefs.length ? selfRefs : defaultReferenceImagesFor(requestNode, false, ctx);
+        request = buildPromptRequestForNode(requestNode, defaults.length ? defaults : (inputRefs?.length ? inputRefs : null), ctx);
+    }
+    settings = runSettings;
     const prompt = (request.prompt || '').trim();
     const displayPrompt = (request.displayPrompt || '').trim();
     if((!prompt || !displayPrompt) && smartRunNeedsPrompt(runSettings)){
@@ -772,17 +771,23 @@ async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=can
     }
 }
 
-async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, ctx){
+async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, ctx, resolveImageRequest=null){
     if(!loopNode || !rootNode || !outputSlot) return [];
     outputSlot = canvasCore.liveSmartNode(outputSlot);
-    const previousSettings = cloneSmartSettings(settings);
     const edgeKey = `${rootNode.id}->${outputSlot.id}`;
     let generationOutcome;
     const runSettings = smartLoopRoundSettings({...cloneSmartSettings(settings), ...cloneSmartSettings(canvasCore.smartSettingsForNode(rootNode) || {})}, ctx);
-    settings = runSettings;
+    // Keep the runtime loop's round index and selection instead of using the saved defaults.
+    let request = resolveImageRequest && await resolveImageRequest(rootNode, {ctx, runSettings, resultNode:outputSlot,
+        draftHtml:() => promptDraftHtmlForNode(rootNode), loopSourceId:loopNode.id});
+    const previousSettings = cloneSmartSettings(settings);
     try {
-        const refsForRequest = outputImagesForNode(loopNode, true, ctx).filter(img => img?.url);
-        const request = buildPromptRequestForNode(rootNode, refsForRequest.length ? refsForRequest : null, ctx);
+        if(!request){
+            settings = runSettings;
+            const refsForRequest = outputImagesForNode(loopNode, true, ctx).filter(img => img?.url);
+            request = buildPromptRequestForNode(rootNode, refsForRequest.length ? refsForRequest : null, ctx);
+        }
+        settings = runSettings;
         const prompt = (request.prompt || '').trim();
         const displayPrompt = (request.displayPrompt || '').trim();
         if((!prompt || !displayPrompt) && smartRunNeedsPrompt(runSettings)) throw new Error(tr('smart.chainNodeMissingPrompt'));
@@ -1039,7 +1044,7 @@ async function runSmartCascadeRoundsWithLimit(roundIndexes, limit, runner, runSt
     await Promise.all(workers);
 }
 
-async function runSmartCascade(targetNode=null){
+async function runSmartCascade(targetNode=null, resolveImageRequest=null){
     const tail = targetNode || selectedNode();
     if(!canRunSmartCascade(tail)){ toast(tr('smart.cascadeTailRequired')); return; }
     savePromptDraftForCurrent();
@@ -1115,7 +1120,7 @@ async function runSmartCascade(targetNode=null){
                     slotIndex
                 );
                 singleLoopSlots[slotIndex] = outputTarget;
-                await runLoopRoundIntoSlot(loop.node, tail, outputTarget, loopIndex, ctx);
+                await runLoopRoundIntoSlot(loop.node, tail, outputTarget, loopIndex, ctx, resolveImageRequest);
                 return;
             }
             const producedRefs = new Map();
@@ -1170,7 +1175,7 @@ async function runSmartCascade(targetNode=null){
                             outputs = outputImagesForNode(source, true, ctx).filter(img => img?.url);
                             sharedRefs = cascadeRefsFromOutputs(outputs, source);
                         } else if(index === 0){
-                            outputs = await runCascadeStepIntoNode(source, target, incomingRefs, stepCtx);
+                            outputs = await runCascadeStepIntoNode(source, target, incomingRefs, stepCtx, resolveImageRequest);
                             sharedRefs = cascadeRefsFromOutputs(outputs, target);
                         } else {
                             outputs = appendCascadeRefsToReceiver(target, sharedRefs, stepCtx);
@@ -1245,7 +1250,7 @@ async function runSmartCascade(targetNode=null){
     }
 }
 
-function runSmartCascadeFromLoop(loopId){
+function runSmartCascadeFromLoop(loopId, resolveImageRequest){
     const loop = canvasState.nodes.find(n => n.id === loopId && n.type === NODE_TYPE_LOOP);
     if(!loop){ toast(tr('smart.loopNodeNotFound')); return; }
     const tail = cascadeTailForLoop(loop.id);
@@ -1253,7 +1258,7 @@ function runSmartCascadeFromLoop(loopId){
     canvasState.selectedId = tail.id;
     canvasState.selectedIds = [];
     canvasState.selectedImage = {nodeId:'', index:-1};
-    runSmartCascade(tail);
+    runSmartCascade(tail, resolveImageRequest);
 }
 
 // 这些名字本来属于本模块，#200 从 smart-canvas.js 搬回（核心不引用它们，纯搬家）。
