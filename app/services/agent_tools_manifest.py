@@ -184,8 +184,26 @@ TOOLS = [
     {"name": "canvas.view_media", "description": f"查看单节点媒体：图像下缩放，视频抽帧拼图（contact sheet）（只读）。{VIEW_TIMEOUT_NOTE}", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "max_px": PARAM_MAX_PX, "frames": {"type": "integer", "description": "视频抽帧数 1..16，默认 4", "minimum": 1, "maximum": 16}}, "required": ["node_id"], "additionalProperties": False}},
     # #266 edit_* 首批（包装 canvas-image-editor.js 已有能力）：本地 PIL，写操作走确认门（#242 语义）
     {"name": "canvas.edit_crop", "description": "裁剪节点图像选区并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 90s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "rect": PARAM_RECT}, "required": ["node_id", "rect"], "additionalProperties": False}},
+    {"name": "canvas.batch_prompt_edit", "description": "批量编辑文本或图像/视频节点的提示词，不触发生图。先以 apply:false + edits 预览，再以 apply:true + diff_id 应用。浏览器整批确认（含用户改过的提示词），取消零写入；每个预览只可尝试应用一次。", "inputSchema": {
+        "type": "object", "properties": {
+            "apply": {"type": "boolean"}, "diff_id": {"type": "string", "minLength": 1},
+            "edits": {"type": "array", "minItems": 1, "maxItems": 50, "items": {
+                "type": "object", "properties": {
+                    "node_id": {"type": "string", "minLength": 1},
+                    "prompt": {"type": "string"}, "append": {"type": "string"},
+                    "find": {"type": "string", "minLength": 1}, "replace": {"type": "string"},
+                }, "required": ["node_id"], "additionalProperties": False,
+                "oneOf": [{"required": ["prompt"]}, {"required": ["append"]},
+                          {"required": ["find", "replace"]}],
+            }},
+        }, "required": ["apply"], "additionalProperties": False,
+        "oneOf": [{"properties": {"apply": {"const": False}}, "required": ["edits"],
+                   "not": {"required": ["diff_id"]}},
+                  {"properties": {"apply": {"const": True}}, "required": ["diff_id"],
+                   "not": {"required": ["edits"]}}],
+    }},
     # #266 canvas.batch_edit（§59.3）：选中 N 节点 + 一句 prompt = N 次生成（调既有生成通路，非本地处理；结果放各自旁边）
-    {"name": "canvas.batch_edit", "description": "批量生成：把同一句 prompt 写入最多 10 个选中节点并逐节点触发一次生成（消耗外部生成任务，区别于 edit_* 的本地处理；结果放各自旁边 = 各节点自身输出）。#351：走服务端确认门（阻塞最长 90s），每 agent 会话按张数计入生成上限；返回各节点的 task_id，用 generate.status 轮询 / generate.wait 等待完成", "inputSchema": {"type": "object", "properties": {"node_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 10, "description": "节点 ID 列表（1..10）"}, "prompt": {"type": "string", "minLength": 1, "description": "批量 prompt，写入每个节点"}}, "required": ["node_ids", "prompt"], "additionalProperties": False}},
+    {"name": "canvas.batch_edit", "description": "批量生成：把同一句 prompt 写入最多 10 个选中节点并逐节点触发一次生成（消耗外部生成任务，区别于 edit_* 的本地处理；结果放各自旁边 = 各节点自身输出）。总是请求浏览器整批确认提示词覆盖和生图费用（阻塞最长 90s），每 agent 会话按张数计入生成上限；返回各节点的 task_id，用 generate.status 轮询 / generate.wait 等待完成", "inputSchema": {"type": "object", "properties": {"node_ids": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 10, "description": "节点 ID 列表（1..10）"}, "prompt": {"type": "string", "minLength": 1, "description": "批量 prompt，写入每个节点"}}, "required": ["node_ids", "prompt"], "additionalProperties": False}},
     # #266b edit_* 再扩两项（包装 canvas-image-editor.js 已有能力：rotate 是既有能力，flip 同族本地变换）：本地 PIL，写操作走确认门（#242 语义）
     {"name": "canvas.edit_rotate", "description": "旋转节点图像（90/180/270 逆时针）并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 90s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "angle": {"type": "integer", "enum": [90, 180, 270], "description": "逆时针旋转角度，90/180/270 之一"}}, "required": ["node_id", "angle"], "additionalProperties": False}},
     {"name": "canvas.edit_flip", "description": "镜像节点图像（horizontal 左右 / vertical 上下）并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 90s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "direction": {"type": "string", "enum": ["horizontal", "vertical"], "description": "horizontal=左右镜像，vertical=上下镜像"}}, "required": ["node_id", "direction"], "additionalProperties": False}},
@@ -208,7 +226,7 @@ TOOL_NAMES = {t["name"] for t in TOOLS}
 # 其余只读工具绝不写画布（票面：「MCP 只读工具也 upsert 节点」）。
 WRITE_TOOLS = frozenset({
     *LAYOUT_TOOLS,
-    "canvas.attach_refs", "canvas.batch_edit", "canvas.connect", "canvas.create_node",
+    "canvas.attach_refs", "canvas.batch_edit", "canvas.batch_prompt_edit", "canvas.connect", "canvas.create_node",
     "canvas.delete_node", "canvas.disconnect", "canvas.edit_crop", "canvas.edit_erase",
     "canvas.edit_flip", "canvas.edit_outpaint", "canvas.edit_rotate", "canvas.place_media",
     "canvas.set_ref_order", "canvas.update_node",

@@ -117,8 +117,13 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
         parameters: Type.Object({ node_id: Type.String(), rect: Type.Object({ x: Type.Number(), y: Type.Number(), width: Type.Number(), height: Type.Number() }, {description: "选区（原图像素坐标，x/y 左上角 + width/height）"}) }),
     },
     {
+        name: "canvas.batch_prompt_edit",
+        description: "批量编辑文本或图像/视频节点的提示词，不触发生图。先以 apply:false + edits 预览，再以 apply:true + diff_id 应用。浏览器整批确认（含用户改过的提示词），取消零写入；每个预览只可尝试应用一次。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        parameters: Type.Object({ apply: Type.Boolean(), diff_id: Type.Optional(Type.String({minLength: 1})), edits: Type.Optional(Type.Array(Type.Object({ node_id: Type.String({minLength: 1}), prompt: Type.Optional(Type.String()), append: Type.Optional(Type.String()), find: Type.Optional(Type.String({minLength: 1})), replace: Type.Optional(Type.String()) }), {minItems: 1, maxItems: 50})) }),
+    },
+    {
         name: "canvas.batch_edit",
-        description: "批量生成：把同一句 prompt 写入最多 10 个选中节点并逐节点触发一次生成（消耗外部生成任务，区别于 edit_* 的本地处理；结果放各自旁边 = 各节点自身输出）。#351：走服务端确认门（阻塞最长 90s），每 agent 会话按张数计入生成上限；返回各节点的 task_id，用 generate.status 轮询 / generate.wait 等待完成。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        description: "批量生成：把同一句 prompt 写入最多 10 个选中节点并逐节点触发一次生成（消耗外部生成任务，区别于 edit_* 的本地处理；结果放各自旁边 = 各节点自身输出）。总是请求浏览器整批确认提示词覆盖和生图费用（阻塞最长 90s），每 agent 会话按张数计入生成上限；返回各节点的 task_id，用 generate.status 轮询 / generate.wait 等待完成。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
         parameters: Type.Object({ node_ids: Type.Array(Type.String(), {description: "节点 ID 列表（1..10）", minItems: 1, maxItems: 10}), prompt: Type.String({description: "批量 prompt，写入每个节点", minLength: 1}) }),
     },
     {

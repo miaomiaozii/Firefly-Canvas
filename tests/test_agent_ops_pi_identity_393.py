@@ -25,7 +25,8 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import vm from "node:vm";
 let source = readFileSync(process.argv[1], "utf8");
-const names = [...source.matchAll(/\n    "([a-z_.]+)": async/g)].map(m => m[1]);
+const input = JSON.parse(process.argv[3]);
+const names = input.map(([name]) => name);
 source = source.replace(/^import .*;\r?\n/gm, "")
     .replace("export default function (pi: ExtensionAPI)", "function register(pi: ExtensionAPI)");
 const calls = [], tools = {};
@@ -33,7 +34,8 @@ const context = {
     process: { env: { FIREFLY_AGENT_API_BASE: "http://127.0.0.1:3000",
                       FIREFLY_AGENT_PROJECT_ID: "project-393",
                       FIREFLY_AGENT_NODE_ID: process.argv[2] } },
-    CANVAS_TOOL_DEFS: names.map(name => ({name})), URLSearchParams, encodeURIComponent,
+    CANVAS_TOOL_DEFS: names.map(name => ({name, parameters: {properties: {}}})),
+    URLSearchParams, encodeURIComponent,
     fetch: async (url, options) => {
         calls.push({url, method: options.method, headers: options.headers,
                     body: options.body === undefined ? null : JSON.parse(options.body)});
@@ -43,7 +45,6 @@ const context = {
 vm.createContext(context);
 vm.runInContext(stripTypeScriptTypes(source), context);
 context.register({registerTool: tool => { tools[tool.name] = tool.execute; }});
-const input = JSON.parse(process.argv[3]);
 for (const [name, params] of input) await tools[name]("call", params);
 console.log(JSON.stringify(calls));
 '''
@@ -56,6 +57,7 @@ CASES = [
     ("canvas.disconnect", {"from_node": "n1", "to_node": "n2"}),
     ("canvas.edit_crop", {"node_id": "n1", "rect": [1, 2, 3, 4]}),
     ("canvas.batch_edit", {"node_ids": ["n1"], "prompt": "edit"}),
+    ("canvas.batch_prompt_edit", {"apply": True, "diff_id": "preview"}),
     ("canvas.edit_rotate", {"node_id": "n1", "angle": 90}),
     ("canvas.edit_flip", {"node_id": "n1", "direction": "horizontal"}),
     ("canvas.edit_outpaint", {"node_id": "n1", "outpaint_size": 50, "offset": [1, 2]}),
@@ -94,6 +96,7 @@ class PiIdentityTests(unittest.TestCase):
             "canvas.disconnect": ("DELETE", "/canvas/edges/n1/n2" + q, None),
             "canvas.edit_crop": ("POST", "/canvas/edit_crop" + q, {"node_id": "n1", "rect": [1, 2, 3, 4]}),
             "canvas.batch_edit": ("POST", "/canvas/batch_edit" + q, {"node_ids": ["n1"], "prompt": "edit"}),
+            "canvas.batch_prompt_edit": ("POST", "/canvas/batch_prompt_edit" + q, {"apply": True, "diff_id": "preview"}),
             "canvas.edit_rotate": ("POST", "/canvas/edit_rotate" + q, {"node_id": "n1", "angle": 90}),
             "canvas.edit_flip": ("POST", "/canvas/edit_flip" + q, {"node_id": "n1", "direction": "horizontal"}),
             "canvas.edit_outpaint": ("POST", "/canvas/edit_outpaint" + q, {"node_id": "n1", "outpaint_size": 50, "offset": [1, 2]}),

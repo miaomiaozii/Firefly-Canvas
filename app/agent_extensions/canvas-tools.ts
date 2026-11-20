@@ -254,6 +254,9 @@ const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any
         }));
     },
 
+    "canvas.batch_prompt_edit": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/batch_prompt_edit${gateQuery()}`, "POST", params)),
+
     "canvas.batch_edit": async (_toolCallId, params) =>
         textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/batch_edit${gateQuery()}`, "POST", {
             node_ids: params.node_ids,

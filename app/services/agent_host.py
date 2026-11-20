@@ -369,7 +369,8 @@ AUTONOMY_SYSTEM_PROMPT_SUFFIXES = {
 }
 
 # Safety floor tools: always require confirmation even in autonomous mode
-SAFETY_FLOOR_TOOLS = frozenset()  # Currently no project-level delete tool in canvas-tools
+# Batch prompt approval is a user decision even in autonomous mode (#398).
+SAFETY_FLOOR_TOOLS = frozenset({"canvas.batch_prompt_edit", "canvas.batch_edit"})
 
 
 # The full status vocabulary for AgentSession.status (stable, ordered).

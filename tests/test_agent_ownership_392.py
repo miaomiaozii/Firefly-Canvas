@@ -162,29 +162,44 @@ class Ownership392Tests(unittest.TestCase):
 
     def test_rest_generation_uses_query_and_rejects_body_only_identity(self):
         before = copy.deepcopy(self.canvas())
-        for suffix, core_name, body, args, count in (
-            ("generate/trigger", "trigger_generation_core", {"node_id": "source", "n": 3},
-             (self.pid, "source"), 3),
+        def plan(count):
+            return SimpleNamespace(request=SimpleNamespace(count=count), node_type=NODE_TYPE_IMAGE,
+                                   original_prompt=("old", None, False, None, None, None))
+
+        one, batch = plan(3), (plan(1), plan(1))
+        for suffix, core_name, body, args, count, prepare, prepared, gate_name, kwargs in (
+            ("generate/trigger", "trigger_generation_core", {"node_id": "source"},
+             (self.pid, "source"), 3, "prepare_generation", one, "_server_confirm_gate", {"plan": one}),
             ("canvas/batch_edit", "batch_edit_core", {"node_ids": ["a", "b"], "prompt": "edit"},
-             (self.pid, ["a", "b"], "edit"), 2),
+             (self.pid, ["a", "b"], "edit"), 2, "prepare_batch_generation", ("edit", batch),
+             "confirm_batch_prompt", {"plans": batch}),
         ):
             for context in ("query-owner", ""):
                 with self.subTest(tool=suffix, context=context), patch.object(
                     self.tools, core_name, new=AsyncMock(return_value={"ok": True}),
-                ) as core, patch.object(self.tools, "_server_confirm_gate", new=AsyncMock()) as gate, patch.object(
-                    self.tools, "enforce_generation_limit",
-                ) as limit:
+                ) as core, patch.object(self.tools, gate_name, new=AsyncMock()) as gate, patch.object(
+                    self.tools, prepare, new=AsyncMock(return_value=prepared),
+                ) as preparation, patch.object(self.tools, "enforce_generation_limit") as limit:
                     response = self.client.post(f"/api/projects/{self.pid}/{suffix}",
                         headers={"X-Agent-Project": self.pid}, params={"agent_node_id": context},
+                        json=body)
+                    forged = self.client.post(f"/api/projects/{self.pid}/{suffix}",
+                        headers={"X-Agent-Project": self.pid},
                         json={**body, "agent_node_id": "body-forgery"})
-                    self.assertEqual(gate.await_count, 1)
-                    limit.assert_called_once_with(self.pid, context, count=count)
+                    self.assertEqual(forged.status_code, 400, forged.text)
+                    self.assertEqual(forged.json()["detail"]["code"], "INVALID_ARGUMENT")
                     if context:
                         self.assertEqual(response.status_code, 200, response.text)
-                        core.assert_awaited_once_with(*args, agent_node_id=context)
+                        preparation.assert_awaited_once()
+                        gate.assert_awaited_once()
+                        limit.assert_called_once_with(self.pid, context, count=count)
+                        core.assert_awaited_once_with(*args, agent_node_id=context, **kwargs)
                     else:
                         self.assertEqual(response.status_code, 400, response.text)
-                        self.assertEqual(response.json()["detail"]["code"], "INVALID_ARGUMENT")
+                        self.assertEqual(response.json()["detail"]["code"], "CONFIRM_MISSING_NODE_ID")
+                        preparation.assert_not_awaited()
+                        gate.assert_not_awaited()
+                        limit.assert_not_called()
                         core.assert_not_awaited()
         self.assertEqual(self.canvas(), before)
         self.broadcast.assert_not_awaited()
@@ -244,7 +259,7 @@ class Ownership392Tests(unittest.TestCase):
         ) as trigger:
             result = run(self.tools.batch_edit_core(self.pid, ["source", "legacy"], " batch ", "context"))
         self.assertEqual(len(attempts), 3)
-        self.assertEqual(trigger.await_args_list, [call(self.pid, identity, agent_node_id="context")
+        self.assertEqual(trigger.await_args_list, [call(self.pid, identity, agent_node_id="context", plan=None)
                                                  for identity in ("source", "legacy")])
         self.assertEqual(result["tasks"], [{"node_id": "source", "task_id": "stub-one"},
                                             {"node_id": "legacy", "task_id": "stub-two"}])

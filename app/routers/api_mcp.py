@@ -507,15 +507,21 @@ async def _impl_edit_crop(project_id, agent_node_id, args):
         raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
 
 
+async def _impl_batch_prompt_edit(project_id, agent_node_id, args, *, binding=None):
+    from app.routers.api_agent_tools import batch_prompt_edit_core
+    from app.services.agent_batch_prompt import parse
+    return await batch_prompt_edit_core(project_id, agent_node_id, parse(args), binding=binding)
+
+
 async def _impl_batch_edit(project_id, agent_node_id, args):
-    from app.routers.api_agent_tools import enforce_generation_limit, prepare_batch_generation
+    from app.routers.api_agent_tools import confirm_batch_prompt, enforce_generation_limit, legacy_batch_prompt_counts, prepare_batch_generation
     from app.services.agent_refs import require_object
     require_object(args, "batch_edit", required=("node_ids", "prompt"))
     node_ids = args["node_ids"]
     prompt, plans = await prepare_batch_generation(project_id, node_ids, args["prompt"])
     count = sum(plan.request.count for plan in plans)
-    await _confirm_gate(project_id, agent_node_id, "canvas.batch_edit", {"node_ids": node_ids, "prompt": prompt, "n": count},
-                        f"批量生成 {len(plans)} 个节点，共 {count} 张图片（消耗外部生成额度）")
+    edited, human = legacy_batch_prompt_counts(plans, prompt)
+    await confirm_batch_prompt(project_id, agent_node_id, "canvas.batch_edit", edited, human, images=count)
     enforce_generation_limit(project_id, agent_node_id, count=count)
     return await batch_edit_core(project_id, node_ids, prompt, agent_node_id=agent_node_id or "", plans=plans)
 
@@ -615,6 +621,7 @@ TOOL_IMPLS = {
     "canvas.edit_flip": _impl_edit_flip,
     "canvas.edit_outpaint": _impl_edit_outpaint,
     "canvas.edit_erase": _impl_edit_erase,
+    "canvas.batch_prompt_edit": _impl_batch_prompt_edit,
     "canvas.batch_edit": _impl_batch_edit,
 }
 
@@ -668,7 +675,7 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
         params = {}
     name = str(params.get("name") or "")
     args = params.get("arguments", params.get("args", {}))
-    if name not in LAYOUT_TOOLS and not isinstance(args, dict):
+    if name not in LAYOUT_TOOLS | {"canvas.batch_prompt_edit"} and not isinstance(args, dict):
         args = params.get("args")
         if not isinstance(args, dict):
             args = {}
@@ -686,6 +693,10 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
     slow_timeout = SLOW_TOOL_TIMEOUTS.get(name)
     turn_lease = None
     try:
+        writes = name in WRITE_TOOLS
+        if name == "canvas.batch_prompt_edit":
+            from app.services.agent_batch_prompt import parse
+            writes = isinstance(parse(args), str)
         if name in LAYOUT_TOOLS:
             agent_layout.validate_args(name, args)
         project_id = resolve_project(str(request.query_params.get("project") or ""))
@@ -702,7 +713,7 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
                 raise ValueError("node is required for hosted caller")
             if turn_id is not None:
                 raise ValueError("turn_id cannot be supplied for hosted caller")
-            if name in WRITE_TOOLS:
+            if writes:
                 from app.services.agent_host import agent_host_manager
                 # #393: caller is a spoofable attribution label, not authentication.
                 turn_id = agent_host_manager.get_current_turn_id(project_id, node_param)
@@ -711,11 +722,11 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
         # #350: explicit node binds attribution; reads must not materialize external nodes.
         if node_param:
             node_id = node_param
-        elif name in WRITE_TOOLS:
+        elif writes:
             node_id = await ensure_external_agent_node(project_id, sid)
         else:
             node_id = ""
-        if caller != 'hosted' and name in WRITE_TOOLS and turn_id is not None:
+        if caller != 'hosted' and writes and turn_id is not None:
             from app.services.agent_ops_store import begin_turn, mark_turn_lookup_failed
             from firefly_opsdb import OpsDb
             db = OpsDb(_app_main.FIREFLY_PROJECT_STORE.root)
@@ -733,6 +744,9 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
                                  turn_id=turn_id, tool=name, args=args):
                 if name in LAYOUT_TOOLS:
                     result = await TOOL_IMPLS[name](project_id, node_id, args, hosted=caller == 'hosted')
+                elif name == "canvas.batch_prompt_edit":
+                    binding = ("agent", node_param) if node_param else ("mcp", sid)
+                    result = await TOOL_IMPLS[name](project_id, node_id, args, binding=binding)
                 elif slow_timeout is not None:
                     result = await asyncio.wait_for(TOOL_IMPLS[name](project_id, node_id, args), slow_timeout)
                 else:

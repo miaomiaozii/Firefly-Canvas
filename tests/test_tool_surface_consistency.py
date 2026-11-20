@@ -425,8 +425,13 @@ class DualPathEquivalenceTests(unittest.TestCase):
                 before = self._canvas_state(store, pid_a)
                 a = self._mcp_call(client, pid_a, name, args)
                 path = name.removeprefix("canvas.")
+                if name == "canvas.batch_prompt_edit":
+                    path += "?agent_node_id=agent-consistency"
+                    body = args
+                else:
+                    body = {**args, "agent_node_id": "agent-consistency"}
                 b = self._rest(client, "POST", f"/api/projects/{pid_b}/canvas/{path}",
-                               {**args, "agent_node_id": "agent-consistency"}, {"X-Agent-Project": pid_b})
+                               body, {"X-Agent-Project": pid_b})
                 self._assert_pair(a, b, name)
                 self.assertFalse(a["ok"], a)
                 self.assertEqual(a["error"]["code"], expected_code)
@@ -436,18 +441,32 @@ class DualPathEquivalenceTests(unittest.TestCase):
 
         def gated(name, args, impl, method, url_path, body=None):
             """确认门工具（#357 后含 disconnect）：MCP 经门批准后打 core；
-            REST 孪生不带 X-Agent-Project 头 = 浏览器用户路径，不进服务端门（#347 ffDialog 在发起侧）。"""
+            REST 孪生走浏览器已确认路径。"""
             def run():
                 client, store, pid_a, pid_b = self._fixture()
                 agent_id = self._materialize_agent(client, store, pid_a)
                 a = self._gated_impl(store, pid_a, agent_id, getattr(api_mcp, impl), args)
                 # Same initiating context, even while this test bypasses the REST gate.
-                rest_path = f"{url_path}?agent_node_id={agent_id}" if name in {"canvas.batch_edit", "generate.trigger"} else url_path
+                rest_path = f"{url_path}?agent_node_id={agent_id}" if name == "generate.trigger" else url_path
                 b = self._rest(client, method, f"/api/projects/{pid_b}{rest_path}", body)
                 self._assert_pair(a, b, name)
                 self.assertEqual(self._canvas_state(store, pid_a), self._canvas_state(store, pid_b),
                                  f"{name}: 两路画布终态不一致")
             return run
+
+        def batch_edit_run():
+            client, store, pid_a, pid_b = self._fixture()
+            args = {"node_ids": ["image-1"], "prompt": "p"}
+            # A8: both Agent transports go through the server gate and journal.
+            with patch("app.routers.api_agent_tools.request_confirmation_core",
+                       new=AsyncMock(return_value={"approved": True})) as confirm:
+                a = self._mcp_call(client, pid_a, "canvas.batch_edit", args)
+                b = self._rest(client, "POST", f"/api/projects/{pid_b}/canvas/batch_edit"
+                               "?agent_node_id=agent-consistency", args, {"X-Agent-Project": pid_b})
+            self.assertEqual(confirm.await_count, 2)
+            self.assertTrue(a["ok"], a)
+            self._assert_pair(a, b, "canvas.batch_edit")
+            self.assertEqual(self._canvas_state(store, pid_a), self._canvas_state(store, pid_b))
 
         def tmp_upload_run():
             client, store, pid_a, pid_b = self._fixture()
@@ -622,7 +641,10 @@ class DualPathEquivalenceTests(unittest.TestCase):
             "canvas.view": pair("canvas.view", {"scope": "page"}, "POST", "/canvas/view", {"scope": "page"}),
             "canvas.view_media": pair("canvas.view_media", {"node_id": "image-1"}, "POST", "/canvas/view_media", {"node_id": "image-1"}),
             "canvas.edit_crop": gated("canvas.edit_crop", {"node_id": "image-1", "rect": {"x": 0, "y": 0, "width": 4, "height": 4}}, "_impl_edit_crop", "POST", "/canvas/edit_crop", {"node_id": "image-1", "rect": {"x": 0, "y": 0, "width": 4, "height": 4}}),
-            "canvas.batch_edit": gated("canvas.batch_edit", {"node_ids": ["image-1"], "prompt": "p"}, "_impl_batch_edit", "POST", "/canvas/batch_edit", {"node_ids": ["image-1"], "prompt": "p"}),
+            "canvas.batch_prompt_edit": media_ref_validation("canvas.batch_prompt_edit", {
+                "apply": False, "edits": [{"node_id": "missing-node", "append": "detail"}],
+            }, "NODE_NOT_FOUND"),
+            "canvas.batch_edit": batch_edit_run,
             "canvas.edit_rotate": gated("canvas.edit_rotate", {"node_id": "image-1", "angle": 90}, "_impl_edit_rotate", "POST", "/canvas/edit_rotate", {"node_id": "image-1", "angle": 90}),
             "canvas.edit_flip": gated("canvas.edit_flip", {"node_id": "image-1", "direction": "horizontal"}, "_impl_edit_flip", "POST", "/canvas/edit_flip", {"node_id": "image-1", "direction": "horizontal"}),
             "canvas.edit_outpaint": gated("canvas.edit_outpaint", {"node_id": "image-1", "outpaint_size": {"width": 40, "height": 40}}, "_impl_edit_outpaint", "POST", "/canvas/edit_outpaint", {"node_id": "image-1", "outpaint_size": {"width": 40, "height": 40}}),

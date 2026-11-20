@@ -26,7 +26,7 @@ import os as _os
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK, ensure_agent_same_origin
 from app.constants import NODE_TYPE_AGENT, NODE_TYPE_GROUP
-from app.services import agent_frame, agent_image_settings, agent_layout, agent_refs
+from app.services import agent_batch_prompt, agent_frame, agent_image_settings, agent_layout, agent_refs
 from app.services.agent_errors import agent_error
 from app.services.agent_tools_manifest import LAYOUT_TOOLS, UPDATABLE_NODE_FIELDS as _UPDATABLE_NODE_FIELDS
 from app.core import AIReference, ONLINE_IMAGE_REFERENCE_MAX, PROJECT_MEDIA_ADAPTER_PROJECT, ProjectImageGenerationRequest
@@ -64,7 +64,7 @@ _LIFETIME_STOPPING = weakref.WeakSet()
 _LIFETIME_LOCK = threading.RLock()
 _JOURNALED_TOOLS = frozenset({"canvas.create_node", "canvas.update_node", "canvas.delete_node",
                               "canvas.connect", "canvas.disconnect", "canvas.place_media",
-                              "canvas.attach_refs", "canvas.set_ref_order", *LAYOUT_TOOLS})
+                              "canvas.attach_refs", "canvas.set_ref_order", "canvas.batch_prompt_edit", *LAYOUT_TOOLS})
 
 
 def _track_lifetime_task(task):
@@ -858,17 +858,31 @@ async def canvas_edit_crop(project_id: str, request: Request, agent_node_id: str
                                   lambda: crop_node_image_core(project_id, body.get("node_id"), body.get("rect")), agent_node_id)
 
 
+@router.post("/batch_prompt_edit")
+async def canvas_batch_prompt_edit(project_id: str, request: Request):
+    args = await request.json()
+    parsed = agent_batch_prompt.parse(args)
+    if not isinstance(parsed, str):
+        return await batch_prompt_edit_core(project_id, request.query_params.get("agent_node_id", ""), parsed)
+    if not request.headers.get("X-Agent-Project"):
+        raise agent_error(400, "INVALID_ARGUMENT", "Agent project context is required to apply a batch prompt edit")
+    actor = _paid_rest_actor(request)
+    return await _rest_agent_call(request, project_id, "canvas.batch_prompt_edit", args,
+                                  lambda: batch_prompt_edit_core(project_id, actor, parsed), actor)
+
+
 @router.post("/batch_edit")
-async def canvas_batch_edit(project_id: str, request: Request, x_agent_project: str = Header(default="")):
+async def canvas_batch_edit(project_id: str, request: Request):
     body = agent_refs.require_object(await request.json(), "batch_edit", required=("node_ids", "prompt"))
+    if not request.headers.get("X-Agent-Project"):
+        raise agent_error(400, "INVALID_ARGUMENT", "Agent project context is required for batch_edit")
     node_ids = body["node_ids"]
     agent = _paid_rest_actor(request)
     prompt, plans = await prepare_batch_generation(project_id, node_ids, body["prompt"])
     count = sum(plan.request.count for plan in plans)
-    await _server_confirm_gate(request, project_id, "canvas.batch_edit", {"node_ids": node_ids, "prompt": prompt, "n": count},
-                               f"批量生成 {len(plans)} 个节点，共 {count} 张图片（消耗外部生成额度）")
-    if x_agent_project:
-        enforce_generation_limit(project_id, agent, count=count)
+    edited, human = legacy_batch_prompt_counts(plans, prompt)
+    await confirm_batch_prompt(project_id, agent, "canvas.batch_edit", edited, human, images=count)
+    enforce_generation_limit(project_id, agent, count=count)
     return await _rest_agent_call(request, project_id, "canvas.batch_edit", body,
                                   lambda: batch_edit_core(project_id, node_ids, prompt,
                                                           agent_node_id=agent, plans=plans), agent)
@@ -1523,7 +1537,8 @@ class _PreparedGeneration:
 
 
 def _node_prompt_fields(node):
-    return node.get("prompt"), node.get("text"), node.get("promptEditedByUser")
+    return tuple(node.get(key) for key in ("prompt", "text", "promptEditedByUser",
+                                            "promptDraftText", "promptDraftHtml", "created_at"))
 
 
 async def prepare_generation(project_id, node_id, *, canvas=None, prompt_override=None):
@@ -2807,10 +2822,61 @@ async def _replace_node_image_impl(project_id: str, node: dict, node_id: str, pi
     return result
 
 
+async def confirm_batch_prompt(project_id, actor, tool, count, human_count, *, images=None):
+    params = {"node_count": count, "user_edited_count": human_count}
+    message = f"是否修改 {count} 个节点的提示词？其中 {human_count} 个由用户手动编辑过。"
+    if images is not None:
+        params["n"] = images
+        message += f"本次还会生成 {images} 张图片（消耗外部生成额度）。"
+    decision = await request_confirmation_core(project_id, actor, tool, params, message,
+                                               AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS)
+    if decision.get("approved"):
+        return
+    if decision.get("reason") == "rejected":
+        raise agent_error(409, "CONFIRM_REJECTED", "用户已取消；没有修改任何提示词。",
+                          "不要自行重试；如需再次发起请先询问用户。")
+    raise agent_error(409, "CONFIRM_PENDING", "未收到用户确认；没有修改任何提示词。",
+                      "确认画布标签页仍打开，再询问用户是否需要重新发起。")
+
+
+async def batch_prompt_edit_core(project_id, actor, parsed, *, binding=None):
+    _validate_project(project_id)
+    store = _app_main.FIREFLY_PROJECT_STORE
+    binding = binding if binding is not None else ("agent", actor)
+    if not isinstance(parsed, str):
+        items = agent_batch_prompt.preview(store.canvas(project_id), parsed)
+        return {"diff_id": agent_batch_prompt.remember(store, project_id, binding, items),
+                "items": [item.public() for item in items]}
+
+    from app.services.agent_ops_context import current_agent_ops_context
+    context = current_agent_ops_context()
+    if not (actor and context and context.project_id == project_id and context.agent_node_id == actor
+            and context.tool == "canvas.batch_prompt_edit"):
+        raise agent_error(400, "INVALID_ARGUMENT", "Matching Agent context is required to apply the diff")
+
+    items = agent_batch_prompt.take(store, project_id, binding, parsed)
+    affected = agent_batch_prompt.changed(items)
+    now = _app_main.now_ms()
+
+    def build(canvas):
+        return agent_batch_prompt.build_mutations(canvas, items, now)
+
+    build(store.canvas(project_id))
+    if affected:
+        await confirm_batch_prompt(project_id, actor, "canvas.batch_prompt_edit",
+                                   len(affected), sum(item.protected for item in affected))
+        await _apply_mutations_from_snapshot(project_id, build)
+    return _op_result({"applied": [item.node_id for item in affected],
+                       "skipped": [{"node_id": item.node_id, "reason": "UNCHANGED"}
+                                   for item in items if item.before == item.after]})
+
+
 def _batch_prompt(node_ids, prompt):
     if not isinstance(node_ids, list) or not node_ids or not all(isinstance(n, str) and n for n in node_ids):
         raise agent_error(400, "INVALID_ARGUMENT", "node_ids 必须是非空节点 ID 数组",
                           "先调用 canvas.list_nodes 获取节点 ID。")
+    if len(set(node_ids)) != len(node_ids):
+        raise agent_refs.invalid("node_ids must be unique")
     if len(node_ids) > BATCH_EDIT_MAX_NODES:
         raise agent_error(400, "INVALID_ARGUMENT",
                           f"node_ids 单次最多 {BATCH_EDIT_MAX_NODES} 个节点（本次 {len(node_ids)}）",
@@ -2828,6 +2894,19 @@ async def prepare_batch_generation(project_id, node_ids, prompt):
     canvas = _app_main.FIREFLY_PROJECT_STORE.canvas(project_id)
     plans = [await prepare_generation(project_id, node_id, canvas=canvas, prompt_override=prompt) for node_id in node_ids]
     return prompt, tuple(plans)
+
+
+def legacy_batch_prompt_counts(plans, prompt):
+    changed = []
+    for plan in plans:
+        original, text, edited, draft, html, _ = plan.original_prompt
+        node = {"type": plan.node_type, "prompt": original, "text": text}
+        if draft is not None or html is not None:
+            node.update(promptDraftText=draft, promptDraftHtml=html)
+        if any(node.get(key) != value for key, value in
+               agent_batch_prompt.prompt_update(node, prompt, legacy=True).items()):
+            changed.append(edited is True)
+    return len(changed), sum(changed)
 
 
 async def batch_edit_core(project_id: str, node_ids, prompt, agent_node_id: str = "", *, plans=None) -> dict:
@@ -2848,19 +2927,28 @@ async def batch_edit_core(project_id: str, node_ids, prompt, agent_node_id: str 
              "tokens": {context.op_id}, "tasks": tasks, "unregistered": {}} if context else None
     token = _BATCH_GENERATION.set(batch)
     guarded = set()
+    def check_prompt(node, plan):
+        if plan and (str(node.get("type", "")) != plan.node_type or
+                     _node_prompt_fields(node) != plan.original_prompt):
+            raise agent_error(409, "CANVAS_CONFLICT", "Batch source prompt changed before write",
+                              "画布上的提示词已改变；检查后重新请求整批确认。")
+
     try:
+        if plans is not None:
+            canvas = store.canvas(project_id)
+            for node_id, plan in zip(node_ids, plans):
+                check_prompt(_snapshot_node(canvas, node_id), plan)
         for index, node_id in enumerate(node_ids):
             plan = plans[index] if plans is not None else None
             updated_at = _app_main.now_ms()
 
             def build(canvas):
                 node = _snapshot_node(canvas, node_id)
-                if node.get("prompt") == prompt:
+                check_prompt(node, plan)
+                update = agent_batch_prompt.prompt_update(node, prompt, legacy=True)
+                if all(node.get(key) == value for key, value in update.items()):
                     return []
-                if plan and _node_prompt_fields(node) != plan.original_prompt:
-                    raise agent_error(409, "CANVAS_CONFLICT", "Batch source prompt changed before write",
-                                      "检查最新提示词后重新预览；不要盲目重试。")
-                return [{"op": "upsert_node", "node": {**node, "prompt": prompt, "updated_at": updated_at}}]
+                return [{"op": "upsert_node", "node": {**node, **update, "updated_at": updated_at}}]
 
             if context:
                 from contextlib import nullcontext

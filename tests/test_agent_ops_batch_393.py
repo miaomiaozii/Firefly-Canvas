@@ -49,8 +49,7 @@ class BatchJournalTests(unittest.IsolatedAsyncioTestCase):
                    patch.object(main, 'route_image_generation', return_value=SimpleNamespace(provider_id='mock', model='mock')),
                    patch.object(main, 'load_api_providers', return_value=[]),
                    patch.object(main.manager, 'broadcast_canvas_updated', new=AsyncMock()),
-                   patch.object(routes, '_server_confirm_gate', new=AsyncMock()),
-                   patch.object(api_mcp, '_confirm_gate', new=AsyncMock()),
+                   patch.object(routes, 'confirm_batch_prompt', new=AsyncMock()),
                    patch.object(api_mcp, 'resolve_project', side_effect=lambda p: p),
                    patch('app.services.agent_host.agent_host_manager', self.host),
                    patch.object(agent_ops_context, 'create_agent_ops_task', side_effect=track)]

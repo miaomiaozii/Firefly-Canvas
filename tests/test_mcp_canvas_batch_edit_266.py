@@ -78,13 +78,13 @@ class BatchEditBehaviorTests(McpTestBase):
         api_agent_tools.build_online_image_result = self._fake_provider
         # #350：batch_edit 在 MCP 层过确认门与会话限额——本组测试只钉 266 行为，
         # 门/限额语义在 test_agent_generation_gate_limit_351 另有钉，这里直接放行。
-        self._prev_conf = api_mcp.request_confirmation_core
+        self._prev_conf = api_agent_tools.request_confirmation_core
         self._prev_limit = api_agent_tools.GENERATION_SESSION_LIMIT
         api_agent_tools.GENERATION_SESSION_LIMIT = 10_000
 
         async def _approve(project_id, node_id, tool, params, message, timeout_seconds=60):
             return {"approved": True}
-        api_mcp.request_confirmation_core = _approve
+        api_agent_tools.request_confirmation_core = _approve
 
     async def _fake_provider(self, _request):
         raise RuntimeError("test provider unavailable")
@@ -93,7 +93,7 @@ class BatchEditBehaviorTests(McpTestBase):
         main.route_image_generation = self.previous_route
         main.load_api_providers = self.previous_providers
         api_agent_tools.build_online_image_result = self.previous_provider_call
-        api_mcp.request_confirmation_core = self._prev_conf
+        api_agent_tools.request_confirmation_core = self._prev_conf
         api_agent_tools.GENERATION_SESSION_LIMIT = self._prev_limit
         with CANVAS_TASK_LOCK:
             CANVAS_TASKS.clear()

@@ -199,8 +199,7 @@ def test_batch_source_lifecycle_http(env, events, monkeypatch, transport):
     store.flush(project)
     monkeypatch.setattr(main, 'route_image_generation', lambda *a, **k: SimpleNamespace(provider_id='mock', model='mock'))
     monkeypatch.setattr(main, 'load_api_providers', lambda: [])
-    monkeypatch.setattr(routes, '_server_confirm_gate', AsyncMock())
-    monkeypatch.setattr(api_mcp, '_confirm_gate', AsyncMock())
+    monkeypatch.setattr(routes, 'confirm_batch_prompt', AsyncMock())
     monkeypatch.setattr(api_mcp, 'resolve_project', lambda p: p)
     async def provider(_):
         raise RuntimeError('provider failure')

@@ -44,6 +44,7 @@ AGENT_ERROR_CODES = (
     "REF_NOT_IN_PROJECT",
     "REF_NOT_ATTACHED",
     "TOO_FEW_NODES",
+    "DIFF_STALE",
     # 兜底翻译器专用（status→通用码，见 translate_detail）
     "NOT_FOUND",
     "CONFLICT",
