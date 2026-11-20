@@ -24,6 +24,8 @@ import sys as _sys
 import os as _os
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
 from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK, ensure_agent_same_origin
+from app.constants import NODE_TYPE_AGENT, NODE_TYPE_GROUP
+from app.services import agent_frame
 from app.services.agent_errors import agent_error
 from app.services.agent_tools_manifest import UPDATABLE_NODE_FIELDS as _UPDATABLE_NODE_FIELDS
 from app.core import OnlineImageRequest, AIReference
@@ -568,7 +570,7 @@ async def get_node(project_id: str, node_id: str, x_agent_project: str = Header(
 @router.post("/nodes")
 async def create_node(project_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Create a new node on the canvas. 可选 `agent_node_id`（#356 D11）：传了则
-    未显式给 x/y 的新节点按该 agent 的会话 frame 网格自动落位（与 MCP 路径同行为）。"""
+    未显式给 x/y 时自动落位；Agent 缺少会话框时自动建立（与 MCP 同行为）。"""
     body = await request.json()
     agent = _creation_context(request, body.get("agent_node_id", ""))
     return await _rest_agent_call(request, project_id, "canvas.create_node", body,
@@ -868,13 +870,7 @@ async def canvas_edit_outpaint(project_id: str, request: Request, agent_node_id:
 
 
 async def create_node_core(project_id: str, node: dict, agent_node_id: str = "") -> dict:
-    """Create a node on the canvas. `node` must be a dict; `type` is required.
-
-    Refs #323 票 E（会话 frame）：调用方未显式给 x/y 且发起 agent 绑了
-    chatFrameId（smart-group）时，新节点按 frame 网格顺序落位并追加进 frame.items
-    （监理钉②：容量不足按整行自动长高，compute_frame_slot 定义）；显式给 x/y 的
-    尊重调用方。仅覆盖 server 侧建节点链（前端级联生成不在票 E 范围）。
-    """
+    """Create a node and return the geometry committed by the placement mutation."""
     _validate_project(project_id)
     if not isinstance(node, dict):
         raise agent_error(400, "INVALID_ARGUMENT", "node must be an object",
@@ -886,7 +882,6 @@ async def create_node_core(project_id: str, node: dict, agent_node_id: str = "")
                           "不要传归属或人工编辑保护字段；服务端按本次调用上下文写入。",
                           details={"rejected_keys": reserved})
     node = {**node, **ownership_fields(agent_node_id)}
-    # Ensure node has required fields
     # #355 W2：caller 传了已存在于画布的 id → 报错，不再静默 upsert 覆盖。
     # #343 升位：MCP/pi 工具建节点一律不接受调用方指定 id（服务端生成）——
     # 任意 id 会流入宿主 argv（--name/--session-dir），传任何非空 id 直接 400。
@@ -900,47 +895,49 @@ async def create_node_core(project_id: str, node: dict, agent_node_id: str = "")
     if not node.get("type"):
         raise agent_error(400, "INVALID_ARGUMENT", "node.type is required",
                           "建节点必须带 type（如 smart-image / prompt / smart-group）。")
-    _explicit_pos = ("x" in node) or ("y" in node)
-    if "x" not in node:
-        node["x"] = 0
-    if "y" not in node:
-        node["y"] = 0
+    explicit_position = any(key in node for key in ("x", "y"))
     node["created_at"] = _app_main.now_ms()
+    frame_id = f"node-{uuid.uuid4().hex[:12]}" if agent_node_id and not explicit_position else None
 
     def build(canvas):
-        created = dict(node)  # Mint identity/time once; recompute placement on retries.
-        mutations = [{"op": "upsert_node", "node": created}]
-        if not _explicit_pos and agent_node_id:
-            frame = _find_chat_frame(project_id, agent_node_id, canvas=canvas)
-            if frame is not None:
-                from app.services import agent_frame as _frame_mod
-                items = list(frame.get("items") or [])
-                dx, dy, new_h = _frame_mod.compute_frame_slot(frame, len(items))
-                created["x"] = int(frame.get("x") or 0) + dx
-                created["y"] = int(frame.get("y") or 0) + dy
-                grown = {**frame, "items": [*items, node["id"]],
-                         "h": max(int(frame.get("h") or 0), new_h)}
-                mutations.append({"op": "upsert_node", "node": grown})
-        return mutations
+        nonlocal created
+        nodes = _placement_nodes(canvas)
+        agent = nodes.get(agent_node_id, {})
+        bindings = []
+        frame = None
+        if not explicit_position and agent.get("type") in (NODE_TYPE_AGENT, "agent"):
+            frame = nodes.get(str(agent.get("chatFrameId") or ""))
+            if not frame or frame.get("type") != NODE_TYPE_GROUP:
+                x, y = agent_frame.right_of_canvas(nodes.values()), agent_frame.coordinate(agent.get("y"))
+                frame = {"id": frame_id, "type": NODE_TYPE_GROUP, "x": x, "y": y, "w": 800, "h": 360,
+                         "title": f"{agent.get('title') or 'Agent'} · 会话框", "items": [],
+                         "chatFrame": True, "chatFrameFor": agent_node_id,
+                         "created_at": node["created_at"], **ownership_fields(agent_node_id)}
+                # Binding, frame and card belong to the same CAS write and undo delta.
+                bindings.append({"op": "upsert_node", "node": {**agent, "chatFrameId": frame_id}})
 
+        w, h = agent_frame.node_size(node, grouped=frame is not None)
+        created = {**node, "w": w, "h": h}
+        if frame is not None:
+            created, frame = agent_frame.place_in_frame(frame, created, nodes)
+            bindings.append({"op": "upsert_node", "node": frame})
+        elif explicit_position:
+            created.update(x=node.get("x", 0), y=node.get("y", 0))
+        else:
+            created.update(x=agent_frame.right_of_canvas(nodes.values()), y=0)
+        return [{"op": "upsert_node", "node": created}, *bindings]
+
+    created = None
     await _apply_mutations_from_snapshot(project_id, build)
-    return _op_result({"success": True, "node_id": node["id"]})
+    return _op_result({"success": True, "node_id": node["id"], **_geometry(created)})
 
 
-def _find_chat_frame(project_id: str, agent_node_id: str, *, canvas: dict | None = None) -> dict | None:
-    """agent 节点 → chatFrameId → 存在的 smart-group（链上任一环缺失= None）。"""
-    if canvas is None:
-        try:
-            canvas = _app_main.FIREFLY_PROJECT_STORE.canvas(project_id)
-        except Exception:
-            return None
-    nodes = {str(n.get("id")): n for n in (canvas.get("nodes") or []) if isinstance(n, dict)}
-    agent = nodes.get(str(agent_node_id))
-    frame_id = str((agent or {}).get("chatFrameId") or "")
-    frame = nodes.get(frame_id)
-    if isinstance(frame, dict) and frame.get("type") == "smart-group":
-        return frame
-    return None
+def _placement_nodes(canvas):
+    return {node["id"]: node for node in canvas.get("nodes", [])}
+
+
+def _geometry(node):
+    return {key: node[key] for key in ("x", "y", "w", "h")}
 
 
 async def update_node_core(project_id: str, node_id: str, updates: dict) -> dict:
@@ -1328,18 +1325,33 @@ async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: 
 
     task_id = f"agent_img_{uuid.uuid4().hex}"
     result_node_id = f"node-{uuid.uuid4().hex[:12]}"
-    src_x = float(target_node.get("x") or 0.0)
-    src_y = float(target_node.get("y") or 0.0)
-    src_w = float(target_node.get("width") or 300.0)
-    result_node = {
+    result_template = {
         "id": result_node_id,
         "type": "smart-image",
         "title": f"生成结果 · {prompt[:24]}",
         **creation,
-        "x": src_x + src_w + 60.0,
-        "y": src_y,
         "created_at": _app_main.now_ms(),
     }
+    result_node = None
+
+    def build_result(canvas):
+        nonlocal result_node
+        nodes = _placement_nodes(canvas)
+        source = nodes.get(node_id)
+        if source is None:
+            raise agent_error(404, "NODE_NOT_FOUND", f"Node not found: {node_id}",
+                              "先调用 canvas.list_nodes 取得当前生成节点。")
+        groups = [n for n in nodes.values() if n.get("type") == NODE_TYPE_GROUP]
+        frame = next((g for g in groups if node_id in (g.get("items") or [])), None)
+        w, h = agent_frame.node_size(result_template, grouped=frame is not None)
+        result_node = {**result_template, "w": w, "h": h}
+        if frame is not None:
+            result_node, frame = agent_frame.place_in_frame(frame, result_node, nodes)
+            return [{"op": "upsert_node", "node": result_node}, {"op": "upsert_node", "node": frame}]
+        memberships = {identity for group in groups for identity in group.get("items") or []}
+        result_node = agent_frame.next_to_source(source, result_node, nodes.values(), memberships)
+        return [{"op": "upsert_node", "node": result_node}]
+
     from app.services.agent_ops_context import current_agent_ops_context, create_agent_ops_task
     from app.services.agent_ops_async import run_blocking_to_completion
     context = current_agent_ops_context()
@@ -1403,8 +1415,8 @@ async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: 
             nonlocal started, recovery_required
             try:
                 def create_result():
-                    return store.apply_mutations(project_id, [{"op": "upsert_node", "node": result_node}],
-                                                 base_revision=store.canvas(project_id)["revision"])
+                    canvas = store.canvas(project_id)
+                    return store.apply_mutations(project_id, build_result(canvas), base_revision=canvas["revision"])
                 if batch is not None and batch["root_exists"]:
                     _generation_child(store, project_id, context, task_id, guarded, create_result, lifecycle=lifecycle)
                 else:
@@ -1454,7 +1466,7 @@ async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: 
         except (Exception, asyncio.CancelledError) as exc:
             start_cancel = exc
     else:
-        await _apply_mutations(project_id, [{"op": "upsert_node", "node": result_node}])
+        await _apply_mutations_from_snapshot(project_id, build_result)
     with CANVAS_TASK_LOCK:
         CANVAS_TASKS[task_id] = {
             "id": task_id,
@@ -1495,7 +1507,7 @@ async def trigger_generation_core(project_id: str, node_id: str, agent_node_id: 
         start_cancel.add_note(f"Generation operation {context.op_id} task {task_id}")
         raise start_cancel
     response = {"task_id": task_id, "type": "image", "node_id": node_id,
-                "result_node_id": result_node_id}
+                "result_node_id": result_node_id, **_geometry(result_node)}
     if context:
         response["op_id"] = context.op_id
         response["touched_node_ids"] = _operation_touched(store, project_id, guarded | {context.op_id})

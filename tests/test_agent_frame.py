@@ -1,7 +1,7 @@
 """Refs #323 票 E：会话 frame 落位 + reference frame 素材注入（服务端）。
 
 覆盖：compute_frame_slot/frame_capacity 网格数学与自动长高（监理钉②）、
-create_node_core 的 chatFrameId 落位链（含显式 x/y 尊重、悬挂降级）、
+create_node_core 的 chatFrameId 落位链（含尊重显式 x/y、缺省建框）、
 _collect_reference_images 护栏（≤8 张/5MB/路径失败不炸整轮=监理钉③/视频）、
 user_prompt refs 元数据（监理钉①）、insert_ref_images codex argv 插入（0.162 实测 -i 语法）。
 """
@@ -107,8 +107,13 @@ class CreateNodePlacement(unittest.TestCase):
         r1 = run_async(create_node_core(self.pid, {"type": "t"}, agent_node_id="agent-2"))
         r2 = run_async(create_node_core(self.pid, {"type": "t"}, agent_node_id="agent-3"))
         nodes = self._nodes()
-        self.assertEqual((nodes[r1["node_id"]]["x"], nodes[r1["node_id"]]["y"]), (0, 0))
-        self.assertEqual((nodes[r2["node_id"]]["x"], nodes[r2["node_id"]]["y"]), (0, 0))
+        frame_ids = [nodes[agent]["chatFrameId"] for agent in ("agent-2", "agent-3")]
+        self.assertEqual(len(set(frame_ids)), 2)
+        self.assertNotIn("ghost", frame_ids)
+        for frame_id, result in zip(frame_ids, (r1, r2)):
+            frame = nodes[frame_id]
+            self.assertEqual(frame["items"], [result["node_id"]])
+            self.assertNotEqual((result["x"], result["y"]), (0, 0))
 
     def test_chatframe_items_immutable_via_update(self):
         """监理钉 B1 + #355（review 01:08）：items 已从 UPDATABLE_NODE_FIELDS 白名单移除——

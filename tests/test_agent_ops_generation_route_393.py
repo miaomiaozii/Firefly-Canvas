@@ -54,6 +54,61 @@ class GenerationJournalTests(unittest.IsolatedAsyncioTestCase):
                              tool='generate.trigger', args={'node_id': 'source'}):
             return await routes.trigger_generation_core(self.pid, 'source', agent_node_id='actor')
 
+    async def test_repeated_generation_uses_source_frame_and_undo_removes_membership(self):
+        canvas = self.store.canvas(self.pid)
+        frame = {"id": "target-frame", "type": "smart-group", "x": 700, "y": 300,
+                 "w": 620, "h": 360, "items": ["source"]}
+        self.store.apply_mutations(self.pid, [
+            {"op": "upsert_node", "node": {**canvas["nodes"][0], "x": 720, "y": 360}},
+            {"op": "upsert_node", "node": frame},
+        ], base_revision=canvas["revision"])
+        self.store.flush(self.pid)
+        image = Path(self.tmp.name) / "test.png"
+        from PIL import Image
+        Image.new('RGB', (2, 2), 'red').save(image)
+        provider = AsyncMock(return_value={'image_items': [{'url': '/output/test.png', 'mime_type': 'image/png'}]})
+        with patch.object(routes, 'build_online_image_result', provider), \
+             patch.object(main, 'output_file_from_url', return_value=image):
+            first = await self.start()
+            await asyncio.wait_for(self.workers[-1], 5)
+            second = await self.start()
+            await asyncio.wait_for(self.workers[-1], 5)
+        first_id, second_id = first['result_node_id'], second['result_node_id']
+        live_frame = self.store.find_canvas_node(self.pid, frame['id'])
+        self.assertEqual(live_frame['items'], ['source', first_id, second_id])
+        for result in (first, second):
+            stored = self.store.find_canvas_node(self.pid, result['result_node_id'])
+            self.assertEqual({k: result[k] for k in ('x', 'y', 'w', 'h')},
+                             {k: stored[k] for k in ('x', 'y', 'w', 'h')})
+            self.assertEqual((await routes.get_task_status(self.pid, result['task_id']))['status'], 'succeeded')
+            self.assertGreater(result['x'], live_frame['x'])
+            self.assertGreater(result['y'], live_frame['y'])
+            self.assertLess(result['x'] + result['w'], live_frame['x'] + live_frame['w'])
+            self.assertLess(result['y'] + result['h'], live_frame['y'] + live_frame['h'])
+        self.assertTrue(any(a[axis] + a[size] <= b[axis]
+                            for a, b in ((first, second), (second, first))
+                            for axis, size in (('x', 'w'), ('y', 'h'))), (first, second))
+        self.assertEqual(self.undo(second['op_id'])['status'], 'reverted')
+        self.assertEqual(self.store.find_canvas_node(self.pid, frame['id'])['items'], ['source', first_id])
+        self.assertEqual(self.undo(first['op_id'])['status'], 'reverted')
+        self.assertEqual(self.store.find_canvas_node(self.pid, frame['id']), frame)
+
+    async def test_ungrouped_generation_does_not_stack_repeated_placeholders(self):
+        canvas = self.store.canvas(self.pid)
+        source = {**canvas['nodes'][0], 'x': 100, 'y': 200, 'w': 450}
+        self.store.apply_mutations(self.pid, [{'op': 'upsert_node', 'node': source}],
+                                   base_revision=canvas['revision'])
+        provider = AsyncMock(side_effect=RuntimeError('mock provider failed'))
+        with patch.object(routes, 'build_online_image_result', provider):
+            first = await self.start()
+            await asyncio.wait_for(self.workers[-1], 5)
+            second = await self.start()
+            await asyncio.wait_for(self.workers[-1], 5)
+        self.assertEqual(first['y'], source['y'])
+        self.assertEqual(second['y'], source['y'])
+        self.assertGreater(first['x'], source['x'] + source['w'])
+        self.assertGreater(second['x'], first['x'] + first['w'])
+
     async def test_blocked_provider_guards_every_visible_child_and_root_undo(self):
         entered, release = asyncio.Event(), asyncio.Event()
         async def provider(_):

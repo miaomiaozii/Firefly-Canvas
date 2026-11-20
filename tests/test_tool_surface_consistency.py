@@ -267,6 +267,9 @@ class DualPathEquivalenceTests(unittest.TestCase):
                 for k, v in list(item.items()):
                     if isinstance(v, str):
                         item[k] = self._canon_text(v)
+                    elif k == "items" and isinstance(v, list):
+                        # Both paths mint independent IDs for frame members.
+                        item[k] = [self._canon_text(i) if isinstance(i, str) else i for i in v]
                     if k in ("x", "y") and v is None:
                         item[k] = 0
         return sorted(json.dumps(x, sort_keys=True) for x in nodes) if not edges else (
@@ -350,6 +353,12 @@ class DualPathEquivalenceTests(unittest.TestCase):
                         self.assertRegex(op_id, r"^[0-9a-f]{32}$")
                         records = self._rest(client, "GET", f"/api/projects/{pid}/ops")
                         self.assertEqual(json.loads(records["text"])["operations"][0]["op_id"], op_id)
+                        if name == "canvas.create_node":
+                            payload = json.loads(result["text"])
+                            nodes = {node["id"]: node for node in store.canvas(pid)["nodes"]}
+                            frame = nodes[nodes["agent-consistency"]["chatFrameId"]]
+                            self.assertEqual(frame["items"], [payload["node_id"]])
+                            self.assertEqual(frame["chatFrameFor"], "agent-consistency")
                 self._assert_pair(a, b, name)
                 self.assertEqual(self._canvas_state(store, pid_a), self._canvas_state(store, pid_b),
                                  f"{name}: 两路画布终态不一致")
