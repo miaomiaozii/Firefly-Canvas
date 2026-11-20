@@ -175,6 +175,41 @@ test('completed content pastes and Alt-copies with new ownership and remapped in
     }
 });
 
+for(const operation of ['paste','duplicate','alt']){
+    test(`#451 ${operation} saves copied links independently of the originals`,()=>{
+        const e=editor([original(),{...original(),id:'target',inputNodeIds:['original']}]);
+        const edge={id:'edge-source',from:'original',to:'target',fromPort:'out',toPort:'in',kind:'input'};
+        e.ctx.sourceEdge=edge;
+        evaluate(e.ctx,`canvas.connections=[{...sourceEdge}];canvasState.selectedIds=['original','target'];lastMouseWorld={x:100,y:100}`);
+        const baseline=e.ctx.projectCanvasSnapshot(e.ctx.canvasForStorage());
+        e.ctx.advanceSmartCanvasShadow(e.ctx.canvasForStorage());
+        e.ctx.settleSmartCanvasPendingView();
+        let copyCount=1;
+        if(operation==='paste'){
+            e.ctx.copySelectedNodes();
+            e.ctx.pasteNodes();
+            e.ctx.pasteNodes();
+            copyCount=2;
+        }else if(operation==='duplicate') e.ctx.duplicateSelectedNodes();
+        else e.ctx.duplicateForAltDrag(e.node(),true);
+        const stored=fromContext(e.ctx.canvasForStorage());
+        const copies=stored.nodes.slice(2);
+        assert.equal(copies.length,2*copyCount);
+        assert.deepEqual(stored.connections[0],edge);
+        assert.equal(stored.connections.length,1+copyCount);
+        assert.equal(new Set(stored.connections.map(link=>link.id)).size,1+copyCount);
+        for(let i=0;i<copyCount;i++){
+            const link=stored.connections[i+1];
+            assert.ok(link.id);
+            assert.deepEqual(link,{...edge,id:link.id,from:copies[2*i].id,to:copies[2*i+1].id});
+            assert.deepEqual(copies[2*i+1].inputNodeIds,[copies[2*i].id]);
+        }
+        const {mutations}=fromContext(e.ctx.buildCoreMutations(stored,baseline));
+        assert.deepEqual(mutations.filter(m=>m.op==='upsert_edge').map(m=>m.edge),stored.connections.slice(1));
+        assert.equal(mutations.some(m=>m.op==='remove_edge'),false);
+    });
+}
+
 test('human port connection stamps only its input target, repeats and automatic shared connections stay negative',async()=>{
     const e=editor([{id:'source',type:'smart-image',...identity,images:[],x:0,y:0},{...original(),id:'target',promptEditedByUser:false}]);
     const nodeEl={dataset:{id:'target'},getBoundingClientRect:()=>({left:100,width:200})};

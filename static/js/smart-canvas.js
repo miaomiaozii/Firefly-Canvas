@@ -7583,6 +7583,10 @@ function cloneSmartNode(node, dx=0, dy=0){
     if(copy.type === NODE_TYPE_GROUP) copy.title = copy.title || '智能分组';
     return copy;
 }
+function cloneSmartConnection(conn, idMap){
+    // #451: A copied edge is a new entity for undo and incremental saving.
+    return {...conn, id:uid('edge'), from:idMap.get(conn.from) || conn.from, to:idMap.get(conn.to) || conn.to};
+}
 function rejectSmartHumanCopy(nodes){
     if(!nodes.some(node => canvasCore.smartConversationPendingIntents(node).length)) return false;
     toast('包含未决执行意图的对话，暂不能复制；请等待对话完成后重试。');
@@ -7629,11 +7633,9 @@ function pasteNodes(){
         if(copy.sourceNodeId) copy.sourceNodeId = idMap.get(copy.sourceNodeId) || copy.sourceNodeId;
     });
     // 连线：选中集内的端点映射到新 ID，外部的保留原 ID（保持连线不断）
-    const newConnections = (nodeClipboard.connections || []).map(conn => ({
-        ...conn,
-        from:idMap.get(conn.from) || conn.from,
-        to:idMap.get(conn.to) || conn.to
-    })).filter(conn => conn.from && conn.to && conn.from !== conn.to);
+    const newConnections = (nodeClipboard.connections || [])
+        .map(conn => cloneSmartConnection(conn, idMap))
+        .filter(conn => conn.from && conn.to && conn.from !== conn.to);
     const action = beginSmartNodeInputEdit(canvasState.nodes.filter(node => newConnections.some(conn => conn.to === node.id)));
     canvas.connections = [...(canvas.connections || []), ...newConnections];
     canvasState.nodes.push(...copies);
@@ -7710,7 +7712,7 @@ function duplicateForAltDrag(node, preserveConnections=false){
         const idSet = new Set(sourceNodes.map(n => n.id));
         const newConnections = (canvas.connections || [])
             .filter(conn => idSet.has(conn.to))
-            .map(conn => ({...conn, from:idMap.get(conn.from) || conn.from, to:idMap.get(conn.to) || conn.to}))
+            .map(conn => cloneSmartConnection(conn, idMap))
             .filter(conn => conn.from && conn.to && conn.from !== conn.to);
         const nextConnections = [...(canvas.connections || [])];
         newConnections.forEach(conn => {
@@ -16827,7 +16829,7 @@ function duplicateSelectedNodes(dx=32, dy=32){
     const nextConnections = [...(canvas.connections || [])];
     (canvas.connections || []).forEach(conn => {
         if(!idSet.has(conn.from) || !idSet.has(conn.to)) return;
-        const mapped = {...conn, from:idMap.get(conn.from) || conn.from, to:idMap.get(conn.to) || conn.to};
+        const mapped = cloneSmartConnection(conn, idMap);
         if(!mapped.from || !mapped.to || mapped.from === mapped.to) return;
         const kind = mapped.kind || 'flow';
         if(nextConnections.some(c => c.from === mapped.from && c.to === mapped.to && (c.kind || 'flow') === kind)) return;
