@@ -520,6 +520,41 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(spawned[1][spawned[1].index("-m") + 1], "model-new")
         self.assertEqual(spawned[1][spawned[1].index("resume") + 1], "codex-native")
 
+    async def test_codex_medium_then_xhigh_stays_xhigh_on_following_resume(self):
+        self.session.agent_cli = "codex"
+        self.session.model = "gpt-test"
+        spawned = []
+
+        def spawn(argv, **kwargs):
+            spawned.append(list(argv))
+            return CodexProcess(argv)
+
+        with patch.object(ah.shutil, "which", return_value="fake-codex.exe"), \
+                patch("app.services.agent_adapters.codex_adapter.codex_spawn_env", return_value={"CODEX_HOME": str(self.root / "home")}), \
+                patch("app.services.agent_adapters.codex_adapter.write_home_mcp_config"), \
+                patch.object(ah.subprocess, "Popen", side_effect=spawn):
+            for index, effort in enumerate(("medium", "xhigh", "xhigh")):
+                with self.subTest(turn=index, effort=effort):
+                    if index < 2:
+                        await self.manager.apply_runtime_settings(self.session, "gpt-test", effort)
+                    await self.manager.send_prompt(self.session, f"turn {index}", request_id=f"effort-447-{index}")
+                    await asyncio.wait_for(asyncio.shield(self.session._reader_task), 3)
+                    self.assertEqual(self.session.effort_state, {
+                        "requested": effort, "submitted": effort, "effective": None,
+                        "source": "codex:argv; effective-unverified",
+                    })
+                    self.assertEqual(self.session.reasoning_effort, effort)
+                    self.assertEqual(self.session.ext_session_id, "codex-native")
+        self.assertEqual(len(spawned), 3)
+        for index, (argv, effort) in enumerate(zip(spawned, ("medium", "xhigh", "xhigh"))):
+            self.assertEqual([arg for arg in argv if arg.startswith("model_reasoning_effort=")],
+                             [f'model_reasoning_effort="{effort}"'])
+            self.assertEqual(argv[argv.index("-m") + 1], "gpt-test")
+            if index == 0:
+                self.assertNotIn("resume", argv)
+            else:
+                self.assertEqual(argv[argv.index("resume") + 1], "codex-native")
+
     async def test_codex_failed_resume_replay_retry_reuses_pair_and_reference_snapshot(self):
         captured, spawned, processes, turn_ids, events = await self.run_codex(
             binding="missing-thread", resume_stderr="Error: no rollout found for thread id missing-thread\n",
