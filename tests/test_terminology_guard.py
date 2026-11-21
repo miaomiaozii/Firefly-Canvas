@@ -263,6 +263,24 @@ SCOPED_EXCEPTIONS = {
         "raise HTTPException(status_code=502, detail=f'从 ComfyUI 取图失败（{view.status_code}）：{image.get(\"filename\")}')",
         "raise HTTPException(status_code=502, detail='ComfyUI 返回了空图片。')",
         "# #331：本地 ComfyUI 直接吃画布的 aspect_ratio + resolution 档；显式尺寸走适配器内的 8 倍数换算。",
+        # #472: real provider diagnostics, never a synonym for online generation.
+        "\"\"\"ComfyUI 提交不幂等；除已确认的 OOM 腾显存一次外，不自动重提。\"\"\"",
+        "'若产物已落盘，可在 ComfyUI 的 output/MiniMax-H3-Image/ 目录里找到；本适配器不自动重提。',",
+        "detail += '，任务可能已入队，请先检查 ComfyUI 队列再决定是否重试；本适配器不自动重提。'",
+        "detail += '，任务可能已入队，请先检查 ComfyUI 队列；本适配器不自动重提。'",
+        "detail += '，请检查 ComfyUI output/MiniMax-H3-Image/ 目录；本适配器不自动重提。'",
+        "detail = f'ComfyUI {stage}网络请求失败'",
+        "detail = f'ComfyUI {stage}超时'",
+        "error = _comfyui_error(f'ComfyUI {stage}{detail}（HTTP {status}）。', public_status, prompt_id=prompt_id)",
+        "error.detail = f'ComfyUI 提交失败（HTTP {submit.status_code}）：{error.detail}'",
+        "f'ComfyUI 生图总等待超时（已等 {int(now - started)} 秒，prompt_id={prompt_id}）。'",
+        "raise _comfyui_error('ComfyUI 参考图上传响应未返回文件名。')",
+        "raise _comfyui_error('ComfyUI 取图返回了空图片。', prompt_id=prompt_id)",
+        "raise _comfyui_error('ComfyUI 提交响应未返回 prompt_id，任务可能已入队，请先检查 ComfyUI 队列；本适配器不自动重提。', uncertain=True)",
+        "raise _comfyui_error(f'ComfyUI {context}响应不是 ComfyUI history 数据（可能是 HTML 或无效 JSON），请检查 Base URL。', prompt_id=prompt_id) from None",
+        "raise _comfyui_error(f'ComfyUI {stage}响应不是 ComfyUI 数据（可能是 HTML 或无效 JSON），请检查 Base URL。',",
+        "raise _comfyui_redact_error(HTTPException(status_code=502, detail=f'ComfyUI 拒绝该工作流：{detail}'), provider_key)",
+        "return _comfyui_error(f'ComfyUI {stage}连接失败：无法建立连接，请确认 ComfyUI 已启动、网络可达及 Base URL 正确。', 503, prompt_id=prompt_id)",
     },
     ("firefly_generation.py", "ComfyUI"): {
         "# #331: 本地 ComfyUI 是工作流图接口，同理不允许被改成 REST 协议。",
@@ -283,6 +301,26 @@ SCOPED_EXCEPTIONS = {
     ("tests/test_comfyui_canvas_payload.py", "ComfyUI"): {
         '"""端到端（假 ComfyUI）：画布各种 payload 变体都要落到节点 4 的正确尺寸。"""',
         "'id': PROVIDER_ID, 'name': 'ComfyUI（本地）', 'base_url': 'http://127.0.0.1:8188',",
+    },
+    # #472: upstream payload/diagnostic assertions; other text in this file stays guarded.
+    ("tests/test_comfyui_generation_472.py", "ComfyUI"): {
+        "('/prompt', httpx.Response(200, json=[]), 502, '不是 ComfyUI', None),",
+        "('/prompt', httpx.Response(200, text='<html>login</html>'), 502, '不是 ComfyUI', None),",
+        "('/upload/image', httpx.Response(200, json=[]), 502, '不是 ComfyUI', [REFERENCE]),",
+        "(httpx.Response(200, content=b'{broken'), 502, '不是 ComfyUI'),",
+        "(httpx.Response(200, json=None), 502, '不是 ComfyUI'),",
+        "(httpx.Response(200, json=[]), 502, '不是 ComfyUI'),",
+        "(httpx.Response(200, json={'error': 'wrong endpoint'}), 502, '不是 ComfyUI'),",
+        "(httpx.Response(200, json={PROMPT_ID: []}), 502, '不是 ComfyUI'),",
+        "(httpx.Response(200, json={PROMPT_ID: {'outputs': {'9': {'images': [None]}}}}), 502, '不是 ComfyUI'),",
+        "(httpx.Response(200, json={PROMPT_ID: {'outputs': {'9': {'images': [{'filename': 'result.png', 'metadata': []}]}}}}), 502, '不是 ComfyUI'),",
+        "(httpx.Response(200, json={PROMPT_ID: {'status': [], 'outputs': {}}}), 502, '不是 ComfyUI'),",
+        "(httpx.Response(200, json={PROMPT_ID: {'status': {'status_str': 'error', 'messages': [['execution_error', []]]}}}), 502, '不是 ComfyUI'),",
+        "(httpx.Response(200, json={PROMPT_ID: {'status': {}, 'outputs': []}}), 502, '不是 ComfyUI'),",
+        "(httpx.Response(200, text='<html>login</html>', headers={'content-type': 'text/html'}), 502, '不是 ComfyUI'),",
+        "assert 'ComfyUI 提交' in error.value.detail",
+        "assert 'ComfyUI' in error.value.detail",
+        "assert '已让 ComfyUI 卸载模型' not in error.value.detail",
     },
     ("tests/test_comfyui_h3_image.py", "ComfyUI"): {
         '"""#331 本地 ComfyUI（MiniMax-H3-Image GGUF）接入 TDD。',
@@ -498,6 +536,8 @@ class TerminologyGuardTests(unittest.TestCase):
     def test_exact_exceptions_do_not_hide_new_uses_in_same_file(self):
         cases = [
             ("app/services/generation.py", "ComfyUI", "f'ComfyUI 执行失败：{raw_error}'", 'label = "ComfyUI 生图模式"'),
+            ("app/services/generation.py", "ComfyUI", "detail = f'ComfyUI {stage}超时'", 'label = "ComfyUI 生图模式"'),
+            ("tests/test_comfyui_generation_472.py", "ComfyUI", "assert 'ComfyUI' in error.value.detail", 'label = "ComfyUI 生图模式"'),
             ("app/services/generation.py", "外链", "现在全部走 store / 本地媒体解析，只有真正的外部 http(s) 外链才允许下网。", 'label = "项目媒体原件：外链"'),
             ("tests/test_server_logging.py", LOGS_PATTERN, 'self.assertEqual(directory, Path(tmp) / "logs")', 'history = data["logs"]'),
         ]

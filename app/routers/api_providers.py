@@ -427,22 +427,76 @@ def apply_agnes_model_defaults(base_url, grouped, ids):
     return (grouped, ids)
 
 async def comfyui_test_connection(payload):
-    """ComfyUI 没有 /v1/models，改探 /system_stats + 关键节点是否存在。"""
+    """探测可达性和生图能力，不修改服务商配置（#472）。"""
+    api_key = api_key_from_payload(payload, 'comfyui').strip()
+    headers = {'Authorization': bearer_auth_value(api_key)} if api_key.lower() not in ('', 'bearer') else {}
     base_url = str(payload.base_url or COMFYUI_DEFAULT_BASE_URL or '').strip().rstrip('/')
     if not base_url:
         raise HTTPException(status_code=400, detail='请先填写服务商请求地址')
     if not re.match('^https?://', base_url):
         raise HTTPException(status_code=400, detail='请求地址必须以 http:// 或 https:// 开头')
+    # httpx 会将 URL 中的 userinfo 自动转换为 Basic，不能绕过 Bearer-only 合同。
+    if urllib.parse.urlsplit(base_url).username is not None:
+        raise HTTPException(status_code=400, detail='请求地址不能包含用户名或密码，请使用 API Key（Bearer）认证。')
+
+    def response_error(response, endpoint):
+        status = response.status_code
+        # 上游正文和跳转地址都可能回显密钥，诊断只包含端点和状态。
+        if status in (401, 403):
+            message = f'服务商 {endpoint} 认证失败（HTTP {status}），请检查 Bearer API Key。'
+        elif status >= 500:
+            message = f'服务商 {endpoint} 服务暂不可用（HTTP {status}）。'
+        elif 300 <= status < 400:
+            message = f'服务商 {endpoint} 发生跳转（HTTP {status}），请填写服务商 API 地址。'
+        elif status >= 400 and not (status == 404 and endpoint.startswith('/object_info/')):
+            message = f'服务商 {endpoint} 不可用（HTTP {status}），请检查服务商 API 地址。'
+        elif 'text/html' in response.headers.get('content-type', '').lower() or looks_like_html_response(response.text):
+            message = f'服务商 {endpoint} 返回 HTML，不是有效的服务商 API 响应。'
+        else:
+            return None
+        return {'ok': False, 'status': status, 'message': message}
+
     try:
         async with httpx.AsyncClient(timeout=15) as client:
-            stats = await client.get(f'{base_url}/system_stats')
-            if stats.status_code >= 400:
-                return {'ok': False, 'status': stats.status_code, 'message': f'服务商 /system_stats 返回 {stats.status_code}：{stats.text[:200]}'}
-            nodes = await client.get(f'{base_url}/object_info/MiniMaxH3ImageConditioning')
-    except httpx.HTTPError as e:
-        return {'ok': False, 'status': 0, 'message': f'连不上服务商（{base_url}）：{str(e)[:200]}'}
-    if nodes.status_code != 200:
-        return {'ok': True, 'status': 200, 'protocol': 'comfyui', 'model_count': 0, 'message': f'服务可用，但没找到 MiniMaxH3ImageConditioning 节点（{base_url}）：需要安装 MiniMax-H3-Image 自定义节点，否则生图会直接失败。'}
+            endpoint = '/system_stats'
+            stats = await client.get(f'{base_url}{endpoint}', headers=headers)
+            error = response_error(stats, '/system_stats')
+            if error:
+                return error
+            try:
+                stats_data = stats.json()
+            except ValueError:
+                stats_data = None
+            if not (isinstance(stats_data, dict) and isinstance(stats_data.get('system'), dict)
+                    and isinstance(stats_data.get('devices'), list)):
+                return {'ok': False, 'status': stats.status_code, 'message': '服务商 /system_stats 未返回有效的服务商状态 JSON，请检查请求地址。'}
+            # 只支持无认证/Bearer，不把上游返回的登录 Cookie 用作后续认证。
+            client.cookies.clear()
+            endpoint = '/object_info/MiniMaxH3ImageConditioning'
+            nodes = await client.get(f'{base_url}{endpoint}', headers=headers)
+            error = response_error(nodes, '/object_info/MiniMaxH3ImageConditioning')
+            if error:
+                return error
+    except httpx.ConnectTimeout:
+        return {'ok': False, 'status': 0, 'message': '服务商连接超时，请检查地址与网络。'}
+    except httpx.ReadTimeout:
+        return {'ok': False, 'status': 0, 'message': f'服务商 {endpoint} 读取超时，请稍后重试。'}
+    except httpx.ConnectError:
+        return {'ok': False, 'status': 0, 'message': '服务商连接失败，请检查地址与网络。'}
+    except httpx.HTTPError:
+        return {'ok': False, 'status': 0, 'message': '服务商 HTTP 请求失败，请检查服务商 API 服务。'}
+    try:
+        node_data = nodes.json()
+    except ValueError:
+        node_data = {}
+    node = node_data.get('MiniMaxH3ImageConditioning') if isinstance(node_data, dict) else None
+    # 显示名、版本等字段不是能力合同；仅检查节点输入/输出结构。
+    valid_node = (isinstance(node, dict) and isinstance(node.get('input'), dict)
+                  and all(isinstance(node['input'].get(group, {}), dict) for group in ('required', 'optional'))
+                  and isinstance(node.get('output'), list)
+                  and all(isinstance(output, str) for output in node['output']))
+    if nodes.status_code != 200 or not valid_node:
+        return {'ok': False, 'status': nodes.status_code, 'protocol': 'comfyui', 'model_count': 0, 'message': '服务可达，但当前无法生图：未找到有效的 MiniMaxH3ImageConditioning 节点信息。'}
     return {'ok': True, 'status': 200, 'protocol': 'comfyui', 'model_count': 0, 'message': '服务可用，已检测到 MiniMaxH3ImageConditioning 节点。'}
 
 

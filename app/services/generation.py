@@ -236,16 +236,20 @@ def comfyui_execution_error_text(status) -> str:
 
 
 async def comfyui_queue_position(client, root: str, prompt_id: str):
-    """排队位置（0 = 正在跑，N = 前面还有任务，None = 查不到）。仅用于进度文案。"""
+    """队列只影响进度文案，探测失败不能掩盖任务的主要错误。"""
     try:
         response = await client.get(f'{root}/queue')
         if response.status_code != 200:
             return None
-        data = response.json() or {}
+        data = response.json()
+        if not isinstance(data, dict):
+            return None
+        running = data.get('queue_running')
+        pending = data.get('queue_pending')
+        if not isinstance(running, list) or not isinstance(pending, list):
+            return None
     except Exception:
         return None
-    running = data.get('queue_running') or []
-    pending = data.get('queue_pending') or []
     for index, item in enumerate(pending):
         if isinstance(item, (list, tuple)) and len(item) > 1 and str(item[1]) == prompt_id:
             return len(pending) - index
@@ -384,27 +388,48 @@ def comfyui_reference_local_size(ref, resolution=''):
         return (0, 0)
 
 
-async def comfyui_cancel_prompt(client, root: str, prompt_id: str) -> None:
-    """把还没开始跑的任务从 ComfyUI 队列里撤掉。
-
-    只删队列不跑 `/interrupt`：ComfyUI 是单队列，interrupt 会打断**正在跑的**那一张（可能是用户别的任务），
-    而幂等性在这里很关键——撤错了就是白烧算力。仅当我们的 prompt_id 确实在 running 里才 interrupt。
-    """
+async def comfyui_cancel_prompt(client, root: str, prompt_id: str):
+    """全局 interrupt 只能用于队列明确报告正在运行的本任务，ACK 也不证明已停止。"""
+    failures = []
+    unknown = []
     try:
-        await client.post(f'{root}/queue', json={'delete': [str(prompt_id)]})
+        deleted = await client.post(f'{root}/queue', json={'delete': [str(prompt_id)]})
+        if not 200 <= deleted.status_code < 300:
+            failures.append(f'删除队列请求失败 HTTP {deleted.status_code}')
     except Exception:
-        return
+        failures.append('删除队列请求失败')
     try:
         queue = await client.get(f'{root}/queue')
-        data = queue.json() or {} if queue.status_code == 200 else {}
+        if queue.status_code != 200:
+            raise ValueError('queue unavailable')
+        data = queue.json()
+        if not isinstance(data, dict):
+            raise ValueError('invalid queue')
+        ids = {}
+        for key in ('queue_running', 'queue_pending'):
+            rows = data.get(key)
+            if not isinstance(rows, list) or any(not isinstance(row, (list, tuple)) or len(row) < 2 for row in rows):
+                raise ValueError('invalid queue rows')
+            ids[key] = [str(row[1]) for row in rows]
     except Exception:
-        return
-    running = [str(item[1]) for item in (data.get('queue_running') or []) if isinstance(item, (list, tuple)) and len(item) > 1]
-    if str(prompt_id) in running:
-        try:
-            await client.post(f'{root}/interrupt')
-        except Exception:
-            pass
+        unknown.append('无法查询或解析远端队列')
+    else:
+        if str(prompt_id) in ids['queue_running']:
+            try:
+                interrupted = await client.post(f'{root}/interrupt')
+                if not 200 <= interrupted.status_code < 300:
+                    failures.append(f'中断请求失败 HTTP {interrupted.status_code}')
+                else:
+                    unknown.append('已请求中断，停止状态未知')
+            except Exception:
+                failures.append('中断请求失败')
+        elif str(prompt_id) in ids['queue_pending']:
+            unknown.append('远端队列仍有本任务')
+    if failures or unknown:
+        state = 'failed' if failures else 'unknown'
+        label = '撤单失败' if failures else '撤单结果未知'
+        return state, f'{label}（{"；".join(failures + unknown)}），无法确认已从队列撤单；请检查远端队列。'
+    return 'success', '已从队列撤单（队列查询未发现本任务；产物仍可能已落盘）。'
 
 
 class ComfyuiOutOfMemoryError(HTTPException):
@@ -422,8 +447,104 @@ async def comfyui_free_memory(client, root: str) -> None:
         pass
 
 
+def _comfyui_redact_error(error, key):
+    values = {str(key or ''), bearer_auth_value(key), strip_auth_scheme(key)} - {''}
+    for value in sorted(values, key=len, reverse=True):
+        error.detail = str(error.detail).replace(value, '[redacted]')
+    return error
+
+
+def _comfyui_error(detail, status=502, *, prompt_id='', uncertain=False, code=None):
+    if prompt_id and f'prompt_id={prompt_id}' not in detail:
+        detail = f'{detail}（prompt_id={prompt_id}）'
+    error = (UpstreamImageFailure(detail, status=status, uncertain=uncertain or bool(prompt_id), code=code)
+             if AGENT_IMAGE_ATTEMPT.get() else HTTPException(status_code=status, detail=detail))
+    if prompt_id:
+        error.upstream_task_id = prompt_id
+    return error
+
+
+def _comfyui_transport_error(exc, stage, *, prompt_id=''):
+    # 原始 HTTP 异常可能含密钥或鉴权 URL，公开错误及其异常链都不能照搬。
+    if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)):
+        return _comfyui_error(f'ComfyUI {stage}连接失败：无法建立连接，请确认 ComfyUI 已启动、网络可达及 Base URL 正确。', 503, prompt_id=prompt_id)
+    if isinstance(exc, httpx.TimeoutException):
+        detail = f'ComfyUI {stage}超时'
+        if stage == '提交':
+            detail += '，任务可能已入队，请先检查 ComfyUI 队列再决定是否重试；本适配器不自动重提。'
+        elif stage == '取图':
+            detail += '，请检查 ComfyUI output/MiniMax-H3-Image/ 目录；本适配器不自动重提。'
+        return _comfyui_error(detail, 504, prompt_id=prompt_id, uncertain=stage == '提交')
+    detail = f'ComfyUI {stage}网络请求失败'
+    if stage == '提交':
+        detail += '，任务可能已入队，请先检查 ComfyUI 队列；本适配器不自动重提。'
+    return _comfyui_error(detail, prompt_id=prompt_id, uncertain=stage == '提交')
+
+
+def _comfyui_check_response(response, stage, *, prompt_id=''):
+    status = response.status_code
+    if status == 200:
+        return
+    if status in (401, 403):
+        detail, public_status = '鉴权失败，请检查 API Key', status
+    elif status >= 500:
+        detail, public_status = '服务不可用', 503
+    else:
+        detail, public_status = '请求失败，请检查 Base URL', 502
+    error = _comfyui_error(f'ComfyUI {stage}{detail}（HTTP {status}）。', public_status, prompt_id=prompt_id)
+    if isinstance(error, UpstreamImageFailure):
+        upstream = response_failure(response, uncertain=bool(prompt_id))
+        error.upstream_status = upstream.upstream_status
+        error.error_code = upstream.error_code
+        error.retry_after = upstream.retry_after
+        error.uncertain = upstream.uncertain
+    raise error
+
+
+def _comfyui_json_object(response, stage, *, prompt_id=''):
+    try:
+        raw = response.json()
+        if not isinstance(raw, dict):
+            raise ValueError('not an object')
+        return raw
+    except (ValueError, TypeError):
+        raise _comfyui_error(f'ComfyUI {stage}响应不是 ComfyUI 数据（可能是 HTML 或无效 JSON），请检查 Base URL。',
+                             prompt_id=prompt_id, uncertain=stage == '提交') from None
+
+
+def _comfyui_history_entry(response, prompt_id):
+    context = f'查询任务状态（prompt_id={prompt_id}）'
+    _comfyui_check_response(response, '查询任务状态', prompt_id=prompt_id)
+    try:
+        raw = response.json()
+        if not isinstance(raw, dict) or (raw and prompt_id not in raw):
+            raise ValueError('invalid history')
+        entry = raw.get(prompt_id, {})
+        if not isinstance(entry, dict):
+            raise ValueError('invalid entry')
+        status = entry.get('status', {})
+        if not isinstance(status, dict) or not isinstance(entry.get('outputs', {}), dict):
+            raise ValueError('invalid status or outputs')
+        if not isinstance(status.get('status_str', ''), str) or not isinstance(status.get('messages', []), list):
+            raise ValueError('invalid status fields')
+        for message in status.get('messages', []):
+            if not isinstance(message, (list, tuple)) or len(message) < 2 or not isinstance(message[1], dict):
+                raise ValueError('invalid execution message')
+        for node in entry.get('outputs', {}).values():
+            if not isinstance(node, dict) or not isinstance(node.get('images', []), list):
+                raise ValueError('invalid output')
+            for image in node.get('images', []):
+                if not isinstance(image, dict) or not isinstance(image.get('filename'), str) or not image['filename'].strip():
+                    raise ValueError('invalid image')
+                if not isinstance(image.get('metadata', {}), dict):
+                    raise ValueError('invalid image metadata')
+    except (ValueError, TypeError):
+        raise _comfyui_error(f'ComfyUI {context}响应不是 ComfyUI history 数据（可能是 HTML 或无效 JSON），请检查 Base URL。', prompt_id=prompt_id) from None
+    return entry
+
+
 async def comfyui_wait_for_images(client, root, prompt_id, started, report, *, width, height, references):
-    """轮询 /history 直到拿到产物。任何非正常退出（超时/报错/取消）都把任务从队列里撤掉。"""
+    """异常退出时尝试撤单；远端队列才是任务是否停止的真源。"""
     deadline = started + COMFYUI_IMAGE_TASK_TIMEOUT
     next_queue_at = started + COMFYUI_IMAGE_QUEUE_INTERVAL
     queue_position = None
@@ -432,34 +553,26 @@ async def comfyui_wait_for_images(client, root, prompt_id, started, report, *, w
         while True:
             now = time.monotonic()
             if now >= deadline:
-                raise HTTPException(
-                    status_code=504,
-                    detail=(
-                        f'ComfyUI 生图超时（已等 {int(now - started)} 秒，prompt_id={prompt_id}），已从队列撤单。'
-                        '若产物已落盘，可在 ComfyUI 的 output/MiniMax-H3-Image/ 目录里找到；本适配器不自动重提。'
-                    ),
+                raise _comfyui_error(
+                    f'ComfyUI 生图总等待超时（已等 {int(now - started)} 秒，prompt_id={prompt_id}）。'
+                    '若产物已落盘，可在 ComfyUI 的 output/MiniMax-H3-Image/ 目录里找到；本适配器不自动重提。',
+                    504, prompt_id=prompt_id,
                 )
             try:
                 history = await client.get(f'{root}/history/{prompt_id}')
             except httpx.HTTPError as exc:
-                raise HTTPException(status_code=502, detail=f'查询 ComfyUI 任务状态失败：{exc}') from exc
-            try:
-                history_raw = history.json() or {}
-            except Exception:
-                history_raw = {}
-            entry = history_raw.get(prompt_id) if isinstance(history_raw, dict) else None
+                raise _comfyui_transport_error(exc, '查询任务状态', prompt_id=prompt_id) from None
+            entry = _comfyui_history_entry(history, prompt_id)
             if entry:
                 status = entry.get('status') or {}
                 if str(status.get('status_str') or '').strip().lower() == 'error':
                     raw_error = comfyui_execution_error_text(status)
                     out_of_memory = 'exceed allowed memory' in raw_error or 'out of memory' in raw_error.lower()
                     if out_of_memory:
-                        # 显存不足单独归类：上游会释放缓存后重跑一次，而不是直接报错给画布。
                         raise ComfyuiOutOfMemoryError(
                             detail=(
                                 f'ComfyUI 执行失败：{raw_error}'
-                                '（显存不够：已让 ComfyUI 卸载模型腾出显存重跑一次仍失败，'
-                                '请把画布的面积档调低一档，或去掉参考图）'
+                                '（显存不够：请把画布的面积档调低一档，或去掉参考图）'
                             ),
                         )
                     raise HTTPException(status_code=502, detail=f'ComfyUI 执行失败：{raw_error}')
@@ -487,20 +600,25 @@ async def comfyui_wait_for_images(client, root, prompt_id, started, report, *, w
             await asyncio.sleep(COMFYUI_IMAGE_POLL_INTERVAL)
     finally:
         if not completed:
-            await comfyui_cancel_prompt(client, root, prompt_id)
+            primary_error = sys.exc_info()[1]
+            state, detail = await comfyui_cancel_prompt(client, root, prompt_id)
+            if primary_error is not None:
+                primary_error.comfyui_cancellation_status = state
+                primary_error.upstream_task_id = prompt_id
+                if isinstance(primary_error, HTTPException):
+                    primary_error.detail = f'{primary_error.detail}；{detail}'
 
 
 async def comfyui_upload_reference(client, root: str, ref, resolution=''):
-    """把画布参考图送进 ComfyUI 的 input 目录，返回 (名字, 缩放后尺寸)。解析不到返回 ('', (0, 0))。"""
+    """外部参考图不属于服务商 API，下载时必须显式禁用客户端鉴权。"""
     payload, size = comfyui_reference_payload(ref, resolution)
     if not payload:
-        # 本地解析不到的才考虑外部外链。本地回环地址一律不走网：那是没解析成功的项目媒体句柄，
-        # 再打一遍必被适配器作用域挡成 403。
+        # 回环地址可能是未解析的项目媒体句柄，不能绕过适配器作用域再走 HTTP。
         item = ref if isinstance(ref, dict) else {'url': ref}
         external = str(item.get('url') or '').strip()
         if external.startswith(('http://', 'https://')) and '127.0.0.1' not in external and 'localhost' not in external:
             try:
-                response = await client.get(external)
+                response = await client.get(external, auth=None)
                 response.raise_for_status()
             except httpx.HTTPError as exc:
                 raise HTTPException(status_code=400, detail=f'下载外部参考图失败：{external}（{exc}）') from exc
@@ -522,25 +640,31 @@ async def comfyui_upload_reference(client, root: str, ref, resolution=''):
         files={'image': (filename, content, content_type)},
         data={'overwrite': 'true', 'type': 'input'},
     )
-    if upload.status_code != 200:
-        raise HTTPException(status_code=502, detail=f'ComfyUI 参考图上传失败（{upload.status_code}）：{upload.text[:200]}')
-    try:
-        raw = upload.json() or {}
-    except Exception:
-        raw = {}
+    _comfyui_check_response(upload, '参考图上传')
+    raw = _comfyui_json_object(upload, '参考图上传')
     name = str(raw.get('name') or '').strip()
     if not name:
-        raise HTTPException(status_code=502, detail=f'ComfyUI 参考图上传未返回文件名：{str(raw)[:200]}')
+        raise _comfyui_error('ComfyUI 参考图上传响应未返回文件名。')
     subfolder = str(raw.get('subfolder') or '').strip().strip('/')
     return (f'{subfolder}/{name}' if subfolder else name), size
 
 
-async def generate_comfyui_provider_image(prompt, size, model, reference_images=None, provider=None, image_parameters=None, progress_callback=None):
-    """本地 ComfyUI（MiniMax-H3-Image GGUF）文生图 / 图生图。
+class _ComfyuiBearerAuth(httpx.Auth):
+    """鉴权绑定完整 origin，不能用会被外部参考图下载复用的客户端默认头。"""
+    def __init__(self, root, value):
+        url = httpx.URL(root)
+        self._origin = (url.scheme, url.host, url.port)
+        self._value = '' if str(value or '').strip().lower() == 'bearer' else bearer_auth_value(value)
 
-    一次画布任务 = 一张 ComfyUI 图：POST /prompt → 轮询 /history → GET /view。
-    本接口不幂等（失败重跑会重算一轮算力），所以这里不重试；超时也不重提。
-    """
+    def auth_flow(self, request):
+        url = request.url
+        if self._value and (url.scheme, url.host, url.port) == self._origin:
+            request.headers['Authorization'] = self._value
+        yield request
+
+
+async def generate_comfyui_provider_image(prompt, size, model, reference_images=None, provider=None, image_parameters=None, progress_callback=None):
+    """ComfyUI 提交不幂等；除已确认的 OOM 腾显存一次外，不自动重提。"""
     def report(phase, **details):
         if callable(progress_callback):
             try:
@@ -564,7 +688,10 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
     root = comfyui_api_root(provider)
     started = time.monotonic()
     timeout = httpx.Timeout(connect=10.0, read=max(COMFYUI_IMAGE_TASK_TIMEOUT, 60.0), write=COMFYUI_UPLOAD_TIMEOUT, pool=10.0)
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    provider_key = str((provider or {}).get('api_key') or '').strip()
+    if not provider_key and (provider or {}).get('id'):
+        provider_key = _svc._main('provider_env_key_value')(provider['id'])
+    async with httpx.AsyncClient(timeout=timeout, auth=_ComfyuiBearerAuth(root, provider_key)) as client:
         names = []
         reference_size = (0, 0)
         for index, ref in enumerate(refs, start=1):
@@ -572,9 +699,11 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
             try:
                 name, ref_size = await comfyui_upload_reference(client, root, ref, resolution)
             except (HTTPException, httpx.HTTPError) as exc:
+                error = _comfyui_transport_error(exc, '参考图上传') if isinstance(exc, httpx.HTTPError) else exc
+                error = _comfyui_redact_error(error, provider_key)
                 if AGENT_IMAGE_ATTEMPT.get():
-                    raise UpstreamImageFailure(f'参考图 {index} 上传失败', code='ref_upload_failed') from exc
-                raise
+                    raise UpstreamImageFailure(f'参考图 {index} 上传失败：{error.detail}', status=error.status_code, code='ref_upload_failed') from None
+                raise error from None
             if not name and AGENT_IMAGE_ATTEMPT.get():
                 raise UpstreamImageFailure(f'参考图 {index} 上传失败', code='ref_upload_failed')
             if name:
@@ -590,15 +719,11 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
                 ),
             )
         if names and comfyui_ratio_is_auto(explicit.get('aspect_ratio')) and reference_size[0] and reference_size[1]:
-            # 只有“没选比例/选跟随参考图”时才跟参考图走（官方 edit 模板的 GetImageSize 行为）。
-            # 选了具体比例就必须听画布的：方圆参考图 + 16:9 画布实测能正常出图（63 秒 / 2720×1536，主体无拉伸）。
+            # 显式比例优先于参考图尺寸，只有 auto 才跟随参考图。
             width, height = reference_size
         submitted_prompt = clean_prompt
         if names and '<Picture' not in clean_prompt:
-            # 节点约定：参考图在提示词里叫 <Picture 1>（节点 description 原文
-            # "The prompt refers to them as <Picture 1>, <Picture 2>, ..."）。
-            # 实测：不点名时模型很容易丢掉参考图另起一张（实测过“把主体放进客厅”变成凭空画个沙发）；
-            # 点名后同一张参考图能稳定保住主体（房景只换天空，其余像素级延续）。
+            # 节点靠 <Picture n> 指代参考图；未点名时可能忽略参考图。
             submitted_prompt = f'Edit <Picture 1>. {clean_prompt}'
         graph = comfyui_h3_workflow(
             submitted_prompt,
@@ -616,38 +741,37 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
         async def submit_graph() -> str:
             try:
                 submit = await client.post(f'{root}/prompt', json={'prompt': graph, 'client_id': f'canvas-{uuid.uuid4().hex[:12]}'})
-            except httpx.ConnectError as exc:
-                if AGENT_IMAGE_ATTEMPT.get():
-                    raise
-                raise HTTPException(status_code=503, detail=f'连不上本地 ComfyUI（{root}）：请确认 ComfyUI 已启动，或修改该服务商的 Base URL。') from exc
-            except httpx.TimeoutException as exc:
-                if AGENT_IMAGE_ATTEMPT.get():
-                    raise
-                raise HTTPException(status_code=504, detail=f'提交 ComfyUI 任务超时（{root}），任务可能已入队，请先到 ComfyUI 队列确认再重试。') from exc
+            except httpx.HTTPError as exc:
+                raise _comfyui_transport_error(exc, '提交') from None
             if submit.status_code != 200:
                 if AGENT_IMAGE_ATTEMPT.get():
-                    raise response_failure(submit)
+                    error = response_failure(submit)
+                    error.detail = f'ComfyUI 提交失败（HTTP {submit.status_code}）：{error.detail}'
+                    raise _comfyui_redact_error(error, provider_key)
+                if submit.status_code in (401, 403) or submit.status_code >= 500:
+                    _comfyui_check_response(submit, '提交')
                 try:
                     error_raw = submit.json() or {}
                 except Exception:
                     error_raw = {}
+                error_raw = error_raw if isinstance(error_raw, dict) else {}
                 detail = comfyui_node_errors_text(error_raw) or str(error_raw.get('error') or submit.text[:300])
-                raise HTTPException(status_code=502, detail=f'ComfyUI 拒绝该工作流：{detail}')
-            try:
-                submitted = submit.json() or {}
-            except Exception:
-                submitted = {}
+                raise _comfyui_redact_error(HTTPException(status_code=502, detail=f'ComfyUI 拒绝该工作流：{detail}'), provider_key)
+            submitted = _comfyui_json_object(submit, '提交')
             submitted_id = str(submitted.get('prompt_id') or '').strip()
             if not submitted_id:
-                raise HTTPException(status_code=502, detail=f'ComfyUI 未返回 prompt_id：{str(submitted)[:300]}')
+                raise _comfyui_error('ComfyUI 提交响应未返回 prompt_id，任务可能已入队，请先检查 ComfyUI 队列；本适配器不自动重提。', uncertain=True)
             return submitted_id
 
         async def run_once():
             submitted_id = await submit_graph()
             mark_accepted()
-            result = await comfyui_wait_for_images(
-                client, root, submitted_id, started, report, width=width, height=height, references=len(names),
-            )
+            try:
+                result = await comfyui_wait_for_images(
+                    client, root, submitted_id, started, report, width=width, height=height, references=len(names),
+                )
+            except HTTPException as exc:
+                raise _comfyui_redact_error(exc, provider_key)
             return submitted_id, result
 
         try:
@@ -665,27 +789,28 @@ async def generate_comfyui_provider_image(prompt, size, model, reference_images=
             'comfyui done: prompt_id=%s elapsed=%.1fs size=%sx%s',
             prompt_id, time.monotonic() - started, width, height,
         )
-        # ComfyUI 的 ResolutionSelector 会把边长对齐到它自己的步长（实测 16:9/1k 要 2728 实际出 2720），
-        # 用产物元数据里的真实尺寸回填，别把节点的对齐差值报给画布。
+        # 节点可能再次对齐边长，回填产物元数据而非仅回显请求尺寸。
         metadata = image.get('metadata') or {}
         try:
             actual_width = int(metadata.get('width') or 0) or width
             actual_height = int(metadata.get('height') or 0) or height
         except (TypeError, ValueError):
             actual_width, actual_height = width, height
-        view = await client.get(
-            f'{root}/view',
-            params={
-                'filename': image.get('filename') or '',
-                'subfolder': image.get('subfolder') or '',
-                'type': image.get('type') or 'output',
-            },
-        )
-        if view.status_code != 200:
-            raise HTTPException(status_code=502, detail=f'从 ComfyUI 取图失败（{view.status_code}）：{image.get("filename")}')
+        try:
+            view = await client.get(
+                f'{root}/view',
+                params={
+                    'filename': image.get('filename') or '',
+                    'subfolder': image.get('subfolder') or '',
+                    'type': image.get('type') or 'output',
+                },
+            )
+        except httpx.HTTPError as exc:
+            raise _comfyui_transport_error(exc, '取图', prompt_id=prompt_id) from None
+        _comfyui_check_response(view, '取图', prompt_id=prompt_id)
         content = view.content or b''
         if not content:
-            raise HTTPException(status_code=502, detail='ComfyUI 返回了空图片。')
+            raise _comfyui_error('ComfyUI 取图返回了空图片。', prompt_id=prompt_id)
         report('receiving', bytes_done=len(content), bytes_total=len(content))
         data = {
             'prompt_id': prompt_id,

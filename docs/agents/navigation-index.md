@@ -54,6 +54,13 @@
 - 权威 ADR：0006「模型路由不得修改用户生成参数」。
 - 不变量：出站前捕获最终 payload 与 final_request_golden 逐字节契约相等（无静默改写）；fixture 记录 provider/model family/请求响应 shape/primary doc URL+检索日期；hard-deny 由 domain gate 的 sitecustomize 证明（非 loopback 与真实 provider 可执行文件全阻断）。
 
+### ComfyUI 服务商连接与任务真相
+
+- 稳定符号：`app/routers/api_providers.py` `comfyui_test_connection`（`POST /api/providers/test-connection`）；`app/services/generation.py` `generate_comfyui_provider_image`、`comfyui_wait_for_images`、`comfyui_upload_reference`、`comfyui_cancel_prompt`（返回撤单状态与说明）。
+- 最相关测试：`tests/test_comfyui_connection_472.py`、`tests/test_comfyui_generation_472.py`、`tests/test_comfyui_h3_image.py`、`tests/test_comfyui_canvas_payload.py`。
+- 权威 ADR：0025「本地 ComfyUI 作为独立生图协议接入」。
+- 不变量：探测失败不阻止保存或自动禁用服务商；可选 Bearer 只发给服务商同源 API，参考图下载不携带该鉴权；合法空 history 仍等待，错误响应及时报错；撤单失败或未知不冒称成功、不打断其他任务；已受理后不因查询或取图失败自动重提。
+
 ### UI 完整性
 
 - 稳定符号：`tools/quality_gate.py:175` `NATIVE_BROWSER_VIEWPORTS`（1920x1080/1440x900/1280x720/1024x768/800x600）；`tests/ui_integrity_native_browser.py`、`tools/ui_integrity_evidence.py`、`tests/test_ui_integrity_contract.py`、`tests/test_ui_integrity_evidence.py`。
