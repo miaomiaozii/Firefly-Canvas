@@ -982,7 +982,7 @@ function ensureSmartPendingHistoryLogs(node, tasks=smartPendingTasks(node), defa
     if(!canvas || !node) return false;
     canvas.history = Array.isArray(canvas.history) ? canvas.history : [];
     let changed = false;
-    const runSettings = canvasCore.smartSettingsForNode(node);
+    const runSettings = defaults.runSettings || canvasCore.smartSettingsForNode(node);
     (Array.isArray(tasks) ? tasks : []).forEach(task => {
         const taskId = String(task?.taskId || task?.task_id || '').trim();
         if(!taskId) return;

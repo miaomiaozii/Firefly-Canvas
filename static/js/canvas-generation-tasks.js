@@ -152,6 +152,7 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
     const pendingHistoryId = runOptions.pendingHistoryId || beginSmartPendingHistoryLog(resultNode, {
             prompt,
             kind:'image',
+            run_id:runOptions.run_id || '',
             providerId:runSettings.providerId || runSettings.provider_id || '',
             model:runSettings.model || '',
             runSettings

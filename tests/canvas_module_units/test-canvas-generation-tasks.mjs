@@ -648,6 +648,65 @@ test('direct cascade poll propagates server history ownership', async () => {
     assert.equal(fromContext(evaluate(ctx, 'canvas.history')).length, 1);
 });
 
+for(const statuses of [['succeeded'], ['succeeded', 'succeeded'], ['failed', 'succeeded'], ['failed', 'failed']])
+    test(`legacy API loop records only owned tasks: ${statuses.join(',')}`, async () => {
+    const node = {id:'loop-history-slot', images:[]};
+    const {ctx, harness} = loadGenerationTasksModule({nodes:[node], canvasPayload:{id:'legacy-loop', nodes:[node], history:[]}});
+    loadModules(ctx, ['canvas-media-history.js', 'canvas-generation-cascade.js']);
+    const runSettings = {engine:'api', apiKind:'image', provider_id:'p1', model:'m1', count:statuses.length};
+    Object.assign(ctx, {
+        cloneSmartSettings:s=>({...s}), liveSmartNode:n=>n,
+        smartSettingsForNode:()=>runSettings, isApiLikeEngine:e=>e === 'api', outputImagesForNode:()=>[],
+        buildPromptRequestForNode:()=>({prompt:'loop prompt', displayPrompt:'loop prompt', refs:[]}),
+        smartRunNeedsPrompt:()=>true, smartRunSnapshot:()=>({nodeId:node.id, prompt:'loop prompt', settings:runSettings}),
+        acceptProjectGenerationRegistration:async()=>true, smartRecoverableImageTask:()=>false,
+        attachRunMeta:()=>{}, markSmartNodeComplete:()=>{}, clearSourceBusyStateIfDownstreamDone:()=>{},
+        smartRunPlatformLabel:()=>'', smartRunTaskLabel:()=>'', smartRunRequestMeta:()=>({}),
+        playGenerationCompleteSound:()=>{}, cleanHistoryImages:images=>images,
+    });
+    ctx.__loopSettings = runSettings;
+    evaluate(ctx, "settings = __loopSettings; apiProviders = [{id:'p1', image_models:['m1']}] ");
+    let submitted = 0, foreign;
+    harness.fetchResponder = (url, options) => {
+        if(options?.method === 'POST') return fakeResponse({data:{task_id:`loop-task-${submitted++}`}});
+        if(!foreign){
+            const runId = evaluate(ctx, "canvas.history.find(log => log.status === 'pending')?.run_id");
+            foreign = [
+                {id:'foreign-loop-pending', task_id:'foreign-loop-task', request:{task_id:'foreign-loop-task'}, status:'pending', nodeId:node.id, run_id:'foreign-run', outputs:[]},
+                {id:'sibling-loop-pending', task_id:'sibling-loop-task', request:{task_id:'sibling-loop-task'}, status:'pending', nodeId:node.id, run_id:runId, outputs:[]},
+            ];
+            ctx.__loopForeign = foreign;
+            evaluate(ctx, 'canvas.history.push(...__loopForeign)');
+        }
+        const index = Number(url.match(/loop-task-(\d+)$/)[1]);
+        return fakeResponse({data:{status:statuses[index], error:statuses[index] === 'failed' ? `loop failure ${index}` : '',
+            result:{history_recorded:false, images:statuses[index] === 'succeeded' ? [{url:`/loop-${index}.png`, kind:'image'}] : []}}});
+    };
+    let settled = false;
+    const promise = globalFunction(ctx, 'runLoopRoundIntoSlot')({id:'loop'}, {id:'root'}, node, 1, {})
+        .then(value=>({value}), error=>({error})).finally(()=>{settled = true;});
+    for(let i=0; i<20 && !settled; i++){ harness.advanceTimers(); await tick(); }
+    assert.ok(settled);
+    const result = await promise;
+    assert.equal(result.error?.message, statuses.every(status=>status === 'failed') ? 'loop failure 0' : undefined);
+    const history = fromContext(evaluate(ctx, 'canvas.history'));
+    assert.deepEqual(history.filter(log=>log.status === 'pending').sort((a,b)=>a.id.localeCompare(b.id)),
+        structuredClone(foreign).sort((a,b)=>a.id.localeCompare(b.id)));
+    const terminal = history.filter(log=>log.status !== 'pending');
+    assert.equal(terminal.length, statuses.length, 'one terminal per actual task; no aggregate success');
+    assert.equal(new Set(terminal.map(log=>log.run_id)).size, 1, 'one loop invocation shares a run');
+    assert.ok(terminal.every(log=>log.run_id));
+    for(const [index, status] of statuses.entries()){
+        const log = terminal.find(item=>item.task_id === `loop-task-${index}`);
+        assert.ok(log, `missing exact task ${index}`);
+        assert.equal(log.status, status === 'failed' ? 'failed' : 'success');
+        assert.deepEqual(log.outputs.map(item=>item.url), status === 'failed' ? [] : [`/loop-${index}.png`]);
+        if(status === 'failed') assert.equal(log.error, `loop failure ${index}`);
+    }
+    assert.equal(submitted, statuses.length);
+    assert.equal(node.images.length, statuses.filter(status=>status === 'succeeded').length);
+});
+
 // The loop caller must propagate the original marked failure rather than fabricate
 // a new no-output error; cancellation remains a neutral empty round.
 for(const mode of ['failure', 'recoverable', 'cancelled', 'cancelled-partial']) test(`loop slot preserves ${mode}`, async () => {

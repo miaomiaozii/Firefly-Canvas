@@ -776,6 +776,7 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
     outputSlot = canvasCore.liveSmartNode(outputSlot);
     const edgeKey = `${rootNode.id}->${outputSlot.id}`;
     let generationOutcome;
+    let taskHistoryOwned = false;
     const runSettings = smartLoopRoundSettings({...cloneSmartSettings(settings), ...cloneSmartSettings(canvasCore.smartSettingsForNode(rootNode) || {})}, ctx);
     // Keep the runtime loop's round index and selection instead of using the saved defaults.
     let request = resolveImageRequest && await resolveImageRequest(rootNode, {ctx, runSettings, resultNode:outputSlot,
@@ -801,7 +802,7 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
             createdAt:Date.now()
         };
         const logKind = canvasCore.isApiLikeEngine(runSettings.engine) && runSettings.apiKind === 'video' ? 'video' : 'image';
-        const runLog = smartRunSnapshot(rootNode, prompt, request.refs || [], logKind);
+        const runLog = {...smartRunSnapshot(rootNode, prompt, request.refs || [], logKind), run_id:uid('run')};
         const runLogStart = nowMs();
         const expectedCount = canvasCore.isApiLikeEngine(runSettings.engine) && runSettings.apiKind !== 'video'
             ? Math.max(1, Math.min(8, Number(runSettings.count || 1)))
@@ -852,7 +853,7 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
             }
             let taskResult;
             try {
-                taskResult = await runApiGeneration(prompt, request.refs || [], runSettings, outputSlot);
+                taskResult = await runApiGeneration(prompt, request.refs || [], runSettings, outputSlot, {run_id:runLog.run_id});
                 if(!Array.isArray(taskResult?.taskIds) || !taskResult.taskIds.length) throw new Error(tr('smart.errRunFailed'));
             } catch(submitError) {
                 const restoreArchive = () => {
@@ -912,8 +913,8 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
                 throw submitError;
             }
             const taskIds = Array.isArray(taskResult?.taskIds) ? taskResult.taskIds : [];
-            outputSlot.pendingTasks = taskIds.map(taskId => ({taskId, kind:'image', count:taskResult.count || 1, providerId:taskResult.providerId, model:taskResult.model}));
-            ensureSmartPendingHistoryLogs(outputSlot, outputSlot.pendingTasks, {prompt, kind:'image'});
+            outputSlot.pendingTasks = taskIds.map(taskId => ({taskId, run_id:runLog.run_id, kind:'image', count:taskResult.count || 1, providerId:taskResult.providerId, model:taskResult.model}));
+            ensureSmartPendingHistoryLogs(outputSlot, outputSlot.pendingTasks, {prompt, kind:'image', runSettings, run_id:runLog.run_id});
             outputSlot.pending = Math.max(taskIds.length, Number(outputSlot.pending || 0) || taskIds.length);
             outputSlot.running = false;
             canvasCore.render();
@@ -921,6 +922,7 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
                 canvasCore.scheduleSave();
                 await saveCanvas();
             }
+            taskHistoryOwned = true;
             generationOutcome = await resumeSmartPendingNode(outputSlot, {run:runLog, runLogStart});
             if(generationOutcome?.cancelled && !generationOutcome.succeeded && !generationOutcome.failure){
                 outputSlot.queued = false;
@@ -957,7 +959,8 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
             runPath.states[edgeKey] = 'done';
             scheduleConnectionLayerRefresh();
         }
-        if(!outputSlot._serverGenerationHistoryRecorded && (!generationOutcome?.failure || generationOutcome.succeeded)) addSmartGenerationHistory({run:{...runLog, kind:result.kind || logKind}, outputs:result.urls, runMs:nowMs() - runLogStart});
+        // #441：轮询已逐任务结算，循环再写整轮记录会重复记账并误消费其他任务的占位。
+        if(!taskHistoryOwned && !outputSlot._serverGenerationHistoryRecorded) addSmartGenerationHistory({run:{...runLog, kind:result.kind || logKind}, outputs:result.urls, runMs:nowMs() - runLogStart});
         delete outputSlot._serverGenerationHistoryRecorded;
         return rememberRoundOutputs(ctx, outputSlot, additions);
     } catch(e) {
