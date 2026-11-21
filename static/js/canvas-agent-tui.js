@@ -1129,6 +1129,12 @@ function updateAgentStreamingText(state, message) {
 
 function applyAgentEventBody(nodeId, event, recordedAt) {
     const state = getAgentTuiState(nodeId);
+    // Older-page reducers have no projectId; read-only hosts cannot publish active canvas state.
+    if (state.projectId && !agentIsReadonly(state) && (event.host || 'pi') === state.activeHost
+        && (event.type === 'confirm' || event.type === 'confirm_resolved')) {
+        window.canvasAgentActivity?.consumeConfirmation({project_id: state.projectId, node_id: nodeId,
+            host: state.activeHost, event});
+    }
     if (agentNodeRefsApplyEvent(nodeId, event, recordedAt)) return;
     const eventType = event.type;
     let streamingText = null;
@@ -1335,7 +1341,7 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
         case 'confirm': {
             state.confirm = event;
             state.status = 'waiting_confirm';
-            // 模态关闭后仍可内联确认；两路共用 sendAgentConfirm，清空 confirm 防双发（#357）。
+            // 模态结果须仍匹配待确认ID；关闭后仍可内联确认，两路共用单次发送防双发（#357）。
             if (!agentIsReadonly(state) && !state._applyingReplay && window.ffDialog && state.confirmModalShown !== event.confirm_id) {
                 state.confirmModalShown = event.confirm_id;
                 window.ffDialog.ask({
@@ -1369,6 +1375,7 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
         case 'response':
             break;
         case 'error': {
+            // Spawn failures arrive without assistant content and must remain visible and retryable (#280).
             state.status = 'failed';
             state._turnFailed = true;
             const errMsg = String(event.message || 'Agent 会话启动失败');

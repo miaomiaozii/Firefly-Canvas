@@ -188,16 +188,27 @@ class CanvasCouplingReportTests(unittest.TestCase):
         rows = {row["name"]: row for row in _cached_reverse()["reverse_rows"]}
         self.assertEqual(rows["resumeSmartPendingActionResumes"]["core_refs"], 3)
 
+    def test_activity_bridge_remains_measured_and_classified(self):
+        rows = {row["name"]: row for row in _cached_reverse()["reverse_rows"]}
+        self.assertEqual(rows["canvasAgentActivity"], {
+            "name": "canvasAgentActivity",
+            "owner": "canvas-agent-activity.js",
+            "core_refs": 1,
+            "owner_refs": 0,
+            "category": "hub",
+        })
+        self.assertEqual(rows["isSmartAgentTaskNode"]["core_refs"], 5)
+
     def test_reverse_coupling_is_measurable_and_pinned(self):
         # ADR 0020 把轨道 3 写成「17 个名字 / 40 处」，而这个数无法从本工具任何字段
         # 重现——`coupling()` 只测「模块引用核心声明的名字」，方向刚好相反。后果：
         # 后来人按错的规模给轨道 3 排期。这里钉住反方向实测值，飘了就必须同步改 ADR。
         rev = _cached_reverse()
         # 漂移原因统一记在 ADR 0020；这里守住精确计数，不因合法调用而豁免。
-        self.assertEqual(rev["reverse_names"], 261)
-        self.assertEqual(rev["reverse_core_refs"], 988)
-        self.assertEqual(rev["core_dominant_names"], 174)
-        self.assertEqual(rev["core_dominant_core_refs"], 807)
+        self.assertEqual(rev["reverse_names"], 262)
+        self.assertEqual(rev["reverse_core_refs"], 990)
+        self.assertEqual(rev["core_dominant_names"], 175)
+        self.assertEqual(rev["core_dominant_core_refs"], 809)
         # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。
         self.assertNotIn("canvas-core.js", rev["by_owner"])
         self.assertNotIn("smart-canvas.js", rev["by_owner"])

@@ -227,7 +227,7 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
             r'(?:src|href)="/static/(?:js|css)/([^"/?]+)\?v=[0-9][0-9.]*&amp;agent=([A-Za-z0-9._-]+)"', html))
         self.assertEqual(set(revised), {
             "smart-canvas.css", "canvas-node-ops.js", "canvas-agent-navigation.js",
-            "canvas-agent-tui.js", "smart-canvas.js",
+            "canvas-agent-activity.js", "canvas-agent-tui.js", "smart-canvas.js",
         })
         self.assertEqual(len(set(revised.values())), 1)
         self.assertLess(CANVAS_SCRIPTS.index("canvas-agent-navigation.js"),

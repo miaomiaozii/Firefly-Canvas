@@ -2078,6 +2078,7 @@ shell.addEventListener('pointerout', event => {
 function applyViewport(){
     world.style.transform = `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.scale})`;
     schedulePreviewLodRefresh();
+    world.classList.toggle('canvas-agent-overview', viewport.scale < 0.6);
     if(isProjectCanvasData()) persistProjectViewport();
     // world 被 transform:scale 缩放后，其内部带 backdrop-filter 的卡片（参数设置/合成卡等）
     // 会被部分浏览器（Chrome/Edge 等 Blink 内核）当作独立合成层先按 1x 栅格化、再整体缩放，
@@ -5394,19 +5395,37 @@ function scheduleCanvasMergeReload(delay=200, minUpdatedAt=0){
         mergeReloadCanvasNow();
     }, delay);
 }
+function smartCanvasAgentActivityBridge(){
+    const activity = window.canvasAgentActivity;
+    if(!activity) return null;
+    activity.configure({
+        getProjectId: () => canvasId,
+        getNodes: () => canvasState.nodes,
+        isTaskNode: isSmartAgentTaskNode,
+        getElements: () => document.querySelectorAll('.image-node[data-id]'),
+        followButton: document.getElementById('smartAgentFollowToggle'),
+        focusTargets: ids => {
+            const target = ids.map(id => canvasState.nodes.find(node => node.id === id))
+                .find(node => node && node.dock !== 'left' && node.dock !== 'right');
+            if(!target) return;
+            const rect = nodeRect(target);
+            centerViewportOnWorldPoint({x:rect.x + rect.width / 2, y:rect.y + rect.height / 2});
+        },
+    });
+    return activity;
+}
 function handleCanvasUpdatedMessage(data={}){
-    if(!data || data.type !== 'canvas_updated') return;
-    // #375: 来源标记先于全部跳过守卫置位——即使这次广播被「自己发的/时间戳不新/保存中」
-    // 跳过，之后任何一次合并（轮询兜底、保存窗口补偿）把 agent 写入带进来都要进撤回栈。
+    if(!data || data.type !== 'canvas_updated' || !canvasId || data.canvas_id !== canvasId) return;
+    smartCanvasAgentActivityBridge()?.consumeCanvasUpdate(data);
+    // Same-project Agent writes must retain legacy undo coalescing even when
+    // self/timestamp/save guards suppress this particular authority fetch (#375).
     if(data.source === 'agent'){
         pendingAgentMergeUndo = true;
         try { pendingAgentMergeFingerprint = JSON.stringify({nodes: canvasState.nodes, connections: canvas.connections}); } catch(e){ pendingAgentMergeFingerprint = ''; }
     }
-    if(!canvasId || data.canvas_id !== canvasId) return;
-    if(data.client_id && data.client_id === smartClientId) return; // 自己发的，忽略
+    if(data.client_id && data.client_id === smartClientId) return;
     const remoteUpdatedAt = Number(data.updated_at || 0);
     if(canvasSyncInFlight){
-        // 正在保存：记下这次更新的时间戳，保存完成后若确实比本地新再补偿拉取合并
         if(remoteUpdatedAt > pendingRemoteUpdatedAt) pendingRemoteUpdatedAt = remoteUpdatedAt;
         return;
     }
@@ -9817,7 +9836,6 @@ function render(){
         const isGroup = isImageNode && imgs.length > 1;
         const isPending = Boolean(node.pending || isQueued);
         const body = nodeBodyHtml(node, layout);
-        // #149 B4: 多图节点（isGroup）也显示删除按钮（与单图一致，删整个节点）
         const deleteBtn = `<button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg></button>`;
         const hint = isLayoutFrame ? '' : isSmartGroup ? escapeHtml(tr('smart.hintGroup')) : isAgentTask ? escapeHtml(tr('smart.hintAgentTask')) : isPending ? escapeHtml(tr('smart.hintPending')) : (imgs.length > 1 ? escapeHtml(tr('smart.hintMulti')) : imgs.length ? escapeHtml(tr('smart.hintSingle')) : escapeHtml(tr('smart.hintEmpty')));
         const deletedInputCount = Array.isArray(node.deletedInputTombstones) ? node.deletedInputTombstones.length : 0;
@@ -9884,11 +9902,10 @@ function render(){
     measureSmartNodeImages();
     scheduleSmartNodeFloatingMenuPosition();
     refreshRunTimerPills();
-    // #272：画布批注层重绘（钉/气泡；逻辑全在 canvas-annotations.js，这里只接线）
     renderAnnotationLayer();
-    // #407 D1：停靠槽同步（挂载/卸载/宽度/收起态 + #shell 边距变量）
     syncAgentDock();
-    // #317：此处曾有 40 行 `return;` 后永不可达的旧版全量重建逻辑（至 updateSmartMarkedBadge），已删除。
+    // World nodes are rebuilt while dock DOM survives; paint both from the accepted live view.
+    smartCanvasAgentActivityBridge()?.sync();
 }
 function measureSmartNodeImages(){
     world.querySelectorAll('.image-node img,.image-node video').forEach(imgEl => {

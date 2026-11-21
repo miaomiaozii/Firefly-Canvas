@@ -4610,3 +4610,61 @@ button.agent-tui-more:hover,
 @media (prefers-reduced-motion:reduce) {
     .agent-node-ref-flash { animation-duration:.01s; outline-color:var(--glow, var(--accent)); }
 }
+
+/* Independent edges preserve selection outlines and never replace live node content (#410). */
+.canvas-agent-activity { position:absolute; inset:-4px; pointer-events:none; z-index:8; color:var(--ink, var(--text)); }
+.canvas-agent-activity-edge { position:absolute; inset:0; width:100%; height:100%; overflow:visible; fill:none; }
+.canvas-agent-activity-edge rect { stroke:transparent; stroke-width:2px; }
+.canvas-agent-activity.is-generating .canvas-agent-activity-status { stroke:var(--glow, var(--accent)); }
+.canvas-agent-activity.is-generating .canvas-agent-activity-flow {
+    stroke:var(--glow, var(--accent));
+    stroke-width:4px;
+    stroke-dasharray:20 80;
+    animation:canvas-agent-flow 2.4s linear infinite;
+}
+.canvas-agent-activity.is-confirming .canvas-agent-activity-status { stroke:var(--line-strong); }
+.canvas-agent-activity.is-failed .canvas-agent-activity-status { stroke:var(--danger); }
+.canvas-agent-activity.is-failed .canvas-agent-activity-flow,
+.canvas-agent-activity.is-confirming .canvas-agent-activity-flow { visibility:hidden; }
+.image-node.node-pending:has(> .canvas-agent-activity.is-generating) > .node-body::after { content:none; }
+.canvas-agent-activity.is-modifying .canvas-agent-activity-modifying { stroke:var(--ink, var(--text)); stroke-width:1.5px; stroke-dasharray:5 4; }
+.canvas-agent-activity.is-ending .canvas-agent-activity-modifying,
+.canvas-agent-activity.is-ending:not(.is-failed):not(.is-confirming) .canvas-agent-activity-label { animation:canvas-agent-end 1.2s ease-out forwards; }
+.canvas-agent-activity-label,
+.canvas-agent-diff-mark {
+    position:absolute;
+    top:-1.5rem;
+    padding:.125rem .5rem;
+    border:1px solid var(--line-strong);
+    border-radius:var(--r-sm, .375rem);
+    background:var(--surface, var(--card));
+    color:inherit;
+    font:inherit;
+    font-size:max(12px, var(--text-xs, .857rem));
+    line-height:1.35;
+    font-weight:500;
+    pointer-events:auto;
+}
+.canvas-agent-activity-label { right:.5rem; display:inline-flex; align-items:center; gap:.25rem; }
+.canvas-agent-activity-label > .ico { width:1.15em; height:1.15em; flex:none; }
+.canvas-agent-activity.is-failed .canvas-agent-activity-label { color:var(--danger); }
+.canvas-agent-diff-mark { left:.5rem; min-width:1.75rem; cursor:pointer; }
+.canvas-agent-diff-mark:focus-visible { outline:2px solid var(--ink, var(--text)); outline-offset:2px; }
+.smart-group-member-node .canvas-agent-activity,
+.agent-dock-node .canvas-agent-activity { inset:3px; }
+.smart-group-member-node .canvas-agent-activity-label,
+.smart-group-member-node .canvas-agent-diff-mark,
+.agent-dock-node .canvas-agent-diff-mark { top:.35rem; }
+.agent-dock-node .canvas-agent-activity-label { top:2.75rem; }
+.canvas-agent-overview .canvas-agent-activity.is-generating .canvas-agent-activity-status,
+.canvas-agent-overview .canvas-agent-activity.is-failed .canvas-agent-activity-status { stroke-width:6px; }
+.canvas-agent-overview .canvas-agent-activity-label { display:none; }
+#smartAgentFollowToggle { font-size:max(12px, var(--text-sm, .929rem)); }
+#smartAgentFollowToggle[aria-pressed="true"] { background:var(--surface-sunken, var(--soft)); color:var(--ink, var(--text)); }
+@keyframes canvas-agent-flow { to { stroke-dashoffset:-100; } }
+@keyframes canvas-agent-end { to { opacity:0; } }
+@media (prefers-reduced-motion:reduce) {
+    .canvas-agent-activity.is-generating .canvas-agent-activity-flow { animation:none; stroke-dasharray:none; stroke-width:2px; }
+    .canvas-agent-activity.is-ending .canvas-agent-activity-modifying,
+    .canvas-agent-activity.is-ending .canvas-agent-activity-label { animation:none; opacity:1; }
+}
