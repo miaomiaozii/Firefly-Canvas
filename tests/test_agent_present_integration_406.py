@@ -9,7 +9,7 @@ import uvicorn
 
 import main
 from app.services.agent_host import agent_host_manager as manager
-from tests.test_agent_present_406 import env
+from tests.test_agent_present_406 import agent_present_env
 
 
 ROOT = Path(__file__).resolve().parents[1]

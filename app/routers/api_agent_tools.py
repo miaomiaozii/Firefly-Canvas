@@ -69,7 +69,7 @@ async def present_agent(project_id: str, request: Request):
         args = await request.json()
     except ValueError as exc:
         raise agent_refs.invalid('Expected a JSON object') from exc
-    return await agent_present.call(_app_main.FIREFLY_PROJECT_STORE, agent_host_manager, project_id,
+    return await agent_present.agent_present_call(_app_main.FIREFLY_PROJECT_STORE, agent_host_manager, project_id,
                                     request.query_params.get('agent_node_id', ''), args)
 
 

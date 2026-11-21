@@ -577,7 +577,7 @@ async def _impl_edit_erase(project_id, agent_node_id, args):
 async def _impl_present(project_id, agent_node_id, args, *, owner=('hosted',), external_turn=None):
     from app.services import agent_present
     from app.services.agent_host import agent_host_manager
-    return await agent_present.call(_app_main.FIREFLY_PROJECT_STORE, agent_host_manager,
+    return await agent_present.agent_present_call(_app_main.FIREFLY_PROJECT_STORE, agent_host_manager,
                                     project_id, agent_node_id, args, owner=owner, external_turn=external_turn)
 
 
@@ -736,7 +736,7 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
             agent_layout.validate_args(name, args)
         if name == 'agent.present':
             from app.services import agent_present
-            agent_present.validate(args)
+            agent_present.agent_present_validate(args)
             if not request.query_params.get('project') or not request.query_params.get('node'):
                 raise agent_error(400, 'INVALID_ARGUMENT', 'Presentation requires explicit project and existing Agent node')
         attachment_archive = name == "media.upload" and "attachment_id" in args

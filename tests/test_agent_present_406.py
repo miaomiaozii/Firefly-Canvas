@@ -20,8 +20,8 @@ from app.services.agent_host import agent_host_manager as manager
 from firefly_projects import ProjectStore
 
 
-@pytest.fixture
-def env(tmp_path, monkeypatch):
+@pytest.fixture(name='env')
+def agent_present_env(tmp_path, monkeypatch):
     store = ProjectStore(tmp_path / 'projects', snapshot_delay=0)
     monkeypatch.setattr(main, 'FIREFLY_PROJECT_STORE', store)
     from app.routers import api_agent_tools, api_mcp
@@ -63,13 +63,13 @@ async def present(env, args, **kwargs):
                                  content=json.dumps(args), **kwargs)
 
 
-async def events(env, suffix='events'):
+async def agent_present_events(env, suffix='events'):
     response = await env.client.get(f'/api/projects/{env.project}/agent-nodes/actor/{suffix}', params={'host': 'pi'})
     assert response.status_code == 200, response.text
     return response.json()['events']
 
 
-async def mcp(env, args, *, caller='external', sid='external-406', node='actor', project=None, tool='agent.present', turn=None):
+async def agent_present_mcp(env, args, *, caller='external', sid='external-406', node='actor', project=None, tool='agent.present', turn=None):
     response = await env.client.post('/api/mcp', params={'project': project or env.project, 'node': node, 'caller': caller,
                                                        **({'turn_id': turn} if turn is not None else {})},
         headers={'Mcp-Session-Id': sid, 'Content-Type': 'application/json'},
@@ -86,7 +86,7 @@ def test_external_mcp_answers_are_only_read_by_original_binding_and_never_inject
         try:
             before = env.store.canvas(env.project)
             pipe_before = env.session.process.stdin.getvalue()
-            result = await mcp(env, QUESTION)
+            result = await agent_present_mcp(env, QUESTION)
             assert 'presentation' in result, result
             p = result['presentation']
             assert p['state'] == 'pending'
@@ -94,16 +94,16 @@ def test_external_mcp_answers_are_only_read_by_original_binding_and_never_inject
             answer = await env.client.post(path + '/answers', json={'answers': {'style': 'b'}})
             assert answer.status_code == 200, answer.text
             assert answer.json()['presentation']['answers'] == {'style': 'b'} and answer.json()['input'] is None
-            read = await mcp(env, {'action': 'get', 'presentation_id': p['id']})
+            read = await agent_present_mcp(env, {'action': 'get', 'presentation_id': p['id']})
             assert read['presentation'] == answer.json()['presentation']
-            foreign = await mcp(env, {'action': 'get', 'presentation_id': p['id']}, sid='other-session')
+            foreign = await agent_present_mcp(env, {'action': 'get', 'presentation_id': p['id']}, sid='other-session')
             assert foreign['isError']
             assert (await present(env, {'action': 'get', 'presentation_id': p['id']})).status_code == 409
             assert env.session.process.stdin.getvalue() == pipe_before
             assert env.store.canvas(env.project) == before and len(manager.sessions) == 1
             live = [e for e in env.live if e['type'] == 'question']
             assert len(live) == 2 and all(e['turn_id'] is None for e in live)
-            assert [r['event'] for r in await events(env) if r['event']['type'] == 'question'] == live
+            assert [r['event'] for r in await agent_present_events(env) if r['event']['type'] == 'question'] == live
         finally:
             await env.client.aclose()
     asyncio.run(scenario())
@@ -137,19 +137,19 @@ def test_pending_question_answer_queues_once_and_becomes_a_real_new_user_turn(en
             assert duplicate.json() == receipt
             conflict = await env.client.post(path + '/answers', json={'answers': {'style': 'b'}})
             assert conflict.status_code == 409
-            records = await events(env)
+            records = await agent_present_events(env)
             assert len([r for r in records if r['event']['type'] == 'queued_input']) == 1
             assert len([r for r in records if r['event']['type'] == 'user_prompt']) == 1
             live = [e for e in env.live if e['type'] == 'question']
             assert [e['presentation']['state'] for e in live] == ['pending', 'answered']
             assert all(e['turn_id'] == original for e in live) and live[1]['seq'] > live[0]['seq']
             assert [r['event'] for r in records if r['event']['type'] == 'question'] == live
-            assert [r['event'] for r in await events(env, 'events/page') if r['event']['type'] == 'question'] == live
+            assert [r['event'] for r in await agent_present_events(env, 'events/page') if r['event']['type'] == 'question'] == live
             await manager._dispatch_event(env.session, {'type': 'agent_end'})
-            prompts = [r['event'] for r in await events(env) if r['event']['type'] == 'user_prompt']
+            prompts = [r['event'] for r in await agent_present_events(env) if r['event']['type'] == 'user_prompt']
             assert len(prompts) == 2 and prompts[1]['turn_id'] not in (None, original)
             assert prompts[1]['request_id'] == 'human-answer' and 'Bright' in prompts[1]['text']
-            assert not any(r['event']['type'] == 'system_continuation' for r in await events(env))
+            assert not any(r['event']['type'] == 'system_continuation' for r in await agent_present_events(env))
             read = await present(env, {'action': 'get', 'presentation_id': p['id']})
             assert read.json()['presentation']['answers'] == {'style': 'a'}
             assert env.store.canvas(env.project) == before and not env.session.confirm_handlers
@@ -178,8 +178,8 @@ def test_diff_resolves_real_bound_preview_without_consuming_or_applying_it(env):
             assert env.store.canvas(env.project) == before and not env.session.confirm_handlers
             live = [e for e in env.live if e['type'] == 'diff']
             assert live[0]['presentation'] == p and live[0]['turn_id'] == env.session._current_turn_id
-            assert [r['event'] for r in await events(env) if r['event']['type'] == 'diff'] == live
-            assert [r['event'] for r in await events(env, 'events/page') if r['event']['type'] == 'diff'] == live
+            assert [r['event'] for r in await agent_present_events(env) if r['event']['type'] == 'diff'] == live
+            assert [r['event'] for r in await agent_present_events(env, 'events/page') if r['event']['type'] == 'diff'] == live
             assert (await present(env, {'action': 'show', 'kind': 'diff', 'title': 'Missing', 'diff_id': 'invented'})).status_code == 409
         finally:
             await env.client.aclose()
@@ -203,7 +203,7 @@ def test_diff_resolves_real_operation_journal_and_rejects_another_agent_receipt(
             assert data['turn_id'] == env.session._current_turn_id and data['tool'] == 'canvas.create_node'
             assert data['undone'] is False and data['before'] != data['after']
             assert 'journal text' in json.dumps(data['after'])
-            other = await mcp(env, {'action': 'show', 'kind': 'diff', 'title': 'Not external ownership', 'op_id': op_id})
+            other = await agent_present_mcp(env, {'action': 'show', 'kind': 'diff', 'title': 'Not external ownership', 'op_id': op_id})
             assert other['isError']
             missing = await present(env, {'action': 'show', 'kind': 'diff', 'title': 'Unknown op', 'op_id': 'invented'})
             assert missing.status_code == 409
@@ -281,7 +281,7 @@ def test_idle_codex_answer_keeps_original_card_envelope_and_starts_a_new_real_tu
             manager.select_runtime(env.session, 'codex')
             sent = await env.client.post(f'/api/projects/{env.project}/agent-nodes/actor/prompt', json={'message': 'codex question'})
             assert sent.status_code == 200, sent.text
-            response = await mcp(env, QUESTION, caller='hosted')
+            response = await agent_present_mcp(env, QUESTION, caller='hosted')
             assert 'presentation' in response, response
             p = response['presentation']
             original_turn, original_gen = env.session._current_turn_id, env.session.generation
@@ -317,7 +317,7 @@ def test_answer_request_id_cannot_silently_alias_an_existing_user_input(env):
             assert response.status_code == 409, response.text
             status = await env.client.get(path)
             assert status.json()['presentation']['state'] == 'pending' and status.json()['answerable']
-            assert len([r for r in await events(env) if r['event']['type'] == 'user_prompt']) == 1
+            assert len([r for r in await agent_present_events(env) if r['event']['type'] == 'user_prompt']) == 1
         finally:
             await env.client.aclose()
     asyncio.run(scenario())
@@ -327,14 +327,14 @@ def test_external_diff_preview_keeps_original_mcp_binding_even_on_shared_node(en
     async def scenario():
         await env.start()
         try:
-            preview = await mcp(env, {'apply': False, 'edits': [{'node_id': 'text', 'prompt': 'external edit'}]},
+            preview = await agent_present_mcp(env, {'apply': False, 'edits': [{'node_id': 'text', 'prompt': 'external edit'}]},
                                 tool='canvas.batch_prompt_edit')
             assert 'diff_id' in preview, preview
             args = {'action': 'show', 'kind': 'diff', 'title': 'External preview', 'diff_id': preview['diff_id']}
-            result = await mcp(env, args)
+            result = await agent_present_mcp(env, args)
             assert 'presentation' in result, result
             assert result['presentation']['data']['items'][0]['after'] == 'external edit'
-            assert (await mcp(env, args, sid='foreign'))['isError']
+            assert (await agent_present_mcp(env, args, sid='foreign'))['isError']
             assert (await present(env, args)).status_code == 409
             assert next(n for n in env.store.canvas(env.project)['nodes'] if n['id'] == 'text')['text'] == 'before'
         finally:
@@ -363,12 +363,12 @@ def test_strict_bounded_arguments_are_identical_on_rest_and_mcp_without_effects(
         await env.start()
         try:
             before = env.store.canvas(env.project)
-            records = await events(env)
+            records = await agent_present_events(env)
             rest = await present(env, args)
-            external = await mcp(env, args)
+            external = await agent_present_mcp(env, args)
             assert rest.status_code == 400 and rest.json()['detail']['code'] == 'INVALID_ARGUMENT'
             assert external['isError'] and external['structuredContent'] == rest.json()['detail']
-            assert env.store.canvas(env.project) == before and await events(env) == records
+            assert env.store.canvas(env.project) == before and await agent_present_events(env) == records
         finally:
             await env.client.aclose()
     asyncio.run(scenario())
@@ -386,7 +386,7 @@ def test_question_answers_require_the_exact_option_set_and_no_authority_override
             response = await env.client.post(path + '/answers', json=body)
             assert response.status_code == 400, response.text
             assert (await env.client.get(path)).json() == {'presentation': p, 'answerable': True}
-            assert not any(r['event']['type'] == 'queued_input' for r in await events(env))
+            assert not any(r['event']['type'] == 'queued_input' for r in await agent_present_events(env))
         finally:
             await env.client.aclose()
     asyncio.run(scenario())
@@ -409,7 +409,7 @@ def test_stop_expires_question_without_resuming_or_creating_a_host(env):
             rejected = await env.client.post(path + '/answers', json={'answers': {'style': 'a'}})
             assert rejected.status_code == 409 and env.session.process is None
             assert len(manager.sessions) == 1
-            replayed = [r['event']['presentation'] for r in await events(env) if r['event']['type'] == 'question']
+            replayed = [r['event']['presentation'] for r in await agent_present_events(env) if r['event']['type'] == 'question']
             assert replayed == [p]
         finally:
             await env.client.aclose()
@@ -425,8 +425,8 @@ def test_read_guards_and_missing_explicit_mcp_targets_never_create_carriers(env)
                                   ({'X-Agent-Project': env.project, 'Origin': 'http://evil.example'}, 403)]:
                 assert (await present(env, QUESTION, headers=headers)).status_code == code
             for node in ('', 'missing', 'text'):
-                assert (await mcp(env, QUESTION, node=node))['isError']
-            assert (await mcp(env, QUESTION, sid=''))['isError']
+                assert (await agent_present_mcp(env, QUESTION, node=node))['isError']
+            assert (await agent_present_mcp(env, QUESTION, sid=''))['isError']
             assert env.store.canvas(env.project) == before and len(manager.sessions) == 1
             p = (await present(env, QUESTION)).json()['presentation']
             path = f'/api/projects/{env.project}/agent-nodes/actor/questions/{p["id"]}'
@@ -469,15 +469,15 @@ def test_external_mcp_with_no_runtime_does_not_spawn_and_get_never_creates_a_ses
             await manager._dispatch_event(env.session, {'type': 'agent_end'})
             manager.sessions.pop(f'{env.project}:actor')
             before = env.store.canvas(env.project)
-            assert (await mcp(env, {'action': 'get', 'presentation_id': 'missing'}))['isError']
+            assert (await agent_present_mcp(env, {'action': 'get', 'presentation_id': 'missing'}))['isError']
             assert not manager.sessions
-            p = (await mcp(env, QUESTION))['presentation']
+            p = (await agent_present_mcp(env, QUESTION))['presentation']
             canonical = manager.conversation_session(env.project, 'actor')
             assert canonical is not None and canonical.process is None
             path = f'/api/projects/{env.project}/agent-nodes/actor/questions/{p["id"]}/answers'
             result = await env.client.post(path, json={'answers': {'style': 'a'}})
             assert result.status_code == 200 and result.json()['input'] is None
-            assert (await mcp(env, {'action': 'get', 'presentation_id': p['id']}))['presentation']['state'] == 'answered'
+            assert (await agent_present_mcp(env, {'action': 'get', 'presentation_id': p['id']}))['presentation']['state'] == 'answered'
             assert canonical.process is None and env.store.canvas(env.project) == before
         finally:
             await env.client.aclose()
@@ -507,12 +507,12 @@ def test_answer_pipe_failure_is_honest_and_never_retried_by_duplicate_post(env):
             status = (await env.client.get(path)).json()
             assert status['presentation']['state'] == 'answered' and not status['answerable']
             assert status['delivery_error']['code'] == 'UPSTREAM_MODEL_ERROR'
-            questions = [r['event'] for r in await events(env) if r['event']['type'] == 'question']
+            questions = [r['event'] for r in await agent_present_events(env) if r['event']['type'] == 'question']
             assert questions[-1]['delivery_error'] == status['delivery_error']
             assert questions[-1]['presentation'] == status['presentation']
             assert [e for e in env.live if e['type'] == 'question'] == questions
-            assert [r['event'] for r in await events(env, 'events/page') if r['event']['type'] == 'question'] == questions
-            assert len([r for r in await events(env) if r['event']['type'] == 'user_prompt']) == 1
+            assert [r['event'] for r in await agent_present_events(env, 'events/page') if r['event']['type'] == 'question'] == questions
+            assert len([r for r in await agent_present_events(env) if r['event']['type'] == 'user_prompt']) == 1
         finally:
             await env.client.aclose()
     asyncio.run(scenario())
@@ -526,7 +526,7 @@ def test_concurrent_same_answers_have_one_receipt_and_one_real_queue_entry(env):
             path = f'/api/projects/{env.project}/agent-nodes/actor/questions/{p["id"]}/answers'
             responses = await asyncio.gather(*[env.client.post(path, json={'answers': {'style': 'a'}}) for _ in range(2)])
             assert all(r.status_code == 200 for r in responses) and responses[0].json() == responses[1].json()
-            assert len([r for r in await events(env) if r['event']['type'] == 'queued_input']) == 1
+            assert len([r for r in await agent_present_events(env) if r['event']['type'] == 'queued_input']) == 1
         finally:
             await env.client.aclose()
     asyncio.run(scenario())
@@ -549,7 +549,7 @@ def test_presentation_turn_is_captured_before_live_subscribers_advance_fifo(env)
                                          'steps': [{'id': 'one', 'text': 'Inspect'}]})
             assert result.status_code == 200
             assert env.session._current_turn_id not in (None, original)
-            saved = [r['event'] for r in await events(env) if r['event']['type'] == 'plan']
+            saved = [r['event'] for r in await agent_present_events(env) if r['event']['type'] == 'plan']
             assert len(saved) == 1 and saved[0]['turn_id'] == original
             assert saved == [e for e in env.live if e['type'] == 'plan']
         finally:
@@ -578,7 +578,7 @@ def test_receipts_are_bounded_and_expire_without_replaying_inputs(env, monkeypat
             assert (await present(env, {'action': 'get', 'presentation_id': last})).status_code == 200
             now += 1801
             assert (await present(env, {'action': 'get', 'presentation_id': last})).status_code == 409
-            assert len([r for r in await events(env) if r['event']['type'] == 'user_prompt']) == 1
+            assert len([r for r in await agent_present_events(env) if r['event']['type'] == 'user_prompt']) == 1
             assert len(manager.sessions) == 1
         finally:
             await env.client.aclose()
@@ -606,16 +606,16 @@ def test_external_operation_diff_requires_real_original_mcp_turn_owner(env):
     async def scenario():
         await env.start()
         try:
-            created = await mcp(env, {'type': 'smart-prompt', 'text': 'External journal'},
+            created = await agent_present_mcp(env, {'type': 'smart-prompt', 'text': 'External journal'},
                                 tool='canvas.create_node', turn='external-original')
             assert 'op_id' in created, created
             args = {'action': 'show', 'kind': 'diff', 'title': 'Journal', 'op_id': created['op_id']}
-            shown = await mcp(env, args)
+            shown = await agent_present_mcp(env, args)
             assert 'presentation' in shown, shown
             data = shown['presentation']['data']
             assert data['source'] == 'operation' and data['turn_id'] == 'external-original'
             assert 'External journal' in json.dumps(data['after'])
-            assert (await mcp(env, args, sid='foreign-owner'))['isError']
+            assert (await agent_present_mcp(env, args, sid='foreign-owner'))['isError']
             assert (await present(env, args)).status_code == 409
         finally:
             await env.client.aclose()
@@ -630,11 +630,11 @@ def test_canonical_host_mismatch_is_not_authorized_by_hosted_caller_label(env):
             env.store.apply_agent_host_mutations(env.project, [{'op': 'upsert_node', 'node': {**node, 'agentCli': 'codex'}}],
                                                  base_revision=env.store.canvas(env.project)['revision'])
             before = env.store.canvas(env.project)
-            response = await mcp(env, QUESTION, caller='hosted')
+            response = await agent_present_mcp(env, QUESTION, caller='hosted')
             assert response['isError'] and response['structuredContent']['code'] == 'CONFLICT'
             assert (await present(env, QUESTION)).status_code == 409
             assert env.session.agent_cli == 'pi' and env.store.canvas(env.project) == before
-            assert not any(r['event']['type'] == 'question' for r in await events(env))
+            assert not any(r['event']['type'] == 'question' for r in await agent_present_events(env))
         finally:
             await env.client.aclose()
     asyncio.run(scenario())
@@ -698,8 +698,8 @@ def test_plan_is_a_real_persisted_live_and_paged_event_without_canvas_writes(env
             live, = [e for e in env.live if e['type'] == 'plan']
             assert live['presentation'] == p and live['turn_id'] == turn
             assert live['host'] == 'pi' and live['generation'] == env.session.generation and live['seq'] > 1
-            saved = [r['event'] for r in await events(env) if r['event']['type'] == 'plan']
-            paged = [r['event'] for r in await events(env, 'events/page') if r['event']['type'] == 'plan']
+            saved = [r['event'] for r in await agent_present_events(env) if r['event']['type'] == 'plan']
+            paged = [r['event'] for r in await agent_present_events(env, 'events/page') if r['event']['type'] == 'plan']
             assert saved == paged == [live]
             read = await present(env, {'action': 'get', 'presentation_id': p['id']})
             assert read.json() == {'presentation': p}

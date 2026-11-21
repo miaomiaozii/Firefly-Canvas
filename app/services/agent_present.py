@@ -51,20 +51,20 @@ SCHEMA['oneOf'] = [
 TOOL = {'name': 'agent.present', 'description': 'show 呈现计划提案、多题选择或真实 diff_id/op_id 差异；get 读取原收据与答案。问题推荐项必须是实际选项，外部 MCP 须沿用原 Mcp-Session-Id。不批准、不执行、不创建节点，不承诺重启续跑。', 'inputSchema': SCHEMA}
 
 
-def _valid(value, schema):
-    if 'oneOf' in schema and sum(_valid(value, branch) for branch in schema['oneOf']) != 1:
+def _agent_present_valid(value, schema):
+    if 'oneOf' in schema and sum(_agent_present_valid(value, branch) for branch in schema['oneOf']) != 1:
         return False
     kind = schema['type']
     if kind == 'object':
         props = schema['properties']
         return (isinstance(value, dict) and set(schema['required']) <= value.keys() <= props.keys()
-                and all(_valid(v, props[k]) for k, v in value.items()))
+                and all(_agent_present_valid(v, props[k]) for k, v in value.items()))
     if kind == 'string':
         return (isinstance(value, str) and bool(value.strip()) and len(value) <= schema.get('maxLength', 128)
                 and ('enum' not in schema or value in schema['enum']))
     if kind == 'array':
         return (isinstance(value, list) and schema['minItems'] <= len(value) <= schema['maxItems']
-                and all(_valid(v, schema['items']) for v in value))
+                and all(_agent_present_valid(v, schema['items']) for v in value))
     return False
 
 
@@ -75,8 +75,8 @@ def _bounded(value):
         return False
 
 
-def validate(args):
-    if not _valid(args, SCHEMA) or not _bounded(args):
+def agent_present_validate(args):
+    if not _agent_present_valid(args, SCHEMA) or not _bounded(args):
         raise invalid('Invalid or oversized agent.present arguments')
     for key in ('steps', 'questions'):
         if key in args and len({item['id'] for item in args[key]}) != len(args[key]):
@@ -87,19 +87,19 @@ def validate(args):
             raise invalid('Options must be unique and recommendation must name an option')
 
 
-def stale():
+def agent_present_stale():
     return agent_error(409, 'CONFLICT', 'Presentation is missing, expired or belongs to another binding',
                        retryable=False, details={'reason': 'presentation_stale'})
 
 
-def _node(store, project, actor):
+def _agent_present_node(store, project, actor):
     node = next((n for n in store.canvas(project)['nodes'] if n.get('id') == actor), None)
     if not node or node.get('type') not in (NODE_TYPE_AGENT, 'agent'):
         raise agent_error(404, 'AGENT_NOT_FOUND', 'An existing Agent node is required')
     return node
 
 
-def _host(node):
+def _agent_present_host(node):
     return read_host_fields(node)['agentCli']
 
 
@@ -139,19 +139,19 @@ async def _publish(manager, record):
     await manager._broadcast_event(session, event, host=record.host, generation=record.generation)
 
 
-def _identity(node):
-    return node.get('created_at'), _host(node), node.get('mcp_session'), node.get('current_branch')
+def _agent_present_identity(node):
+    return node.get('created_at'), _agent_present_host(node), node.get('mcp_session'), node.get('current_branch')
 
 
-def _fresh(store, manager, record):
+def _agent_present_fresh(store, manager, record):
     session = record.session()
     try:
-        node = _node(store, record.project, record.actor)
+        node = _agent_present_node(store, record.project, record.actor)
     except Exception:
         return False
     return bool(record.expires > monotonic() and session
                 and manager.conversation_session(record.project, record.actor) is session
-                and _identity(node) == record.node_identity
+                and _agent_present_identity(node) == record.node_identity
                 and session.agent_cli == record.host and session.generation == record.generation
                 and session.input_epoch == record.epoch and not session._stopping
                 and (record.owner[0] == 'mcp' or (
@@ -162,14 +162,14 @@ def _fresh(store, manager, record):
 
 
 def _expire(store, manager, record):
-    if record.presentation['state'] == 'pending' and not _fresh(store, manager, record):
+    if record.presentation['state'] == 'pending' and not _agent_present_fresh(store, manager, record):
         record.presentation['state'] = 'expired'
 
 
 def question(store, manager, project, actor, presentation_id):
     record = _records(store).get(presentation_id)
     if not record or (record.project, record.actor, record.presentation['kind']) != (project, actor, 'question'):
-        raise stale()
+        raise agent_present_stale()
     _expire(store, manager, record)
     return record
 
@@ -209,8 +209,8 @@ async def answer(store, manager, project, actor, presentation_id, body, send):
 
         def guard():
             _expire(store, manager, record)
-            if record.presentation['state'] == 'expired' or not _fresh(store, manager, record):
-                raise stale()
+            if record.presentation['state'] == 'expired' or not _agent_present_fresh(store, manager, record):
+                raise agent_present_stale()
             if record.owner[0] == 'hosted' and request_id in record.session()._follow_up_ids:
                 raise agent_error(409, 'CONFLICT', 'request_id already identifies another input', retryable=False)
 
@@ -252,13 +252,13 @@ def _resolve_diff(store, project, actor, owner, args):
         db = OpsDb(store.root)
         operation = get_operation(db, project, args['op_id'])
         if not operation or operation.get('agent_node_id') != actor:
-            raise stale()
+            raise agent_present_stale()
         with db.connect(project, create_project_dir=False, create_db=False) as conn:
             turn = conn.execute('SELECT owner, kind FROM agent_ops_turns WHERE project_id=? AND turn_id=?',
                                 (project, operation['turn_id'])).fetchone()
         expected = (actor, 'hosted') if owner[0] == 'hosted' else (owner[1], 'external')
         if turn is None or tuple(turn) != expected:
-            raise stale()
+            raise agent_present_stale()
         return {'source': 'operation', **{key: deepcopy(operation[key]) for key in
                 ('op_id', 'turn_id', 'tool', 'before', 'after', 'undone')}}
     from app.services import agent_batch_prompt
@@ -275,9 +275,9 @@ def _resolve_diff(store, project, actor, owner, args):
             'items': [item.public() for item in items], 'applied': False}
 
 
-async def call(store, manager, project, actor, args, *, owner=('hosted',), external_turn=None):
-    validate(args)
-    node = _node(store, project, actor)
+async def agent_present_call(store, manager, project, actor, args, *, owner=('hosted',), external_turn=None):
+    agent_present_validate(args)
+    node = _agent_present_node(store, project, actor)
     session = manager.conversation_session(project, actor)
     external = owner[0] == 'mcp'
     if external:
@@ -286,22 +286,22 @@ async def call(store, manager, project, actor, args, *, owner=('hosted',), exter
         if session is None and args['action'] == 'show':
             session = await manager.get_or_create_session(project, actor, recover_history=False)
             if not session.is_running and session._current_turn_id is None:
-                session.agent_cli = _host(node)
-    if not session or session.agent_cli != _host(node) or session._stopping:
-        raise stale()
+                session.agent_cli = _agent_present_host(node)
+    if not session or session.agent_cli != _agent_present_host(node) or session._stopping:
+        raise agent_present_stale()
     records = _records(store)
     if args['action'] == 'get':
         record = records.get(args['presentation_id'])
         if not record or (record.project, record.actor, record.owner) != (project, actor, owner):
-            raise stale()
+            raise agent_present_stale()
         if not external and (record.session() is not session or record.host != session.agent_cli
                              or record.generation != session.generation or record.epoch != session.input_epoch):
-            raise stale()
+            raise agent_present_stale()
         _expire(store, manager, record)
         return {'presentation': deepcopy(record.presentation)}
     turn = external_turn if external else manager.get_current_turn_id(project, actor)
     if not external and (not turn or not session.is_running):
-        raise stale()
+        raise agent_present_stale()
     if args['kind'] == 'diff':
         data = _resolve_diff(store, project, actor, owner, args)
     else:
@@ -312,7 +312,7 @@ async def call(store, manager, project, actor, args, *, owner=('hosted',), exter
     p = {'schema': 1, 'id': uuid4().hex, 'kind': args['kind'], 'title': args['title'],
          'state': 'pending' if args['kind'] == 'question' else 'presented', 'data': data}
     record = Record(project, actor, owner, ref(session), session.agent_cli, session.generation, turn,
-                    monotonic() + TTL, p, session.input_epoch, _identity(node))
+                    monotonic() + TTL, p, session.input_epoch, _agent_present_identity(node))
     while len(records) >= MAX_RECORDS:
         records.popitem(last=False)
     records[p['id']] = record
