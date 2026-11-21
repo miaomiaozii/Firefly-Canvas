@@ -112,6 +112,52 @@ class AgentWorkspaceTests(unittest.TestCase):
         visit(root)
         return result
 
+    def test_default_session_recovery_rejects_redirected_project_without_external_writes(self):
+        self.store.apply_mutations(self.project_id, [{"op": "upsert_node", "node": {
+            "id": "node-445", "type": "smart-agent", "agentCli": "pi"}}], base_revision=0)
+        source = self.session()
+        source.status = "busy"
+        self.run_async(self.manager.send_follow_up(source, "retained follow-up", request_id="retained-445"))
+        journal = self.project / "agent-events" / "node-445.jsonl"
+        retained_bytes = journal.read_bytes()
+        restarted = agent_host.AgentHostManager()
+        self.addCleanup(lambda: self.run_async(restarted.cleanup_project(self.project_id)))
+        outside = self.base / "outside-with-retained-project"
+        self.project.rename(outside)
+        junction = os.name == "nt"
+        try:
+            if junction:
+                from _winapi import CreateJunction
+                CreateJunction(str(outside), str(self.project))
+            else:
+                self.project.symlink_to(outside, target_is_directory=True)
+            before = self.snapshot()
+            external_before = self.snapshot(outside)
+            rejected = self.run_async(restarted.get_or_create_session(self.project_id, "node-445"))
+            self.assertEqual(self.snapshot(outside), external_before,
+                             "Default history recovery must not append through a redirected project")
+            self.assertEqual(self.snapshot(), before)
+            self.assertEqual(rejected.status, "crashed")
+            self.assertIn("workspace guard", rejected.last_error)
+            self.assertFalse(self.run_async(restarted.spawn_session(rejected)))
+            self.assertEqual(self.launches, [])
+            self.assertEqual(self.snapshot(outside), external_before)
+        finally:
+            if junction:
+                self.project.rmdir()
+            else:
+                self.project.unlink()
+            outside.rename(self.project)
+
+        recovered = self.run_async(restarted.get_or_create_session(self.project_id, "node-445"))
+        self.assertIs(recovered, rejected)
+        events = restarted.load_events(self.project_id, "node-445")["events"]
+        terminals = [(row["event"]["request_id"], row["event"]["delivery"])
+                     for row in events if row["event"]["type"] == "input_delivery_terminal"]
+        self.assertEqual(terminals, [("retained-445", "unsent")])
+        self.assertTrue(journal.read_bytes().startswith(retained_bytes))
+        self.assertEqual(self.launches, [])
+
     def test_rejected_root_does_not_write_pending_queue_bookkeeping(self):
         session = self.session(recover_history=False)
         session.status = "busy"

@@ -618,13 +618,11 @@ class AgentHostManager:
             session = self.sessions.get(key)
             if session and recover_history and session._history_recovery_pending:
                 self._recover_pending_history(session)
-                session._history_recovery_pending = False
             if session:
                 # #317：空闲对象复用不替换——否则 stream 连接（不拉起）与后续 /prompt spawn 各自拿到
                 # 不同对象，WS 监听器挂在旧对象上会永久丢事件；复用后同对象晚 spawn 也能广播。
                 return session
 
-            # Create new session
             session = AgentSession(project_id=project_id, node_id=node_id, model=model, autonomy=autonomy)
             if recover_history:
                 self._recover_pending_history(session)
@@ -633,8 +631,24 @@ class AgentHostManager:
             self.sessions[key] = session
             return session
 
+    def _validated_pi_workspace(self, session: AgentSession) -> Path:
+        validate_spawn_arg("node_id", session.node_id)
+        _validate_workspace_component("node_id", session.node_id)
+        _validate_workspace_component("project_id", session.project_id)
+        return _pi_workspace_path(self._get_project_dir(session.project_id), session.node_id)
+
     def _recover_pending_history(self, session: AgentSession) -> None:
         """Close retained queue records without reconstructing the in-memory queue."""
+        if session.agent_cli == "pi":
+            try:
+                self._validated_pi_workspace(session)
+            except (ValueError, RuntimeError) as exc:
+                session.status = "crashed"
+                session.last_error = str(exc)
+                # A rejected stable path may be repaired; do not consume its recovery (#445).
+                session._history_recovery_pending = True
+                return
+        session._history_recovery_pending = False
         try:
             records = self.load_events(session.project_id, session.node_id)["events"]
         except (OSError, RuntimeError, AttributeError, InvalidEventsCursor):
@@ -720,14 +734,9 @@ class AgentHostManager:
 
         try:
             _binding_pref = session.ext_session_id or session.session_id
-            for _name, _val in (("node_id", session.node_id),
-                                ("model", spawn_model),
-                                ("session_id", _binding_pref)):
+            for _name, _val in (("model", spawn_model), ("session_id", _binding_pref)):
                 validate_spawn_arg(_name, _val, model=(_name == "model"))
-            _validate_workspace_component("node_id", session.node_id)
-            _validate_workspace_component("project_id", session.project_id)
-            project_dir = self._get_project_dir(session.project_id)
-            session_path = _pi_workspace_path(project_dir, session.node_id)
+            session_path = self._validated_pi_workspace(session)
             session_dir = str(session_path)
             # Queue recovery can write event files, so reject unsafe roots before it too.
             async with session._input_lock:

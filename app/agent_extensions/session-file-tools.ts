@@ -70,6 +70,12 @@ export function registerSessionFileTools(pi: ExtensionAPI) {
         const absolute = path.resolve(root, spelling);
         const relative = path.relative(root, absolute);
         if ((!relative && !directory) || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) denied("outside the fixed sessions workspace");
+        // #445: Windows relative folds case even for distinct case-sensitive NTFS siblings.
+        // Require exact root components too; alternate-case root spellings are unsupported aliases.
+        if (windows) {
+            const exactRelative = path.posix.relative(root.replace(/\\/g, "/"), absolute.replace(/\\/g, "/"));
+            if (exactRelative === ".." || exactRelative.startsWith("../") || path.posix.isAbsolute(exactRelative)) denied("outside the fixed sessions workspace");
+        }
         if (mutation && !relative.includes(path.sep) && /^(?:system-prompt\.txt|.*\.jsonl)$/i.test(relative)) denied("host control file is read-only");
         await inspect(absolute, mutation, directory);
         return absolute;

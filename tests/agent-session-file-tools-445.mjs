@@ -1,5 +1,5 @@
 // Standalone SDK conformance, separate from pytest. Run only through run_445.py:
-// python D:/ff-qa/a-445-443-464/run_445.py --label <unique> -- node tests/agent-session-file-tools-445.mjs --sdk-entry <SDK>/dist/index.js
+// python D:/ff-qa/a-445-443-464/run_445.py --label <unique> --root <isolated-worktree> --timeout 120 -- node tests/agent-session-file-tools-445.mjs --sdk-entry <SDK>/dist/index.js
 // Uses the installed SDK's real extension loader, no CLI/session/model/auth discovery.
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { deflateSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 
 const args = process.argv.slice(2);
 const option = name => args[args.indexOf(name) + 1];
@@ -18,6 +19,7 @@ assert.equal(sdk.VERSION, '1.5.1', 'This conformance suite requires the reviewed
 const extensionPath = fileURLToPath(new URL('../app/agent_extensions/canvas-tools.ts', import.meta.url));
 const selected = args.includes('--case') ? option('--case') : undefined;
 const tests = [];
+const limits = [];
 const test = (name, run) => tests.push({ name, run });
 
 async function fixture() {
@@ -135,6 +137,117 @@ test('outside-denial', async f => {
     assert.deepEqual(await Promise.all([f.outside, otherNode, otherProject].map(snapshot)), before);
     assert.equal(await fs.readFile(outsideFile, 'utf8'), 'EXTERNAL SENTINEL\r\n');
     assert.deepEqual(await fs.readdir(f.root), [], 'Denied writes must not create in-root parents either');
+});
+
+test('fixed-root-normal-io', async f => {
+    const api = await load(f);
+    process.env.FIREFLY_AGENT_WORKSPACE_ROOT = f.outside;
+    const before = await snapshot(f.outside);
+    const absolute = path.join(f.root, 'work', 'nested', 'Note.txt');
+    const nativeSeparators = absolute;
+    const forwardSlashes = process.platform === 'win32' ? absolute.replace(/\\/g, '/') : absolute;
+    await api.execute('write', { path: './work/nested/Note.txt', content: 'alpha\r\nbeta\r\n' });
+    assert.equal(text(await api.execute('read', { path: nativeSeparators })), 'alpha\r\nbeta\r\n');
+    await api.execute('edit', { path: forwardSlashes, edits: [{ oldText: 'alpha', newText: 'ALPHA' }] });
+    assert.equal(text(await api.execute('read', { path: '@work/nested/Note.txt' })), 'ALPHA\r\nbeta\r\n');
+    await api.execute('write', { path: forwardSlashes, content: 'gamma\n' });
+    await api.execute('edit', { path: './work/nested/Note.txt', edits: [{ oldText: 'gamma', newText: 'GAMMA' }] });
+    assert.equal(text(await api.execute('read', { path: forwardSlashes })), 'GAMMA\n');
+    assert.equal(await fs.readFile(absolute, 'utf8'), 'GAMMA\n');
+    assert.deepEqual(await snapshot(f.outside), before, 'ctx.cwd and environment changes must not rebind any tool');
+});
+
+test('fixed-root-case-sibling-boundary', async f => {
+    // fsutil requires an empty directory; only this test's fresh QA tree may change its flag.
+    const agentNodes = path.join(f.temp, 'case-project', 'agent_nodes');
+    await fs.mkdir(agentNodes, { recursive: true });
+    const root = path.join(agentNodes, 'node-a', 'sessions');
+    const siblingNode = path.join(agentNodes, 'NODE-A');
+    const siblingRoot = path.join(siblingNode, 'sessions');
+    const capability = { platform: process.platform, commands: [] };
+    if (process.platform === 'win32') {
+        for (const operation of [['setCaseSensitiveInfo', agentNodes, 'enable'], ['queryCaseSensitiveInfo', agentNodes]]) {
+            const args = ['file', ...operation];
+            const result = spawnSync('fsutil.exe', args, { windowsHide: true, timeout: 10000 });
+            const receipt = { command: ['fsutil.exe', ...args], status: result.status, signal: result.signal,
+                stdoutBase64: result.stdout?.toString('base64'), stderrBase64: result.stderr?.toString('base64'),
+                error: result.error?.message };
+            capability.commands.push(receipt);
+            console.log(JSON.stringify({ caseSensitiveCommand: receipt }));
+        }
+    }
+    await fs.mkdir(root, { recursive: true });
+    let distinctSibling = false;
+    try {
+        await fs.mkdir(siblingNode);
+        distinctSibling = true;
+    } catch (error) {
+        assert.equal(error.code, 'EEXIST', 'Only case-insensitive alias collision is an expected capability limit');
+    }
+    const sentinel = 'EXTERNAL SENTINEL\r\n';
+    await fs.writeFile(path.join(root, 'sentinel.txt'), distinctSibling ? 'INTERNAL SENTINEL\r\n' : sentinel);
+    if (distinctSibling) {
+        await fs.mkdir(siblingRoot);
+        await fs.writeFile(path.join(siblingRoot, 'sentinel.txt'), sentinel, { flag: 'wx' });
+        const names = await fs.readdir(agentNodes);
+        assert.ok(names.includes('node-a') && names.includes('NODE-A'), 'Both exact sibling names must coexist');
+        assert.notEqual((await fs.stat(root)).ino, (await fs.stat(siblingRoot)).ino);
+        assert.equal(await fs.readFile(path.join(root, 'sentinel.txt'), 'utf8'), 'INTERNAL SENTINEL\r\n');
+        assert.equal(await fs.readFile(path.join(siblingRoot, 'sentinel.txt'), 'utf8'), sentinel);
+    } else {
+        limits.push({ case: 'fixed-root-case-sibling-boundary', status: 'LIMIT',
+            reason: 'Distinct node-a/NODE-A directories unavailable; alias contract tested, no native case-sensitive sibling proof', ...capability });
+    }
+    console.log(JSON.stringify({ caseSiblingCapability: { ...capability, status: distinctSibling ? 'AVAILABLE' : 'LIMIT', distinctSibling } }));
+    const api = await load(f, root);
+    process.env.FIREFLY_AGENT_WORKSPACE_ROOT = f.outside;
+    assert.equal(text(await api.execute('read', { path: 'sentinel.txt' })), distinctSibling ? 'INTERNAL SENTINEL\r\n' : sentinel);
+    await api.execute('write', { path: 'work/inside.txt', content: 'INSIDE' });
+    await api.execute('edit', { path: path.join(root, 'work/inside.txt'), edits: [{ oldText: 'INSIDE', newText: 'EDITED INSIDE' }] });
+    assert.equal(text(await api.execute('read', { path: 'work/inside.txt' })), 'EDITED INSIDE');
+    const before = await Promise.all([root, siblingRoot, f.outside].map(snapshot));
+    await denyAll(api, path.join(siblingRoot, 'sentinel.txt'));
+    await denyAll(api, path.join(siblingRoot, 'not-created', 'deep', 'new.txt'));
+    await denyAll(api, '@' + path.join(siblingRoot, 'sentinel.txt').replace(/\\/g, '/'));
+    assert.deepEqual(await Promise.all([root, siblingRoot, f.outside].map(snapshot)), before,
+        'Denied read/write/edit must not change sibling bytes or create parents');
+    assert.equal(await fs.readFile(path.join(siblingRoot, 'sentinel.txt'), 'utf8'), sentinel);
+});
+
+test('fixed-root-case-alias', async f => {
+    const api = await load(f);
+    const aliases = [
+        path.join(path.dirname(path.dirname(f.root)), 'NODE-A', 'sessions'),
+        path.join(path.dirname(f.root), 'SESSIONS'),
+        f.root.replace(`${path.sep}agent_nodes${path.sep}`, `${path.sep}AGENT_NODES${path.sep}`),
+        f.root.replace(`${path.sep}project${path.sep}`, `${path.sep}PROJECT${path.sep}`),
+    ];
+    if (process.platform === 'win32') aliases.push((f.root[0] === f.root[0].toUpperCase() ? f.root[0].toLowerCase() : f.root[0].toUpperCase()) + f.root.slice(1));
+    for (const index of aliases.keys()) {
+        for (const name of ['read', 'write', 'edit']) {
+            await fs.writeFile(path.join(f.root, `${index}-${name}.txt`), 'EXTERNAL SENTINEL\r\n');
+        }
+    }
+    const before = await snapshot(f.root);
+    const accepted = [];
+    for (const [index, alias] of aliases.entries()) {
+        assert.notEqual(alias, f.root, 'Fixture must change a fixed-root component');
+        for (const name of ['read', 'write', 'edit']) {
+            const filename = `${index}-${name}.txt`;
+            const target = path.join(alias, filename);
+            const params = name === 'write' ? { content: 'MUST NOT WRITE' }
+                : name === 'edit' ? { edits: [{ oldText: 'EXTERNAL SENTINEL', newText: 'CORRUPTED' }] } : {};
+            try {
+                const result = await api.execute(name, { path: target, ...params });
+                accepted.push({ name, target, result: text(result), bytesAfter: await fs.readFile(path.join(f.root, filename), 'utf8') });
+            } catch (error) {
+                assert.match(error.message, denial, `${name} must fail closed for ${target}`);
+            }
+        }
+    }
+    console.log(JSON.stringify({ caseAliasAccepted: accepted }));
+    assert.deepEqual(accepted, [], 'Alternate-case fixed-root components are unsupported even on case-insensitive Windows');
+    assert.deepEqual(await snapshot(f.root), before, 'Denied read/write/edit must leave fixture bytes unchanged');
 });
 
 test('reserved-name-space-alias', async f => {
@@ -277,6 +390,6 @@ for (const source of [fileURLToPath(import.meta.url), extensionPath, path.join(p
     path.join(path.dirname(sdkEntry), 'core/extensions/loader.js')]) {
     sourceSha256[source] = createHash('sha256').update(await fs.readFile(source)).digest('hex');
 }
-console.log(JSON.stringify({ sdkEntry, sdkVersion: sdk.VERSION, platform: process.platform, passed, failed, sourceSha256,
+console.log(JSON.stringify({ sdkEntry, sdkVersion: sdk.VERSION, platform: process.platform, passed, failed, limits, sourceSha256,
     proof: 'real SDK loader + registered execute + temporary filesystem; not CLI/model/OS sandbox proof' }));
 process.exitCode = failed ? 1 : 0;

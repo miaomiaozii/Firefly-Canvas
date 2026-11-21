@@ -344,5 +344,8 @@ def test_pi_submits_an_allowlist_that_keeps_shared_extension_namespaces(submissi
                      "ops.list", "ops.undo", "chat.history", "chat.search",
                      "canvas.list_nodes", "generate.status", "media.list", "viewport.focus"):
             assert any(fnmatchcase(name, pattern) for pattern in patterns), name
-        for name in ("read", "bash", "edit", "write", "codemode"):
+        # #445 enables only the guarded file extensions, not bare built-ins or shell tools.
+        for name in ("read", "write", "edit"):
+            assert name in patterns, name
+        for name in ("bash", "powershell", "codemode"):
             assert not any(fnmatchcase(name, pattern) for pattern in patterns), name
