@@ -5400,6 +5400,7 @@ function scheduleCanvasMergeReload(delay=200, minUpdatedAt=0){
 }
 function smartCanvasAgentActivityBridge(){
     window.canvasAgentCompletion?.configure({getProjectId: () => canvasId});
+    window.canvasAgentChat?.configure({getProjectId: () => canvasId});
     const activity = window.canvasAgentActivity;
     if(!activity) return null;
     activity.configure({

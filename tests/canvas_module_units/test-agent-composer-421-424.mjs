@@ -66,7 +66,7 @@ test('r3 composer has no duplicate internal header; real parameters and more men
     for (const text of ['每张', '每批', '无需']) assert.ok(html.includes(text));
     assert.doesNotMatch(html, /生效未确认/);
     const head = fn(m.ctx, 'agentHeadActionButtonsHtml')(m.node);
-    assert.match(head, /^<details class="agent-tui-more"><summary aria-label="更多会话操作">.*<\/summary><div data-agent-more-content>/);
+    assert.match(head, /^<button type="button" class="agent-tui-btn agent-chat-head-button" data-agent-chat-open="search" aria-label="搜索本画布对话" title="搜索本画布对话"><svg class="ico" aria-hidden="true"><use href="#i-search"\/><\/svg><\/button><button type="button" class="agent-tui-btn agent-chat-head-button" data-agent-chat-open="history" aria-label="本画布历史会话" title="本画布历史会话"><svg class="ico" aria-hidden="true"><use href="#i-history"\/><\/svg><\/button><details class="agent-tui-more"><summary aria-label="更多会话操作">.*<\/summary><div data-agent-more-content>/);
     assert.equal((head.match(/<summary /g) || []).length, 1);
     const menu = head.slice(head.indexOf('<div data-agent-more-content>'));
     for (const attr of ['chat-frame', 'ref-frame', 'dock-set', 'more-fork', 'more-cli', 'more-delete']) assert.ok(menu.includes(`data-agent-${attr}`));

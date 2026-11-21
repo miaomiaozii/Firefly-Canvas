@@ -75,6 +75,15 @@ function agentCompletionBridge() {
     });
     return completion;
 }
+function agentChatBridge() {
+    const chat = window.canvasAgentChat;
+    chat?.configure({
+        getOwner: id => canvasState.nodes.some(node => node.id === id && isSmartAgentNode(node)) ? agentTuiState.get(id) : null,
+        hasNode: id => canvasState.nodes.some(node => node.id === id && isSmartAgentNode(node)),
+        getComposer: agentNodeRefsInput,
+    });
+    return chat;
+}
 function agentCaptureComposer(state, nodeId) {
     const input = agentNodeRefsInput(nodeId);
     if (input && !input.disabled && !state.viewNeedsMount) {
@@ -96,6 +105,7 @@ function agentChangeHostView(nodeId, state, host) {
     state.viewHost = host;
     state.viewNeedsMount = true;
     state.viewEpoch++;
+    agentChatBridge()?.invalidate();
     agentCompletionBridge()?.invalidate();
     state._replayInFlight = false;
     state._replayBuffer = [];
@@ -3310,7 +3320,7 @@ function bindAgentNodeControls(el, node){
 }
 
 function renderAgentNode(nodeId) {
-    // #314：IME 组合进行中——推迟重建，compositionend 后补渲染（中文输入不被杀）
+    // Rebuilding during composition destroys the native IME session; defer until compositionend.
     const st314 = agentTuiState.get(nodeId);
     if (st314 && st314._batchHistory) return;
     if (st314 && st314.composing) { st314.pendingRerender = true; return; }
@@ -3349,13 +3359,12 @@ function renderAgentNode(nodeId) {
         bindAgentNodeControls(bodyContainer, node);
         if (st314) st314.viewNeedsMount = false;
         const focus = restoreFocus || (!changedHost && st314 ? st314.inputFocus : null);
-        if ((focus && focus.focused) || (!changedHost && hadFocus)) {
-            const newInput = bodyContainer.querySelector('[data-agent-tui-input]');
-            if (newInput && !newInput.disabled) {
-                newInput.focus({ preventScroll: true });
-                newInput.setSelectionRange(focus ? focus.start : selStart, focus ? focus.end : selEnd, focus?.direction);
-                if (focus) newInput.scrollTop = focus.scrollTop;
-            }
+        const newInput = bodyContainer.querySelector('[data-agent-tui-input]');
+        if (newInput && !newInput.disabled && (focus || (!changedHost && prevInput))) {
+            // A focused history reader must not steal the composer's selection when live events rebuild it.
+            if (focus?.focused || (!changedHost && hadFocus)) newInput.focus({ preventScroll: true });
+            newInput.setSelectionRange(focus ? focus.start : selStart, focus ? focus.end : selEnd, focus?.direction);
+            if (focus) newInput.scrollTop = focus.scrollTop;
         }
     }
 
@@ -3725,6 +3734,7 @@ function agentDockUnmount(nodeId){
 }
 
 function cleanupAgentTuiState(nodeId) {
+    window.canvasAgentChat?.forget(nodeId);
     agentNodeRefsForget(nodeId);
     agentDockForget(nodeId);
     const state = agentTuiState.get(nodeId);
@@ -3736,7 +3746,7 @@ function cleanupAgentTuiState(nodeId) {
         for (const view of state.hostViews.values()) {
             if (view.nodeRefsDraft) for (const pending of view.nodeRefsDraft.pending.values()) clearTimeout(pending.timer);
         }
-        // #280：先标记再关——onclose 见 closing 不会安排重连；并取消在途退避定时器。
+        // Invalidate before closing: onclose must not schedule a reconnect for a deleted node.
         state.closing = true;
         if (state.reconnectTimer) {
             clearTimeout(state.reconnectTimer);
@@ -3870,9 +3880,8 @@ function agentRefFrameCycle(agentId, buttonEl, {actor=null}={}){
     return {action:'cycled', refFrameId:nextId, frames:frames.length};
 }
 
-// 停靠与浮动共用同一个头部入口，操作全部位于更多菜单。
 function agentHeadActionButtonsHtml(node){
-    return `<details class="agent-tui-more"><summary aria-label="更多会话操作">${agentIco('ellipsis')}</summary><div data-agent-more-content>${agentMoreActionsHtml(node)}</div></details>`;
+    return `<button type="button" class="agent-tui-btn agent-chat-head-button" data-agent-chat-open="search" aria-label="搜索本画布对话" title="搜索本画布对话">${agentIco('search')}</button><button type="button" class="agent-tui-btn agent-chat-head-button" data-agent-chat-open="history" aria-label="本画布历史会话" title="本画布历史会话">${agentIco('history')}</button><details class="agent-tui-more"><summary aria-label="更多会话操作">${agentIco('ellipsis')}</summary><div data-agent-more-content>${agentMoreActionsHtml(node)}</div></details>`;
 }
 
 function agentMoreActionsHtml(node) {
@@ -3959,9 +3968,9 @@ function closeAgentMoreMenu(menu) {
     menu.open = false;
 }
 
-// Bind both newly mounted menus and content refreshed by renderAgentNode.
 function bindAgentHeadControls(el, node){
     if(!el || !node) return;
+    agentChatBridge()?.bind(el, node.id);
     el.querySelectorAll('[data-agent-chat-frame],[data-agent-ref-frame],[data-agent-dock-set],[data-agent-dock-collapse],[data-agent-dock-undock],[data-agent-more-delete]').forEach(btn => {
         btn.addEventListener('click', event => {
             event.preventDefault();

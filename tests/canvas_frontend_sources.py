@@ -47,6 +47,7 @@ CANVAS_SCRIPTS: tuple[str, ...] = (
     "canvas-agent-navigation.js",
     "canvas-agent-activity.js",
     "canvas-agent-completion.js",
+    "canvas-agent-chat.js",
     "canvas-agent-tui.js",
     # #324：跨项目搜索面板（顶栏搜索 + 结果列表）。
     "canvas-search.js",
