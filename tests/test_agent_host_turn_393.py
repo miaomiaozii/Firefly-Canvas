@@ -479,11 +479,16 @@ class LogicalTurnTests(unittest.IsolatedAsyncioTestCase):
             live = []
             self.session.event_handlers.append(lambda session, event: live.append(dict(event)))
             await self.manager.send_prompt(self.session, 'first', request_id='first')
+            first_turn = self.session._current_turn_id
             await self.manager.send_follow_up(self.session, 'second', request_id='second')
             await self.manager.send_follow_up(self.session, 'third', request_id='third')
             await self.end()
             records = self.manager.load_events('project', 'node')['events']
             events = [record['event'] for record in records]
+            ended = next(event for event in events if event['type'] == 'agent_end')
+            self.assertEqual(ended['turn_id'], first_turn)
+            self.assertNotEqual(ended['turn_id'], self.session._current_turn_id)
+            self.assertEqual(ended, next(event for event in live if event['type'] == 'agent_end'))
             self.assertEqual([e['type'] for e in live],
                              ['queued_input', 'queued_input', 'agent_end', 'input_delivery_attempt', 'user_prompt'])
             delivered = [e for e in events if e['type'] == 'user_prompt' and e.get('request_id') == 'second']

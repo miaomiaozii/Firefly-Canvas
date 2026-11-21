@@ -12,6 +12,16 @@ export interface CanvasToolDef {
 
 export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     {
+        name: "chat.history",
+        description: "只读当前项目 Agent 对话：node 返回最近用户/助手纯文本消息（seq 升序），canvas 返回按最近消息倒序的会话摘要，包含 retired 节点；不启动/切换宿主，不读工具内部。范围、截断与 IDs 见 ADR 0022。",
+        parameters: Type.Object({ scope: Type.Optional(Type.Union([Type.Literal("node"), Type.Literal("canvas")], {description: "history 默认 node；search 默认 canvas。canvas 包含已删除 Agent 的保留历史。"})), node_id: Type.Optional(Type.String({description: "node 范围的目标；省略沿用发起 Agent，与原生会话 ID 无关。", minLength: 1, maxLength: 200})), host: Type.Optional(Type.Union([Type.Literal("pi"), Type.Literal("codex")], {description: "node 默认活跃宿主，历史/缺失节点必填；canvas 省略时查询两宿主。"})), limit: Type.Optional(Type.Integer({description: "最多 200 条，默认 50。", minimum: 1, maximum: 200})), before_seq: Type.Optional(Type.Integer({description: "仅 node：读取此 seq 之前的消息。", minimum: 1})) }),
+    },
+    {
+        name: "chat.search",
+        description: "只读当前项目 Agent 保留对话的用户/助手文字，字面量大小写不敏感搜索；默认 canvas，含 retired 节点，结果按最近消息倒序；不搜索工具/思考/系统续接/附件内部或其他项目。每次扫描有界，truncated 表示非完整历史。",
+        parameters: Type.Object({ query: Type.String({minLength: 1, maxLength: 200}), scope: Type.Optional(Type.Union([Type.Literal("node"), Type.Literal("canvas")], {description: "history 默认 node；search 默认 canvas。canvas 包含已删除 Agent 的保留历史。"})), node_id: Type.Optional(Type.String({description: "node 范围的目标；省略沿用发起 Agent，与原生会话 ID 无关。", minLength: 1, maxLength: 200})), host: Type.Optional(Type.Union([Type.Literal("pi"), Type.Literal("codex")], {description: "node 默认活跃宿主，历史/缺失节点必填；canvas 省略时查询两宿主。"})), limit: Type.Optional(Type.Integer({description: "最多 200 条，默认 50。", minimum: 1, maximum: 200})) }),
+    },
+    {
         name: "plan.import_excel",
         description: "只读解析已发送到当前 Agent 会话的 XLSX 附件。每个主图/A+ 简报只建一项，不按场景数量拆分。意向图仅供描述方向，产品图由用户自行接入。返回未勾选任务、字段识别、排除项及需复核提示。能力不包括图片识别。个人路径和链接不读取。",
         parameters: Type.Object({ attachment_id: Type.String({description: "已发送到当前 Agent 会话的附件 ID，不是文件路径或 asset_id", minLength: 32, maxLength: 32}), sheet: Type.Optional(Type.String({maxLength: 200})) }),

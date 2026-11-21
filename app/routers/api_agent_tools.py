@@ -1060,14 +1060,18 @@ async def layout_tool_core(project_id: str, owner: str, tool: str, args: dict, *
         preview = plan(snapshot)
         active_turn = current_agent_ops_context().turn_id if hosted else None
         if preview.confirm:
+            existing = {node['id'] for node in snapshot.get('nodes', [])}
             details = {"nodes": preview.confirm, "group_id": preview.result.get("group_id")}
+            targets = [mutation['node']['id'] for mutation in preview.mutations
+                       if mutation['node']['id'] in existing]
             names = "、".join(f"{entry['title']} ({entry['id']})" for entry in preview.confirm[:8])
             more = f" 等 {len(preview.confirm)} 个节点" if len(preview.confirm) > 8 else ""
             action = "加入新排版框并移动" if tool == "canvas.group_create" else "移动"
             named_nodes = agent_host_manager.layout_named_nodes(project_id, owner, active_turn)
             decision = await request_confirmation_core(project_id, owner, tool, details,
                 f"是否{action}以下受保护节点：{names}{more}？", AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS,
-                allow_automatic={entry['id'] for entry in preview.confirm}.issubset(named_nodes))
+                allow_automatic={entry['id'] for entry in preview.confirm}.issubset(named_nodes),
+                prepared_target_node_ids=targets)
             if decision.get("approved") is not True:
                 if decision.get("reason") == "rejected":
                     raise agent_error(409, "CONFIRM_REJECTED", "User rejected the layout operation",
@@ -2628,6 +2632,7 @@ async def request_confirmation_core(
     message: str,
     timeout_seconds: float = 60,
     *, allow_automatic: bool = True, transient_session=None, cancel_event=None, confirm_id=None,
+    prepared_target_node_ids=None,
 ) -> dict:
     """Share live, replayable approvals between HTTP, MCP and batch workers."""
     if not node_id:
@@ -2637,7 +2642,8 @@ async def request_confirmation_core(
     from app.services.agent_confirmation import request
     decision = await request(project_id, node_id, tool, params, message, timeout_seconds,
                              allow_automatic=allow_automatic, transient_session=transient_session,
-                             cancel_event=cancel_event, confirm_id=confirm_id)
+                             cancel_event=cancel_event, confirm_id=confirm_id,
+                             prepared_target_node_ids=prepared_target_node_ids)
     if decision.get('approved'):
         # Stale approvals must fail before callers debit their generation quota.
         validate_pending(project_id, _app_main.FIREFLY_PROJECT_STORE.canvas(project_id))
@@ -2962,7 +2968,8 @@ async def _replace_node_image_impl(project_id: str, node: dict, node_id: str, pi
     return result
 
 
-async def confirm_batch_prompt(project_id, actor, tool, count, human_count, *, images=None, preflight=None):
+async def confirm_batch_prompt(project_id, actor, tool, count, human_count, *, images=None, preflight=None,
+                               target_node_ids=None):
     params = {"node_count": count, "user_edited_count": human_count}
     if preflight is not None:
         params['preflight'] = preflight
@@ -2970,8 +2977,9 @@ async def confirm_batch_prompt(project_id, actor, tool, count, human_count, *, i
     if images is not None:
         params["n"] = images
         message += f"本次还会生成 {images} 张图片（消耗外部生成额度）。"
+    targets = {'prepared_target_node_ids': target_node_ids} if target_node_ids is not None else {}
     decision = await request_confirmation_core(project_id, actor, tool, params, message,
-                                               AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS)
+                                               AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS, **targets)
     if decision.get("approved"):
         return
     if decision.get("reason") == "rejected":
@@ -3006,7 +3014,8 @@ async def batch_prompt_edit_core(project_id, actor, parsed, *, binding=None):
     build(store.canvas(project_id))
     if affected:
         await confirm_batch_prompt(project_id, actor, "canvas.batch_prompt_edit",
-                                   len(affected), sum(item.protected for item in affected))
+                                   len(affected), sum(item.protected for item in affected),
+                                   target_node_ids=[item.node_id for item in affected])
         await _apply_mutations_from_snapshot(project_id, build)
     return _op_result({"applied": [item.node_id for item in affected],
                        "skipped": [{"node_id": item.node_id, "reason": "UNCHANGED"}

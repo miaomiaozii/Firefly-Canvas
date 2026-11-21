@@ -10,6 +10,7 @@ import json
 import logging
 from uuid import uuid4
 
+from app.constants import NODE_TYPE_AGENT
 from app.services.agent_errors import agent_error, translate_detail
 from app.services.agent_ops_context import current_agent_ops_context
 
@@ -79,7 +80,7 @@ class WaitingOperation:
         if self.snapshot is None:
             return
         if (not self.origin.valid() or project != self.origin.session.project_id
-                or not any(n.get('id') == self.origin.session.node_id and n.get('type') == 'smart-agent'
+                or not any(n.get('id') == self.origin.session.node_id and n.get('type') == NODE_TYPE_AGENT
                            for n in canvas.get('nodes', []))
                 or (not self.admitted and canvas != self.snapshot)
                 or (self.providers is not None and self.providers != _api()._app_main.load_api_providers(read_only=True))):
@@ -205,12 +206,36 @@ def _owned_entity(project, actor, tool, params, canvas, turn):
     return False
 
 
+def target_node_ids(params, *, prepared=None, tool=None):
+    """Project execution targets; only server-side preparation may override them."""
+    if not isinstance(params, dict):
+        return []
+    if prepared is not None:
+        candidates = prepared
+    elif tool in ('canvas.disconnect', 'canvas.delete_edge'):
+        candidates = [params.get('from_node', params.get('from')), params.get('to_node', params.get('to'))]
+    elif tool is not None and tool not in (
+            'generate.trigger', 'generate.retry', 'generate.request_batch', 'canvas.batch_edit') and 'node_id' in params:
+        candidates = [params['node_id']]
+    else:
+        preflight = params.get('preflight')
+        rows = preflight.get('items', [preflight]) if isinstance(preflight, dict) else preflight
+        candidates = [row.get('node_id') for row in rows or [] if isinstance(row, dict)] if isinstance(rows, list) else []
+        if not candidates:
+            ids = params.get('node_ids')
+            candidates = [params.get('node_id'), *(ids if isinstance(ids, list) else []),
+                          params.get('from_node', params.get('from')), params.get('to_node', params.get('to'))]
+            nodes = params.get('nodes')
+            candidates += [row.get('id') for row in nodes or [] if isinstance(row, dict)] if isinstance(nodes, list) else []
+    return list(dict.fromkeys(value for value in candidates if isinstance(value, str) and value.strip())) if isinstance(candidates, list) else []
+
+
 async def request(project, actor, tool, params, message, timeout, *, allow_automatic=True,
-                  transient_session=None, cancel_event=None, confirm_id=None):
+                  transient_session=None, cancel_event=None, confirm_id=None, prepared_target_node_ids=None):
     from app.services.agent_host import agent_host_manager as host, SAFETY_FLOOR_TOOLS
     store = _api()._app_main.FIREFLY_PROJECT_STORE
     canvas = store.canvas(project)
-    node = next((n for n in canvas.get('nodes', []) if n.get('id') == actor and n.get('type') == 'smart-agent'), None)
+    node = next((n for n in canvas.get('nodes', []) if n.get('id') == actor and n.get('type') == NODE_TYPE_AGENT), None)
     if node is None:
         raise agent_error(404, 'NODE_NOT_FOUND', 'Confirmation Agent node does not exist',
                           '先选择当前画布上已有的 Agent 节点。', details={'node_id': actor})
@@ -236,7 +261,8 @@ async def request(project, actor, tool, params, message, timeout, *, allow_autom
             state.providers = deepcopy(_api()._app_main.load_api_providers(read_only=True))
     confirm_id = confirm_id or 'confirm-' + uuid4().hex[:12]
     decision = asyncio.get_running_loop().create_future()
-    metadata = {'host': origin.host, 'generation': origin.generation, 'turn_id': origin.turn}
+    metadata = {'host': origin.host, 'generation': origin.generation, 'turn_id': origin.turn,
+                'target_node_ids': target_node_ids(params, prepared=prepared_target_node_ids, tool=tool)}
 
     async def publish(event):
         # Resolving a registered old approval must remove its replay card after a host switch too.

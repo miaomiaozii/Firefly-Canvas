@@ -125,7 +125,19 @@ function gateQuery() {
     return NODE_ID ? `?agent_node_id=${encodeURIComponent(NODE_ID)}` : "";
 }
 
+async function readChat(tool: string, params: any) {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+        if (value !== undefined) query.append(key, String(value));
+    }
+    // The carrier is a default only; an explicit target stays within this project's API.
+    if (NODE_ID) query.append("agent_node_id", NODE_ID);
+    return textResult(await callApi(`/api/projects/${PROJECT_ID}/chat/${tool}?${query}`, "GET"));
+}
+
 const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any>> = {
+    "chat.history": async (_toolCallId, params) => readChat("history", params),
+    "chat.search": async (_toolCallId, params) => readChat("search", params),
     "ops.list": async (_toolCallId, params) => {
         const query = new URLSearchParams();
         if (params.turn_id !== undefined) query.append("turn_id", params.turn_id);

@@ -94,6 +94,7 @@ def test_batch_confirm_cancel_and_undo(canvas, mcp, approved):
     result = tool(client, project, args, mcp=mcp)
     assert len(seen) == 1
     assert seen[0]['params'] == {'node_count': 2, 'user_edited_count': 1}
+    assert seen[0]['target_node_ids'] == ['a', 'b']
     assert '2' in seen[0]['message'] and '1' in seen[0]['message']
     assert 'apple' not in seen[0]['message']
     assert tool(client, project, args, mcp=mcp)['code'] == 'DIFF_STALE'
@@ -138,6 +139,27 @@ def test_stale_preview_never_partially_applies(canvas, during_confirmation):
     assert nodes['b']['text'] == 'blue berry'
 
 
+def test_pending_prompt_replay_targets_exclude_unchanged_nodes(canvas, monkeypatch):
+    from app.routers import api_agent_tools
+    client, store, project, host = canvas
+    monkeypatch.setattr(api_agent_tools, 'AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS', .01)
+    draft = tool(client, project, {'apply': False, 'edits': [
+        {'node_id': 'b', 'prompt': 'blue berry'}, {'node_id': 'a', 'append': ' detail'},
+    ]}, mcp=False)
+    receipt = tool(client, project, {'apply': True, 'diff_id': draft['diff_id']}, mcp=False)
+    assert receipt['code'] == 'CONFIRM_PENDING'
+    response = client.get(f'/api/projects/{project}/agent-nodes/actor/events')
+    events = [record['event'] for record in response.json()['events']]
+    pending = next(event for event in events if event['type'] == 'confirm')
+    assert pending['confirm_id'] == receipt['confirm_id']
+    assert pending['target_node_ids'] == ['a']
+    assert not any(event['type'] == 'confirm_resolved' for event in events)
+    assert store.find_canvas_node(project, 'a')['text'] == 'red apple'
+    response = client.post(f'/api/projects/{project}/agent-nodes/actor/confirm',
+                           json={'confirm_id': receipt['confirm_id'], 'approved': False})
+    assert response.status_code == 200
+
+
 def test_legacy_rest_requires_agent_project_header(canvas):
     client, store, project, host = canvas
     before = store.canvas(project)
@@ -176,6 +198,7 @@ def test_legacy_batch_uses_same_confirmation_before_any_write_or_task(canvas, mc
     assert {key: params[key] for key in ('node_count', 'user_edited_count', 'n')} == {
         'node_count': 2, 'user_edited_count': 1, 'n': 2}
     assert [item['node_id'] for item in params['preflight']] == ['a', 'b']
+    assert seen[0]['target_node_ids'] == ['a', 'b']
     assert all(item['final_prompt'] == 'replacement' for item in params['preflight'])
     assert 'replacement' not in seen[0]['message']
     if result.get('code') == 'CONFIRM_PENDING':

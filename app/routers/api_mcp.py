@@ -574,6 +574,11 @@ async def _impl_edit_erase(project_id, agent_node_id, args):
         raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
 
 
+async def _impl_chat(project_id, agent_node_id, args, *, tool):
+    from app.routers.api_agent_chat import chat_core
+    return await chat_core(project_id, agent_node_id, tool, args)
+
+
 async def _impl_ops_list(project_id, agent_node_id, args):
     from app.routers.api_agent_ops import list_ops_core
     return await list_ops_core(project_id, args)
@@ -601,6 +606,7 @@ _MEDIA_REF_TOOL_IMPLS = {
 }
 
 TOOL_IMPLS = {
+    **{name: partial(_impl_chat, tool=name) for name in ('chat.history', 'chat.search')},
     "ops.list": _impl_ops_list,
     "ops.undo": _impl_ops_undo,
     "canvas.list_nodes": _impl_list_nodes,
@@ -694,7 +700,7 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
         params = {}
     name = str(params.get("name") or "")
     args = params.get("arguments", params.get("args", {}))
-    if name not in LAYOUT_TOOLS | PLAN_TOOLS | agent_batch.TOOLS | {"canvas.batch_prompt_edit"} and not isinstance(args, dict):
+    if name not in LAYOUT_TOOLS | PLAN_TOOLS | agent_batch.TOOLS | {"canvas.batch_prompt_edit", "chat.history", "chat.search"} and not isinstance(args, dict):
         args = params.get("args")
         if not isinstance(args, dict):
             args = {}
@@ -712,6 +718,8 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
     slow_timeout = SLOW_TOOL_TIMEOUTS.get(name)
     turn_lease = None
     try:
+        if name in ('chat.history', 'chat.search') and not isinstance(args, dict):
+            raise agent_error(400, 'INVALID_ARGUMENT', 'Chat tool arguments must be a JSON object')
         writes = name in WRITE_TOOLS
         if name == "canvas.batch_prompt_edit":
             from app.services.agent_batch_prompt import parse
@@ -730,6 +738,11 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
                 raise file_not_allowed()
             raise ValueError("Expected a JSON object")
         project_id = resolve_project(str(request.query_params.get("project") or ""))
+        if name in ('chat.history', 'chat.search'):
+            declared = request.headers.get('X-Agent-Project')
+            if declared is not None and declared != project_id:
+                raise agent_error(403, 'PROJECT_MISMATCH', 'X-Agent-Project does not match the requested project',
+                                  '使用当前项目的 X-Agent-Project，不能跨项目读取对话。')
         caller = request.query_params.get("caller")
         if caller not in (None, "external", "hosted"):
             raise ValueError("caller must be hosted or external when supplied")

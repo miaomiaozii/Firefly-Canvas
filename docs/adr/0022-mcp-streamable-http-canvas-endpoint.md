@@ -111,3 +111,60 @@ MCP 端点对外暴露，外部会话具现为画布上的 Agent 节点。关联
 - 已准入的图片任务在独立于待决确认的上下文中归档和结算，保留原操作/轮次归属；后续宿主、用户轮或服务商设置变化不能使已花钱任务永久 `cleanup_pending`。尚未准入的新调用仍检查原确认有效性，不把结算许可扩成新的执行许可。
 - 操作结束由原宿主接收系统续接，沿用原 `turn_id` 和操作撤销归属；忙碌时按现有待发队列顺序投递，不伪造用户输入、不创建新用户轮。外部 MCP 不向承载节点的宿主注入系统续接。
 - 本修订覆盖上文 #357 的超时失败约定和 #400 的临时 90 秒过期、批准前不记确认日志及缺少长期待决约定。`canvas.batch_edit` 仍保持一次整批确认与原子改词，不迁入新批次工具；D6 的逐项选择界面另交付。
+
+## 修订（#457）：前端事件关联与项目对话读口
+
+### 确认目标与逻辑轮
+
+- `confirm` 精确新增顶层 `target_node_ids: string[]`，原 `confirm_id/tool/params/message/host/generation/turn_id/seq` 不变；`confirm_resolved` 同样携带该数组。live 与保存/回放是同一 payload。按准备输入或真实参数的顺序稳定去重，不用承载确认卡的 Agent ID 代替目标。
+- `generate.request_batch` 从已准备的 `preflight.items[].node_id` 取目标，cautious 逐项门只含当前项；`generate.trigger/retry` 与旧 `canvas.batch_edit` 从准备输入取目标。`canvas.batch_prompt_edit` 只含 diff 中确有变化的节点，不含 unchanged 项。布局门含本次准备变更中已存在的节点（含受影响框），不含尚未创建的框或被跳过节点；单节点编辑/删除用实际 `node_id`，断边用两个端点。媒体删除不改画布引用，因此为 `[]`，不猜引用节点。目标字段仅供呈现，不授予批准、归属或 CAS 权限。
+- 新 `agent_end` 一律含 `turn_id: string | null`：在分发入口、任何异步持久化/订阅者和 FIFO 投递之前捕获该响应的逻辑轮。值就是 #393 操作日志的 turn ID，不是原生 thread/session/generation、MCP request ID 或下一条排队输入的轮。`user_prompt` 同时保存其真实用户轮的 `turn_id`。
+- 一条真实用户消息开始一轮；排队用户消息实际投递时才开下一轮。系统确认续接不产生 `user_prompt`，它的 `agent_end` 仍指原轮；仅排队的续接不截断当前助手消息，实际投递才构成消息边界。没有可证明的活动用户轮时返回 null，不借用上一轮，也不为旧日志伪造/回填 ID；既有无此字段的日志原样保留。重试、停止、批准有效性、FIFO、#402 续接与 #442 回收语义不变。
+
+### `chat.history` / `chat.search`（REST、MCP、Pi 共用）
+
+REST 为 `GET /api/projects/{project_id}/chat/history` 和 `/chat/search`；参数用 query string。MCP/Pi 工具名为 `chat.history` / `chat.search`，参数同名 JSON 对象。全部只读，不创建/重绑 Agent，不启动宿主，不恢复待发队列，不修复/迁移画布，不读用户全局宿主目录。旧 `/agent-nodes/{node_id}/events` 和 `/events/page` 合同不变。
+
+- 两工具接受 `scope: "node" | "canvas"`、`node_id?: string`、`host?: "pi" | "codex"`、`limit?: integer`（默认 50，1..200）。history 默认 node，search 默认 canvas。node 的缺省目标是发起工具的 Agent；REST 可用 `agent_node_id` 指定此缺省值。显式 `node_id` 优先，仍限定本项目。
+- node 省略 host 时读当前 Agent 的活跃宿主；已删除/缺失/非 Agent 目标必须显式 host，不能猜历史宿主。显式 host 的缺失历史安全返回空数组。canvas 禁止 node_id，只查当前项目所有保留日志，含已删除 Agent；host 省略读两宿主。
+- `chat.history` 另接受仅 node 可用的 `before_seq?: positive integer`（严格小于）；返回最近 limit 条消息，**页内 seq 升序**，`next_before_seq` 供向前翻页。canvas 返回对话摘要而非事件原文。
+- `chat.search` 必填 `query: string`（裁剪空白后非空，原长最多 200），按 Unicode casefold 字面量匹配，不是正则。结果每条代表一条消息，不把 delta 拆成命中；默认跨本画布内各 Agent，而不跨项目。未知参数、错误范围/类型或越界限制为标准 `400 INVALID_ARGUMENT`。
+- 项目是读取边界，不把 MCP session 当独立私有租户：同项目 canvas 显式共享该项目 Agent 历史；node 范围不会混入其他节点/宿主。REST 的项目路径、MCP 既有项目仲裁为权威；若提供 `X-Agent-Project`，必须与之相同，否则 `403 PROJECT_MISMATCH`。MCP JSON 参数不能覆盖 project/caller/session。沿用同源/Host 守卫，无新增跨项目搜索权限。
+- 会话身份为 `{node_id}:{host}`，表示节点该宿主的**保留日志流**，不是某个原生 thread、分支或进程；换原生绑定仍是同一日志流。`retired` 表示当前画布已无该 Agent。消息 ID 为 `{node_id}:{host}:{seq}`；seq 是节点事件游标，不跨节点比较。助手消息用首个 text delta 的 seq（无 delta 时用 message_end 的 seq），合并流式 delta 与最终正文，避免重复；历史旧无 host 记录归 Pi。
+- 仅投影服务端 `user_prompt`、用户 steer 及助手可见正文；未投递 follow-up、系统确认续接、工具参数/输出、思考、raw、附件/引用上下文、用量与原生配置/凭据均不搜索或返回。用户/助手正文自己写出的内容仍是正文，不承诺对正文做秘密识别/删改。旧轮 ID 不明时 message.turn_id 为 null。
+
+### 精确响应形状与有界读取
+
+所有成功响应共有：
+
+```typescript
+{ project_id: string, scope: "node" | "canvas", node_id: string | null,
+  host: "pi" | "codex" | null }
+```
+
+node history 额外字段：
+
+```typescript
+{ messages: Message[], has_more: boolean, next_before_seq: number | null, truncated: boolean }
+Message = { message_id: string, node_id: string, host: "pi" | "codex", seq: number,
+  timestamp: number, turn_id: string | null, role: "user" | "assistant",
+  text: string, text_truncated: boolean }
+```
+
+canvas history 额外字段：
+
+```typescript
+{ conversations: [{ conversation_id: string, node_id: string, host: "pi" | "codex",
+  retired: boolean, title: string, last_message_id: string, last_seq: number,
+  timestamp: number, snippet: string, message_count: number }], has_more: boolean, truncated: boolean }
+```
+
+search 额外字段：
+
+```typescript
+{ query: string, hits: [(Omit<Message, "text"> & {snippet: string})], has_more: boolean, truncated: boolean }
+```
+
+- timestamp 为事件时间的 epoch **秒**；无有效值为 0。搜索命中和会话摘要按最近消息的 `(timestamp, node_id, host, seq)` **降序**，同值顺序确定。message_count 仅为本次保留扫描内的消息数，不是假称终生总数。title 最多 200 字，snippet 最多 240 字；search 摘要围绕第一次匹配，history 摘要取开头。
+- 每请求最多检查目录前 500 个条目（顺序取文件系统枚举，超限不承诺全局最新；选中的文件按名字排序），每文件最多读取尾部 2 MiB / 2000 行，全请求最多 16 MiB；丢弃被裁断的首行和未完成的最后一行。消息正文最多 16000 字，超出标 `text_truncated`，超出的正文不参与匹配。路径越界/链接文件不跟随，记录内 project/node 不符则丢弃，不读取相邻项目。
+- `has_more` 仅指扫描内还有超过 limit 的结果（node 可用 next_before_seq 继续；canvas/search 可缩小范围或提高 limit），不是无限游标或完整性证明。`truncated` 表示扫描预算、目录上限或个别文件读取失败，可能还有未扫描历史；保留策略已经删除的历史不能找回。不建全局索引，不保证全库精确总数。空命中正常返回空数组、has_more=false；项目缺失为 `404 PROJECT_NOT_FOUND`，画布/历史目录不安全或不可读为 `409 CHAT_HISTORY_UNAVAILABLE`，均使用现有 Agent 错误工厂。

@@ -224,6 +224,13 @@ _Avoid_: 独立音频项目、音频工作站
 - 花钱确认立即回 `CONFIRM_PENDING` / `awaiting_confirmation` 和 `confirm_id`，确认事件携带准备好的生成输入。非花钱门的 90 秒是同步回包窗口，不是拒绝或批准的有效期；等待中的操作、处理器和回放卡保留到决定、停止或会话失效。执行前仍检查宿主、generation、原轮次及当前输入/CAS；拒绝不执行写入。已准入的图片任务保留原操作/轮次归属并独立结算，后续宿主、用户轮或服务商设置变化不能阻断已花钱结果的归档；新调用仍须重新过门。
 - 批准后的系统续接属于原用户逻辑轮，Pi/Codex 共用 FIFO，不伪造用户消息或新的用户轮次。待执行处理器仅在本次服务进程生命周期内存活；停止/关闭执行循环会取消未批准工作。
 
+### 事件关联与历史对话读口（#457）
+
+- 确认事件及其终态的顶层 `target_node_ids` 是按准备输入/实际参数稳定去重的目标，不是发起 Agent；批量改词仅含有变化的节点，逐项花钱确认只含当前项。批准/CAS 权限不由此字段决定。
+- 新 live 与回放 `agent_end.turn_id` 在响应分发前捕获，对齐 `agent_ops` 的真实用户逻辑轮；FIFO 的下一用户轮不会覆盖旧事件，系统确认续接仍为原轮。新 `user_prompt` 同时记录 turn_id；不明/旧历史不伪造 ID。
+- `GET /api/projects/{project_id}/chat/history|search` 与共享 MCP/Pi 工具 `chat.history|search` 只读本项目的 Agent 用户/助手正文。history 默认节点活跃宿主，canvas 范围列出保留会话（含已删除 Agent）；search 默认 canvas，不读工具、思考、系统续接、附件内部或其他项目。不创建会话、切宿主、修复文件或变更画布。会话为节点+宿主的日志流，不是原生会话/分支身份；历史节点读取须显式 host。
+- 参数、精确回包、消息/会话 ID、排序、分页与扫描/正文/结果上限见 [ADR 0022「#457」](docs/adr/0022-mcp-streamable-http-canvas-endpoint.md)。既有活跃节点 `/agent-nodes/{node_id}/events` 与 `/events/page` 读口不改。
+
 ### 设置请求 schema
 
 `POST /api/projects/{project_id}/agent-nodes/{node_id}/settings` 的请求只接受下表字段；所有字段可省略，未知字段拒绝。人工 UI 提交 host/model/effort 整组及 `user_edit:true`，不乐观改节点。

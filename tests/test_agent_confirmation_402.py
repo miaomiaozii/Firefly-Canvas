@@ -46,6 +46,7 @@ def test_standard_fifteen_images_one_prepared_confirmation_and_original_turn(fx)
     receipt = rest(fx, 'request_batch', {'preflight_id': pre['preflight_id']})[1]
     event = fx.events.get(timeout=2)
     assert event['params']['preflight']['items'] == pre['items']
+    assert event['target_node_ids'] == ids
     assert event['params']['total_images'] == 15
     fx.session._current_turn_id = None
     confirm(fx, event)
@@ -64,6 +65,7 @@ def test_cautious_batch_confirms_each_paid_item(fx):
     receipt = rest(fx, 'request_batch', {'preflight_id': pre['preflight_id']})[1]
     first = fx.events.get(timeout=2)
     assert first['params']['total_images'] == 1
+    assert first['target_node_ids'] == ['a']
     confirm(fx, first)
     wait_for(lambda: fx.calls.qsize() == 1)
     second = None
@@ -73,6 +75,7 @@ def test_cautious_batch_confirms_each_paid_item(fx):
             second = event
     assert second['confirm_id'] != first['confirm_id']
     assert second['params']['preflight']['items'][0]['node_id'] == 'b'
+    assert second['target_node_ids'] == ['b']
     confirm(fx, second)
     final = status_until(fx, receipt['batch_id'], lambda s: s['status'] == 'done')
     assert final['approved_count'] == final['spent'] == fx.calls.qsize() == 2
@@ -98,6 +101,9 @@ def test_paid_returns_pending_immediately_then_approval_executes_once(fx):
     event = fx.events.get(timeout=2)
     assert event['confirm_id'] == receipt['confirm_id']
     assert event['params']['preflight']['final_prompt'] == 'Minimalist art'
+    assert event['target_node_ids'] == ['b']
+    saved = next(e for e in replay(fx) if e['type'] == 'confirm')
+    assert saved == event
     confirm(fx, event)
     wait_for(lambda: fx.calls.qsize() == 1)
     confirm(fx, event)
@@ -177,6 +183,7 @@ def test_over_ninety_seconds_batch_remains_live_replayable_and_late_approval_run
     events = replay(fx)
     assert any(e.get('confirm_id') == event['confirm_id'] for e in events)
     assert not any(e['type'] == 'confirm_resolved' for e in events)
+    assert next(e for e in events if e['type'] == 'confirm')['target_node_ids'] == ['b']
     confirm(fx, event)
     final = status_until(fx, receipt['batch_id'], lambda s: s['status'] == 'done')
     assert final['spent'] == fx.calls.qsize() == 1

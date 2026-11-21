@@ -235,6 +235,7 @@ class LayoutTests(unittest.TestCase):
         aligned = self.ok("align", args, mcp=True)
         self.assertEqual(aligned["moved"], ["manual"])
         self.assertEqual([n["id"] for n in events[0]["params"]["nodes"]], ["manual"])
+        self.assertEqual(events[0]['target_node_ids'], ['manual'])
         self.assertIn("manual", events[0]["message"])
         self.assertEqual(self.nodes()["other-card"]["y"], 30)
         self.assertNotIn("op_id", self.ok("align", args))
@@ -243,6 +244,7 @@ class LayoutTests(unittest.TestCase):
         self.assertEqual(self.nodes()["manual"]["y"], 13)
         grouped = self.create("named", ["a", "manual"], include_user_nodes=True)
         self.assertEqual([n["id"] for n in events[1]["params"]["nodes"]], ["manual"])
+        self.assertEqual(events[1]['target_node_ids'], ['a', 'manual'])
         self.assertEqual(self.nodes()[grouped["group_id"]]["items"], ["a", "manual"])
 
     def test_rejection_and_autonomous_named_only(self):

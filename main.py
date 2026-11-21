@@ -1422,6 +1422,8 @@ app.include_router(_r_api_agent_tools.generate_router)
 app.include_router(_r_api_agent_tools.media_router)
 app.include_router(_r_api_agent_tools.viewport_router)
 app.include_router(_r_api_agent_tools.confirm_router)
+from app.routers.api_agent_chat import router as _agent_chat_router
+app.include_router(_agent_chat_router)
 from app.routers.api_agent_plan import router as _agent_plan_router
 app.include_router(_agent_plan_router)
 from app.routers import api_agent_ops as _r_api_agent_ops

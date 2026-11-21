@@ -42,6 +42,7 @@ def host(request, monkeypatch):
     monkeypatch.setattr(manager, '_codex_turn', codex)
 
     async def finish():
+        turn_id = session._current_turn_id
         if session.agent_cli == 'pi':
             await manager._dispatch_event(session, {'type': 'agent_end'})
         else:
@@ -54,6 +55,8 @@ def host(request, monkeypatch):
                 host=session.agent_cli, generation=session.generation))
             session._reader_task = task
             await task
+        assert [event for event in events if event['type'] == 'agent_end'][-1]['turn_id'] == turn_id
+        assert [event for event in live if event['type'] == 'agent_end'][-1]['turn_id'] == turn_id
 
     async def continue_with(message, turn_id=None, **overrides):
         origin = dict(turn_id=turn_id or session._last_user_turn_id, host=session.agent_cli,

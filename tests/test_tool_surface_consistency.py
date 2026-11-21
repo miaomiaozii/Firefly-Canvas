@@ -657,6 +657,8 @@ class DualPathEquivalenceTests(unittest.TestCase):
             self.assertNotEqual(resp.status_code, 404, "REST 孪生路由必须存在")
 
         cases = {
+            "chat.history": pair("chat.history", {"node_id": self.ACTOR}, "GET", f"/chat/history?node_id={self.ACTOR}"),
+            "chat.search": pair("chat.search", {"query": "firefly"}, "GET", "/chat/search?query=firefly"),
             "ops.list": ops_list_run,
             "ops.undo": ops_undo_run,
             "canvas.list_nodes": pair("canvas.list_nodes", {}, "GET", "/canvas/nodes"),

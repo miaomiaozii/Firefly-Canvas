@@ -881,9 +881,10 @@ class AgentHostManager:
         generation = session.generation if generation is None else generation
         if not self._runtime_matches(session, host, generation):
             return
-        # #322 票 D：工具耗时——start 记 monotonic 时锟，end 就地注入 duration_ms，
-        # 在 _persist_event 之前 ⇒ live WS 与 events.jsonl 回放都带耗时（单一注入点）。
         _etype = event.get("type", "")
+        # Capture before persistence or subscribers can drain FIFO into a later user turn.
+        if _etype == 'agent_end':
+            event['turn_id'] = session._current_turn_id
         if _etype == "tool_execution_start":
             session._tool_ts = getattr(session, "_tool_ts", {})
             session._tool_ts[event.get("toolCallId", "")] = time.monotonic()
@@ -892,17 +893,15 @@ class AgentHostManager:
             _t0 = _ts_map.pop(event.get("toolCallId", ""), None)
             if _t0 is not None:
                 event["duration_ms"] = round((time.monotonic() - _t0) * 1000)
-        # #318 票 C：单一 fan-out——先持久化（就地注入 seq，WS 广播 payload 自动带
-        # seq，前端去重/续拉按 seq），再分发。best-effort，永不阻断实时流。
+        # Persist once before fan-out so live and replay share the same payload and cursor.
         self._persist_event(session, event, host=host, generation=generation)
         event_type = event.get("type", "")
 
-        # Update session status based on event
         if event_type == "agent_start":
             session._turn_open = True
             session.status = "busy"
-            session._turn_started_at = time.time()  # #258：turn 起点（用量时长用）
-            session._stall_notified = False  # #286：新 turn 重置停顿提醒
+            session._turn_started_at = time.time()
+            session._stall_notified = False
         elif event_type == "agent_end":
             session._turn_open = False
             session.status = "running"
@@ -917,7 +916,6 @@ class AgentHostManager:
         elif event_type == "auto_retry_end":
             session._retrying = False
 
-        # #239 错误五元组：LLM 错误事件归一为 (error, llm_error)
         if event_type in ("error", "llm_error"):
             session.result = normalize_result(RESULT_ERROR, ERROR_KIND_LLM_ERROR)
         finishing = event_type == "agent_end"
@@ -1126,6 +1124,7 @@ class AgentHostManager:
         user_payload = self._input_event("prompt", message, node_refs=node_refs,
                                          node_ref_context=node_ref_context, request_id=request_id,
                                          attachment_refs=attachment_refs)
+        user_payload['turn_id'] = session._current_turn_id
         if ref_images or ref_skipped:
             user_payload["refs"] = [{"node_id": r["node_id"], "name": r["name"]} for r in ref_images]
             if ref_skipped:
