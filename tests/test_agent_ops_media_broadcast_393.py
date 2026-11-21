@@ -243,7 +243,7 @@ def test_media_effect_waits_before_end(env, events, monkeypatch, operation):
     source = store.root / project / 'input.png'
     source.write_bytes(png('green'))
     asset = store.import_media(project, png('red'), 'red.png', 'image/png')['asset_id']
-    method = 'import_media_file' if operation == 'upload' else 'delete_media'
+    method = 'import_media_file' if operation == 'upload' else 'recycle_agent_media'
     original = getattr(store, method)
     entered, release = threading.Event(), threading.Event()
     def blocked(*args, **kwargs):
@@ -258,7 +258,8 @@ def test_media_effect_waits_before_end(env, events, monkeypatch, operation):
                     else routes.delete_media_core(project, asset))
             task = asyncio.create_task(call)
             assert await asyncio.to_thread(entered.wait, 5)
-            assert routes.agent_generation_is_running(store, project, context.op_id)
+            # Recycle holds the project/store locks through its native transaction.
+            assert store._agent_generation_tasks.get((project, context.op_id))
             assert len(events) == 1
             release.set()
             await task

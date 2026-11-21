@@ -2427,7 +2427,7 @@ async def list_media(project_id: str, x_agent_project: str = Header(default=""))
 @media_router.delete("/{asset_id}", dependencies=_AGENT_WRITE)
 @resumable
 async def delete_media(project_id: str, asset_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
-    """Delete a media file from the project. #357：agent 调用经服务端确认门。"""
+    """Agent media deletion always passes the safety-floor confirmation gate."""
     _validate_project(project_id)
     await _server_confirm_gate(request, project_id, "media.delete",
                                {"asset_id": asset_id}, f"删除媒体资源 {asset_id}")
@@ -2436,44 +2436,86 @@ async def delete_media(project_id: str, asset_id: str, request: Request, agent_n
 
 
 async def delete_media_core(project_id: str, asset_id: str) -> dict:
-    """#357：删媒体执行核（无门；REST/MCP 各自门过后调）。"""
+    """REST/MCP share recycle semantics after their respective confirmation gates."""
     _validate_project(project_id)
     store = _app_main.FIREFLY_PROJECT_STORE
     context = _media_context(project_id)
-    guarded = set()
-    lifecycle = None
+    if not context:
+        store.delete_media(project_id, asset_id)
+        return {"success": True, "asset_id": asset_id}
+    import re
+    from app.services import agent_ops_media, agent_ops_store
+    from app.services.agent_ops_journal import record_sides
+    from app.services.agent_ops_async import run_blocking_to_completion
+    if not isinstance(asset_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", asset_id):
+        raise agent_error(400, "INVALID_ARGUMENT", "Invalid asset ID")
+    with store._lock:
+        if asset_id not in store._load_media_index(project_id)["items"]:
+            return {"success": True, "asset_id": asset_id}
+    lifecycle, token = await _media_start(project_id, context, [])
+    journal = _journal_for(store)
+    committed = uncertain = False
+
+    def recycle():
+        nonlocal committed, uncertain
+        with store._project_operation_lock(project_id), journal.mutation(project_id) as operation:
+            validate_pending(project_id, store.canvas(project_id), admit=True)
+            if asset_id not in store._load_media_index(project_id)["items"]:
+                return False
+            delta = agent_ops_media.deletion_delta(asset_id, context.op_id)
+            old, new = record_sides(delta)
+            record = {"op_id": context.op_id, "turn_id": context.turn_id,
+                      "agent_node_id": context.agent_node_id, "tool": context.tool, "args": context.args,
+                      "before": old, "after": new, "touched_node_ids": [],
+                      "created_at": datetime.now(timezone.utc).isoformat(),
+                      "irreversible_effects": [], "undone": False}
+            if ((project_id, context.op_id) in journal._entries
+                    or agent_ops_store.get_operation(journal._opsdb, project_id, context.op_id) is not None):
+                raise ValueError("operation identity already used")
+            agent_ops_store._reserve(journal, journal._opsdb, project_id, record)
+            try:
+                set_agent_generation_running(store, project_id, context.op_id, context.op_id, True)
+                lifecycle['guarded'].add(context.op_id)
+                store.recycle_agent_media(project_id, asset_id, deletion_id=context.op_id)
+                committed = True
+                lifecycle['unregistered'][context.op_id] = (record, delta)
+                operation.register(record, delta)
+                lifecycle['unregistered'].pop(context.op_id)
+            except BaseException:
+                if committed or store._original_transaction_path(project_id).exists() or any(
+                    item.get('agent_deletion_id') == context.op_id
+                    for item in store._load_media_trash_index(project_id)['items'] if isinstance(item, dict)
+                ):
+                    # A durable native effect without a settled journal must not
+                    # leave siblings in this logical turn eligible for undo (#442).
+                    uncertain = True
+                    agent_ops_store.mark_append_failed(journal._opsdb, project_id, record)
+                if not committed:
+                    agent_ops_store._release(journal, journal._opsdb, project_id, context.op_id)
+                raise
+            store.flush(project_id)
+            status = operation.result()
+            if status['status'] not in ('settled', 'append_failed'):
+                raise RuntimeError(f"Media deletion journal {status['status']}")
+            lifecycle['updated_at'] = store.canvas(project_id)['updated_at']
+            return True
+
     try:
-        if context:
-            import re
-            if not isinstance(asset_id, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,200}", asset_id):
-                raise agent_error(400, "INVALID_ARGUMENT", "Invalid asset ID")
-            with store._lock:
-                index = store._load_media_index(project_id)
-                if asset_id not in index["items"]:
-                    return {"success": True, "asset_id": asset_id}
-                _media_root(store, project_id, context,
-                            f"media deletion attempted for {asset_id}; file and index may be irreversibly removed", guarded)
-            lifecycle = await _media_start(project_id, context, [])
-            from app.services.agent_ops_async import run_blocking_to_completion
-            await run_blocking_to_completion(store.delete_media, project_id, asset_id)
-        else:
-            store.delete_media(project_id, asset_id)
-    except Exception as e:
-        if guarded:
-            raise _media_partial(context, e) from e
-        if isinstance(e, HTTPException):
+        changed = await run_blocking_to_completion(recycle)
+    except BaseException as exc:
+        if committed or uncertain:
+            raise _media_partial(context, exc) from exc
+        if isinstance(exc, (HTTPException, asyncio.CancelledError)):
             raise
-        raise agent_error(500, "INTERNAL_ERROR", str(e),
-                          "删除失败；先调用 media.list 确认资产还在，再重试一次。") from e
+        raise agent_error(500, "INTERNAL_ERROR", str(exc),
+                          "删除未完成；检查项目回收区与媒体后重试。") from exc
     finally:
         try:
-            if lifecycle:
-                await _media_end(project_id, *lifecycle)
+            await _media_end(project_id, lifecycle, token)
         finally:
-            if guarded:
-                _generation_release(store, project_id, context.op_id, guarded)
+            _generation_release(store, project_id, context.op_id, lifecycle['guarded'])
     result = {"success": True, "asset_id": asset_id}
-    if context:
+    if changed:
         result.update(op_id=context.op_id, touched_node_ids=[])
     return result
 

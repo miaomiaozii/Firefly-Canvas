@@ -143,7 +143,7 @@ class RouteJournalTests(unittest.IsolatedAsyncioTestCase):
         delete.assert_not_called()
         self.assertEqual(self.records(), [])
 
-    async def test_agent_media_delete_journal_failure_prevents_deletion(self):
+    async def test_agent_media_delete_journal_failure_preserves_recycle_but_disables_undo(self):
         image = io.BytesIO()
         Image.new('RGB', (2, 2), 'red').save(image, format='PNG')
         asset = self.store.import_media(self.project, image.getvalue(), 'source.png', 'image/png')
@@ -151,14 +151,18 @@ class RouteJournalTests(unittest.IsolatedAsyncioTestCase):
         before = self.store.media_record(self.project, asset_id)
         path = Path(before['path'])
         content = path.read_bytes()
-        with agent_ops_scope(project_id=self.project, agent_node_id='actor', tool='media.delete', args={}):
+        from app.services.agent_ops_undo import undo_ops
+        with agent_ops_scope(project_id=self.project, agent_node_id='actor', tool='media.delete', args={}) as context:
             with patch('app.services.agent_ops_store.append_operation', side_effect=OSError('sidecar unavailable')):
-                with patch.object(self.store, 'delete_media', wraps=self.store.delete_media) as delete:
-                    with self.assertRaises(Exception) as error:
-                        await routes.delete_media_core(self.project, asset_id)
-        self.assertEqual(error.exception.status_code, 500)
-        self.assertIn('sidecar unavailable', str(error.exception.detail))
-        delete.assert_not_called()
+                with patch.object(self.store, 'recycle_agent_media', wraps=self.store.recycle_agent_media) as recycle:
+                    result = await routes.delete_media_core(self.project, asset_id)
+        self.assertEqual(result['op_id'], context.op_id)
+        recycle.assert_called_once()
+        self.assertFalse(path.exists())
+        trash = self.store.list_deleted_media(self.project)[0]
+        self.assertEqual((self.store.root / self.project / 'trash/media' / trash['media_filename']).read_bytes(), content)
+        self.assertEqual(self.records(), [])
+        self.assertEqual(undo_ops(self.store, self.project, op_id=context.op_id)['status'], 'conflict')
+        self.store.restore_trash_media(self.project, asset_id, base_revision=self.store.canvas(self.project)['revision'])
         self.assertEqual(self.store.media_record(self.project, asset_id), before)
         self.assertEqual(path.read_bytes(), content)
-        self.assertEqual(self.records(), [])

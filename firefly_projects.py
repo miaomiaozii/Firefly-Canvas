@@ -422,6 +422,21 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             strict_moves=False,
         )
         transaction_path.unlink(missing_ok=True)
+        timer = self._timers.pop(project_id, None)
+        if timer is not None:
+            timer.cancel()
+        self._canvases.pop(project_id, None)
+        self._histories.pop(project_id, None)
+        self._saved_revisions.pop(project_id, None)
+
+    def _ensure_original_media_transaction_recovered(self, project_id: str) -> None:
+        # A pending journal can replay an old whole-project state; recover before
+        # accepting newer edits, and discard caches of the partial transaction (#442).
+        if self._original_transaction_path(project_id).exists():
+            try:
+                self._recover_original_media_transaction(project_id)
+            except OSError as exc:
+                raise ProjectStoreError("项目原图事务尚未恢复，请等待文件解除占用后重试") from exc
 
     def _commit_original_media_transaction(
         self,
@@ -566,6 +581,18 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             _write_json_atomic(undo_path, undo_snapshot, keep_backup=False)
         else:
             raise ProjectStoreError("项目原图事务撤销快照无效")
+        # A grouped Agent inverse shares the same native transaction and rollback
+        # boundary, including all of its recycle snapshots (#442).
+        for filename, snapshot in state.get("undo_snapshots", {}).items():
+            if not re.fullmatch(r"[A-Za-z0-9._-]{1,240}\.json", filename):
+                raise ProjectStoreError("项目原图事务撤销路径无效")
+            path = self._safe_project_path(project_dir, f"trash/undo/{filename}")
+            if snapshot is None:
+                path.unlink(missing_ok=True)
+            elif isinstance(snapshot, dict):
+                _write_json_atomic(path, snapshot, keep_backup=False)
+            else:
+                raise ProjectStoreError("项目原图事务撤销快照无效")
         if checkpoints:
             self._original_transaction_checkpoint("after_undo_snapshot")
         # ``canvas.json`` is only one member of this project-wide transaction.
@@ -1252,6 +1279,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
     def open_project(self, project_id: str) -> Dict[str, Any]:
         project_id = _clean_project_id(project_id)
         with self._lock:
+            self._ensure_original_media_transaction_recovered(project_id)
             project_dir = self._project_directory(project_id)
             metadata_path = self._safe_project_path(project_dir, "project.json")
             if not metadata_path.is_file():
@@ -3209,6 +3237,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
         """
         project_id = _clean_project_id(project_id)
         with self._lock:
+            self._ensure_original_media_transaction_recovered(project_id)
             timer = self._timers.pop(project_id, None)
             if timer is not None and timer is not threading.current_thread():
                 timer.cancel()
@@ -3335,6 +3364,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
         if file not in ("canvas.json", "project.json"):
             raise ProjectStoreError("不支持恢复该文件")
         with self._lock:
+            self._ensure_original_media_transaction_recovered(project_id)
             project_dir = self.root / project_id
             primary = self._safe_project_path(project_dir, file)
             candidates = self._recovery_candidates(project_id, file)
@@ -3369,7 +3399,6 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                 self._project_canvas_for_persistence(data) if file == "canvas.json" else data,
                 keep_backup=False,
             )
-            # 清内存缓存，让下一次读取从磁盘拿到恢复后的内容。
             if file == "canvas.json":
                 self._canvases.pop(project_id, None)
                 self._saved_revisions.pop(project_id, None)
@@ -3586,7 +3615,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
         timer.start()
 
     def _apply_mutation(
-        self, canvas: Dict[str, Any], mutation: Dict[str, Any], *, trusted_agent_bindings: bool,
+        self, canvas: Dict[str, Any], mutation: Dict[str, Any], *, trusted_agent_bindings: bool, restoring_media=(),
     ) -> None:
         if not isinstance(mutation, dict):
             raise InvalidMutation("变更必须是对象")
@@ -3598,6 +3627,10 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             if self._contains_external_media_reference(node):
                 raise InvalidMutation("项目节点只能引用项目媒体资源 ID")
             for asset_id in self._collect_asset_ids(node):
+                # Only the Agent inverse preflight may admit media that its same
+                # native project transaction has already proved recoverable (#442).
+                if trusted_agent_bindings and asset_id in restoring_media:
+                    continue
                 try:
                     self.media_record(str(canvas.get("project_id") or ""), asset_id)
                 except ProjectStoreError as exc:

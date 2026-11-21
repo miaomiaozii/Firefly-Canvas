@@ -790,6 +790,178 @@ class ProjectDeletionMixin:
                 result["history"] = copy.deepcopy(cleaned_history)
                 return {"canvas": result, "deleted": copy.deepcopy(trash_item)}
 
+    def recycle_agent_media(self, project_id: str, asset_id: str, *, deletion_id: str) -> Dict[str, Any]:
+        """Agent deletion retains its file/index-only scope; references are not rewritten (#442)."""
+        project_id = _store._clean_project_id(project_id)
+        asset_id = self._validate_deletable_asset_id(asset_id)
+        if not isinstance(deletion_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", deletion_id):
+            raise _store.ProjectStoreError("媒体回收身份无效")
+        with self._project_operation_lock(project_id), self._lock:
+            if self._original_transaction_path(project_id).exists():
+                raise _store.ProjectStoreError("项目媒体事务尚未恢复，请先重新打开项目")
+            opened = self.open_project(project_id)["canvas"]
+            self._cleanup_expired_deleted_media_locked(project_id)
+            media_index = self._load_media_index(project_id)
+            original = media_index["items"].get(asset_id)
+            if not isinstance(original, dict):
+                raise _store.ProjectNotFound("项目媒体不存在")
+            if original.get("asset_id") != asset_id:
+                raise _store.ProjectStoreError("媒体索引身份不匹配")
+            if self._active_generation_references_asset(opened, asset_id):
+                raise _store.ProjectStoreError("该媒体正在被生成任务引用，请等待任务完成后再删除")
+            trash_index = self._load_media_trash_index(project_id)
+            if any(item.get("asset_id") == asset_id for item in trash_index["items"] if isinstance(item, dict)):
+                raise _store.ProjectStoreError("该媒体已有回收记录，无法安全覆盖")
+            project_dir = self._project_directory(project_id)
+            filename = original.get("filename")
+            if (not isinstance(filename, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,240}", filename)
+                    or filename in {".", "..", "index.json"}):
+                raise _store.ProjectStoreError("媒体文件路径无效")
+            source = self._safe_project_path(project_dir, f"media/{filename}")
+            if any(key != asset_id and isinstance(record, dict) and record.get("filename") == original.get("filename")
+                   for key, record in media_index["items"].items()):
+                raise _store.ProjectStoreError("媒体文件归属冲突")
+            if not source.is_file():
+                raise _store.ProjectNotFound("项目媒体文件不存在")
+            previews = sorted(self._safe_project_path(project_dir, "previews").glob(f"{asset_id}-*"))
+            files = []
+            for path in [source] + [path for path in previews if path.is_file()]:
+                live = self._safe_project_path(project_dir, path.relative_to(project_dir).as_posix())
+                relative = live.relative_to(project_dir).as_posix()
+                target = self._safe_project_path(project_dir, f"trash/{relative}")
+                if target.exists():
+                    raise _store.ProjectStoreError("回收区目标位置已被占用")
+                files.append({"live": relative, "trash": f"trash/{relative}", "required": True,
+                              "sha256": _store._file_sha256(live)})
+            snapshot_filename = f"agent-{deletion_id}.json"
+            if self._safe_project_path(project_dir, f"trash/undo/{snapshot_filename}").exists():
+                raise _store.ProjectStoreError("媒体回收身份已被占用")
+            snapshot = {"media_record": copy.deepcopy(original), "files": files}
+            deleted_at = _store._now_ms()
+            item = {**copy.deepcopy(original), "deleted_at": deleted_at,
+                    "expires_at": deleted_at + _store.MEDIA_TRASH_RETENTION_MS,
+                    "media_filename": source.name, "preview_filenames": [Path(f["live"]).name for f in files[1:]],
+                    "reason": "agent-media-delete", "agent_deletion_id": deletion_id,
+                    "undo": {"operation": "restore-agent-media", "snapshot_filename": snapshot_filename}}
+            before = self._agent_media_transaction_state(project_id, opened, media_index, trash_index)
+            media_index = copy.deepcopy(media_index)
+            media_index["items"].pop(asset_id)
+            trash_index = copy.deepcopy(trash_index)
+            trash_index["items"].append(item)
+            candidate = copy.deepcopy(opened)
+            candidate["revision"] += 1
+            candidate["updated_at"] = max(_store._now_ms(), int(opened.get("updated_at") or 0) + 1)
+            after = self._agent_media_transaction_state(project_id, candidate, media_index, trash_index)
+            before.update(file_location="live", undo_snapshot=None)
+            after.update(file_location="trash", undo_snapshot=snapshot)
+            self._commit_agent_media_transaction(project_id, "delete", asset_id, files, snapshot_filename, before, after)
+            self._canvases[project_id] = after["canvas"]
+            self._saved_revisions[project_id] = after["canvas"]["revision"]
+            return {"deleted": copy.deepcopy(item)}
+
+    def _commit_agent_media_transaction(self, project_id, *args):
+        try:
+            self._commit_original_media_transaction(project_id, *args)
+        except Exception:
+            # A failed prepare must not leave an old recovery snapshot behind
+            # that could replay over edits accepted after this request (#442).
+            if self._original_transaction_path(project_id).exists():
+                self._recover_original_media_transaction(project_id)
+            raise
+
+    def _agent_media_transaction_state(self, project_id, canvas, media_index, trash_index):
+        project_dir = self._project_directory(project_id)
+        canvas = copy.deepcopy(canvas)
+        canvas.pop("history", None)
+        metadata = _store._read_json(self._safe_project_path(project_dir, "project.json"))
+        return {"canvas": canvas, "history": copy.deepcopy(self._histories.get(project_id, [])),
+                "media_index": copy.deepcopy(media_index), "trash_index": copy.deepcopy(trash_index),
+                "project": self._metadata_for_canvas(metadata, canvas)}
+
+    def prepare_agent_media_restore(self, project_id, asset_id, deletion_id):
+        """Preflight only: missing identities and every occupied destination fail closed."""
+        with self._lock:
+            if self._original_transaction_path(project_id).exists():
+                raise _store.ProjectStoreError("项目媒体事务尚未恢复，请先重新打开项目")
+            project_dir = self._project_directory(project_id)
+            item = next((item for item in self._load_media_trash_index(project_id)["items"]
+                         if isinstance(item, dict) and item.get("asset_id") == asset_id
+                         and item.get("reason") == "agent-media-delete"
+                         and item.get("agent_deletion_id") == deletion_id), None)
+            if item is None or int(item.get("expires_at") or 0) <= _store._now_ms():
+                raise _store.ProjectStoreError("媒体回收记录不存在、已过期或已清理")
+            if asset_id in self._load_media_index(project_id)["items"]:
+                raise _store.ProjectStoreError("媒体恢复身份已被占用")
+            undo = item.get("undo")
+            filename = undo.get("snapshot_filename") if isinstance(undo, dict) else None
+            if filename != f"agent-{deletion_id}.json":
+                raise _store.ProjectStoreError("媒体回收身份不匹配")
+            snapshot = _store._read_json(self._safe_project_path(project_dir, f"trash/undo/{filename}"))
+            record, files = snapshot.get("media_record"), snapshot.get("files")
+            if (not isinstance(record, dict) or record.get("asset_id") != asset_id
+                    or not isinstance(files, list) or not files or not isinstance(files[0], dict)
+                    or files[0].get("live") != f"media/{record.get('filename') or ''}"):
+                raise _store.ProjectStoreError("媒体回收快照无效")
+            if any(isinstance(other, dict) and other.get("filename") == record.get("filename")
+                   for other in self._load_media_index(project_id)["items"].values()):
+                raise _store.ProjectStoreError("媒体恢复文件归属已被占用")
+            for position, mapping in enumerate(files):
+                if not isinstance(mapping, dict):
+                    raise _store.ProjectStoreError("媒体回收快照无效")
+                relative = mapping.get("live", "")
+                if (not isinstance(relative, str) or len(Path(relative).parts) != 2
+                        or Path(relative).parts[0] != ("media" if position == 0 else "previews")
+                        or Path(relative).name in {".", "..", "index.json"}
+                        or mapping.get("trash") != f"trash/{relative}"):
+                    raise _store.ProjectStoreError("媒体回收路径无效")
+                live = self._safe_project_path(project_dir, relative)
+                trash = self._safe_project_path(project_dir, mapping["trash"])
+                if live.exists():
+                    raise _store.ProjectStoreError("媒体恢复位置已被占用")
+                if not trash.is_file() or _store._file_sha256(trash) != mapping.get("sha256"):
+                    raise _store.ProjectStoreError("回收区文件缺失或已改变")
+            return {"item": item, "snapshot": snapshot, "snapshot_filename": filename}
+
+    def restore_agent_media_deletions(self, project_id, deletions, *, canvas):
+        """Use the native project transaction for grouped bytes/index/canvas recovery."""
+        from firefly_withdrawn_refs import preserve_withdrawals
+        project_id = _store._clean_project_id(project_id)
+        with self._project_operation_lock(project_id), self._lock:
+            opened = self.open_project(project_id)["canvas"]
+            if opened["revision"] != canvas["revision"]:
+                raise _store.RevisionConflict(opened)
+            plans = [self.prepare_agent_media_restore(project_id, asset, token) for asset, token in deletions]
+            media_index = self._load_media_index(project_id)
+            trash_index = self._load_media_trash_index(project_id)
+            before = self._agent_media_transaction_state(project_id, opened, media_index, trash_index)
+            files, snapshots, destinations = [], {}, set()
+            for plan in plans:
+                record = plan["snapshot"]["media_record"]
+                for mapping in plan["snapshot"]["files"]:
+                    if mapping["live"] in destinations:
+                        raise _store.ProjectStoreError("媒体恢复位置冲突")
+                    destinations.add(mapping["live"])
+                    files.append(mapping)
+                media_index["items"][record["asset_id"]] = record
+                snapshots[plan["snapshot_filename"]] = plan["snapshot"]
+            tokens = {token for _, token in deletions}
+            trash_index["items"] = [item for item in trash_index["items"]
+                                    if not isinstance(item, dict) or item.get("agent_deletion_id") not in tokens]
+            candidate = copy.deepcopy(canvas)
+            preserve_withdrawals(candidate, opened)
+            candidate["revision"] += 1
+            candidate["updated_at"] = max(_store._now_ms(), int(opened.get("updated_at") or 0) + 1)
+            after = self._agent_media_transaction_state(project_id, candidate, media_index, trash_index)
+            filename = next(iter(snapshots))
+            before.update(file_location="trash", undo_snapshot=snapshots[filename], undo_snapshots=snapshots)
+            after.update(file_location="live", undo_snapshot=None, undo_snapshots={name: None for name in snapshots})
+            self._commit_agent_media_transaction(project_id, "restore", deletions[0][0], files, filename, before, after)
+            self._canvases[project_id] = after["canvas"]
+            self._saved_revisions[project_id] = after["canvas"]["revision"]
+            result = copy.deepcopy(after["canvas"])
+            result["history"] = copy.deepcopy(after["history"])
+            return {"canvas": result, "restored": [asset for asset, _ in deletions]}
+
     def delete_project_media_asset(
         self,
         project_id: str,

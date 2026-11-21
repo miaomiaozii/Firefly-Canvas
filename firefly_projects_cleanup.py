@@ -574,6 +574,7 @@ class ProjectCleanupMixin:
 
         与 restore_deleted_original（生成输出 occurrence 恢复，需 deletion_id + 撤销快照）
         互补：不带撤销身份的回收条目（如生成孤儿回收）只恢复文件与索引，不恢复画布引用。
+        Agent 回收条目按本次删除身份校验并复用原图事务，保留现有画布与历史引用。
         """
         project_id = _store._clean_project_id(project_id)
         asset_id = str(asset_id or "").strip()
@@ -596,6 +597,10 @@ class ProjectCleanupMixin:
                 )
                 if item is None:
                     raise _store.ProjectNotFound("项目回收区中不存在该媒体")
+                if item.get("reason") == "agent-media-delete":
+                    result = self.restore_agent_media_deletions(
+                        project_id, [(asset_id, item.get("agent_deletion_id"))], canvas=opened)
+                    return {**result, "restored": asset_id}
                 referenced = self._collect_asset_ids(opened.get("nodes") or [])
                 referenced.update(self._collect_asset_ids(self._histories.get(project_id, [])))
                 if asset_id in referenced:

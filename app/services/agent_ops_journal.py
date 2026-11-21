@@ -8,7 +8,8 @@ remain the caller's, while operation.result() reports settlement independently.
 The record's before and after must be the lists returned by record_sides(delta),
 and its touched_node_ids must equal the delta's touched IDs. op_id must be globally
 unique per project, including across journal instances. Pending state is in memory:
-a process crash can lose a log entry.
+a process crash can lose a log entry. Media deltas identify native project recycle
+entries; settlement must prove those entries too, without copying index backups.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ import threading
 import weakref
 
 from app.services import agent_ops_delta as delta_ops
-from app.services import agent_ops_store
+from app.services import agent_ops_store, agent_ops_media
 
 
 _journals_lock = threading.RLock()
@@ -117,10 +118,14 @@ class PendingOperation:
             self._journal._store._canvases[self._project_id]
         )
         actual = delta_ops.build_delta(self._before, after)
-        if ((not actual and not record["irreversible_effects"])
-                or not delta_ops._equal(actual, delta)):
+        canvas_delta, media_delta = agent_ops_media.split_delta(delta)
+        agent_ops_media.validate_deletions(record, media_delta)
+        if agent_ops_media.deletion_conflicts(self._journal._store, self._project_id, media_delta):
+            raise ValueError("media deletion must have a recoverable project recycle identity")
+        if ((not actual and not media_delta and not record["irreversible_effects"])
+                or not delta_ops._equal(actual, canvas_delta)):
             raise ValueError("delta must exactly describe the Agent mutation")
-        before, after = record_sides(actual)
+        before, after = record_sides(delta)
         if (not delta_ops._equal(record["before"], before)
                 or not delta_ops._equal(record["after"], after)
                 or record["touched_node_ids"] != delta_ops.touched_node_ids(actual)):
@@ -211,12 +216,14 @@ class AgentOpsJournal:
                     blocked.extend(entry["delta"])
                     continue
                 try:
-                    conflicts = _conflicts(virtual, entry["delta"])
+                    canvas_delta, media_delta = agent_ops_media.split_delta(entry["delta"])
+                    conflicts = _conflicts(virtual, canvas_delta)
+                    conflicts += agent_ops_media.deletion_conflicts(self._store, project_id, media_delta)
                     conflicts += _blocked_conflicts(entry["delta"], blocked)
                     if conflicts:
                         blocked.extend(entry["delta"])
                     else:
-                        reversed_canvas, inverse_conflicts, _ = delta_ops.apply_inverse(virtual, entry["delta"])
+                        reversed_canvas, inverse_conflicts, _ = delta_ops.apply_inverse(virtual, canvas_delta)
                         if inverse_conflicts:
                             # The operation is represented, but reversing it could
                             # discard a later structural dependency.

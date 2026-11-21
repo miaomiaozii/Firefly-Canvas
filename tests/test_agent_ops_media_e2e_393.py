@@ -68,7 +68,9 @@ def test_upload_dedupe_delete_and_undo(env):
             deleted = await routes.delete_media_core(project, asset)
         assert not path.exists()
         undo = undo_ops(store, project, op_id=deleted['op_id'])
-        assert undo['irreversible_effects'] and not path.exists()
+        assert undo['status'] == 'reverted' and not undo['irreversible_effects'] and path.is_file()
+        with scope(project, 'media.delete'):
+            await routes.delete_media_core(project, asset)
         with scope(project, 'media.delete'):
             missing = await routes.delete_media_core(project, asset)
         assert 'op_id' not in missing
@@ -142,15 +144,15 @@ def test_bad_input_no_write_and_partial_delete(env, monkeypatch):
             with pytest.raises(HTTPException):
                 await routes.erase_node_image_core(project, 'image', {}, '')
         assert list_operations(db, project) == []
-        def partial(project_id, asset_id):
-            Path(store.media_record(project_id, asset_id)['path']).unlink()
-            raise OSError('index failure')
-        monkeypatch.setattr(store, 'delete_media', partial)
+        def fail(stage):
+            if stage == 'after_media_index':
+                raise OSError('index failure')
+        monkeypatch.setattr(store, '_original_transaction_checkpoint', fail)
         with scope(project, 'media.delete') as context:
-            with pytest.raises(HTTPException) as error:
+            with pytest.raises(HTTPException):
                 await routes.delete_media_core(project, asset)
-            assert error.value.detail['details']['op_id'] == context.op_id
-            assert get_operation(db, project, context.op_id)['irreversible_effects']
+            assert Path(store.media_record(project, asset)['path']).is_file()
+            assert get_operation(db, project, context.op_id) is None
     asyncio.run(run())
 
 

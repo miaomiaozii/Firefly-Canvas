@@ -1,4 +1,4 @@
-"""Synchronous, conflict-checked Agent operation listing and canvas undo.
+"""Conflict-checked Agent operation listing, canvas undo and media recovery.
 
 The store lock serializes this service with ProjectStore and journal mutations.
 A successful canvas replacement is observed separately from flush's later errors;
@@ -15,7 +15,7 @@ from firefly_opsdb import OpsDb
 from firefly_withdrawn_refs import AUTO_ARCHIVED_REFS, archive_ids, task_id, withdrawal_map
 from app.services.canvas_image_refs import prompt_parts
 from firefly_projects import InvalidMutation
-from app.services import agent_ops_delta as delta_ops, agent_ops_store
+from app.services import agent_ops_delta as delta_ops, agent_ops_store, agent_ops_media
 
 
 def list_ops(store, project_id, *, turn_id=None, limit=100):
@@ -36,7 +36,7 @@ def _delta(record):
             raise ValueError("operation delta sides disagree")
         kind, entity_id, path = common.get("entity"), common.get("id"), common.get("path")
         keys = {"entity", "id", "path"} | ({"node_ids"} if kind == "connection" else set())
-        if (common.keys() != keys or kind not in ("node", "connection")
+        if (common.keys() != keys or kind not in ("node", "connection", "media")
                 or not isinstance(entity_id, str) or not entity_id
                 or not isinstance(path, list) or any(not isinstance(k, str) for k in path)):
             raise ValueError("invalid operation delta identity")
@@ -51,6 +51,7 @@ def _delta(record):
         result.append({**deepcopy(common), "before": deepcopy(old["before"]), "after": deepcopy(new["after"])})
     if not result and not record["irreversible_effects"]:
         raise ValueError("empty operation delta without irreversible effects")
+    agent_ops_media.validate_deletions(record, agent_ops_media.split_delta(result)[1])
     return result
 
 
@@ -186,6 +187,9 @@ def _withdrawal_plan(store, project_id, canvas, candidate, history, records, del
 def undo_ops(store, project_id, *, op_id=None, turn_id=None, is_running=None):
     """Undo an op and descendants or all retained operations in a turn.
 
+    Recycled media is restored only from its native project recycle identity;
+    sidecar deltas cannot recreate missing bytes or index metadata.
+
     is_running(project_id, op_id), when supplied, must report active generation;
     any running operation rejects the entire undo without cancelling generation.
 
@@ -202,7 +206,7 @@ def undo_ops(store, project_id, *, op_id=None, turn_id=None, is_running=None):
     db = OpsDb(store.root)
     result = {"status": "not_found", "reverted": [], "already_reverted": [],
               "conflicts": [], "irreversible_effects": [], "error": None}
-    with store._lock:
+    with store._project_operation_lock(project_id), store._lock:
         target = {"op_id": op_id, "turn_id": turn_id}
         if reason := agent_ops_store.undo_failure(db, project_id, target):
             result.update(status="conflict", error=reason,
@@ -269,8 +273,17 @@ def undo_ops(store, project_id, *, op_id=None, turn_id=None, is_running=None):
         if running:
             result.update(status="generating", running=running, error="生成仍在进行")
             return result
-        deltas = [(record["op_id"], _delta(record)) for record in active]
-        deltas = [(op, delta) for op, delta in deltas if delta]
+        all_deltas = [(record["op_id"], _delta(record)) for record in active]
+        media_deltas = [(op, media) for op, changes in all_deltas
+                        if (media := agent_ops_media.split_delta(changes)[1])]
+        media_restores = [(change['id'], change['before']['value']) for _, changes in media_deltas for change in changes]
+        for current_op, changes in media_deltas:
+            conflicts = agent_ops_media.deletion_conflicts(store, project_id, changes)
+            if conflicts:
+                result.update(status='conflict', conflicts=[{**item, 'op_id': current_op} for item in conflicts])
+                return result
+        deltas = [(op, canvas_delta) for op, changes in all_deltas
+                  if (canvas_delta := agent_ops_media.split_delta(changes)[0])]
         # Saved revisions can lag a successful replacement when a later flush step fails.
         try:
             with (store.root / project_id / "canvas.json").open(encoding="utf-8") as source:
@@ -306,7 +319,8 @@ def undo_ops(store, project_id, *, op_id=None, turn_id=None, is_running=None):
             preview = deepcopy(canvas)
             try:
                 for mutation in mutations:
-                    store._apply_mutation(preview, mutation, trusted_agent_bindings=True)
+                    store._apply_mutation(preview, mutation, trusted_agent_bindings=True,
+                                          restoring_media={asset for asset, _ in media_restores})
             except InvalidMutation as exc:
                 result.update(status="conflict", conflicts=[{"node_id": None, "reason": f"store rejected inverse: {exc}"}])
                 return result
@@ -315,10 +329,19 @@ def undo_ops(store, project_id, *, op_id=None, turn_id=None, is_running=None):
                     not delta_ops._equal(preview.get("connections", []), candidate.get("connections", []))):
                 result.update(status="conflict", conflicts=[{"node_id": None, "reason": "store mutation changes additional canvas data"}])
                 return result
-        if mutations or withdrawals:
+        if media_restores:
+            from firefly_withdrawn_refs import preserve_withdrawals, WITHDRAWN_REFS
+            if withdrawals:
+                preserve_withdrawals(candidate, {WITHDRAWN_REFS: withdrawals})
+            try:
+                store.restore_agent_media_deletions(project_id, media_restores, canvas=candidate)
+            except Exception as exc:
+                result.update(status='error', error=f'{type(exc).__name__}: {exc}')
+                return result
+        elif mutations or withdrawals:
             store.apply_agent_inverse(project_id, mutations, base_revision=canvas['revision'], withdrawals=withdrawals,
                                       force_empty=bool(canvas.get('nodes')) and not candidate.get('nodes'))
-        if not deltas and not withdrawals:
+        if not deltas and not withdrawals and not media_restores:
             try:
                 agent_ops_store.mark_undone(db, project_id, [record["op_id"] for record in active])
             except (OSError, sqlite3.Error, KeyError) as exc:
@@ -351,6 +374,7 @@ def undo_ops(store, project_id, *, op_id=None, turn_id=None, is_running=None):
         if not observed:
             result.update(status="pending", error=flush_error)
             return result
+        broadcast_ids.extend(op for op, _ in media_deltas if op not in broadcast_ids)
         if broadcast_ids:
             result["broadcast_op_ids"] = broadcast_ids
         try:
