@@ -14913,7 +14913,7 @@ async function runGeneration(){
     }
     const meta = snapshotRunMeta(prompt, node.id, request.displayPrompt, refs);
     const logKind = isApiLikeEngine(settings.engine) && settings.apiKind === 'video' ? 'video' : 'image';
-    const runLog = smartRunSnapshot(node, prompt, refs, logKind);
+    const runLog = {...smartRunSnapshot(node, prompt, refs, logKind), run_id:uid('run')};
     rememberRecentSmartSettings(settings, node);
     const runLogStart = nowMs();
     const expectedCount = settings.engine === 'runninghub'
@@ -14948,6 +14948,7 @@ async function runGeneration(){
             providerId:runSettings.providerId || runSettings.provider_id || '',
             model:runSettings.model || '',
             runSettings,
+            run_id:runLog.run_id,
             forceNew:true
         })
         : '';
@@ -14972,15 +14973,13 @@ async function runGeneration(){
         }
         const priorPendingCount = priorPendingTasks.reduce((total, task) => total + Math.max(1, Number(task?.count || 1)), 0);
         pendingNode.pending = Math.max(1, priorPendingCount + Math.max(1, Number(expectedCount) || 1));
-        // 固化本批占位格总数：写回/完成阶段布局都以它为准，避免 node.pending 递减导致尺寸跳变
+        // 布局不能随 pending 递减而跳变。
         pendingNode._batchTotal = pendingNode.pending;
         if(!priorPendingTasks.length) pendingNode._generationBatchApplied = false;
         pendingNode.runStartedAt = Number(pendingNode.runStartedAt || 0) || nowMs();
         delete pendingNode.runFinishedAt;
         delete pendingNode.runElapsedMs;
         pendingNode.runTimerHidden = false;
-        // 提交生成时就固化目标比例，pendingBoxSize 使用它计算占位图尺寸
-        // 扩图激活时，使用扩图的比例（sizeForRun 返回空字符串）
         const outpaintForAspect = validOutpaintSize(node);
         const aspectForRun = outpaintForAspect 
             ? {w: outpaintForAspect.width, h: outpaintForAspect.height}
@@ -15006,11 +15005,11 @@ async function runGeneration(){
     render();
     try {
         if(isApiLikeEngine(settings.engine) && settings.apiKind === 'video'){
-            const videoResult = await runApiVideoGeneration(prompt, refs, settings, pendingNode);
+            const videoResult = await runApiVideoGeneration(prompt, refs, settings, pendingNode, {run_id:runLog.run_id});
             if(Array.isArray(videoResult?.taskIds)){
                 const taskIds = videoResult.taskIds.filter(Boolean);
                 if(!taskIds.length) throw new Error(tr('smart.errRunFailed'));
-                const newTasks = taskIds.map((taskId, index) => ({taskId, kind:'video', count:videoResult.count || 1, providerId:videoResult.providerId, model:videoResult.model, pendingHistoryId:index === 0 ? pendingHistoryId : ''}));
+                const newTasks = taskIds.map((taskId, index) => ({taskId, run_id:runLog.run_id, kind:'video', count:videoResult.count || 1, providerId:videoResult.providerId, model:videoResult.model, pendingHistoryId:index === 0 ? pendingHistoryId : ''}));
                 pendingNode.pendingTasks = [...smartPendingTasks(pendingNode).filter(task => !taskIds.includes(task.taskId)), ...newTasks];
                 ensureSmartPendingHistoryLogs(pendingNode, newTasks, {prompt, kind:'video'});
                 pendingNode.pending = Math.max(pendingNode.pendingTasks.length, pendingNode.pendingTasks.reduce((total, task) => total + Math.max(1, Number(task.count || 1)), 0));
@@ -15034,7 +15033,6 @@ async function runGeneration(){
                 }
                 if(!(completedVideoNode.images || []).length) throw new Error(tr('smart.errNoOutVideos'));
                 if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
-                if(!completedVideoNode._serverGenerationHistoryRecorded && (!outcome?.failure || outcome.succeeded)) addSmartGenerationHistory({run:runLog, outputs:completedVideoNode.images || [], runMs:nowMs() - runLogStart});
                 delete completedVideoNode._serverGenerationHistoryRecorded;
                 clearPromptInput({preserveDraft:true});
                 settings = previousSettings;
@@ -15073,7 +15071,7 @@ async function runGeneration(){
         if(isApiLikeEngine(settings.engine) || rhModelMode){
             const taskIds = Array.isArray(outImages?.taskIds) ? outImages.taskIds : [];
             if(!taskIds.length) throw new Error(tr('smart.errRunFailed'));
-            const newTasks = taskIds.map((taskId, index) => ({taskId, kind:'image', count:outImages.count || 1, providerId:outImages.providerId, model:outImages.model, prompt, size:sizeForRun(settings) || '', createdAt:runLogStart, pendingHistoryId:index === 0 ? pendingHistoryId : ''}));
+            const newTasks = taskIds.map((taskId, index) => ({taskId, run_id:runLog.run_id, kind:'image', count:outImages.count || 1, providerId:outImages.providerId, model:outImages.model, prompt, size:sizeForRun(settings) || '', createdAt:runLogStart, pendingHistoryId:index === 0 ? pendingHistoryId : ''}));
             pendingNode.pendingTasks = [...smartPendingTasks(pendingNode).filter(task => !taskIds.includes(task.taskId)), ...newTasks];
             // 占位、逐张写入和完成必须共用目标比例，不能按真实图片重算而跳变。
             const outpaintForWriteback = validOutpaintSize(node);
@@ -15103,7 +15101,6 @@ async function runGeneration(){
             if(!(completedImageNode.images || []).length) throw new Error(tr('smart.errNoOutImages'));
             if(outpaintSize) delete node.outpaintSize;
             if(sourceVisualState) restoreSourceVisualState(node, sourceVisualState);
-            if(!completedImageNode._serverGenerationHistoryRecorded && (!outcome?.failure || outcome.succeeded)) addSmartGenerationHistory({run:runLog, outputs:completedImageNode.images || [], runMs:nowMs() - runLogStart});
             delete completedImageNode._serverGenerationHistoryRecorded;
             clearPromptInput({preserveDraft:true});
             settings = previousSettings;

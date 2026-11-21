@@ -204,6 +204,7 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
             media_type:'image',
             result_node_id:resultNode.id,
             angle_preset:runSettings.anglePreset || 'none',
+            run_id:String(runOptions.run_id || (canvas.history || []).find(log => log.id === pendingHistoryId)?.run_id || pendingHistoryId),
             base_revision:Number(canvas.revision || 0),
             idempotency_key:runOptions.idempotencyKey || `browser:${projectId}:${pendingHistoryId || uid('generation')}`
         };
@@ -231,8 +232,6 @@ async function runApiGeneration(prompt, refs, runSettings=settings, resultNode=n
         const task = await postProjectImageTaskWithReplay(projectId, payload);
         const taskResult = {taskIds:[task.task_id].filter(Boolean), count, providerId:task.route?.provider_id || '', model:task.route?.model || '', route:task.route, projectRevision:task.project_revision, registeredNode:task.registered_node, pendingHistoryId, idempotencyKey:task.idempotency_key || payload.idempotency_key};
         await canvasCore.acceptProjectGenerationRegistration(taskResult);
-        // 新运行重置计时器：项目 API 提交路径不经过 runCascadeStepIntoNode，
-        // 必须显式重置，否则持久化节点会带着上次生成的旧 runStartedAt 无限涨。
         const refreshedNode = canvasState.nodes.find(item => item.id === resultNode.id) || resultNode;
         refreshedNode.runStartedAt = nowMs();
         delete refreshedNode.runFinishedAt;
@@ -347,31 +346,23 @@ function projectVideoSizeForRun(runSettings=settings){
     return {width, height, size:`${width}x${height}`};
 }
 
-async function runApiVideoGeneration(prompt, refs, runSettings=settings, resultNode=null){
+async function runApiVideoGeneration(prompt, refs, runSettings=settings, resultNode=null, runOptions={}){
     if(!runSettings.videoModel) throw new Error(tr('smart.errNoVideoModel'));
     if(canvas?.format === 'firefly-canvas-v1'){
         if(!resultNode?.id) throw new Error(tr('smart.projectVideoMissingResult'));
         if(!await flushProjectCanvasBeforeGeneration()){
-            // #189 gate (m03364/m03420): the video request was never sent. Do not drop it:
-            // queue a single-shot replay that re-runs this function once the canvas save
-            // settles (markAutosaveSaved → resumeSmartPendingActionResumes); on that pass the
-            // flush succeeds. The video endpoint has no server-side dedup and the dispatcher
-            // removes the entry before running it, so one click sends at most one request.
+            // #189：视频端点不去重；保存确认后只重放一次，避免重复计费。
             queueSmartPendingActionResume('video', resultNode.id, live => (async () => {
                 const freshNode = canvasState.nodes.find(n => n.id === live.id) || live;
-                const videoResult = await runApiVideoGeneration(prompt, refs, runSettings, freshNode);
-                // Mirror the main caller's success path (shared helper so the reload
-                // rebuilder applies the exact same result handling). Fire-and-forget
-                // completion tracking: the dispatcher's 'replayed' event must be logged
-                // as soon as the request has been re-sent and registered; polling the
-                // video task to completion must not gate the resume log.
+                const videoResult = await runApiVideoGeneration(prompt, refs, runSettings, freshNode, runOptions);
+                // 重放以注册为界，不能等待长轮询才释放发送状态。
                 const taskIds = applyApiVideoGenerationResult(freshNode, videoResult, prompt);
                 if(!await canvasCore.acceptProjectGenerationRegistration(videoResult)){
                     canvasCore.scheduleSave();
                     await canvasCore.saveCanvas();
                 }
                 if(taskIds.length) void resumeSmartPendingNode(freshNode, {taskIds}).catch(error => {
-                    // #348: fire-and-forget 完成跟踪（上方注释：不得阻塞 resume 日志）；resumeSmartPendingNode 内部已按任务自行处理失败。
+                    // #348：轮询按任务处理失败；保存恢复不等后台完成，避免重复错误提示。
                     console.warn('[generation-tasks] 视频 pending 节点恢复失败', error);
                 });
             })(), {prompt, refs, runSettings});
@@ -410,6 +401,7 @@ async function runApiVideoGeneration(prompt, refs, runSettings=settings, resultN
             audio_reference_asset_ids:ownedRefs.filter(item => canvasCore.mediaKindForItem(item) === 'audio').map(item => item.asset_id),
             media_type:'video',
             result_node_id:resultNode.id,
+            run_id:String(runOptions.run_id || ''),
             base_revision:Number(canvas.revision || 0)
         };
         const task = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/video-generation-tasks`, {
@@ -676,9 +668,11 @@ function absorbProjectGenerationResult(result, taskId=''){
         let pendingProgress = null;
         if(taskId){
             const pendingId = smartPendingHistoryId(taskId);
-            const taskLog = canvas.history.find(log => String(log?.id || '') === pendingId || smartHistoryTaskId(log) === String(taskId));
+            const ownsPending = log => log?.status === 'pending' && (smartHistoryTaskId(log)
+                ? smartHistoryTaskId(log) === String(taskId) : String(log?.id || '') === pendingId);
+            const taskLog = canvas.history.find(ownsPending);
             if(taskLog?.progress) pendingProgress = {...taskLog.progress};
-            canvas.history = canvas.history.filter(log => String(log?.id || '') !== pendingId && !(log?.status === 'pending' && smartPendingHistoryTaskId(log) === String(taskId)));
+            canvas.history = canvas.history.filter(log => !ownsPending(log));
         }
         const hydratedRecord = hydrateProjectMediaReferences(result.history_record);
         if(['failed', 'cancelled'].includes(result.history_record.status) && pendingProgress) hydratedRecord.progress = {...pendingProgress, failed:result.history_record.status === 'failed'};
@@ -711,9 +705,7 @@ function absorbProjectGenerationResult(result, taskId=''){
             requestSmartEdgeReveal(resultNode);
         }
     } else if(resultNode && !nodeSnapshotCurrent && taskId){
-        // #41：服务端快照落后于本地编辑（revision < appliedNodeRevision）时不能覆盖
-        // 节点内容，但任务已是终态——必须终结该任务的 pending 状态，否则节点永远
-        // “生成中”、计时器无限增长。
+        // #41：过期快照不能覆盖节点，但终态任务仍须清理自己的占位。
         const pendingTask = smartPendingTasks(resultNode).find(item => item.taskId === taskId);
         finalizeSmartPendingTask(resultNode, taskId, [], 'image', Number(pendingTask?.count || 1));
         result.project_node_applied = true;
@@ -779,14 +771,18 @@ async function resumeSmartPendingNode(node, logContext={}){
     const scopedTaskIds = new Set(Array.isArray(logContext.taskIds) ? logContext.taskIds.filter(Boolean) : []);
     const tasks = smartPendingTasks(node).filter(task => !scopedTaskIds.size || scopedTaskIds.has(task.taskId));
     if(!node || !tasks.length) return;
-    const logTaskFailure = (message, task) => {
-        if(!logContext?.run || !message) return;
-        const runMs = Math.max(0, nowMs() - Number(logContext.runLogStart || nowMs()));
+    const logTaskResult = (task, outputs=[], error='') => {
+        const pending = (canvas?.history || []).find(log => log?.status === 'pending' && smartHistoryTaskId(log) === task.taskId);
+        // #441：刷新会丢失前台闭包，只能从本任务的占位恢复请求，不能借用节点当前的另一轮参数。
+        const run = logContext.run || (pending && {...pending, settings:pending.runSettings, refs:pending.promptRefs});
+        if(!run) return;
+        const runMs = Math.max(0, nowMs() - Number(logContext.runLogStart || pending?.createdAt || nowMs()));
         addSmartGenerationHistory({
-            run:logContext.run,
-            outputs:[],
+            run:{...run, nodeId:node.id, task_id:task.taskId,
+                run_id:task.run_id || run.run_id || '', pendingHistoryId:task.pendingHistoryId || ''},
+            outputs,
             runMs,
-            error:message
+            error
         });
     };
     node.pending = Math.max(tasks.length, Number(node.pending || 0) || tasks.length);
@@ -803,6 +799,7 @@ async function resumeSmartPendingNode(node, logContext={}){
             const resultImages = result?.project_node_applied
                 ? []
                 : resultMediaUrls(resultItems);
+            if(!result?.history_recorded) logTaskResult(task, resultMediaUrls(resultItems));
             if(!result?.project_node_applied){
                 finalizeSmartPendingTask(node, task.taskId, resultImages, task.kind || 'image', task.count || 1);
             }
@@ -811,15 +808,14 @@ async function resumeSmartPendingNode(node, logContext={}){
             return {succeeded:true};
         } catch(e) {
             if(e && e.imageTaskRecover && e.recoverTaskId){
-                // #41：本地任务已终态失败，但有上游任务 ID 可供手动查询；
-                // 恢复信息移入 recoveredGenerationTasks，再清理 pending，停止计时器和轮询。
+                // #41：终态失败仍保留上游任务号供手动取回，不重新提交。
                 task.failed = true;
                 task.querying = false;
                 task.recoverTaskId = e.recoverTaskId;
                 task.providerId = e.providerId || task.providerId || providerIdForSmartTask(node, task);
                 task.error = e.message || tr('smart.errRunFailed');
                 if(!e?.smartGenerationLogged){
-                    logTaskFailure(task.error, task);
+                    logTaskResult(task, [], task.error);
                     if(logContext.run) e.smartGenerationLogged = true;
                 }
                 node.recoveredGenerationTasks = Array.isArray(node.recoveredGenerationTasks) ? node.recoveredGenerationTasks : [];
@@ -836,10 +832,7 @@ async function resumeSmartPendingNode(node, logContext={}){
                 return {failure:e, recoverable:true};
             }
             if(e?.generationCancelled && e?.cancelledByUser){
-                // #237 用户主动停止（stop≠error）：后端 /cancel 已写即时终态快照
-                // （final_node 清除「生成中」占位 + 取消历史含 partial 成品 + 中性文案「任务已取消」），
-                // 轮询端在抛错前已用 absorb 写回——这里只保证该任务的 pending 被移除，
-                // 不走服务商失败「失败/重试」UI，不记 error 日志，不弹 error toast。
+                // #237：主动取消是中性终态，不走失败重试或错误提示。
                 const taskStillPending = smartPendingTasks(node).some(item => item.taskId === task.taskId);
                 if(taskStillPending){
                     const remainingTasks = smartPendingTasks(node).filter(item => item.taskId !== task.taskId);
@@ -868,11 +861,7 @@ async function resumeSmartPendingNode(node, logContext={}){
             const isProviderFailure = e && (e.providerFailure || (e.message && (e.message.includes('failed') || e.message.includes('cancelled') || e.message.includes('timeout') || e.message.includes('sensitive') || e.message.includes('FAILURE'))));
             
             if(isProviderFailure){
-                // 服务商失败（终态）：无论节点状态是否已被服务端同步，都必须登记
-                // failedGenerationTasks，让节点显示"重试/取回"UI。
-                // （后端 fail_image_generation 已把任务从 pendingTasks 移除并同步节点，
-                //  若像旧逻辑那样用 projectNodeApplied 作守卫，失败任务会被静默吞掉，
-                //  用户永远看不到重试入口——即"失败取回机制不生效"的根因。）
+                // 服务端应用过快照也必须保留失败任务，否则会丢失重试入口。
                 node.failedGenerationTasks = Array.isArray(node.failedGenerationTasks) ? node.failedGenerationTasks : [];
                 if(!node.failedGenerationTasks.some(item => item.taskId === task.taskId)){
                     node.failedGenerationTasks.push({taskId:task.taskId, error:String(e?.message || tr('smart.errRunFailed')).slice(0, 240), at:nowMs()});
@@ -893,7 +882,7 @@ async function resumeSmartPendingNode(node, logContext={}){
                     }
                 }
                 if(!e?.smartGenerationLogged){
-                    logTaskFailure(e.message || tr('smart.errRunFailed'), task);
+                    logTaskResult(task, [], e.message || tr('smart.errRunFailed'));
                     if(logContext.run && e && typeof e === 'object') e.smartGenerationLogged = true;
                 }
                 toast((e.message || tr('smart.errRunFailed')).slice(0, 160));
@@ -904,14 +893,13 @@ async function resumeSmartPendingNode(node, logContext={}){
             
             task._retryCount = (task._retryCount || 0) + 1;
             if(task._retryCount <= 3){
-                const delay = task._retryCount * 5000; // 5s, 10s, 15s
+                const delay = task._retryCount * 5000;
                 toast(canvasCore.trf('smart.writeFailedRetry', {n: task._retryCount, s: delay/1000}));
                 await sleep(delay);
                 if(activeSmartTaskPolls.has(task.taskId)){
                     return;
                 }
-                // Retry only this task: siblings already have their own pollers and
-                // must not be finalized a second time by the recursive call.
+                // 只重轮询当前任务，兄弟任务已有轮询器，不能重复结算。
                 return resumeSmartPendingNode(node, {...logContext, taskIds:[task.taskId]});
             }
             
@@ -936,7 +924,7 @@ async function resumeSmartPendingNode(node, logContext={}){
             }
             failures.push(e);
             if(!e?.smartGenerationLogged){
-                logTaskFailure(e.message || tr('smart.errRunFailed'), task);
+                logTaskResult(task, [], e.message || tr('smart.errRunFailed'));
                 if(logContext.run && e && typeof e === 'object') e.smartGenerationLogged = true;
             }
             toast(tr('smart.writeFailedMaxRetries'));
@@ -947,8 +935,7 @@ async function resumeSmartPendingNode(node, logContext={}){
     if(failures.length){
         throw failures[0];
     }
-    // Foreground callers need the original failure's history ownership, while
-    // background recovery must continue to resolve on ordinary terminal errors.
+    // 前台需要原错误的记账归属，后台恢复则不能因普通终态失败中断。
     return {
         failure:outcomes.find(outcome => outcome?.failure)?.failure,
         cancelled:outcomes.some(outcome => outcome?.cancelled),
@@ -1079,6 +1066,7 @@ async function resumeSmartGenerationSubmission(node, submission, registeredRetry
             providerId:taskResult.providerId,
             model:taskResult.model,
             prompt:submission.prompt || payload.prompt || '',
+            run_id:payload.run_id || '',
             createdAt:Number(submission.createdAt || nowMs()),
             pendingHistoryId,
             idempotencyKey
@@ -1089,7 +1077,7 @@ async function resumeSmartGenerationSubmission(node, submission, registeredRetry
         currentNode._generationAspect = parseSizeAspect(resumeSize);
         ensureSmartPendingHistoryLogs(currentNode, newTasks, {prompt:submission.prompt || payload.prompt || '', kind:'image'});
         currentNode.pending = Math.max(currentNode.pendingTasks.length, currentNode.pendingTasks.reduce((total, item) => total + Math.max(1, Number(item.count || 1)), 0));
-        // 恢复提交：保持占位格总数固化（已有则保留，避免覆盖）
+        // 续跑不能覆盖已有批次的布局基数。
         if(!Number(currentNode._batchTotal)) currentNode._batchTotal = currentNode.pending;
         currentNode.running = false;
         canvasCore.render();

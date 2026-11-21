@@ -649,8 +649,11 @@ def project_image_idempotency_signature(payload: Any) -> str:
         data = {}
     data.pop('idempotency_key', None)
     data.pop('base_revision', None)
+    # #396/#441：缺省的可选元数据不能改变旧持久请求的幂等签名。
     if not data.get('reference_roles'):
-        data.pop('reference_roles', None)  # Preserve signatures of durable tasks saved before #396.
+        data.pop('reference_roles', None)
+    if not data.get('run_id'):
+        data.pop('run_id', None)
     return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
 
 

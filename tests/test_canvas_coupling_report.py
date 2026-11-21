@@ -193,42 +193,11 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # 重现——`coupling()` 只测「模块引用核心声明的名字」，方向刚好相反。后果：
         # 后来人按错的规模给轨道 3 排期。这里钉住反方向实测值，飘了就必须同步改 ADR。
         rev = _cached_reverse()
-        # 231/933/163/784 → 235/938/166/788：增量全部来自 #223 新建的 canvas-download.js
-        # —— 下载层从 smart-canvas.js 抽成模块后，核心按名调它的 4 个函数
-        # （downloadCanvasArchive / canvasReceiveBlob / canvasSaveBlobAsFile / canvasDownloadSkipSummary）。
-        # 方向是 #154 要求的「核心调模块」，不是新债；但口径上漂就必须同步 ADR 0020 的表。
-        # → 236/940/167/790：#224 让素材抽屉的名字格改调 canvas-media-history.js 的
-        # markedItemDisplayName（smart-canvas.js 两处：可见文本 + title），同样是「核心调模块」，
-        # 目的是不让两处的显示名逻辑分叉（回填后素材名全是 generated-N 这类默认名，
-        # 直接拼 item.name 会一排重复）。
-        # 钉值漂移史（每一跳的原因）记在 docs/adr/0020 的漂移日志里，这里不重复。
-        # 241/950/170/798：#238 核心改调 canvas-media-history.js 档位层（smartNodePreviewTier 等 4 名），
-        # 「核心调模块」方向，非新债。
-        # 241/948/170/797：wave1-live 合并态——#249 Escape 栈迁移把 2 处核心引用结算进
-        # static/js/escape-stack.js（dd67bdc 同因 -2），#238 的 +10 与其叠加后净 -2/-1。
-        # 246/957/173/803：#260 切片（批量重命名 + Upscale 档位菜单）新增 5 反向名字/9 引用，
-        # 方向为「核心调模块」，非新债。
-        # 246/959/174/806：#256 图片节点右键「提取文字」——核心 smart-canvas.js 新增
-        # createPromptNodeFromOcr，调 canvas-node-ops.js 的 createPromptNode（1→2）与
-        # canvas-node-types.js 的 NODE_TYPE_IMAGE（15→16），方向「核心调模块」，非新债。
-        # 246/964/174/811：#253 交互套件——smart-canvas.js 接线 snap 拖拽吸附、
-        # quick-edit 就地重命名、tidy/快捷键扩表，新增 5 处「核心调模块」引用
-        # （canvas-snap.js / canvas-quick-edit.js 等），非新债。
-        # 247/967/174/812：#251 undo 接线（+1/+1，见 ADR 0020）叠 #246 freeSpot 接线：
-        # 素材粘贴行排新增 NODE_TYPE_IMAGE 核心引用 +2（reverse_core_refs +2）；
-        # createPromptNode 由 core 2/owner 1 → core 2/owner 2（owner +1）退出核心主导体
-        # （175→174）；core_dominant_core_refs 净 0（+2 与 -2 对冲）。均非新债。
-        # 242/959/170/805：#236 即梦全量退役——smart-canvas.js / canvas-generation-tasks.js /
-        # canvas-image-editor.js 删除即梦模型过滤/发图发视频/轮询取回/编辑态整块，
-        # 四个口径全降（-5/-8/-4/-7），纯还债，非新债（见 ADR 0020 漂移日志）。
-        # 936655c（#431）：fbb6299 的 257/961/172/783 → 257/965/171/785。
-        # 四处新增引用及主导集合变化逐项对账见 ADR 0020；保持四项精确相等。
-        # #397：保留排版框内批量卡尺寸时复用批量渲染常量；见 ADR 0020 的对账。
-        # #465：共用已勾选模型列表，核心少读两次 apiProviders，见 ADR 0020。
+        # 漂移原因统一记在 ADR 0020；这里守住精确计数，不因合法调用而豁免。
         self.assertEqual(rev["reverse_names"], 261)
-        self.assertEqual(rev["reverse_core_refs"], 990)
+        self.assertEqual(rev["reverse_core_refs"], 988)
         self.assertEqual(rev["core_dominant_names"], 174)
-        self.assertEqual(rev["core_dominant_core_refs"], 809)
+        self.assertEqual(rev["core_dominant_core_refs"], 807)
         # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。
         self.assertNotIn("canvas-core.js", rev["by_owner"])
         self.assertNotIn("smart-canvas.js", rev["by_owner"])

@@ -186,6 +186,13 @@ from firefly_withdrawn_refs import (
 _BARE_ASSET_ID_RE = re.compile(r"^[0-9a-f]{24,}$", re.IGNORECASE)
 
 
+def _generation_history_run_id(record: Dict[str, Any], pending_tasks: List[Dict[str, Any]], task_id: str) -> str:
+    # #441：分组由请求明确指定，不按结果节点猜测；旧无分组请求维持原语义。
+    pending = next((item for item in pending_tasks if str(item.get("taskId") or "") == task_id), {})
+    return str(record.get("run_id") or (record.get("request_payload") or {}).get("run_id")
+               or pending.get("run_id") or (pending.get("requestPayload") or {}).get("run_id") or "")
+
+
 class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMixin, ProjectUsageMixin, ProjectUndoStackMixin, ProjectAnnotationsMixin):
     _MEDIA_ASSET_ID_FIELDS = frozenset({
         "original_asset_id", "originalAssetId",
@@ -2403,7 +2410,11 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             if node is None or str(node.get("type") or "") not in {"image", NODE_TYPE_IMAGE}:
                 raise InvalidMutation("媒体生成任务必须绑定已保存的媒体节点")
             existing_tasks = list(node.get("pendingTasks") or [])
-            if not existing_tasks:
+            retry = str(task.get("idempotencyKey") or "").startswith("retry:")
+            # #441：显式重试只补该任务的输出，不能替换已成功兄弟任务的生成输出项。
+            if retry and node.get("images"):
+                node["_generationBatchApplied"] = True
+            elif not existing_tasks:
                 node["_generationBatchApplied"] = False
             tasks = [item for item in existing_tasks if str(item.get("taskId") or "") != task_id]
             tasks.append(task)
@@ -2495,6 +2506,8 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             canvas.pop("history", None)
             node = next((item for item in canvas.get("nodes") or [] if str(item.get("id") or "") == node_id), None)
             history = copy.deepcopy(self._histories.get(project_id, []))
+            if run_id := _generation_history_run_id(clean_history, (node or {}).get("pendingTasks") or [], clean_task_id):
+                clean_history["run_id"] = history_record["run_id"] = run_id
             replaced_prior_id = ""
             if require_pending:
                 prior = next(
@@ -2514,9 +2527,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                     new_status = str(clean_history.get("status") or "")
                     merged_terminal = None
                     if prior_status == "running" and new_status in {"failed", "timeout", "cancelled"}:
-                        # #83/#79: 终态写入 running 进度记录（同 id）——新 id 写入会让 running
-                        # 记录永远留在历史里；取消记录的 outputs=[] 又会丢掉 partial 已归档的图。
-                        # 可变字段以终态记录为准，outputs 按 asset_id 累加合并（失败/取消取回兑底）。
+                        # #83/#79：终态替换进度记录，但必须保留已归档的 partial 输出以便取回。
                         merged_terminal = copy.deepcopy(prior)
                         for key, value in clean_history.items():
                             if key != "outputs":
@@ -2525,8 +2536,6 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                             merged_terminal.get("outputs") or [],
                             clean_history.get("outputs") or [],
                         )
-                        # 合并记录携带终态记录的新 id，旧 running 记录（progress id）需一并移除，
-                        # 否则历史里会留下两条同内容的记录。
                         replaced_prior_id = str(prior.get("id") or "")
                     elif prior_status != new_status:
                         raise InvalidMutation("生成任务已结束，无法写入另一个终态")
@@ -2557,8 +2566,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                 history = [item for item in history if str(item.get("id") or "") not in replace_ids]
             history.append(clean_history)
             self._histories[project_id] = history[-5000:]
-            # 终态记录（失败/取消取回兑底）的 outputs 也需要稳定的生成输出身份，
-            # 否则历史抽屉无法对取回的图做单张删除（T4 同源问题）。
+            # 取回的输出也必须有稳定身份，才能在历史抽屉独立删除。
             self._ensure_output_occurrence_ids(canvas, history)
             self._persist_history(project_id)
             result = self._commit_generation_canvas(project_id, canvas)
@@ -2819,6 +2827,8 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             completed_task_id = str(task_id or clean_history.get("task_id") or clean_history.get("taskId") or "").strip()
             if not completed_task_id and len(pending_tasks) == 1:
                 completed_task_id = str(pending_tasks[0].get("taskId") or "").strip()
+            if run_id := _generation_history_run_id(clean_history, pending_tasks, completed_task_id):
+                clean_history["run_id"] = history_record["run_id"] = run_id
             if require_pending and completed_task_id not in {
                 str(item.get("taskId") or "")
                 for item in pending_tasks
@@ -2843,8 +2853,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                         merge_ledger.add(asset_id)
                 node["images"] = merged_media
             elif partial:
-                # 逐张写回必须累加：直接赋值会把上一次 partial 的图覆盖掉（用户
-                # 反馈“8 张并发最终只剩 1 张”的根因）。同样按 ledger 去重。
+                # partial 必须累加去重，不能覆盖前一张已经写回的输出。
                 merged_media = copy.deepcopy(node.get("images") or [])
                 for item in clean_media:
                     asset_id = str(item.get("asset_id") or "")
@@ -2881,8 +2890,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             node["running"] = False
             node.pop("queued", None)
             if partial:
-                # 增量写回（逐张归档）：图片已落到节点上，但任务还在跑，
-                # 保留 pendingTasks/pending 让前端继续显示剩余占位与进度。
+                # partial 不是任务终态，必须保留剩余占位和进度。
                 if not completed_task_id and len(pending_tasks) == 1:
                     completed_task_id = str(pending_tasks[0].get("taskId") or "").strip()
                 node["pendingTasks"] = list(pending_tasks)
@@ -2906,8 +2914,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                     node["pending"] = 0
                     node.pop("_generationBatchApplied", None)
             history = copy.deepcopy(self._histories.get(project_id, []))
-            # #83: 同 id 的 partial 逐张写回 + final 全量写回是累加合并——整体替换会让
-            # 历史记录永远只剩最后一次写入的 outputs（节点 images 早已累加，两边会分裂）。
+            # #83：同记录的 partial 与 final 累加合并，历史与节点不能丢失已写回的输出。
             if history_id:
                 existing_index = next(
                     (
@@ -2933,7 +2940,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                 history.append(clean_history)
             history = history[-5000:]
             self._histories[project_id] = history
-            # prune merge ledger 到仍存活的 history id，避免无限增长。
+            # 去重账本不能随已删除的历史无限增长。
             live_ids = {str(item.get("id") or "") for item in history}
             self._generation_written_assets = {
                 key: value
@@ -2941,12 +2948,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                 if key in live_ids
             }
             self._ensure_output_occurrence_ids(canvas, history)
-            # Bug fix (T4): 回写 Store 分配的 output_id/output_order 到调用方的
-            # history_record（任务结果会把它返回给前端合并进 canvas.history）。
-            # 此前任务结果携带的是 deepcopy 前的无 ID 副本，导致刚生成的图
-            # 在画布历史里无法删除（output_id 为空），刷新后才会恢复。
-            # #83: 累加合并后 canonical 记录的 outputs 顺序与调用方不一致（旧 partial
-            # 在前、本次新增在后、按 asset_id 去重），索引对齐会错位——改为按 asset_id 匹配回填。
+            # #83：响应必须带稳定输出身份；partial 合并可能改变顺序，不能按索引回填。
             if history_id and isinstance(history_record, dict):
                 caller_outputs = history_record.get("outputs")
                 if isinstance(caller_outputs, list):

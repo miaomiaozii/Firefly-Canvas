@@ -1161,6 +1161,7 @@ class ProjectImageGenerationRequest(BaseModel):
     angle_preset: str = 'none'
     base_revision: int = Field(ge=0)
     idempotency_key: str = Field(default='', max_length=240)
+    run_id: str = Field(default='', max_length=240)
 
 class ProjectVideoGenerationRequest(BaseModel):
     prompt: str = Field(min_length=1, max_length=VIDEO_PROMPT_MAX_LENGTH)
@@ -1188,6 +1189,7 @@ class ProjectVideoGenerationRequest(BaseModel):
     media_type: str = 'video'
     result_node_id: str = Field(min_length=1, max_length=200)
     base_revision: int = Field(ge=0)
+    run_id: str = Field(default='', max_length=240)
 
 class ImageTaskQueryRequest(BaseModel):
     provider_id: str = ''  # #349：不再默认 comfly——查询必须用任务自己的服务商，空值会被后端拒掉

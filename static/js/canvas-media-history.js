@@ -930,8 +930,7 @@ function smartPendingHistoryId(taskId){
 }
 
 function smartPendingHistoryTaskId(log){
-    const request = log?.request || {};
-    return String(request.task_id || request.taskId || '').trim();
+    return smartHistoryTaskId(log);
 }
 
 function beginSmartPendingHistoryLog(node, defaults={}){
@@ -958,6 +957,7 @@ function beginSmartPendingHistoryLog(node, defaults={}){
     const id = `pending-local-${uid('generation')}`;
     canvas.history.push({
         id,
+        run_id:String(defaults.run_id || id),
         createdAt:Number(defaults.createdAt || node.runStartedAt || Date.now()),
         status:'pending',
         kind:String(defaults.kind || runSettings.apiKind || 'image'),
@@ -993,14 +993,18 @@ function ensureSmartPendingHistoryLogs(node, tasks=smartPendingTasks(node), defa
         const providerId = String(task?.providerId || task?.provider_id || defaults.providerId || runSettings.providerId || '');
         const model = String(task?.model || defaults.model || runSettings.model || '');
         const prompt = String(task?.prompt || defaults.prompt || node.runPrompt || node.promptDraftText || '').trim();
+        const runId = String(task?.run_id || task?.requestPayload?.run_id || defaults.run_id || '');
         const localId = String(task?.pendingHistoryId || node._pendingHistoryId || '');
         const localEntry = canvas.history.find(log =>
             log?.status === 'pending'
             && !smartPendingHistoryTaskId(log)
-            && (String(log?.id || '') === localId || String(log?.nodeId || '') === String(node.id || ''))
+            && String(log?.id || '') === localId
+            && (!runId || !log.run_id || log.run_id === runId)
         );
         if(localEntry){
             localEntry.id = id;
+            localEntry.task_id = taskId;
+            localEntry.run_id = runId || localEntry.run_id || taskId;
             localEntry.createdAt = createdAt;
             localEntry.kind = kind;
             localEntry.platform = String(task?.providerName || task?.provider_name || defaults.providerName || providerId || '');
@@ -1017,6 +1021,8 @@ function ensureSmartPendingHistoryLogs(node, tasks=smartPendingTasks(node), defa
         }
         canvas.history.push({
             id,
+            task_id:taskId,
+            run_id:runId || taskId,
             createdAt,
             status:'pending',
             kind,
@@ -1043,9 +1049,14 @@ function ensureSmartPendingHistoryLogs(node, tasks=smartPendingTasks(node), defa
 
 function failSmartPendingHistoryLog(taskId, error=''){
     const id = smartPendingHistoryId(taskId);
-    const entry = (canvas?.history || []).find(log => String(log?.id || '') === id || (log?.status === 'pending' && smartPendingHistoryTaskId(log) === String(taskId || '')));
+    const entry = (canvas?.history || []).find(log => {
+        if(log?.status !== 'pending') return false;
+        const owner = smartPendingHistoryTaskId(log);
+        return owner ? owner === String(taskId || '') : String(log?.id || '') === id;
+    });
     if(!entry) return false;
     entry.status = 'failed';
+    entry.task_id = String(taskId);
     entry.error = String(error || tr('smart.errRunFailed'));
     entry.completed_at = Date.now();
     entry.runMs = Math.max(0, entry.completed_at - smartHistoryLogTimestamp(entry));
@@ -1060,11 +1071,18 @@ function addSmartGenerationHistory({run, outputs=[], runMs=0, error=''}) {
     canvas.history = canvas.history || [];
     const runNodeId = String(run?.nodeId || '');
     const runNode = canvasState.nodes.find(node => String(node?.id || '') === runNodeId);
+    const taskId = String(run?.task_id || run?.taskId || '');
+    const runId = String(run?.run_id || '');
+    if(taskId && canvas.history.some(log => log?.status !== 'pending' && smartHistoryTaskId(log) === taskId)) return;
     const pendingId = String(run?.pendingHistoryId || runNode?._pendingHistoryId || '');
-    const pendingEntry = canvas.history.find(log =>
-        log?.status === 'pending'
-        && (String(log?.id || '') === pendingId || (runNodeId && String(log?.nodeId || '') === runNodeId))
-    );
+    // #441：有任务身份时只结算本任务；旧整轮占位必须有明确关联且只能被认领一次。
+    const pendingEntry = canvas.history.find(log => {
+        if(log?.status !== 'pending') return false;
+        const owner = smartHistoryTaskId(log);
+        if(taskId) return owner ? owner === taskId
+            : String(log?.id || '') === pendingId && (!runId || !log.run_id || log.run_id === runId);
+        return String(log?.id || '') === pendingId || (runNodeId && String(log?.nodeId || '') === runNodeId);
+    });
     if(pendingEntry){
         canvas.history = canvas.history.filter(log => log !== pendingEntry);
         if(runNode && String(runNode._pendingHistoryId || '') === pendingId) delete runNode._pendingHistoryId;
@@ -1083,6 +1101,8 @@ function addSmartGenerationHistory({run, outputs=[], runMs=0, error=''}) {
     if(!error && outputItems.length) playGenerationCompleteSound();
     const entry = {
         id:uid('log'),
+        ...(taskId ? {task_id:taskId} : {}),
+        ...(runId || pendingEntry?.run_id ? {run_id:runId || pendingEntry.run_id} : {}),
         createdAt:Number(pendingEntry?.createdAt || Date.now()),
         status:error ? 'failed' : 'success',
         kind:run?.kind || 'image',
@@ -1090,7 +1110,7 @@ function addSmartGenerationHistory({run, outputs=[], runMs=0, error=''}) {
         nodeId:run?.nodeId || '',
         nodeType:run?.nodeType || NODE_TYPE_IMAGE,
         model:smartRunTaskLabel(run),
-        request:smartRunRequestMeta(run),
+        request:{...smartRunRequestMeta(run), ...(taskId ? {task_id:taskId} : {})},
         prompt:run?.prompt || '',
         displayPrompt:run?.displayPrompt || run?.prompt || '',
         runSettings:cloneSmartSettings(run?.runSettings || run?.settings || {}),

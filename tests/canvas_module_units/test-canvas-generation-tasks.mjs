@@ -311,7 +311,6 @@ for (const scenario of [
     });
     ctx.sleep = async()=>{};
     if(scenario.pending){
-        // Use the real pending-history transition, not a second fake ledger.
         ctx.smartPendingHistoryId = id=>`pending-${id}`;
         ctx.smartHistoryLogTimestamp = ()=>0;
         ctx.sortSmartHistoryLogs = logs=>logs;
@@ -344,9 +343,9 @@ for (const scenario of [
         };
     }
     const start = source.indexOf('async function runGeneration(){');
-    const end = source.indexOf('// Local ComfyUI generation execution was removed.', start);
+    const end = source.indexOf('function updateSelectionBox(', start);
     assert.ok(start >= 0 && end > start);
-    ctx.usesServerImageReferences = () => false; // foreground lifecycle test, not reference resolution
+    ctx.usesServerImageReferences = () => false;
     evaluate(ctx, source.slice(start, end));
     let polls = 0;
     harness.fetchResponder = url => {
@@ -390,8 +389,7 @@ for (const scenario of [
         if(scenario.source) assert.equal(restores[0].state.images[0].url, '/source.png');
     }
     if(scenario.group && !scenario.cancelled){
-        // Exercise the actual retry action against archived server outputs, not a
-        // stubbed retry implementation. No new paid submission is needed here.
+        // 归档结果应直接取回，不能重新提交付费任务。
         harness.fetchResponder = () => fakeResponse({data:{status:'failed', result:{history_record:{outputs:[{asset_id:'a1', kind:'image'}]}}}});
         await globalFunction(ctx, 'retryFailedGeneration')('branch');
         assert.equal(resultNode.failedGenerationTasks.length, 0);
@@ -405,7 +403,7 @@ test('foreground resolution cannot write a pending run after the live graph chan
     const {ctx, harness} = loadGenerationTasksModule({nodes:[node]});
     const smart = readFileSync('static/js/smart-canvas.js', 'utf8');
     const start = smart.indexOf('function imageReferenceInput(');
-    const end = smart.indexOf('// Local ComfyUI generation execution was removed.', start);
+    const end = smart.indexOf('function updateSelectionBox(', start);
     evaluate(ctx, 'let canvasUsesConnections = true');
     evaluate(ctx, smart.slice(start, end));
     const messages = [];
@@ -432,9 +430,9 @@ test('foreground resolution cannot write a pending run after the live graph chan
     assert.equal(harness.fetchLog.length, 1);
 });
 
-// Exercise the actual foreground caller and ledger for both the normal per-task
-// pending entries and a missing task entry (legacy fallback to logTaskFailure).
-for(const taskPending of [true, false]) test(`mixed unrecorded failure real ledger taskPending=${taskPending}`, async () => {
+// #441：真实调用链必须保留逐任务归属，完成顺序不能决定谁消费占位。
+for(const taskPending of [true, false, 'legacy', 'conflicting']) for(const successFirst of [false, true])
+    test(`mixed unrecorded failure real ledger taskPending=${taskPending} successFirst=${successFirst}`, async () => {
     const node = {id:'mixed-ledger', images:[]};
     const {ctx, harness} = loadGenerationTasksModule({nodes:[node]});
     loadModules(ctx, ['canvas-media-history.js']);
@@ -453,24 +451,45 @@ for(const taskPending of [true, false]) test(`mixed unrecorded failure real ledg
         playGenerationCompleteSound:()=>{}, recoverStuckLoopOutputsFromHistory:()=>false,
         cleanHistoryImages:images=>images,
     });
-    if(!taskPending) ctx.ensureSmartPendingHistoryLogs = ()=>false;
-    const ledgerWrites = [];
-    const realAddHistory = ctx.addSmartGenerationHistory;
-    ctx.addSmartGenerationHistory = entry=>{
-        const before = fromContext(evaluate(ctx, 'canvas.history'));
-        realAddHistory(entry);
-        ledgerWrites.push({error:entry.error, before, after:fromContext(evaluate(ctx, 'canvas.history'))});
-    };
-    evaluate(ctx, "settings = {engine:'api', apiKind:'image', count:1}; runApiGeneration = async () => ({taskIds:['task-1','task-2'], count:1});");
+    const foreign = [
+        {id:'foreign-task', status:'pending', nodeId:node.id, task_id:'other-task', request:{task_id:'other-task'}, run_id:'other-run', outputs:[]},
+        {id:'foreign-run', status:'pending', nodeId:node.id, run_id:'other-run', outputs:[]},
+    ];
+    ctx.__foreign = foreign;
+    evaluate(ctx, 'canvas.history.push(...__foreign)');
+    ctx.__ids = successFirst ? ['task-2', 'task-1'] : ['task-1', 'task-2'];
+    evaluate(ctx, "settings = {engine:'api', apiKind:'image', count:1}; runApiGeneration = async () => ({taskIds:__ids, count:1});");
     const source = readFileSync('static/js/smart-canvas.js', 'utf8');
     const start = source.indexOf('async function runGeneration(){');
-    const end = source.indexOf('// Local ComfyUI generation execution was removed.', start);
+    const end = source.indexOf('function updateSelectionBox(', start);
     assert.ok(start >= 0 && end > start);
-    ctx.usesServerImageReferences = () => false; // foreground lifecycle test, not reference resolution
+    ctx.usesServerImageReferences = () => false;
     evaluate(ctx, source.slice(start, end));
-    harness.fetchResponder = url => url.endsWith('/task-1')
-        ? fakeResponse({data:{status:'failed', error:'provider failed', result:{history_recorded:false}}})
-        : fakeResponse({data:{status:'succeeded', result:{history_recorded:false, images:[{url:'/ok.png', kind:'image'}]}}});
+    let seeded = false, sameRunPending, conflictingPending;
+    harness.fetchResponder = url => {
+        if(!seeded){
+            seeded = true;
+            const runId = node.pendingTasks[0].run_id;
+            sameRunPending = {id:'same-run-sibling', status:'pending', nodeId:node.id, run_id:runId,
+                task_id:'still-pending', request:{task_id:'still-pending'}, outputs:[]};
+            ctx.__sameRunPending = sameRunPending;
+            evaluate(ctx, 'canvas.history.push(__sameRunPending)');
+            if(taskPending === 'legacy'){
+                ctx.__legacy = {id:node.pendingTasks[0].pendingHistoryId, status:'pending', nodeId:node.id, run_id:runId, outputs:[]};
+                evaluate(ctx, "canvas.history = canvas.history.filter(log => !['task-1','task-2'].includes(smartHistoryTaskId(log))); canvas.history.push(__legacy)");
+            } else if(taskPending === 'conflicting'){
+                const entry = evaluate(ctx, "canvas.history.find(log => smartHistoryTaskId(log) === 'task-1')");
+                entry.task_id = 'different-task';
+                delete entry.request;
+                conflictingPending = fromContext(entry);
+            } else if(!taskPending){
+                evaluate(ctx, "canvas.history = canvas.history.filter(log => smartHistoryTaskId(log) !== 'task-1')");
+            }
+        }
+        return url.endsWith('/task-1')
+            ? fakeResponse({data:{status:'failed', error:'provider failed', result:{history_recorded:false}}})
+            : fakeResponse({data:{status:'succeeded', result:{history_recorded:false, images:[{url:'/ok.png', kind:'image'}]}}});
+    };
     let settled = false;
     const promise = globalFunction(ctx, 'runGeneration')().finally(()=>{settled = true;});
     for(let i=0; i<20 && !settled; i++){ harness.advanceTimers(); await tick(); }
@@ -478,29 +497,52 @@ for(const taskPending of [true, false]) test(`mixed unrecorded failure real ledg
     await promise;
     assert.equal(harness.fetchLog.length, 2);
     const history = fromContext(evaluate(ctx, 'canvas.history'));
-    assert.equal(history.length, 2, JSON.stringify({history, ledgerWrites}));
+    assert.equal(history.length, conflictingPending ? 6 : 5, JSON.stringify(history));
+    const expectedPending = [...foreign, sameRunPending, ...(conflictingPending ? [conflictingPending] : [])];
+    assert.deepEqual(history.filter(entry=>entry.status === 'pending').sort((a,b)=>a.id.localeCompare(b.id)),
+        expectedPending.sort((a,b)=>a.id.localeCompare(b.id)));
     const failed = history.find(entry=>entry.status === 'failed');
     const success = history.find(entry=>entry.status === 'success');
-    assert.ok(failed, JSON.stringify({history, ledgerWrites}));
-    assert.ok(success, JSON.stringify({history, ledgerWrites}));
+    assert.ok(failed, JSON.stringify(history));
+    assert.ok(success, JSON.stringify(history));
     assert.equal(failed.error, 'provider failed');
+    assert.equal(failed.task_id || failed.request?.task_id, 'task-1');
+    assert.equal(success.task_id || success.request?.task_id, 'task-2');
+    assert.ok(failed.run_id);
+    assert.equal(success.run_id, failed.run_id);
     assert.deepEqual(failed.outputs, []);
     assert.deepEqual(success.outputs.map(output=>output.url), ['/ok.png']);
     assert.deepEqual(fromContext(node.images.map(image=>image.url)), ['/ok.png']);
     assert.equal(node.failedGenerationTasks.length, 1);
     assert.equal(node.failedGenerationTasks[0].taskId, 'task-1');
-    assert.equal(ledgerWrites.length, taskPending ? 1 : 2);
-    if(taskPending){
-        assert.equal(failed.request.task_id, 'task-1');
-        assert.deepEqual(ledgerWrites[0].before.map(entry=>entry.status).sort(), ['failed', 'pending']);
-        assert.equal(ledgerWrites[0].before.find(entry=>entry.status === 'pending').request.task_id, 'task-2');
-    } else {
-        assert.equal(ledgerWrites[0].error, 'provider failed');
-        assert.equal(ledgerWrites[0].before.length, 1);
-        assert.equal(ledgerWrites[0].before[0].status, 'pending');
-        assert.deepEqual(ledgerWrites[0].after.map(entry=>entry.status), ['failed']);
-    }
-    assert.deepEqual(ledgerWrites[ledgerWrites.length - 1].after.map(entry=>entry.status).sort(), ['failed', 'success']);
+    assert.equal(history.filter(entry=>(entry.task_id || entry.request?.task_id) === 'task-1').length, 1);
+    assert.equal(history.filter(entry=>(entry.task_id || entry.request?.task_id) === 'task-2').length, 1);
+});
+
+for(const foreground of [true, false]) test(`legacy recovered tasks claim only their explicit run placeholder once foreground=${foreground}`, async () => {
+    const node = {id:'legacy-reload', images:[], pending:2, _pendingHistoryId:'owned-run',
+        pendingTasks:[{taskId:'legacy-a', count:1}, {taskId:'legacy-b', count:1}]};
+    const {ctx, harness} = loadGenerationTasksModule({nodes:[node]});
+    loadModules(ctx, ['canvas-media-history.js']);
+    Object.assign(ctx, {smartSettingsForNode:()=>({}), smartRunPlatformLabel:()=>'', smartRunTaskLabel:()=>'',
+        smartRunRequestMeta:()=>({}), playGenerationCompleteSound:()=>{}, recoverStuckLoopOutputsFromHistory:()=>false});
+    evaluate(ctx, "canvas.history = [{id:'foreign-run', nodeId:'legacy-reload', status:'pending', run_id:'foreign'}, {id:'owned-run', nodeId:'legacy-reload', status:'pending'}]");
+    globalFunction(ctx, 'ensureSmartPendingHistoryLogs')(node);
+    harness.fetchResponder = url=>fakeResponse({data:url.endsWith('legacy-a')
+        ? {status:'succeeded', result:{images:[{url:'/legacy-a.png'}]}}
+        : {status:'failed', error:'legacy failure', result:{history_recorded:false}}});
+    let settled = false;
+    const promise = globalFunction(ctx, 'resumeSmartPendingNode')(node, foreground ? {run:{nodeId:node.id}} : {})
+        .finally(()=>{settled = true;});
+    for(let i=0; i<20 && !settled; i++){ harness.advanceTimers(); await tick(); }
+    assert.ok(settled);
+    await promise;
+    const history = fromContext(evaluate(ctx, 'canvas.history'));
+    assert.equal(history.length, 3);
+    assert.deepEqual(history.filter(log=>log.status === 'pending'),
+        [{id:'foreign-run', nodeId:'legacy-reload', status:'pending', run_id:'foreign'}]);
+    assert.equal(history.filter(log=>log.task_id === 'legacy-a').length, 1);
+    assert.equal(history.filter(log=>log.task_id === 'legacy-b').length, 1);
 });
 
 test('retry of one task does not finalize its still-polling sibling twice', async () => {
@@ -1039,7 +1081,6 @@ test('runApiGeneration: flush success sends exactly one POST with the durable pa
 
     const result = await run('make a cat', [], { provider_id: 'p1', model: 'm1', quality: 'auto', outputFormat: 'webp' }, node, {});
 
-    // 外层调用经注册队列包装，透传内层的注册结果。
     assert.deepEqual(fromContext(result.taskIds), ['project_img_5']);
     assert.equal(result.idempotencyKey, 'browser:proj-1:ph-1');
     assert.equal(result.projectRevision, 8);
@@ -1047,10 +1088,10 @@ test('runApiGeneration: flush success sends exactly one POST with the durable pa
     assert.equal(harness.pendingHistoryLogs.length, 1, 'pendingHistoryId 只在外层调用生成一次（内层复用）');
     // 生成前必须先过比例收敛（否则节点上残留的模型外比例会直接进请求）。
     assert.equal(harness.alignCalls.length, 1, 'runApiGeneration 必须在构造载荷前调 canvasCore.alignRatioToModel');
-    // 恰好一个 POST，载荷是持久化契约。
     assert.equal(harness.fetchLog.length, 1);
     const body = JSON.parse(harness.fetchLog[0].options.body);
     assert.equal(body.prompt, 'make a cat');
+    assert.equal(body.run_id, 'ph-1');
     assert.equal(body.idempotency_key, 'browser:proj-1:ph-1');
     assert.equal(body.result_node_id, 'img-2');
     assert.equal(body.base_revision, 7);
@@ -1058,7 +1099,7 @@ test('runApiGeneration: flush success sends exactly one POST with the durable pa
     assert.equal(body.aspect_ratio, '1:1');
     assert.equal(body.output_format, 'webp', '节点「格式」控件值进入请求（#330 MiniMax H3）');
     assert.equal(node.generationSubmissions, undefined, 'POST 成功清除标记');
-    // 新运行重置计时器：持久化节点不得带着上次生成的旧 runStartedAt 无限涨。
+    // 旧时间戳不能让新运行的计时器无限增长。
     assert.ok(node.runStartedAt > 111, 'runStartedAt 重置为当前时间');
     assert.equal(node.runFinishedAt, undefined);
     assert.equal(node.runElapsedMs, undefined);
