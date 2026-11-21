@@ -39,8 +39,8 @@ def _params(session_dir, **overrides):
 def _pi_prefix(session_dir):
     return [
         PI_CLI, "--mode", "rpc", "--no-extensions", "-e", TOOLS_PATH,
-        # #406: 原生 --tools 也过滤扩展；只加入共享业务命名空间，仍禁用内置工具。
-        "--no-builtin-tools", "--tools", "canvas.*,generate.*,media.*,viewport.*,agent.*,plan.*,ops.*,chat.*",
+        # 原生 --tools 也过滤扩展；#445 只允许共享业务命名空间和受限文件工具。
+        "--no-builtin-tools", "--tools", "canvas.*,generate.*,media.*,viewport.*,agent.*,plan.*,ops.*,chat.*,read,write,edit",
         "--session-dir", session_dir, "--name", "firefly-agent-node-123",
     ]
 

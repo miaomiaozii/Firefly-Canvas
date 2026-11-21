@@ -1,8 +1,8 @@
-"""Agent host service: manages pi --mode rpc subprocesses.
+"""Agent hosts: persistent Pi RPC subprocesses and read-only Codex per-turn runs.
 
-Each agent node has a dedicated pi subprocess that communicates via JSONL
-over stdin/stdout. This service handles spawning, event forwarding, command
-sending, and crash recovery.
+Pi launches in its fixed node sessions workspace and passes that server-owned
+root to the restricted extension tools. Path guards reject stable redirects;
+they do not provide an OS sandbox against concurrent filesystem replacement.
 """
 import asyncio
 import base64
@@ -16,6 +16,7 @@ import re
 import shutil
 import sqlite3
 import signal
+import stat
 import subprocess
 import threading
 import time
@@ -242,6 +243,65 @@ def validate_spawn_arg(name: str, value: str, *, model: bool = False) -> None:
         raise ValueError(
             f"#343 spawn guard: {name} rejected (unsafe characters): {str(value)!r:.120}"
         )
+
+
+def _validate_workspace_component(name: str, value: str) -> None:
+    """Reject Windows aliases even when the server runs on another platform."""
+    if (not isinstance(value, str) or not value or value in (".", "..")
+            or value.endswith((".", " "))
+            or any(ord(char) < 32 or char in '<>:"/\\|?*' for char in value)
+            or re.fullmatch(r"CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³]|CONIN\$|CONOUT\$|CLOCK\$",
+                            value.split(".", 1)[0].rstrip(" "), re.IGNORECASE)):
+        raise ValueError(f"#445 workspace guard: {name} rejected (unsafe path component): {value!r}")
+
+
+def _validate_workspace_ancestors(path: Path) -> None:
+    """Reject stable redirects before mkdir; this is not an OS/TOCTOU sandbox."""
+    for component in (*reversed(path.parents), path):
+        try:
+            metadata = component.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise ValueError(f"#445 workspace guard: cannot inspect {component}") from exc
+        if (stat.S_ISLNK(metadata.st_mode)
+                or getattr(metadata, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+                or not stat.S_ISDIR(metadata.st_mode)):
+            raise ValueError(f"#445 workspace guard: unsafe directory component: {component}")
+
+
+def _validate_workspace_control_files(path: Path) -> None:
+    """Host writes must not follow aliases planted in the model workspace (#445)."""
+    try:
+        entries = list(path.iterdir())
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise ValueError("#445 workspace guard: cannot inspect workspace files") from exc
+    for entry in entries:
+        name = entry.name.casefold()
+        if name not in (SYSTEM_PROMPT_FILE_NAME, SYSTEM_PROMPT_FILE_NAME + ".tmp") and not name.endswith(".jsonl"):
+            continue
+        metadata = entry.lstat()
+        if (not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1
+                or getattr(metadata, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+            raise ValueError(f"#445 workspace guard: unsafe host control file: {entry}")
+
+
+def _pi_workspace_path(project_dir: str, node_id: str) -> Path:
+    """Keep the server root lexical until every existing ancestor is inspected."""
+    root = Path(project_dir)
+    if (not root.is_absolute() or project_dir.startswith(("\\\\", "//"))
+            or (os.name == "nt" and not re.fullmatch(r"[A-Za-z]:", root.drive))):
+        raise ValueError("#445 workspace guard: project root must be an absolute local path")
+    for component in root.parts[1:]:
+        _validate_workspace_component("project path", component)
+    path = root / "agent_nodes" / node_id / "sessions"
+    _validate_workspace_ancestors(path)
+    if not root.is_dir():
+        raise ValueError("#445 workspace guard: project root is unavailable")
+    _validate_workspace_control_files(path)
+    return path
 
 
 def write_system_prompt_file(session_dir: str, prompt: str) -> str:
@@ -636,7 +696,7 @@ class AgentHostManager:
         session.last_error = ""
 
     async def spawn_session(self, session: AgentSession, model: str = "", autonomy: str = "", continue_session: bool = False) -> bool:
-        """Spawn a pi --mode rpc subprocess for the session.
+        """Launch Pi in its validated workspace, or validate the per-turn Codex host.
 
         Args:
             session: The agent session to spawn.
@@ -648,48 +708,43 @@ class AgentHostManager:
             raise RuntimeError("Agent runtime is stopping")
         if session.is_running:
             return True
-        async with session._input_lock:
-            if session.status in ("stopped", "crashed") and session._follow_ups:
-                await self._classify_follow_ups(session)
         # Snapshot before any await/adapter callback; requests may change later.
         spawn_model, spawn_effort = model or session.model, session.reasoning_effort
 
-        # #318 票 B：codex = per-turn 进程模型（ADR 0024）——「spawn」仅验证 CLI
-        # 可用性并标为宿主会话；进程由 send_prompt 每轮拉起、轮末退出。
-        # 无常驻进程、无 pi RPC get_state；不污染 pi 常驻路径一行。
+        # Codex remains per-turn and read-only (ADR 0024); no Pi workspace setup.
         if session.agent_cli == "codex":
+            async with session._input_lock:
+                if session.status in ("stopped", "crashed") and session._follow_ups:
+                    await self._classify_follow_ups(session)
             return self._codex_validate(session)
 
         try:
-            # Determine session directory
-            project_dir = self._get_project_dir(session.project_id)
-            session_dir = os.path.join(project_dir, session.session_dir)
-            os.makedirs(session_dir, exist_ok=True)
-
-            # Determine effective autonomy level
-            effective_autonomy = autonomy or session.autonomy
-            if effective_autonomy not in AUTONOMY_SYSTEM_PROMPT_SUFFIXES:
-                effective_autonomy = "standard"
-
-            # Build system prompt with autonomy suffix
-            system_prompt = DEFAULT_SYSTEM_PROMPT + AUTONOMY_SYSTEM_PROMPT_SUFFIXES.get(effective_autonomy, "")
-
-            # Build command（#278：先解析可执行入口——Windows 上 pi 只有 pi.cmd
-            # 包装器，直接 Popen(["pi", ...]) 会 WinError 2；解析失败记可操作错误，不启动进程）
-            # #318 票 A：argv 拼法迁入 PiAdapter.build_argv（flag 列表/--continue 探测/
-            # 模型 flag 逐行等价）；resolve_pi_cli/build_pi_launch_command/PI_CLI 仍驻
-            # 本模块（测试 monkey-patch 面不变），PiAdapter 运行时延迟导入本模块取用。
-            from .agent_adapters import SpawnParams
-            adapter = self._adapter_for(session)
-            # #343：spawn 前置严格校验——node id、模型名、会话绑定 id 来自数据
-            # （节点属性/请求 body/会话文件），不合白名单直接拒绝，不进 argv。
             _binding_pref = session.ext_session_id or session.session_id
             for _name, _val in (("node_id", session.node_id),
                                 ("model", spawn_model),
                                 ("session_id", _binding_pref)):
                 validate_spawn_arg(_name, _val, model=(_name == "model"))
-            # #318 票 B：codex 宿主经 MCP 端点操作画布（ADR 0022/0024）；
-            # 端口/基址动态取（resolve_agent_api_base，L-1 禁硬编码），&node= 只改归属。
+            _validate_workspace_component("node_id", session.node_id)
+            _validate_workspace_component("project_id", session.project_id)
+            project_dir = self._get_project_dir(session.project_id)
+            session_path = _pi_workspace_path(project_dir, session.node_id)
+            session_dir = str(session_path)
+            # Queue recovery can write event files, so reject unsafe roots before it too.
+            async with session._input_lock:
+                if session.status in ("stopped", "crashed") and session._follow_ups:
+                    await self._classify_follow_ups(session)
+            os.makedirs(session_dir, exist_ok=True)
+
+            effective_autonomy = autonomy or session.autonomy
+            if effective_autonomy not in AUTONOMY_SYSTEM_PROMPT_SUFFIXES:
+                effective_autonomy = "standard"
+
+            system_prompt = DEFAULT_SYSTEM_PROMPT + AUTONOMY_SYSTEM_PROMPT_SUFFIXES.get(effective_autonomy, "")
+
+            # Windows npm shims must resolve to executable argv, never a shell (#343).
+            from .agent_adapters import SpawnParams
+            adapter = self._adapter_for(session)
+            # Callback URLs follow the server port; node IDs bind ownership, not tool authority.
             api_base = resolve_agent_api_base(os.environ)
             mcp_url = (
                 f"{api_base}/api/mcp?project={session.project_id}"
@@ -699,7 +754,7 @@ class AgentHostManager:
                 resolved_cli=resolve_pi_cli(),
                 session_dir=session_dir,
                 system_prompt=system_prompt,
-                # #334：pi 宿主提示词走文件（cmd /c 下内联多行必丢参）；codex 不经 cmd 包装器维持内联。
+                # File-form prompts preserve multiline instructions across CLI wrappers (#334).
                 system_prompt_file=(
                     write_system_prompt_file(session_dir, system_prompt)
                     if session.agent_cli == "pi" else ""
@@ -712,9 +767,8 @@ class AgentHostManager:
                 agent_cli=session.agent_cli,
                 ext_session_id=session.ext_session_id,
                 mcp_url=mcp_url,
-                # #334 升级（钉①）：pi 宿主确定性会话绑定——id=会话文件名后缀（pi 命名
-                # =<启动时间>_<原始id>.jsonl，header id 恒等于后缀），pi 按 header id 精确打开，
-                # 零「最新文件」歧义；无会话文件（首 spawn）不传，由 pi 自选后落盘可拾。
+                # Pi headers match the UUID filename suffix; bind explicitly instead of
+                # resuming the newest stray file. Fresh mapped nodes must not discover old files (#334/#424).
                 pi_session_id=(
                     (self._pi_session_binding(session_dir, _binding_pref)
                      if session.allow_session_discovery else (_binding_pref or str(uuid.uuid4())))
@@ -739,14 +793,13 @@ class AgentHostManager:
                 session.last_error = error
                 return False
 
-            # （原「--continue 探测」与「model flag」两段已迁入 PiAdapter.build_argv，#318 票 A）
-
-            # Set environment for the canvas-tools extension
             env = os.environ.copy()
             # #279：回连基址跟随实际监听端口（显式值 → FIREFLY_PORT → 默认 3000）
             env["FIREFLY_AGENT_API_BASE"] = resolve_agent_api_base(env)
             env["FIREFLY_AGENT_PROJECT_ID"] = session.project_id
             env["FIREFLY_AGENT_NODE_ID"] = session.node_id
+            # The extension root is server-owned, never inherited or inferred from mutable cwd (#445).
+            env["FIREFLY_AGENT_WORKSPACE_ROOT"] = session_dir
 
             logger.info(f"Spawning pi subprocess for agent {session.node_id}: {' '.join(cmd[:6])}...")
 
@@ -762,6 +815,7 @@ class AgentHostManager:
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
+                cwd=session_dir,
                 env=env,
             )
             session._generation += 1
@@ -782,7 +836,6 @@ class AgentHostManager:
             )
             session._stderr_thread.start()
 
-            # Start reader task
             session._reader_task = asyncio.create_task(
                 self._read_events(session, session.process, host, generation))
 
@@ -795,8 +848,7 @@ class AgentHostManager:
                 session.session_id = state.get("sessionId")
                 session.session_file = state.get("sessionFile")
                 session.status = "running"
-                # #334 升级（钉①）：pi 宿主把 pi 会话 id 存入 extSessionId——重启/
-                # 重_materialize 后绑定首选仍可确定拾回（不靠 mtime 启发式）。
+                # Persist Pi's identity so server restarts bind exactly, not by mtime (#334).
                 if session.agent_cli == "pi" and session.session_id and not session.ext_session_id:
                     session.ext_session_id = session.session_id
                     self._persist_ext_session_id(session)

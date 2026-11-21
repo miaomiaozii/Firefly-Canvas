@@ -414,4 +414,10 @@ export default function (pi: ExtensionAPI) {
         }
         pi.registerTool({ name: def.name, description: def.description, parameters: toolParameters(def.name, def.parameters), execute });
     }
+    // #445: no host-injected root means no file tools, including in legacy canvas-only integrations.
+    if (process.env.FIREFLY_AGENT_WORKSPACE_ROOT) {
+        return import("./session-file-tools.ts")
+            .then(({ registerSessionFileTools }) => registerSessionFileTools(pi))
+            .catch(error => { console.error(`[session-file-tools] Unavailable: ${error.message}`); });
+    }
 }

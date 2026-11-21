@@ -1,6 +1,7 @@
-"""Pi 宿主 adapter：只开放画布扩展，不开放宿主内置文件/进程工具。
+"""Pi 宿主 adapter：开放画布扩展与节点工作区受限 read/write/edit。
 
-CLI 解析仍经 agent_host，保留统一的包装器安全边界与测试接缝。
+保留 --no-builtin-tools，文件工具由扩展守卫固定服务器根；不开放进程工具。
+CLI 解析仍经 agent_host，保留统一的包装器安全边界。
 """
 from __future__ import annotations
 
@@ -20,17 +21,16 @@ class PiAdapter(HostAdapter):
     cli = "pi"
 
     def build_argv(self, params: SpawnParams) -> Optional[List[str]]:
-        from .. import agent_host  # 延迟导入：保持测试 patch 面（agent_host.PI_CLI 等）
+        from .. import agent_host  # 延迟导入，避免宿主与 adapter 循环依赖。
 
-        # #334: 文件提示词收尾，避免多行 argv 截断时丢失续接/模型参数。
-        # Pi 1.5.1 src/core/agent-session.ts:_refreshToolRegistry 也过滤扩展注册；
-        # --no-builtin-tools 不会让扩展绕过 --tools，故需列出共享工具命名空间。
+        # Pi 1.5.1 的 --tools 也过滤扩展注册；只列业务命名空间和受限文件工具，
+        # 保留 --no-builtin-tools，不能把同名裸内置工具或进程工具开放给模型（#445）。
         args = [
             "--mode", "rpc",
             "--no-extensions",
             "-e", params.tools_path,
             "--no-builtin-tools",
-            "--tools", "canvas.*,generate.*,media.*,viewport.*,agent.*,plan.*,ops.*,chat.*",
+            "--tools", "canvas.*,generate.*,media.*,viewport.*,agent.*,plan.*,ops.*,chat.*,read,write,edit",
             "--session-dir", params.session_dir,
             "--name", f"firefly-agent-{params.node_id[:8]}",
         ]

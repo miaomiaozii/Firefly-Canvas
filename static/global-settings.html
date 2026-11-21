@@ -76,7 +76,8 @@
         </div>
         <div class="status-card">
           <h3>Pi</h3>
-          <p class="status-detail" data-i18n="globalSettings.piFileAccess">不支持</p>
+          <p class="status-detail" data-i18n="globalSettings.piFileAccess">工作目录固定为当前节点的 agent_nodes/{node_id}/sessions；受限 read/write/edit 仅可访问该目录，目录外访问被拒绝。模型不能写入 system-prompt.txt 或该目录根层的原生会话 .jsonl；未开放 bash、PowerShell 或 codemode。</p>
+          <p class="status-detail" data-i18n="globalSettings.piFileAccessBoundary">这是工具 I/O 守卫，不是操作系统沙盒，不能防止其他进程并发替换重解析点（reparse points）。</p>
         </div>
       </div>
     </section>
