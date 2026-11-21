@@ -3,6 +3,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import threading
 import time
+from queue import Queue
 
 import httpx
 import pytest
@@ -162,7 +163,19 @@ def wait_task(fx, task):
     return fx.client.get(f'/api/projects/{fx.pid}/generate/tasks/{task}/wait?timeout=5').json()
 
 
-def test_explicit_retry_requires_fresh_confirmation_scope_tip_and_revalidates(fx, monkeypatch):
+@pytest.fixture
+def operation_results(monkeypatch):
+    from app.services.agent_confirmation import Origin
+    results = Queue()
+
+    async def finished(origin, result):
+        results.put(result)
+
+    monkeypatch.setattr(Origin, 'continue_with', finished)
+    return results
+
+
+def test_explicit_retry_requires_fresh_confirmation_scope_tip_and_revalidates(fx, monkeypatch, operation_results):
     calls = []
 
     async def provider(*args, **kw):
@@ -170,8 +183,10 @@ def test_explicit_retry_requires_fresh_confirmation_scope_tip_and_revalidates(fx
         raise upstream(503, {'code': 'model_not_found'})
 
     monkeypatch.setattr(main, 'generate_ai_image', provider)
+    fx.session.autonomy = 'autonomous'
     first = rest(fx, 'trigger', {'node_id': 'b'})[1]['task_id']
     assert wait_task(fx, first)['status'] == 'failed'
+    fx.session.autonomy = 'standard'
     assert rest(fx, 'retry', {'task_id': first}, actor='second-actor')[0] == 404
     assert rest(fx, 'retry', {'task_id': first}, pid=fx.other, headers={'X-Agent-Project': fx.pid})[0] == 403
     assert not mcp(fx, 'retry', {'task_id': first})[0]
@@ -179,48 +194,44 @@ def test_explicit_retry_requires_fresh_confirmation_scope_tip_and_revalidates(fx
     assert rest(fx, 'retry', {'task_id': first, 'model': 'not-approved'})[1]['detail']['code'] == 'MODEL_NOT_APPROVED'
     assert fx.events.empty() and len(calls) == 1
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        pending = pool.submit(rest, fx, 'retry', {'task_id': first})
-        event = fx.events.get(timeout=2)
-        assert not pending.done() and len(calls) == 1
-        assert event['tool'] == 'generate.retry'
-        patch_node(fx, 'b', prompt='Edited user prompt')
-        confirm(fx, event)
-        assert pending.result(5)[1]['detail']['code'] == 'RETRY_STALE'
-        assert fx.events.get(timeout=2)['type'] == 'confirm_resolved'
-        assert agent._GENERATION_COUNTS[fx.pid, 'actor'] == 1
+    receipt = rest(fx, 'retry', {'task_id': first})[1]
+    assert receipt['code'] == 'CONFIRM_PENDING' and len(calls) == 1
+    event = fx.events.get(timeout=2)
+    assert event['tool'] == 'generate.retry'
+    patch_node(fx, 'b', prompt='Edited user prompt')
+    confirm(fx, event)
+    failure = operation_results.get(timeout=5)['error']
+    assert failure['code'] in ('RETRY_STALE', 'CONFIRM_STALE'), failure
+    assert fx.events.get(timeout=2)['type'] == 'confirm_resolved'
+    assert agent._GENERATION_COUNTS[fx.pid, 'actor'] == 1
 
-        one = pool.submit(rest, fx, 'retry', {'task_id': first})
-        two = pool.submit(rest, fx, 'retry', {'task_id': first})
-        events = [fx.events.get(timeout=2) for _ in range(2)]
-        assert all(e['type'] == 'confirm' for e in events)
-        confirm(fx, events[0]); confirm(fx, events[1])
-        outcomes = [one.result(5), two.result(5)]
-        assert sorted(s for s, _ in outcomes) == [200, 409]
-        tip = next(body['task_id'] for status, body in outcomes if status == 200)
-        assert wait_task(fx, tip)['status'] == 'failed'
-        assert calls == ['Minimalist art'] * 2
-        assert [fx.events.get(timeout=2)['type'] for _ in range(2)] == ['confirm_resolved'] * 2
-        assert rest(fx, 'retry', {'task_id': first})[1]['detail']['code'] == 'RETRY_LIMIT'
-        # Even an already approved confirm ID cannot approve a new call.
-        monkeypatch.setattr(agent, 'GENERATION_SESSION_LIMIT', 2)
-        retry_call = pool.submit(rest, fx, 'retry', {'node_id': 'b', 'use_snapshot': False})
-        actual = fx.events.get(timeout=2)
-        fx.client.post(f'/api/projects/{fx.pid}/agent-nodes/actor/confirm',
-                       json={'confirm_id': events[0]['confirm_id'], 'approved': True})
-        assert not retry_call.done() and len(calls) == 2
-        confirm(fx, actual)
-        assert retry_call.result(5)[1]['detail']['code'] == 'BUDGET_EXCEEDED'
-        assert fx.events.get(timeout=2)['type'] == 'confirm_resolved'
-        monkeypatch.setattr(agent, 'GENERATION_SESSION_LIMIT', 200)
-        third = pool.submit(rest, fx, 'retry', {'node_id': 'b', 'use_snapshot': False})
-        confirm(fx, fx.events.get(timeout=2))
-        result = third.result(5)
-        assert result[0] == 200, result
-        assert wait_task(fx, result[1]['task_id'])['status'] == 'failed'
-        assert calls[-1] == 'Edited user prompt'
-        assert rest(fx, 'retry', {'task_id': result[1]['task_id']})[1]['detail']['code'] == 'RETRY_LIMIT'
-        assert agent._GENERATION_COUNTS[fx.pid, 'actor'] == len(calls) == 3
+    receipts = [rest(fx, 'retry', {'task_id': first})[1] for _ in range(2)]
+    assert all(r['code'] == 'CONFIRM_PENDING' for r in receipts)
+    events = [fx.events.get(timeout=2) for _ in range(2)]
+    confirm(fx, events[0]); confirm(fx, events[1])
+    outcomes = [operation_results.get(timeout=5) for _ in range(2)]
+    assert sum('error' in result for result in outcomes) == 1
+    tip = next(result['task_id'] for result in outcomes if 'task_id' in result)
+    assert wait_task(fx, tip)['status'] == 'failed'
+    assert calls == ['Minimalist art'] * 2
+    assert [fx.events.get(timeout=2)['type'] for _ in range(2)] == ['confirm_resolved'] * 2
+    assert rest(fx, 'retry', {'task_id': first})[1]['detail']['code'] == 'RETRY_LIMIT'
+    monkeypatch.setattr(agent, 'GENERATION_SESSION_LIMIT', 2)
+    assert rest(fx, 'retry', {'node_id': 'b', 'use_snapshot': False})[1]['code'] == 'CONFIRM_PENDING'
+    actual = fx.events.get(timeout=2)
+    confirm(fx, events[0])
+    assert operation_results.empty() and len(calls) == 2
+    confirm(fx, actual)
+    assert operation_results.get(timeout=5)['error']['code'] == 'BUDGET_EXCEEDED'
+    assert fx.events.get(timeout=2)['type'] == 'confirm_resolved'
+    monkeypatch.setattr(agent, 'GENERATION_SESSION_LIMIT', 200)
+    assert rest(fx, 'retry', {'node_id': 'b', 'use_snapshot': False})[1]['code'] == 'CONFIRM_PENDING'
+    confirm(fx, fx.events.get(timeout=2))
+    result = operation_results.get(timeout=5)
+    assert wait_task(fx, result['task_id'])['status'] == 'failed'
+    assert calls[-1] == 'Edited user prompt'
+    assert rest(fx, 'retry', {'task_id': result['task_id']})[1]['detail']['code'] == 'RETRY_LIMIT'
+    assert agent._GENERATION_COUNTS[fx.pid, 'actor'] == len(calls) == 3
 
 
 @pytest.mark.parametrize('edit', ['node', 'reference', 'none'])
@@ -237,6 +248,7 @@ def test_failure_cleanup_is_one_reversible_write_and_does_not_remove_user_data(f
         raise upstream(400, 'unsupported size')
 
     monkeypatch.setattr(main, 'generate_ai_image', provider)
+    fx.session.autonomy = 'autonomous'
     result = rest(fx, 'trigger', {'node_id': 'b'})[1]
     result_id = result['result_node_id']
     try:
@@ -311,21 +323,22 @@ def test_actual_openai_adapter_preserves_upstream_codes_and_retry_after(fx, monk
     assert attempts == [('POST', '/v1/images/generations')] * 2
 
 
-def test_external_mcp_retry_keeps_the_same_actor_and_session(fx, monkeypatch):
+def test_external_mcp_retry_keeps_the_same_actor_and_session(fx, monkeypatch, operation_results):
     async def fail(*args, **kw):
         raise upstream(429, 'busy')
 
     monkeypatch.setattr(main, 'generate_ai_image', fail)
+    fx.session.autonomy = 'autonomous'
     ok, task = mcp(fx, 'trigger', {'node_id': 'b'}, sid='same')
     assert ok and wait_task(fx, task['task_id'])['status'] == 'failed'
+    fx.session.autonomy = 'standard'
     args = {'task_id': task['task_id']}
     assert not mcp(fx, 'retry', args, sid='different')[0]
     assert fx.events.empty()
-    with ThreadPoolExecutor() as pool:
-        pending = pool.submit(mcp, fx, 'retry', args, sid='same')
-        event = fx.events.get(timeout=2)
-        assert event['tool'] == 'generate.retry' and not pending.done()
-        confirm(fx, event)
-        ok, retried = pending.result(5)
-    assert ok, retried
+    ok, receipt = mcp(fx, 'retry', args, sid='same')
+    assert ok and receipt['code'] == 'CONFIRM_PENDING'
+    event = fx.events.get(timeout=2)
+    assert event['tool'] == 'generate.retry'
+    confirm(fx, event)
+    retried = operation_results.get(timeout=5)
     assert wait_task(fx, retried['task_id'])['status'] == 'failed'

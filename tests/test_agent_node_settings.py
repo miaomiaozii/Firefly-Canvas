@@ -289,9 +289,9 @@ class TestAgentAutonomyLevel(unittest.TestCase):
         self.assertEqual(session.autonomy, "autonomous")
 
     def test_get_or_create_session_default_autonomy(self):
-        """get_or_create_session should default to cautious."""
+        """New sessions use batch confirmation by default."""
         session = run_async(self.manager.get_or_create_session("proj-1", "node-1"))
-        self.assertEqual(session.autonomy, "cautious")
+        self.assertEqual(session.autonomy, "standard")
 
     def test_set_autonomy_endpoint(self):
         """POST /autonomy endpoint should update node attribute and session."""
@@ -361,8 +361,8 @@ class TestAgentAutonomyLevel(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
-    def test_confirm_autonomous_auto_approves(self):
-        """In autonomous mode, destructive tools should be auto-approved."""
+    def test_confirm_autonomous_user_node_still_gates(self):
+        """Autonomy cannot authorize deletion without journal ownership."""
         project = self.store.create_project("Confirm Autonomous Test")
         project_id = project["id"]
         node_id = "node-auto-3"
@@ -399,7 +399,9 @@ class TestAgentAutonomyLevel(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertTrue(data["approved"], "Autonomous mode should auto-approve")
+        self.assertFalse(data['approved'])
+        self.assertEqual(data['reason'], 'pending')
+        self.assertTrue(data['confirm_id'])
 
     def test_confirm_cautious_waits_for_user(self):
         """In cautious mode, destructive tools should wait for user confirmation."""
@@ -439,7 +441,7 @@ class TestAgentAutonomyLevel(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertFalse(data["approved"], "Cautious mode should wait for user")
-        self.assertEqual(data["reason"], "timeout")
+        self.assertEqual(data["reason"], "pending")
 
     def test_confirm_standard_waits_for_user(self):
         """In standard mode, destructive tools should wait for user confirmation."""
@@ -479,10 +481,10 @@ class TestAgentAutonomyLevel(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertFalse(data["approved"], "Standard mode should wait for user")
-        self.assertEqual(data["reason"], "timeout")
+        self.assertEqual(data["reason"], "pending")
 
     def test_confirm_autonomous_media_delete(self):
-        """In autonomous mode, media.delete should also be auto-approved."""
+        """Every media deletion remains a user decision in autonomous mode."""
         project = self.store.create_project("Confirm Autonomous Media Test")
         project_id = project["id"]
         node_id = "node-auto-6"
@@ -519,7 +521,9 @@ class TestAgentAutonomyLevel(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertTrue(data["approved"], "Autonomous mode should auto-approve media.delete")
+        self.assertFalse(data['approved'])
+        self.assertEqual(data['reason'], 'pending')
+        self.assertTrue(data['confirm_id'])
 
     def test_create_agent_node_reads_node_autonomy(self):
         """create_agent_node should read autonomy from node attributes if not provided."""
@@ -579,13 +583,13 @@ class TestDefaultBehaviorRegression(unittest.TestCase):
         session = run_async(self.manager.get_or_create_session("proj-1", "node-1"))
         self.assertEqual(session.model, "")
 
-    def test_node_without_autonomy_uses_cautious(self):
-        """A node without an autonomy attribute should default to cautious."""
+    def test_node_without_autonomy_uses_standard(self):
+        """Missing autonomy must not silently opt into per-call confirmation."""
         session = run_async(self.manager.get_or_create_session("proj-1", "node-1"))
-        self.assertEqual(session.autonomy, "cautious")
+        self.assertEqual(session.autonomy, "standard")
 
     def test_confirm_without_autonomy_waits(self):
-        """A node without autonomy attribute should wait for confirmation (cautious default)."""
+        """The standard default still gates user-node deletion."""
         project = self.store.create_project("Default Confirm Test")
         project_id = project["id"]
         node_id = "node-default-1"
@@ -621,8 +625,8 @@ class TestDefaultBehaviorRegression(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertFalse(data["approved"], "Default (cautious) should wait for user")
-        self.assertEqual(data["reason"], "timeout")
+        self.assertFalse(data["approved"], "Default (standard) should wait for user")
+        self.assertEqual(data["reason"], "pending")
 
 
 class SettingsHost(AgentHostManager):

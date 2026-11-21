@@ -11,7 +11,6 @@ import tempfile
 import unittest
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, call, patch
 
 from fastapi import HTTPException
@@ -161,12 +160,19 @@ class Ownership392Tests(unittest.TestCase):
         self.assert_metadata(self.nodes()[response.json()["node_id"]], ownership("body-owner"))
 
     def test_rest_generation_uses_query_and_rejects_body_only_identity(self):
-        before = copy.deepcopy(self.canvas())
-        def plan(count):
-            return SimpleNamespace(request=SimpleNamespace(count=count), node_type=NODE_TYPE_IMAGE,
-                                   original_prompt=("old", None, False, None, None, None))
+        from app.routers.api_project_library import project_image_request
+        from tests.agent_image_task_fakes import route_stub
 
-        one, batch = plan(3), (plan(1), plan(1))
+        before = copy.deepcopy(self.canvas())
+        def plan(identity, count):
+            payload = self.tools.ProjectImageGenerationRequest(
+                prompt="old", n=count, result_node_id=identity, base_revision=before["revision"])
+            return self.tools._PreparedGeneration(
+                request=project_image_request(payload), payload=payload, route=route_stub(),
+                node_type=NODE_TYPE_IMAGE, original_prompt=("old", None, False, None, None, None),
+                user_prompt="old", final_prompt="old")
+
+        one, batch = plan("source", 3), (plan("a", 1), plan("b", 1))
         for suffix, core_name, body, args, count, prepare, prepared, gate_name, kwargs in (
             ("generate/trigger", "trigger_generation_core", {"node_id": "source"},
              (self.pid, "source"), 3, "prepare_generation", one, "_server_confirm_gate", {"plan": one}),

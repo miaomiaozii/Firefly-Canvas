@@ -32,7 +32,7 @@ def run(tmp_path, monkeypatch):
                   "base_url": "https://example.invalid/v1", "api_key": "mock-only",
                   "image_models": ["fallback", "picked"],
                   "image_model_capabilities": {"fallback": caps, "picked": caps}}]
-    monkeypatch.setattr(main, "load_api_providers", lambda: providers)
+    monkeypatch.setattr(main, "load_api_providers", lambda *, read_only=False: providers)
     buf = io.BytesIO()
     Image.new("RGB", (8, 8)).save(buf, "PNG")
     png = buf.getvalue()
@@ -223,14 +223,21 @@ def test_legacy_mention_rejected_before_any_generation_writes(run, monkeypatch, 
 
 
 @pytest.mark.parametrize("transport", ["rest", "mcp", "rest-batch", "mcp-batch"])
-def test_gate_budget_and_dispatch_share_count_snapshot(run, monkeypatch, transport):
+@pytest.mark.parametrize("change_during_confirmation", [False, True], ids=["stable-inputs", "changed-inputs"])
+def test_gate_budget_and_dispatch_share_count_snapshot(run, monkeypatch, transport, change_during_confirmation):
     client, store, pid, calls, _, _ = run
     confirmations = []
-    async def yes(project, actor, tool, params, message, timeout):
-        confirmations.append(message)
+
+    def change_settings():
         node = store.find_canvas_node(pid, "source")
         node["runSettings"] = {**node["runSettings"], "count": 8, "routingMode": "auto", "ratio": "square"}
         store.apply_mutations(pid, [{"op": "upsert_node", "node": node}], base_revision=store.canvas(pid)["revision"])
+
+    async def yes(project, actor, tool, params, message, timeout):
+        assert (project, actor) == (pid, "actor")
+        confirmations.append((params, message))
+        if change_during_confirmation:
+            change_settings()
         return {"approved": True}
     approve(monkeypatch, yes)
     monkeypatch.setattr(api_agent_tools, "GENERATION_SESSION_LIMIT", 2)
@@ -242,13 +249,33 @@ def test_gate_budget_and_dispatch_share_count_snapshot(run, monkeypatch, transpo
             return not response.is_success, response.json()
         return mcp(client, pid, "canvas.batch_edit" if batch else "generate.trigger", args)
     error, result = trigger()
-    assert not error, result
-    task = result["tasks"][0] if batch else result
-    wait(client, f"/api/projects/{pid}/generate/tasks/{task['task_id']}")
-    assert "2 张" in confirmations[0]
-    assert len(calls) == 2 and all(c["model"] == "picked" for c in calls)
-    assert trigger()[0]
-    assert len(calls) == 2
+    assert "2 张" in confirmations[0][1]
+    preflight = confirmations[0][0]["preflight"]
+    assert (preflight[0] if batch else preflight)["count"] == 2
+    assert confirmations[0][0]["n"] == 2
+    if batch and change_during_confirmation:
+        # #402: a confirmed batch cannot silently rebase changed inputs at child admission.
+        assert error, result
+        detail = result["detail"] if transport.startswith("rest") else result
+        assert detail["code"] == "CANVAS_CONFLICT"
+        assert detail["details"]["tasks"] == []
+        assert calls == []
+        expected_calls = 0
+    else:
+        assert not error, result
+        task = result["tasks"][0] if batch else result
+        wait(client, f"/api/projects/{pid}/generate/tasks/{task['task_id']}")
+        assert len(calls) == 2 and all(c["model"] == "picked" for c in calls)
+        expected_calls = 2
+    assert api_agent_tools._GENERATION_COUNTS[(pid, "actor")] == 2
+    change_settings()
+    error, result = trigger()
+    assert error, result
+    detail = result["detail"] if transport.startswith("rest") else result
+    assert detail["code"] == "BUDGET_EXCEEDED"
+    assert len(confirmations) == 2 and confirmations[1][0]["n"] == 8
+    assert api_agent_tools._GENERATION_COUNTS[(pid, "actor")] == 2
+    assert len(calls) == expected_calls
     node = store.find_canvas_node(pid, "source")
     assert node["runSettings"]["count"] == 8
     assert node["runSettings"]["routingMode"] == "auto"

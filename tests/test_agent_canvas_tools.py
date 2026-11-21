@@ -1,5 +1,4 @@
 """Tests for agent canvas tools API endpoints (issue #119)."""
-import asyncio
 import sys
 import tempfile
 import unittest
@@ -15,7 +14,6 @@ if str(ROOT) not in sys.path:
 import main
 from firefly_projects import ProjectStore
 from app.routers import api_agent_tools
-from app.services import agent_host
 
 
 class AgentCanvasToolsTests(unittest.TestCase):
@@ -236,11 +234,9 @@ class AgentCanvasToolsTests(unittest.TestCase):
 
     def test_delete_edge_not_found(self):
         """canvas.disconnect returns 404 for missing edge."""
-        self._add_actor(autonomy="autonomous")
-        # Real auto-approval lets the request reach the missing-edge check without mocking the gate.
-        host = agent_host.AgentHostManager()
-        asyncio.run(host.get_or_create_session(self.project_id, self.actor_id, autonomy="autonomous"))
-        with patch.object(agent_host, "agent_host_manager", host):
+        self._add_actor()
+        # Missing-edge validation is independent of the non-bypassable disconnect safety floor (#402).
+        with patch.object(api_agent_tools, "request_confirmation_core", return_value={"approved": True}):
             response = self.client.delete(
                 f"/api/projects/{self.project_id}/canvas/edges/nonexistent/nonexistent",
                 headers=self.agent_headers,

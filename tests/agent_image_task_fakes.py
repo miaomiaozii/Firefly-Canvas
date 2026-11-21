@@ -5,7 +5,7 @@ from unittest.mock import patch
 from app.routers import api_project_library
 
 
-def stub_providers(provider_id='mock', model='mock'):
+def stub_providers(provider_id='mock', model='mock', *, read_only=False):
     return [{'id': provider_id, 'name': provider_id, 'image_models': [model]}]
 
 

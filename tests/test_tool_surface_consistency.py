@@ -88,6 +88,18 @@ class SourceSameOriginTests(unittest.TestCase):
                 self.assertIn("turn_id 不得复用到其他轮次", tool["description"])
                 self.assertNotIn("turn_id", tool["inputSchema"]["properties"])
 
+    def test_confirmation_descriptions_do_not_expire_approvals(self):
+        descriptions = {tool['name']: tool['description'] for tool in agent_tools_manifest.TOOLS}
+        for name in ('canvas.delete_node', 'canvas.disconnect', 'canvas.edit_crop',
+                     'canvas.edit_rotate', 'canvas.edit_flip', 'canvas.edit_outpaint',
+                     'canvas.edit_erase', 'canvas.batch_edit', 'generate.trigger',
+                     'generate.retry', 'generate.request_batch', 'media.delete'):
+            with self.subTest(tool=name):
+                self.assertNotIn('阻塞最长 90s', descriptions[name])
+                self.assertNotIn('90 秒有效', descriptions[name])
+                self.assertIn('CONFIRM_PENDING', descriptions[name])
+                self.assertIn('勿重复提交', descriptions[name])
+
     def test_codegen_fresh(self):
         """重跑 codegen diff 必须为空（拍板 a：进 fast 门/pytest）。"""
         proc = subprocess.run(

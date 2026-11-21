@@ -63,7 +63,7 @@ def fx(tmp_path, monkeypatch):
     tab, tab_other = object(), object()
     register_project_session(tab, pid)
     register_project_session(tab_other, other)
-    session = AgentSession(project_id=pid, node_id='actor', autonomy='autonomous')
+    session = AgentSession(project_id=pid, node_id='actor', autonomy='standard')
     session._current_turn_id = 'initiating-turn'
 
     async def event_handler(session, event):
@@ -106,11 +106,12 @@ def confirm(fx, event, approved=True, *, actor='actor'):
 
 
 def tree(fx):
-    return {p.relative_to(fx.store.root): p.read_bytes() for p in fx.store.root.rglob('*') if p.is_file()}
+    return {p.relative_to(fx.store.root): p.read_bytes() for p in fx.store.root.rglob('*')
+            if p.is_file() and 'agent-events' not in p.parts}
 
 
-def status_until(fx, batch, pred):
-    deadline = time.monotonic() + 5
+def status_until(fx, batch, pred, *, timeout=5):
+    deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         status, data = rest(fx, 'batch_status', {'batch_id': batch, 'wait_seconds': .1})
         assert status == 200, data
@@ -143,7 +144,8 @@ def test_read_only_preview_matches_executed_provider_and_journals_after_turn(fx)
     batch = receipt['batch_id']
     event = fx.events.get(timeout=2)
     assert event['type'] == 'confirm' and event['params'] == {
-        'batch_id': batch, 'fallback_models': ['alternate', 'last'], 'max_retries': 3, 'total_images': 2}
+        'batch_id': batch, 'fallback_models': ['alternate', 'last'], 'max_retries': 3, 'total_images': 2,
+        'preflight': {k: v for k, v in preview.items() if k != 'preflight_id'}}
     assert 'alternate' in event['message'] and event['message'].endswith('2')
     assert tree(fx) == before and set(main.CANVAS_TASKS) == tasks and fx.calls.empty()
     assert not agent._GENERATION_COUNTS.get((fx.pid, 'actor'))
@@ -168,14 +170,12 @@ def test_read_only_preview_matches_executed_provider_and_journals_after_turn(fx)
     ops = list_operations(OpsDb(fx.store.root), fx.pid)
     family = [row for row in ops if row['tool'] == 'generate.request_batch']
     root, = [row for row in family if not row.get('parent_op_id')]
-    assert len(family) >= 5 and not root['turn_id'] and root['args']['fallback_models'] == options['fallback_models']
-    assert rest(fx, 'request_batch', options) == (200, {'batch_id': batch, 'status': 'approved'})
+    assert len(family) >= 5 and root['turn_id'] == 'initiating-turn' and root['args']['fallback_models'] == options['fallback_models']
+    assert rest(fx, 'request_batch', options) == (200, {**receipt, 'status': 'approved'})
 
 
-@pytest.mark.parametrize('ending', ['stop', 'reject', 'timeout', 'source', 'ref', 'provider'])
+@pytest.mark.parametrize('ending', ['stop', 'reject', 'source', 'ref', 'provider'])
 def test_pending_terminal_no_charge_or_submission(fx, monkeypatch, ending):
-    if ending == 'timeout':
-        monkeypatch.setattr(agent, 'AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS', .25)
     before = tree(fx)
     ok, preview = mcp(fx, 'preflight', {'node_ids': ['a']})
     assert ok
@@ -206,7 +206,7 @@ def test_pending_terminal_no_charge_or_submission(fx, monkeypatch, ending):
         assert ok
         if final['status'] in ('rejected', 'stopped'):
             break
-    assert final['reason'] == {'stop': 'stopped', 'reject': 'rejected', 'timeout': 'timeout'}.get(ending, 'PREFLIGHT_STALE')
+    assert final['reason'] == {'stop': 'stopped', 'reject': 'rejected'}.get(ending, 'PREFLIGHT_STALE')
     assert final['approved_count'] == final['spent'] == 0 and fx.calls.empty()
     assert not agent._GENERATION_COUNTS.get((fx.pid, 'actor'))
     assert fx.events.get(timeout=2)['type'] == 'confirm_resolved'
@@ -232,7 +232,7 @@ def test_external_mcp_approved_matches_preview_and_wait_is_bounded(fx):
     expected = pre['items'][0]
     assert (prompt, size, model, provider, refs) == (expected['final_prompt'], expected['size'],
                                                      expected['model'], expected['provider'], [])
-    assert mcp(fx, 'request_batch', args) == (True, {**batch, 'status': 'approved'})
+    assert mcp(fx, 'request_batch', args) == (True, {**receipt, 'status': 'approved'})
     fx.release.set()
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -344,13 +344,18 @@ def test_blockers_and_legacy_batch_keeps_its_own_gate(fx):
         call = pool.submit(fx.client.post, f'/api/projects/{fx.pid}/canvas/batch_edit?agent_node_id=actor',
                            json={'node_ids': ['b'], 'prompt': 'Legacy batch prompt'}, headers={'X-Agent-Project': fx.pid})
         event = fx.events.get(timeout=2)
-        assert event['tool'] == 'canvas.batch_edit' and not call.done()
+        assert event['tool'] == 'canvas.batch_edit'
         assert fx.store.find_canvas_node(fx.pid, 'b')['prompt'] == 'Minimalist art'
-        confirm(fx, event)
         response = call.result(5)
-    assert response.is_success and response.json()['count'] == 1
+        assert response.is_success and response.json()['code'] == 'CONFIRM_PENDING'
+        confirm(fx, event)
+    assert fx.events.get(timeout=2)['type'] == 'confirm_resolved'
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        history = fx.store.canvas(fx.pid).get('history', [])
+        if history and history[-1].get('status') == 'succeeded':
+            break
+        time.sleep(.01)
+    assert history and history[-1]['status'] == 'succeeded'
     assert fx.store.find_canvas_node(fx.pid, 'b')['prompt'] == 'Legacy batch prompt'
-    assert fx.events.get(timeout=2)['type'] == 'confirm_resolved' and fx.events.empty()
-    task = response.json()['tasks'][0]['task_id']
-    reply = fx.client.get(f'/api/projects/{fx.pid}/generate/tasks/{task}/wait?timeout=5')
-    assert reply.json()['status'] == 'succeeded'
+    assert fx.calls.qsize() == 1

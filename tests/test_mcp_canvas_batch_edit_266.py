@@ -74,7 +74,7 @@ class BatchEditBehaviorTests(McpTestBase):
         self.previous_route = main.route_image_generation
         self.previous_providers = main.load_api_providers
         main.route_image_generation = lambda *a, **k: route_stub('fake', 'fake')
-        main.load_api_providers = lambda: stub_providers('fake', 'fake')
+        main.load_api_providers = lambda **kwargs: stub_providers('fake', 'fake')
         self.enterContext(patch_candidate(self._fake_provider))
         # #350：batch_edit 在 MCP 层过确认门与会话限额——本组测试只钉 266 行为，
         # 门/限额语义在 test_agent_generation_gate_limit_351 另有钉，这里直接放行。

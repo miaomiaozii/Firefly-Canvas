@@ -38,6 +38,7 @@ class ConfirmEventReplay389Tests(unittest.TestCase):
         main.FIREFLY_PROJECT_STORE = self.store
         self.client = TestClient(main.app, base_url="http://127.0.0.1:8125",
                                  headers={"origin": "http://127.0.0.1:8125"})
+        self.client.__enter__()
         project = self.store.create_project("Confirm Replay 389")
         self.pid = project["id"]
         self.node_id = "agent-389"
@@ -66,6 +67,7 @@ class ConfirmEventReplay389Tests(unittest.TestCase):
     def tearDown(self):
         for handler in list(self.session.event_handlers):
             self.session.event_handlers.remove(handler)
+        self.client.__exit__(None, None, None)
         self.client.close()
         self.store.close()
         main.FIREFLY_PROJECT_STORE = self.previous_store
@@ -132,19 +134,27 @@ class ConfirmEventReplay389Tests(unittest.TestCase):
         # live WS 也收到两条（confirm + confirm_resolved）
         self.assertIn("confirm_resolved", [e.get("type") for e in self.captured])
 
-    # ── ② 超时：门返回 timeout 且 confirm_resolved(reason=timeout) 落日志 ──
-    def test_timeout_persists_resolution(self):
+    def test_wait_window_keeps_pending_replay_until_late_resolution(self):
         r = self._gate(timeout_seconds=0.4)
         self.assertEqual(r.status_code, 200, r.text)
         body = r.json()
         self.assertFalse(body.get("approved"))
-        self.assertEqual(body.get("reason"), "timeout")
+        self.assertEqual(body.get("reason"), "pending")
+        self.assertTrue(body.get('confirm_id'))
         records = self._replay()
-        types = self._types(records)
-        self.assertIn("confirm", types)
-        idx = types.index("confirm_resolved")
-        self.assertGreater(idx, -1, "超时也必须落终态记录")
-        self.assertEqual(records[idx]["event"].get("reason"), "timeout")
+        self.assertIn('confirm', self._types(records))
+        self.assertNotIn('confirm_resolved', self._types(records))
+        self.assertTrue(self.session.confirm_handlers)
+        response = self.client.post(f'/api/projects/{self.pid}/agent-nodes/{self.node_id}/confirm',
+                                    json={'confirm_id': body['confirm_id'], 'approved': False})
+        self.assertEqual(response.status_code, 200)
+        import time
+        deadline = time.monotonic() + 2
+        while self.session.confirm_handlers and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertFalse(self.session.confirm_handlers)
+        resolved = [r['event'] for r in self._replay() if r['event']['type'] == 'confirm_resolved']
+        self.assertEqual(resolved[-1]['reason'], 'rejected')
 
     # ── ③ autonomous 自动放行：不发卡、不写回放 ─────────────────────────
     def test_autonomous_autoapprove_writes_nothing(self):

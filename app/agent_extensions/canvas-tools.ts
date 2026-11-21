@@ -120,8 +120,7 @@ function textResult(payload: any, normalize = false) {
     return { content: [{ type: "text", text: JSON.stringify(body, null, 2) }], details: {} };
 }
 
-// #357：扩展不做预确认；服务端确认门用查询串的 agent_node_id 将确认投影到对应会话，
-// 拒绝或超时返回 409。#393 操作日志也用此身份；不混入受服务端白名单约束的更新字段。
+// Confirmation and operation ownership use server-side agent_node_id; never mix identity into node updates.
 function gateQuery() {
     return NODE_ID ? `?agent_node_id=${encodeURIComponent(NODE_ID)}` : "";
 }
@@ -182,11 +181,8 @@ const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any
         return textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes/${params.node_id}${gateQuery()}`, "PATCH", updates));
     },
 
-    "canvas.delete_node": async (_toolCallId, params) => {
-        // #357：确认在服务端门里发生（阻塞最长 90s），这里只带身份参数。
-        await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes/${params.node_id}${gateQuery()}`, "DELETE");
-        return { content: [{ type: "text", text: `节点 ${params.node_id} 已删除。` }], details: {} };
-    },
+    "canvas.delete_node": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/canvas/nodes/${params.node_id}${gateQuery()}`, "DELETE")),
 
     "canvas.connect": async (_toolCallId, params) => {
         // #356 D12/D11：edge id 由服务端铸造，缺省 kind=flow 归两路共用的 core。
@@ -336,11 +332,8 @@ const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any
     "media.list": async (_toolCallId, params) =>
         textResult(await callApi(`/api/projects/${PROJECT_ID}/media/list`, "GET"), true),
 
-    "media.delete": async (_toolCallId, params) => {
-        // #357：确认在服务端门里发生。
-        await callApi(`/api/projects/${PROJECT_ID}/media/${params.asset_id}${gateQuery()}`, "DELETE");
-        return { content: [{ type: "text", text: `媒体文件 ${params.asset_id} 已删除。` }], details: {} };
-    },
+    "media.delete": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/media/${params.asset_id}${gateQuery()}`, "DELETE")),
 
     "viewport.focus": async (_toolCallId, params) =>
         textResult(await callApi(`/api/projects/${PROJECT_ID}/viewport/focus`, "POST", { node_id: params.node_id })),

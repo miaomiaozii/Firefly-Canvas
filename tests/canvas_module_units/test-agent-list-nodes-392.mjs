@@ -128,6 +128,25 @@ test('#392 list payload is not media-normalized and existing generation gate ide
     assert.deepEqual(JSON.parse(runner.calls[2].options.body), { node_ids: ['source-392'], prompt: 'new prompt' });
 });
 
+for (const [name, params] of [
+    ['canvas.delete_node', { node_id: 'target-node' }],
+    ['media.delete', { asset_id: 'target-media' }],
+]) {
+    for (const payload of [
+        { code: 'CONFIRM_PENDING', status: 'awaiting_confirmation', confirm_id: 'confirm-live' },
+        { success: true, deleted: 'target', trash_entry: 'trash-entry' },
+    ]) {
+        test(`#402 ${name} preserves the actual ${payload.status ?? 'completed'} server receipt`, async () => {
+            const runner = loadExecutors({ payload });
+            const result = await runner.execute(name, params);
+            assert.deepEqual(JSON.parse(result.content[0].text), payload);
+            assert.equal(runner.calls.length, 1);
+            assert.equal(runner.calls[0].options.method, 'DELETE');
+            assert.equal(runner.calls[0].url.searchParams.get('agent_node_id'), AGENT);
+        });
+    }
+}
+
 test('#400 Pi batch calls forward scope and options once, with no client-side confirmation', async () => {
     const runner = loadExecutors({ payload: { status: 'awaiting_confirmation' } });
     const cases = {

@@ -94,8 +94,7 @@ SESSION_HEADER = "Mcp-Session-Id"
 SUPPORTED_PROTOCOL_VERSIONS = ("2024-11-05", "2025-03-26", "2025-06-18")
 DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 
-#: Confirmation gate blocking wait (#357: agent 写操作确认等待 90s > 60s，
-#: 与 REST 侧 AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS 同口径；ADR 0022 原 default 60s 已被 #357 覆写)。
+# A12: this is the synchronous receipt window, not an approval lifetime (ADR 0022).
 CONFIRM_TIMEOUT_SECONDS = 90.0
 
 #: Event aggregation interval — dirty flag + 3s timer, ComfyArt
@@ -239,15 +238,7 @@ async def ensure_external_agent_node(project_id: str, mcp_session_id: str) -> st
 
 
 async def _confirm_gate(project_id: str, agent_node_id: str, tool: str, args: dict, message: str) -> None:
-    """Materialized confirmation gate (ADR 0022): destructive MCP tool calls
-    block until the user approves/rejects on the canvas (#357 起为 90s，
-    见 CONFIRM_TIMEOUT_SECONDS；ADR 原文 default 60s 已被覆写)。
-
-    The confirm event is projected to the materialized Agent node's session;
-    a human approves through the canvas TUI of the owning tab. On timeout the
-    message distinguishes "tab closed" from "confirmation may still be
-    pending" per the ADR timeout contract.
-    """
+    """A12: returning a pending receipt leaves the original operation waiting for a live decision."""
     decision = await request_confirmation_core(
         project_id, agent_node_id, tool, args, message, CONFIRM_TIMEOUT_SECONDS
     )
@@ -440,12 +431,13 @@ async def _prepare_trigger(project_id, args):
 
 
 async def _impl_trigger(project_id, agent_node_id, args, *, plan=None, retry_caller=None):
-    from app.routers.api_agent_tools import enforce_generation_limit
+    from app.routers.api_agent_tools import enforce_generation_limit, generation_confirmation_input
     if plan is None:
         plan = await _prepare_trigger(project_id, args)
     node_id = args["node_id"]
     count = plan.request.count
-    await _confirm_gate(project_id, agent_node_id, "generate.trigger", {"node_id": node_id, "n": count},
+    await _confirm_gate(project_id, agent_node_id, "generate.trigger",
+                        {"node_id": node_id, "n": count, 'preflight': generation_confirmation_input(project_id, node_id, plan)},
                         f"节点 {node_id} 生成 {count} 张图片（消耗外部生成额度）")
     enforce_generation_limit(project_id, agent_node_id, count=count)
     return await trigger_generation_core(project_id, node_id, agent_node_id=agent_node_id or "", plan=plan,
@@ -528,14 +520,16 @@ async def _impl_batch_prompt_edit(project_id, agent_node_id, args, *, binding=No
 
 
 async def _impl_batch_edit(project_id, agent_node_id, args):
-    from app.routers.api_agent_tools import confirm_batch_prompt, enforce_generation_limit, legacy_batch_prompt_counts, prepare_batch_generation
+    from app.routers.api_agent_tools import confirm_batch_prompt, enforce_generation_limit, generation_confirmation_input, legacy_batch_prompt_counts, prepare_batch_generation
     from app.services.agent_refs import require_object
     require_object(args, "batch_edit", required=("node_ids", "prompt"))
     node_ids = args["node_ids"]
     prompt, plans = await prepare_batch_generation(project_id, node_ids, args["prompt"])
     count = sum(plan.request.count for plan in plans)
     edited, human = legacy_batch_prompt_counts(plans, prompt)
-    await confirm_batch_prompt(project_id, agent_node_id, "canvas.batch_edit", edited, human, images=count)
+    await confirm_batch_prompt(project_id, agent_node_id, "canvas.batch_edit", edited, human, images=count,
+                               preflight=[generation_confirmation_input(project_id, node, plan)
+                                          for node, plan in zip(node_ids, plans)])
     enforce_generation_limit(project_id, agent_node_id, count=count)
     return await batch_edit_core(project_id, node_ids, prompt, agent_node_id=agent_node_id or "", plans=plans)
 
@@ -639,6 +633,13 @@ TOOL_IMPLS = {
     "canvas.batch_prompt_edit": _impl_batch_prompt_edit,
     "canvas.batch_edit": _impl_batch_edit,
 }
+
+from app.services.agent_confirmation import confirmation_transport, resumable
+
+for _name in ('canvas.delete_node', 'canvas.disconnect', 'media.delete', 'generate.trigger', 'generate.retry',
+              'canvas.edit_crop', 'canvas.edit_rotate', 'canvas.edit_flip', 'canvas.edit_outpaint',
+              'canvas.edit_erase', 'canvas.batch_edit', 'canvas.batch_prompt_edit', *LAYOUT_TOOLS):
+    TOOL_IMPLS[_name] = resumable(TOOL_IMPLS[_name])
 
 TOOL_IMPLS.update({name: partial(plan_core, tool=name) for name in PLAN_TOOLS})
 TOOL_IMPLS.update({name: partial(agent_batch.call, name) for name in agent_batch.TOOLS})
@@ -752,7 +753,9 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
             # A10 cannot create/rebind a carrier or reserve an external turn before approval.
             binding = (agent_batch.Caller(project_id, node_param) if caller == 'hosted' else
                        agent_batch.external_caller(project_id, node_param, request.headers.get(SESSION_HEADER)))
-            result = await TOOL_IMPLS[name](binding, args)
+            with agent_ops_scope(project_id=project_id, agent_node_id=node_param or None,
+                                 turn_id=turn_id, tool=name, args=args):
+                result = await TOOL_IMPLS[name](binding, args)
             return _rpc_response(200, msg_id, sid, result={'content': _tool_result_content_blocks(result), 'isError': False})
         retry_caller = None
         if name == 'generate.retry':
@@ -786,7 +789,7 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
                 mark_turn_lookup_failed(db, project_id, turn_id)
         try:
             with agent_ops_scope(project_id=project_id, agent_node_id=node_id or None,
-                                 turn_id=turn_id, tool=name, args=args):
+                                 turn_id=turn_id, tool=name, args=args), confirmation_transport(hosted=caller == 'hosted'):
                 if trigger_plan is not None:
                     binding = agent_batch.Caller(project_id, node_id, '' if caller == 'hosted' else sid)
                     result = await TOOL_IMPLS[name](project_id, node_id, args, plan=trigger_plan, retry_caller=binding)

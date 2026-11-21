@@ -199,9 +199,9 @@ async def _create_agent_node_locked(project_id: str, node_id: str, model: str,
     if not autonomy:
         try:
             node = _find_node(project_id, node_id)
-            autonomy = node.get("autonomy", "") or "cautious"
+            autonomy = node.get("autonomy", "") or "standard"
         except HTTPException:
-            autonomy = "cautious"
+            autonomy = "standard"
 
     # #335: 节点显式声明了未知 agentCli → 400，先于任何会话/spawn。
     # #332: body 可直接带 agentCli（幻影节点无 canvas 属性可读）；同样先验后落。
@@ -234,7 +234,7 @@ async def _create_agent_node_locked(project_id: str, node_id: str, model: str,
     # Update session model/autonomy if they were read from node attributes
     if model and not session.model:
         session.model = model
-    if autonomy and session.autonomy == "cautious" and autonomy != "cautious":
+    if autonomy:
         session.autonomy = autonomy
     _apply_node_host(project_id, node_id, session)
 
@@ -616,7 +616,9 @@ async def post_agent_node_confirm(
     except Exception:
         body = {}
     confirm_id = str(body.get("confirm_id", ""))
-    approved = bool(body.get("approved", False))
+    approved = body.get("approved", False)
+    if type(approved) is not bool:
+        raise agent_error(400, 'INVALID_ARGUMENT', 'approved must be a boolean')
 
     # A transient batch decision must not trigger history recovery.
     session = (agent_host_manager.conversation_session(project_id, node_id) or

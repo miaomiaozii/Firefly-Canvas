@@ -29,6 +29,7 @@ if str(ROOT) not in sys.path:
 import main
 from starlette.websockets import WebSocketDisconnect
 from firefly_projects import ProjectStore
+from app.constants import NODE_TYPE_AGENT
 from app.services.agent_host import AgentHostManager, AgentSession, agent_host_manager
 from tests.fake_agent_host import (
     FakeAgentProcess,
@@ -975,117 +976,68 @@ class TestAgentConfirmation(unittest.TestCase):
         self.assertEqual(result["reason"], "timeout")
 
     def test_confirm_endpoint_sends_event(self):
-        """Test that the confirm endpoint sends a confirm event via WS stream."""
         from app.services.agent_host import agent_host_manager
 
-        project = self.store.create_project("Confirm Endpoint Test")
-        project_id = project["id"]
+        project_id = self.store.create_project("Confirm Endpoint Test")["id"]
         node_id = "agent-confirm-4"
-
-        # Use the global manager (same as the endpoint)
+        self.store.apply_mutations(project_id, [{'op': 'upsert_node', 'node': {
+            'id': node_id, 'type': NODE_TYPE_AGENT, 'autonomy': 'strict',
+        }}], base_revision=self.store.canvas(project_id)['revision'])
         session = run_async(agent_host_manager.get_or_create_session(project_id, node_id))
-
-        # Make the session appear running so the endpoint reuses it
-        fake = FakeAgentProcess(script=[])
-        session.process = fake
+        session.process = FakeAgentProcess(script=[])
         session.status = "running"
-
         captured_events = []
 
         async def capture_handler(sess, event):
             captured_events.append(event)
 
         agent_host_manager.on_event(session, capture_handler)
-
-        # Call the confirm endpoint (it will time out, but we check the event was sent)
-        # Use a very short timeout so the test doesn't hang
-        response = self.client.post(
-            f"/api/projects/{project_id}/agent/confirm",
-            json={
-                "node_id": node_id,
-                "tool": "canvas.delete_node",
-                "params": {"node_id": "node-1"},
-                "message": "删除节点 node-1？",
-                "timeout_seconds": 0.5,
-            },
-        )
-
-        self.assertEqual(response.status_code, 200)
-        data = response.json()
-        self.assertEqual(data["approved"], False)
-        self.assertEqual(data["reason"], "timeout")
-
-        # Verify a confirm event was sent to the frontend
-        confirm_events = [e for e in captured_events if e.get("type") == "confirm"]
-        self.assertGreater(len(confirm_events), 0, "Should have sent a confirm event")
-        self.assertEqual(confirm_events[0]["tool"], "canvas.delete_node")
-        self.assertIn("node-1", json.dumps(confirm_events[0]["params"]))
+        with self.client:
+            response = self.client.post(f"/api/projects/{project_id}/agent/confirm", json={
+                'node_id': node_id, 'tool': 'canvas.delete_node', 'params': {'node_id': 'node-1'},
+                'message': '删除节点 node-1？', 'timeout_seconds': .01,
+            })
+            self.assertEqual(response.status_code, 200)
+            data = response.json()
+            self.assertFalse(data['approved'])
+            self.assertEqual(data['reason'], 'pending')
+            self.assertEqual(data['code'], 'CONFIRM_PENDING')
+            confirm_events = [event for event in captured_events if event.get('type') == 'confirm']
+            self.assertEqual(len(confirm_events), 1)
+            self.assertEqual(confirm_events[0]['confirm_id'], data['confirm_id'])
+            self.assertEqual(confirm_events[0]['tool'], 'canvas.delete_node')
+            self.assertIn('node-1', json.dumps(confirm_events[0]['params']))
+            self.assertEqual(len(session.confirm_handlers), 1)
 
     def test_confirm_endpoint_approve_via_ws(self):
-        """Test the full confirm flow: endpoint sends event, WS handler approves."""
         from app.services.agent_host import agent_host_manager
 
-        project = self.store.create_project("Confirm WS Test")
-        project_id = project["id"]
+        project_id = self.store.create_project("Confirm WS Test")["id"]
         node_id = "agent-confirm-5"
-
+        self.store.apply_mutations(project_id, [{'op': 'upsert_node', 'node': {
+            'id': node_id, 'type': NODE_TYPE_AGENT, 'autonomy': 'strict',
+        }}], base_revision=self.store.canvas(project_id)['revision'])
         session = run_async(agent_host_manager.get_or_create_session(project_id, node_id))
-
-        # Make the session appear running so the endpoint reuses it
-        fake = FakeAgentProcess(script=[])
-        session.process = fake
+        session.process = FakeAgentProcess(script=[])
         session.status = "running"
-
-        # Register a confirm handler that approves after a short delay
-        async def delayed_approve(confirm_id, approved):
-            # Simulate user clicking approve
-            pass
-
-        agent_host_manager.on_confirm(session, delayed_approve)
-
-        # Start the confirm endpoint in a background task
-        import threading
-
-        response_holder = {}
-
-        def call_confirm():
-            response = self.client.post(
-                f"/api/projects/{project_id}/agent/confirm",
-                json={
-                    "node_id": node_id,
-                    "tool": "canvas.delete_node",
-                    "params": {"node_id": "node-1"},
-                    "message": "删除节点 node-1？",
-                    "timeout_seconds": 5,
-                },
-            )
-            response_holder["response"] = response
-
-        # Start confirm in background thread
-        confirm_thread = threading.Thread(target=call_confirm)
-        confirm_thread.start()
-
-        # Wait a bit for the confirm event to be sent
-        time.sleep(0.5)
-
-        # Now simulate the frontend approving via the confirm handler
-        # The endpoint registered a temporary handler; we need to find and call it
-        # The handler is in session.confirm_handlers
-        if session.confirm_handlers:
-            handler = session.confirm_handlers[0]
-            # Call it with the confirm_id from the event
-            # We don't know the exact confirm_id, but the handler checks it
-            # Instead, let's just verify the handler was registered
-            self.assertGreater(len(session.confirm_handlers), 0)
-
-        # Wait for the confirm to complete (it will time out since we didn't approve)
-        confirm_thread.join(timeout=10)
-
-        self.assertIn("response", response_holder)
-        data = response_holder["response"].json()
-        # Since we didn't actually approve, it should time out
-        self.assertEqual(data["approved"], False)
-        self.assertEqual(data["reason"], "timeout")
+        with self.client:
+            with self.client.websocket_connect(
+                    f'ws://127.0.0.1/api/projects/{project_id}/agent-nodes/{node_id}/stream') as ws:
+                self.assertEqual(ws.receive_json()['type'], 'session')
+                response = self.client.post(f'/api/projects/{project_id}/agent/confirm', json={
+                    'node_id': node_id, 'tool': 'canvas.delete_node', 'params': {'node_id': 'node-1'},
+                    'message': '删除节点 node-1？', 'timeout_seconds': .01,
+                })
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()['code'], 'CONFIRM_PENDING')
+                event = ws.receive_json()
+                self.assertEqual(event['type'], 'confirm')
+                self.assertEqual(event['confirm_id'], response.json()['confirm_id'])
+                ws.send_json({'type': 'confirm', 'confirm_id': event['confirm_id'], 'approved': True})
+                resolved = ws.receive_json()
+                self.assertEqual(resolved['type'], 'confirm_resolved')
+                self.assertEqual(resolved['confirm_id'], event['confirm_id'])
+                self.assertTrue(resolved['approved'])
 
     def test_confirm_http_fallback_route_exists_and_2xx(self):
         """#241: TUI 确认门 HTTP fallback 目标路由存在且 2xx（不再必 404）。

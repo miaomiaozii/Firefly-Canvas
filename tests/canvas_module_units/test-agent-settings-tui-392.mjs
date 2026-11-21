@@ -120,7 +120,7 @@ test('no canvas, missing receiver or receiver rejection grants no persistent aut
             await pending;
             assert.deepEqual(persisted(m.ctx), before);
             assert.equal(m.state.model, '');
-            assert.equal(m.state.autonomy, 'cautious');
+            assert.equal(m.state.autonomy, 'standard', '#402 transient default does not override the persisted cautious node');
             assert.equal(m.state.messages.length, 1);
             assert.equal(m.state.toolActivities.size, 1);
             assert.deepEqual(m.received, mode === 'rejected-canvas' ? [canvas] : []);
@@ -458,7 +458,7 @@ test('autonomy request keeps persisted values until the server canvas is receive
     const pending = fn(m.ctx, 'setAgentAutonomy')('n1', 'project', 'autonomous');
     assert.deepEqual(JSON.parse(m.calls[0].opts.body), { autonomy: 'autonomous', user_edit: true });
     assert.deepEqual(persisted(m.ctx), before);
-    assert.equal(m.state.autonomy, 'cautious');
+    assert.equal(m.state.autonomy, 'standard', '#402 pending settings retain the transient default, not an optimistic selection');
     m.calls[0].resolve({ ok: false, status: 403, json: async () => ({ detail: 'not allowed' }) });
     await pending;
     await flush();

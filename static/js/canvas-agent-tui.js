@@ -20,7 +20,7 @@ const agentTuiState = new Map(); // nodeId -> { socket, messages, status, model,
 // All host views are transient. Persisted settings/bindings belong to the canvas receiver.
 function createAgentHostView() {
     return {
-        messages: [], toolActivities: new Map(), status: 'idle', model: '', autonomy: 'cautious',
+        messages: [], toolActivities: new Map(), status: 'idle', model: '', autonomy: 'standard',
         thinkingVisible: false, pendingImages: [], attachWorking: '', draft: '', composing: false,
         pendingRerender: false, scrollState: null, inputFocus: null, nodeRefsDraft: null,
         thinking: [], timeline: null, timelineMessages: null, timelineTools: null, timelineSeq: 0,
@@ -2453,7 +2453,7 @@ function agentNodeBodyHtml(node) {
     const setting = agentHostSetting(node, state.viewHost);
     const currentModel = state.sessionModel !== undefined ? state.sessionModel : setting.model;
     const disabled = parameterDisabled ? ' disabled' : '';
-    const currentAutonomy = node.autonomy || 'cautious';
+    const currentAutonomy = node.autonomy || 'standard';
     const modelLabel = currentModel || '跟随宿主';
     const shortModel = modelLabel.length > 24 ? `${modelLabel.slice(0, 11)}…${modelLabel.slice(-11)}` : modelLabel;
     const effortLabel = setting.effort === null ? '跟随宿主' : setting.effort;

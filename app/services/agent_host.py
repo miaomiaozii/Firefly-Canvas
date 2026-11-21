@@ -344,8 +344,8 @@ DEFAULT_SYSTEM_PROMPT = """你是本项目的画布自动化 Agent。你是执�
 
 行为准则：
 - 简洁、中文、边做边报（每个动作一行活动行 + 必要的解释）
-- 小任务直接做；多步任务先给 3 行内计划，等用户确认或用户已明确"直接做"
-- 破坏性操作（删除节点/删除媒体）必须先问用户确认
+- 按目标执行；确认由系统处理，不在聊天中重复询问批准
+- 工具返回 CONFIRM_PENDING / awaiting_confirmation 时结束响应并等待，不要重复调用
 - 不确定用户意图时问，不要猜
 - 动手前先 canvas.list_nodes 看现状，避免重复建节点
 - 完成任务后，如果生成了新内容，用 viewport.focus 聚焦到产物
@@ -358,19 +358,15 @@ DEFAULT_SYSTEM_PROMPT = """你是本项目的画布自动化 Agent。你是执�
 - media.upload / media.list / media.delete（媒体操作）
 - viewport.focus（视口聚焦）"""
 
-# Autonomy level system prompt suffixes (appended to DEFAULT_SYSTEM_PROMPT at spawn)
-# cautious: current behavior (plan-first for multi-step)
-# standard: execute directly, report as you go
-# autonomous: execute directly, only safety-floor operations trigger confirmation
 AUTONOMY_SYSTEM_PROMPT_SUFFIXES = {
-    "cautious": "",
-    "standard": "\n\n自治级别：标准——多步任务直接执行，边做边报，不要先给计划等确认。",
-    "autonomous": "\n\n自治级别：自主——直接执行任务，不要先给计划等确认。仅项目级删除等真正不可逆操作会触发用户确认（工具层已处理）。",
+    level: "\n\n确认由系统处理。需要批准的操作返回 CONFIRM_PENDING，此时结束响应并等待，不要重复询问或调用。"
+    for level in ("cautious", "standard", "autonomous")
 }
 
-# Safety floor tools: always require confirmation even in autonomous mode
-# Batch prompt approval is a user decision even in autonomous mode (#398).
-SAFETY_FLOOR_TOOLS = frozenset({"canvas.batch_prompt_edit", "canvas.batch_edit"})
+# Node/edge exceptions require journal ownership; caller-provided labels are not authority.
+# Batch prompt approval remains mandatory even in autonomous mode (#398).
+SAFETY_FLOOR_TOOLS = frozenset({"canvas.delete_node", "canvas.disconnect", "canvas.delete_edge", "media.delete",
+                               "canvas.batch_prompt_edit", "canvas.batch_edit"})
 
 
 # The full status vocabulary for AgentSession.status (stable, ordered).
@@ -395,6 +391,7 @@ class AgentSession:
     _response_finishing: bool = False
     _retrying: bool = False
     _current_turn_id: Optional[str] = None
+    _last_user_turn_id: Optional[str] = None
     _current_request_id: Optional[str] = None
     _turn_layout_refs: set[str] = field(default_factory=set, repr=False)
     _codex_cleanup: bool = False
@@ -405,7 +402,7 @@ class AgentSession:
     _recovered_input_ids: set = field(default_factory=set, repr=False)
     _follow_up_delivery_failed: bool = False
     _native_state: dict = field(default_factory=dict, repr=False)
-    autonomy: str = "cautious"  # cautious | standard | autonomous
+    autonomy: str = "standard"  # cautious | standard | autonomous
     status: str = "stopped"  # stopped, starting, running, busy, waiting_confirm, crashed, aborted
     event_handlers: List[Callable] = field(default_factory=list)
     confirm_handlers: List[Callable] = field(default_factory=list)
@@ -526,7 +523,7 @@ class AgentHostManager:
         key = self._session_key(project_id, node_id)
         return self._node_locks.setdefault(key, asyncio.Lock())
 
-    async def get_or_create_session(self, project_id: str, node_id: str, model: str = "", autonomy: str = "cautious",
+    async def get_or_create_session(self, project_id: str, node_id: str, model: str = "", autonomy: str = "standard",
                                     *, recover_history: bool = True) -> AgentSession:
         """Get existing session or create a new one."""
         key = self._session_key(project_id, node_id)
@@ -645,7 +642,7 @@ class AgentHostManager:
             # Determine effective autonomy level
             effective_autonomy = autonomy or session.autonomy
             if effective_autonomy not in AUTONOMY_SYSTEM_PROMPT_SUFFIXES:
-                effective_autonomy = "cautious"
+                effective_autonomy = "standard"
 
             # Build system prompt with autonomy suffix
             system_prompt = DEFAULT_SYSTEM_PROMPT + AUTONOMY_SYSTEM_PROMPT_SUFFIXES.get(effective_autonomy, "")
@@ -1097,6 +1094,7 @@ class AgentHostManager:
 
     async def _start_logical_turn(self, session: AgentSession, message: str, **kwargs) -> dict:
         session._current_turn_id = str(uuid.uuid4())
+        session._last_user_turn_id = session._current_turn_id
         session._current_request_id = kwargs.get("request_id")
         # Only refs supplied by the user in this logical turn can bypass an autonomous layout prompt.
         session._turn_layout_refs = self._layout_ref_ids(kwargs.get("node_refs"))
@@ -1276,30 +1274,86 @@ class AgentHostManager:
         session._follow_up_delivery_failed = False
 
     async def _deliver_follow_up(self, session: AgentSession) -> None:
-        if not session._follow_ups:
-            return
-        item = session._follow_ups[0]
-        # Record the attempt before touching the host: a crash during write is ambiguous.
-        try:
-            attempt = {"type": "input_delivery_attempt", "request_id": item["request_id"]}
-            if self._persist_event(session, attempt) is False:
-                await self._classify_follow_ups(session)
+        while session._follow_ups:
+            item = session._follow_ups[0]
+            # Record the attempt before touching the host: a crash during write is ambiguous.
+            try:
+                attempt = {"type": "input_delivery_attempt", "request_id": item["request_id"]}
+                if self._persist_event(session, attempt) is False:
+                    await self._classify_follow_ups(session)
+                    return
+                await self._broadcast_event(session, attempt, host=session.agent_cli, generation=session.generation)
+                if item.get('_system'):
+                    event = await self._send_system_now(session, item)
+                else:
+                    event = await self._start_logical_turn(session, **item)
+            except asyncio.CancelledError:
+                await self._classify_follow_ups(session, uncertain_first=True)
+                raise
+            except Exception:
+                # A host error does not prove non-delivery; never resend automatically.
+                logger.exception("Failed to deliver queued input for agent %s", session.node_id)
+                await self._classify_follow_ups(session, uncertain_first=True)
                 return
-            await self._broadcast_event(session, attempt, host=session.agent_cli, generation=session.generation)
-            event = await self._start_logical_turn(session, **item)
-        except asyncio.CancelledError:
-            await self._classify_follow_ups(session, uncertain_first=True)
+            # Remove before awaiting handlers: cancellation must not resend an accepted prompt.
+            session._follow_ups.popleft()
+            session._follow_up_delivery_failed = False
+            await self._broadcast_event(session, event, host=event.get("host", session.agent_cli),
+                                        generation=event.get("generation", session.generation))
+            # Dropped system work has no response to trigger delivery of the next input.
+            if event['type'] != 'input_delivery_terminal':
+                return
+
+    async def send_system_continuation(self, session: AgentSession, message: str, *,
+                                       turn_id: str, host: str, generation: int, epoch: str) -> None:
+        """Resume approved server work without manufacturing a user input or turn."""
+        item = {'_system': True, 'message': message, 'turn_id': turn_id,
+                'host': host, 'generation': generation, 'epoch': epoch,
+                'request_id': 'system-' + uuid.uuid4().hex}
+        async with session._input_lock:
+            if (not self._runtime_matches(session, host, generation) or session._stopping
+                    or session.input_epoch != epoch
+                    or (session._last_user_turn_id or session._current_turn_id) not in (None, turn_id)):
+                return
+            event = {'type': 'system_continuation', 'text': message, 'turn_id': turn_id,
+                     'request_id': item['request_id'], 'delivery': 'queued'}
+            if self._persist_event(session, event, host=host, generation=generation) is False:
+                return
+            if session.is_busy:
+                session._follow_ups.append(item)
+            else:
+                await self._send_system_now(session, item)
+
+    async def _send_system_now(self, session: AgentSession, item: dict) -> dict:
+        # Response cleanup clears the active turn, but only another user turn makes this work obsolete.
+        if (not self._runtime_matches(session, item['host'], item['generation'])
+                or session._stopping or session.input_epoch != item['epoch']
+                or (session._last_user_turn_id or session._current_turn_id) not in (None, item['turn_id'])):
+            event = {'type': 'input_delivery_terminal', 'request_id': item['request_id'], 'delivery': 'unsent'}
+            self._persist_event(session, event)
+            return event
+        session._current_turn_id = item['turn_id']
+        session._current_request_id = None
+        try:
+            if session.agent_cli == 'codex':
+                previous_generation = session.generation
+                await self._codex_turn(session, item['message'])
+                # Codex advances native generations within one user turn; the head item is also in this queue.
+                for queued in session._follow_ups:
+                    if (queued.get('_system') and queued['turn_id'] == item['turn_id']
+                            and queued['host'] == item['host'] and queued['epoch'] == item['epoch']
+                            and queued['generation'] == previous_generation):
+                        queued['generation'] = session.generation
+            else:
+                await self.send_command(session, {'type': 'follow_up', 'message': item['message']})
+                session.status = 'busy'
+        except BaseException:
+            session._current_turn_id = None
             raise
-        except Exception:
-            # A host error does not prove non-delivery; never resend automatically.
-            logger.exception("Failed to deliver queued input for agent %s", session.node_id)
-            await self._classify_follow_ups(session, uncertain_first=True)
-            return
-        # Remove before awaiting handlers: cancellation must not resend an accepted prompt.
-        session._follow_ups.popleft()
-        session._follow_up_delivery_failed = False
-        await self._broadcast_event(session, event, host=event.get("host", session.agent_cli),
-                                    generation=event.get("generation", session.generation))
+        event = {'type': 'system_continuation', 'text': item['message'], 'turn_id': item['turn_id'],
+                 'request_id': item['request_id'], 'delivery': 'sent'}
+        self._persist_event(session, event)
+        return event
 
     async def send_follow_up(self, session: AgentSession, message: str, *, images=None,
                              node_refs=None, node_ref_context: str = "", request_id=None, attachment_refs=None) -> None:
@@ -1394,9 +1448,9 @@ class AgentHostManager:
         from .agent_adapters.codex_adapter import CodexAdapter, codex_spawn_env, write_home_mcp_config
 
         adapter = self._adapters.get("codex") or CodexAdapter()
-        effective_autonomy = session.autonomy or "cautious"
+        effective_autonomy = session.autonomy or "standard"
         if effective_autonomy not in AUTONOMY_SYSTEM_PROMPT_SUFFIXES:
-            effective_autonomy = "cautious"
+            effective_autonomy = "standard"
         system_prompt = DEFAULT_SYSTEM_PROMPT + AUTONOMY_SYSTEM_PROMPT_SUFFIXES.get(effective_autonomy, "")
         project_dir = self._get_project_dir(session.project_id)
         session_dir = os.path.join(project_dir, session.session_dir)
@@ -1752,7 +1806,10 @@ class AgentHostManager:
             logger.warning(f"Failed to record codex usage for {session.node_id}: {e}")
 
     async def send_abort(self, session: AgentSession) -> None:
-        """Abort the current turn."""
+        """Abort the current turn and invalidate unpaid approvals."""
+        session.input_epoch = uuid.uuid4().hex
+        from .agent_batch import invalidate
+        invalidate(session.project_id, session.node_id)
         if session.agent_cli == "codex":
             # ADR 0024：abort=SIGINT 单轮（实测 rollout 实时落盘、可 resume）。
             # Windows 无 SIGINT：terminate() 终止当前轮进程（不毁 sessionId）。

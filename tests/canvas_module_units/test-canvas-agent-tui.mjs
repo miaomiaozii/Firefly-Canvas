@@ -271,7 +271,7 @@ test('getAgentTuiState 首次建默认形状，二次返回同一对象', t => {
         autonomy: first.autonomy,
         messages: first.messages,
         socket: first.socket,
-    }), { status: 'idle', model: '', autonomy: 'cautious', messages: [], socket: null });
+    }), { status: 'idle', model: '', autonomy: 'standard', messages: [], socket: null });
     first.status = 'busy';
     const second = get('n1');
     assert.equal(fromContext(second.status), 'busy', '必须复用同一 Map 条目，不能重建');
@@ -1089,8 +1089,25 @@ test('agentNodeBodyHtml: 模型触发器、自治分段、更多菜单分支按�
     const plain = fromContext(body({ id: 'n2', type: 'agent' }));
     assert.doesNotMatch(plain, /data-agent-more-branch/);
     assert.doesNotMatch(fn(ctx, 'agentHeadActionButtonsHtml')({ id:'n2' }), /data-agent-more-branch/, '无分支时更多菜单也无分支下拉');
-    assert.match(plain, /data-agent-autonomy-choice="cautious" aria-pressed="true">每张/, '默认自治级别必须是谨慎');
+    assert.match(plain, /data-agent-autonomy-choice="standard" aria-pressed="true">每批/, '#402 缺省自治级别必须是每批确认');
     assert.ok(plain.includes('agent-tui-empty'), '空会话要有占位文案');
+});
+
+test('agentNodeBodyHtml: #402 显式谨慎节点不随缺省档位迁移', () => {
+    const node = { id: 'n1', type: 'smart-agent', autonomy: 'cautious' };
+    const { ctx, fetchCalls, renders } = loadAgentTuiModule({ nodes: [node] });
+    const before = fromContext(ctx.canvasState.nodes);
+    const state = fn(ctx, 'getAgentTuiState')('n1');
+    state.historyLoaded = true;
+    assert.equal(state.autonomy, 'standard', '临时状态的缺省值不能覆盖节点的显式设置');
+
+    const html = fromContext(fn(ctx, 'agentNodeBodyHtml')(node));
+    assert.match(html, /data-agent-autonomy-choice="cautious" aria-pressed="true">每张/);
+    assert.match(html, /data-agent-autonomy-choice="standard" aria-pressed="false">每批/);
+    assert.match(html, /data-agent-autonomy-choice="autonomous" aria-pressed="false">无需/);
+    assert.deepEqual(fromContext(ctx.canvasState.nodes), before, '只读渲染不得改写持久节点或人工归属');
+    assert.deepEqual(renders, [], '只读渲染不得触发保存');
+    assert.equal(fetchCalls.length, 0, '已加载历史的渲染不得提交设置或重新拉取历史');
 });
 
 test('agentNodeBodyHtml: #322 思考 inline 折叠——默认收起不展开，thinkingVisible=全展开，全转义', () => {

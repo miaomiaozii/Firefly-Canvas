@@ -9,7 +9,7 @@ import mimetypes
 import os
 import time
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
@@ -20,6 +20,7 @@ import weakref
 from typing import Callable
 
 from app.services.agent_node_state import ownership_fields, project_nodes
+from app.services.agent_confirmation import generation_settlement, originating_turn, resumable, validate_pending
 
 import sys as _sys
 import os as _os
@@ -172,6 +173,7 @@ def _apply_journaled(store, project_id, mutations, revision, trusted_agent_bindi
     store.open_project(project_id)
     with journal.mutation(project_id) as operation:
         before = store.canvas(project_id)
+        validate_pending(project_id, before, admit=True)
         apply = store.apply_agent_host_mutations if trusted_agent_bindings else store.apply_mutations
         result = apply(project_id, mutations, base_revision=revision)
         delta = build_delta(before, store.canvas(project_id))
@@ -252,7 +254,7 @@ async def _rest_agent_call(request, project_id, tool, args, callback, agent_node
         raise agent_error(400, "INVALID_ARGUMENT", "Agent node identity is required for operation journaling",
                           "请在查询串传入发起操作的 agent_node_id，再重试。")
     from app.services.agent_host import agent_host_manager
-    turn = agent_host_manager.get_current_turn_id(project_id, agent_node_id)
+    turn = originating_turn() or agent_host_manager.get_current_turn_id(project_id, agent_node_id)
     with agent_ops_scope(project_id=project_id, agent_node_id=agent_node_id,
                          turn_id=turn, tool=tool, args=args):
         return await callback()
@@ -297,6 +299,7 @@ def _append_effect_preflight(store, project_id, record):
 
 
 def _media_root(store, project_id, context, effect, guarded):
+    validate_pending(project_id, store.canvas(project_id), admit=True)
     record = {"op_id": context.op_id, "turn_id": context.turn_id,
               "agent_node_id": context.agent_node_id, "tool": context.tool, "args": context.args,
               "before": [], "after": [], "touched_node_ids": [],
@@ -428,6 +431,7 @@ async def _apply_mutations_from_snapshot(
                 with store._lock:
                     canvas = store.canvas(project_id)
                     mutations = build_mutations(canvas)
+                    validate_pending(project_id, canvas)
                     if not mutations:
                         return None
                     preview = deepcopy(canvas)
@@ -631,7 +635,7 @@ def _layout_route(tool):
         return await _rest_agent_call(request, project_id, tool, args,
                                       lambda: layout_tool_core(project_id, owner, tool, args,
                                                                hosted=True), owner)
-    return endpoint
+    return resumable(endpoint)
 
 
 for _layout_tool in sorted(LAYOUT_TOOLS):
@@ -649,6 +653,7 @@ async def update_node(project_id: str, node_id: str, request: Request, x_agent_p
 
 
 @router.delete("/nodes/{node_id}", dependencies=_AGENT_WRITE)
+@resumable
 async def delete_node(project_id: str, node_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
     """Delete a node after confirmation; shared delete core also tears down any Agent host."""
     _validate_project(project_id)
@@ -818,8 +823,9 @@ async def create_edge(project_id: str, request: Request, x_agent_project: str = 
 
 
 @router.delete("/edges/{from_node}/{to_node}", dependencies=_AGENT_WRITE)
+@resumable
 async def delete_edge(project_id: str, from_node: str, to_node: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
-    """Remove a connection between two nodes. #357：agent 调用同样过确认门。"""
+    """Disconnect only after the server has verified ownership or approval."""
     _validate_project(project_id)
     await _server_confirm_gate(request, project_id, "canvas.delete_edge",
                                {"from": from_node, "to": to_node},
@@ -863,6 +869,7 @@ async def canvas_view_media(project_id: str, request: Request, x_agent_project: 
 
 
 @router.post("/edit_crop", dependencies=_AGENT_WRITE)
+@resumable
 async def canvas_edit_crop(project_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
     """Crop a node image after confirmation, retaining the original in the media library."""
     body = await request.json()
@@ -873,6 +880,7 @@ async def canvas_edit_crop(project_id: str, request: Request, agent_node_id: str
 
 
 @router.post("/batch_prompt_edit")
+@resumable
 async def canvas_batch_prompt_edit(project_id: str, request: Request):
     args = await request.json()
     parsed = agent_batch_prompt.parse(args)
@@ -885,6 +893,7 @@ async def canvas_batch_prompt_edit(project_id: str, request: Request):
 
 
 @router.post("/batch_edit", dependencies=_AGENT_WRITE)
+@resumable
 async def canvas_batch_edit(project_id: str, request: Request):
     body = agent_refs.require_object(await request.json(), "batch_edit", required=("node_ids", "prompt"))
     node_ids = body["node_ids"]
@@ -892,7 +901,9 @@ async def canvas_batch_edit(project_id: str, request: Request):
     prompt, plans = await prepare_batch_generation(project_id, node_ids, body["prompt"])
     count = sum(plan.request.count for plan in plans)
     edited, human = legacy_batch_prompt_counts(plans, prompt)
-    await confirm_batch_prompt(project_id, agent, "canvas.batch_edit", edited, human, images=count)
+    await confirm_batch_prompt(project_id, agent, "canvas.batch_edit", edited, human, images=count,
+                               preflight=[generation_confirmation_input(project_id, node, plan)
+                                          for node, plan in zip(node_ids, plans)])
     enforce_generation_limit(project_id, agent, count=count)
     return await _rest_agent_call(request, project_id, "canvas.batch_edit", body,
                                   lambda: batch_edit_core(project_id, node_ids, prompt,
@@ -900,6 +911,7 @@ async def canvas_batch_edit(project_id: str, request: Request):
 
 
 @router.post("/edit_rotate", dependencies=_AGENT_WRITE)
+@resumable
 async def canvas_edit_rotate(project_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
     """#266b canvas.edit_rotate: 本地旋转节点图（90/180/270 逆时针）覆写节点图。
     #357：agent 调用经服务端确认门。"""
@@ -911,6 +923,7 @@ async def canvas_edit_rotate(project_id: str, request: Request, agent_node_id: s
 
 
 @router.post("/edit_flip", dependencies=_AGENT_WRITE)
+@resumable
 async def canvas_edit_flip(project_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
     """#266b canvas.edit_flip: 本地镜像节点图（horizontal 左右 / vertical 上下）覆写节点图。
     #357：agent 调用经服务端确认门。"""
@@ -922,6 +935,7 @@ async def canvas_edit_flip(project_id: str, request: Request, agent_node_id: str
 
 
 @router.post("/edit_outpaint", dependencies=_AGENT_WRITE)
+@resumable
 async def canvas_edit_outpaint(project_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
     """#289 canvas.edit_outpaint: 服务端复刻站内红底扩图链（PIL 填 #ff0044 + 贴原图）覆写节点图。
     #357：agent 调用经服务端确认门。"""
@@ -1315,13 +1329,15 @@ def reset_generation_counts(project_id: str, agent_node_id: str = "") -> None:
 
 
 @generate_router.post("/trigger", dependencies=_AGENT_WRITE)
+@resumable
 async def trigger_generation(project_id: str, request: Request, x_agent_project: str = Header(default="")):
     body = agent_refs.require_object(await request.json(), "generate.trigger", required=("node_id",))
     agent = _paid_rest_actor(request)
     node_id = body["node_id"]
     plan = await prepare_generation(project_id, node_id)
     count = plan.request.count
-    await _server_confirm_gate(request, project_id, "generate.trigger", {"node_id": node_id, "n": count},
+    await _server_confirm_gate(request, project_id, "generate.trigger",
+                               {"node_id": node_id, "n": count, "preflight": generation_confirmation_input(project_id, node_id, plan)},
                                f"节点 {node_id} 生成 {count} 张图片（消耗外部生成额度）")
     enforce_generation_limit(project_id, agent, count=count)
     return await _rest_agent_call(request, project_id, "generate.trigger", body,
@@ -1329,6 +1345,7 @@ async def trigger_generation(project_id: str, request: Request, x_agent_project:
 
 
 @generate_router.post('/retry', dependencies=_AGENT_WRITE)
+@resumable
 async def retry_generation(project_id: str, request: Request):
     from app.services import agent_batch, agent_generation_retry
 
@@ -1402,6 +1419,7 @@ def _generation_mutation(store, project_id, context, task_id, guarded, action, *
     lifecycle = _MEDIA_LIFECYCLE.get()
     reserved = batch is not None or lifecycle is not None
     with journal.mutation(project_id) as operation:
+        validate_pending(project_id, store.canvas(project_id), admit=True)
         # Reserve before the write so a failing reservation cannot orphan a delta.
         if reserved:
             reservation = {"op_id": context.op_id, "turn_id": context.turn_id}
@@ -1566,6 +1584,18 @@ class _PreparedGeneration:
     reference_roles: tuple = ()
     reference_files: tuple = ()
     provider: dict | None = None
+    batch_input: tuple | None = None
+
+
+def generation_confirmation_input(project_id, node_id, plan):
+    legacy = {image.asset_id: image.url for image in plan.legacy_images}
+    roles = plan.reference_roles or (None,) * len(plan.payload.reference_asset_ids)
+    return {'node_id': node_id, 'final_prompt': plan.final_prompt, 'user_prompt': plan.user_prompt,
+            'refs': [{'n': n, 'asset_id': asset, 'role': role or 'general',
+                      'thumb': legacy.get(asset, f'/api/project-library/{project_id}/media/{asset}')}
+                     for n, (asset, role) in enumerate(zip(plan.payload.reference_asset_ids, roles), 1)],
+            'model': plan.route.model, 'provider': plan.route.provider_id,
+            'aspect_ratio': plan.request.aspect_ratio, 'size': plan.payload.size, 'count': plan.request.count}
 
 
 def _node_prompt_fields(node):
@@ -1785,6 +1815,7 @@ class _AgentImageLifecycle:
 
         def register():
             with self.store._lock:
+                validate_pending(self.project_id, self.store.canvas(self.project_id), admit=True)
                 if self.validate_start is not None:
                     self.validate_start(self.task_id, self.result_id)
                 return register_with_refs()
@@ -2043,7 +2074,8 @@ class _AgentImageLifecycle:
             return
         self.update(**self.metadata)
         error.add_note(f'Generation operation {self.metadata["op_id"]} task {self.task_id}')
-        await _generation_archive_to_completion(self.finalize(error, registration=True))
+        with generation_settlement():
+            await _generation_archive_to_completion(self.finalize(error, registration=True))
 
     def schedule(self, run, *, pre_cancel=False):
         from app.services.agent_ops_context import create_agent_ops_task
@@ -2068,7 +2100,9 @@ class _AgentImageLifecycle:
 
         coro = supervise()
         try:
-            task = create_agent_ops_task(coro)
+            # The task keeps journal attribution, but live approval cannot veto an already paid result.
+            with generation_settlement():
+                task = create_agent_ops_task(coro)
         except Exception:
             coro.close()
             raise
@@ -2391,6 +2425,7 @@ async def list_media(project_id: str, x_agent_project: str = Header(default=""))
 
 
 @media_router.delete("/{asset_id}", dependencies=_AGENT_WRITE)
+@resumable
 async def delete_media(project_id: str, asset_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
     """Delete a media file from the project. #357：agent 调用经服务端确认门。"""
     _validate_project(project_id)
@@ -2526,17 +2561,10 @@ async def get_viewport_state(project_id: str, x_agent_project: str = Header(defa
 
 @confirm_router.post("/confirm")
 async def request_confirmation(project_id: str, request: Request, x_agent_project: str = Header(default="")):
-    """Request user confirmation for a destructive operation.
+    """Keep an unanswered approval live beyond the synchronous response window.
 
-    Called by the canvas-tools extension before executing destructive tools.
-    Sends a confirm event to the frontend via the agent's WS stream and blocks
-    waiting for the user's decision (with timeout).
-
-    For nodes with autonomy="autonomous", destructive tools are auto-approved
-    (except safety-floor tools which always require confirmation).
-
-    Body: {"node_id": "...", "tool": "...", "params": {...}, "message": "..."}
-    Returns: {"approved": true} or {"approved": false, "reason": "timeout"|"rejected"}
+    Autonomous mode cannot bypass safety-floor tools. A pending receipt does
+    not authorize execution; only the original operation may consume approval.
     """
     _validate_project(project_id)
     body = await request.json()
@@ -2557,118 +2585,21 @@ async def request_confirmation_core(
     params: dict,
     message: str,
     timeout_seconds: float = 60,
-    *, allow_automatic: bool = True, transient_session=None, cancel_event=None,
+    *, allow_automatic: bool = True, transient_session=None, cancel_event=None, confirm_id=None,
 ) -> dict:
-    """Confirmation gate core (Request-free; shared by HTTP + MCP, #243).
-
-    Blocks until the user confirms/rejects on the canvas or times out.
-    Returns {"approved": bool, "reason": "rejected" | "timeout" | None}.
-    """
+    """Share live, replayable approvals between HTTP, MCP and batch workers."""
     if not node_id:
         raise agent_error(400, "CONFIRM_MISSING_NODE_ID", "node_id is required",
                           "确认门需要发起节点：调用时带 ?agent_node_id=<节点>。")
 
-    from app.services.agent_host import agent_host_manager, SAFETY_FLOOR_TOOLS
-
-    session = transient_session or await agent_host_manager.get_or_create_session(project_id, node_id)
-
-    # Check autonomy level: auto-approve destructive tools in autonomous mode
-    # (except safety-floor tools which always require confirmation)
-    autonomy = session.autonomy or "cautious"
-    if allow_automatic and autonomy == "autonomous" and tool not in SAFETY_FLOOR_TOOLS:
-        return {"approved": True}
-
-    # Generate a unique confirm ID
-    confirm_id = f"confirm-{uuid.uuid4().hex[:12]}"
-
-    # Create a completion event and result holder
-    loop = asyncio.get_running_loop()
-    expires_at = loop.time() + float(timeout_seconds)
-    transient_metadata = ({'host': session.agent_cli, 'generation': session.generation}
-                          if transient_session is not None else {})
-    done_event = asyncio.Event()
-    result = {"approved": False, "reason": "timeout"}
-
-    # Register a temporary confirm handler
-    async def handle_confirm_response(cid, approved):
-        if cid == confirm_id and (cancel_event is None or (
-                type(approved) is bool and loop.time() < expires_at
-                and not (cancel_event.is_set() or done_event.is_set()))):
-            result["approved"] = approved
-            result["reason"] = "rejected" if not approved else None
-            done_event.set()
-
-    async def publish(event):
-        # #389: persist before fan-out so live and replay share the same sequence.
-        # #400 has no durable pending approval; do not create an event log for it.
-        if transient_session is None:
-            agent_host_manager._persist_event(session, event)
-        for handler in session.event_handlers:
-            try:
-                await handler(session, event)
-            except Exception:
-                pass
-
-    agent_host_manager.on_confirm(session, handle_confirm_response)
-
-    try:
-        confirm_event = {
-            "type": "confirm",
-            "confirm_id": confirm_id,
-            "tool": tool,
-            "params": params,
-            "message": message,
-            **transient_metadata,
-        }
-        if transient_session is None:
-            await publish(confirm_event)
-        else:
-            try:
-                await asyncio.wait_for(publish(confirm_event), max(0, expires_at - loop.time()))
-            except TimeoutError:
-                pass  # A slow browser transport cannot extend this approval's lifetime.
-
-        if cancel_event is None:
-            try:
-                await asyncio.wait_for(done_event.wait(), timeout=float(timeout_seconds))
-            except asyncio.TimeoutError:
-                result.update(approved=False, reason='timeout')
-        else:
-            decision = asyncio.create_task(done_event.wait())
-            cancelled = asyncio.create_task(cancel_event.wait())
-            try:
-                completed, _ = await asyncio.wait((decision, cancelled), timeout=max(0, expires_at - loop.time()),
-                                                  return_when=asyncio.FIRST_COMPLETED)
-                if cancel_event.is_set():
-                    result.update(approved=False, reason='stopped')
-                elif not completed:
-                    result.update(approved=False, reason='timeout')
-            finally:
-                decision.cancel()
-                cancelled.cancel()
-
-        # #389：门结束（批准/拒绝/超时）落终态记录并 live 广播：回放时前端据此关闭
-        # 已决确认卡（「确认结束后不再重放」），live 端同步关掉挂着的 ffDialog。
-        resolved_event = {
-            "type": "confirm_resolved",
-            "confirm_id": confirm_id,
-            "tool": tool,
-            "approved": bool(result["approved"]),
-            "reason": result["reason"],
-            **transient_metadata,
-        }
-        if transient_session is None:
-            await publish(resolved_event)
-        else:
-            try:
-                await asyncio.wait_for(publish(resolved_event), 1)
-            except TimeoutError:
-                pass
-
-        return {"approved": result["approved"], "reason": result["reason"]}
-    finally:
-        if handle_confirm_response in session.confirm_handlers:
-            session.confirm_handlers.remove(handle_confirm_response)
+    from app.services.agent_confirmation import request
+    decision = await request(project_id, node_id, tool, params, message, timeout_seconds,
+                             allow_automatic=allow_automatic, transient_session=transient_session,
+                             cancel_event=cancel_event, confirm_id=confirm_id)
+    if decision.get('approved'):
+        # Stale approvals must fail before callers debit their generation quota.
+        validate_pending(project_id, _app_main.FIREFLY_PROJECT_STORE.canvas(project_id))
+    return decision
 
 
 # =============================================================================
@@ -2989,8 +2920,10 @@ async def _replace_node_image_impl(project_id: str, node: dict, node_id: str, pi
     return result
 
 
-async def confirm_batch_prompt(project_id, actor, tool, count, human_count, *, images=None):
+async def confirm_batch_prompt(project_id, actor, tool, count, human_count, *, images=None, preflight=None):
     params = {"node_count": count, "user_edited_count": human_count}
+    if preflight is not None:
+        params['preflight'] = preflight
     message = f"是否修改 {count} 个节点的提示词？其中 {human_count} 个由用户手动编辑过。"
     if images is not None:
         params["n"] = images
@@ -3055,11 +2988,35 @@ def _batch_prompt(node_ids, prompt):
     return prompt
 
 
+def _legacy_batch_input(project_id, node_id, canvas, catalog, prompt, plan, *, source=None):
+    from app.services.canvas_image_refs import ReferenceGraph
+
+    graph = ReferenceGraph(canvas, project_id, catalog)
+    node = _snapshot_node(canvas, node_id)
+    source = node if source is None else source
+    return ({key: value for key, value in source.items() if key != 'updated_at'},
+            tuple(upstream['id'] for upstream in graph._inputs(node)),
+            graph.resolve(node_id, prompt_override=prompt),
+            plan.payload.model_dump(exclude={'base_revision'}), plan.final_prompt,
+            (plan.route.provider_id, plan.route.model), plan.reference_files, plan.provider)
+
+
 async def prepare_batch_generation(project_id, node_ids, prompt):
+    from copy import deepcopy
+
     _validate_project(project_id)
     prompt = _batch_prompt(node_ids, prompt)
-    canvas = _app_main.FIREFLY_PROJECT_STORE.canvas(project_id)
-    plans = [await prepare_generation(project_id, node_id, canvas=canvas, prompt_override=prompt) for node_id in node_ids]
+    store = _app_main.FIREFLY_PROJECT_STORE
+    canvas, catalog = await asyncio.to_thread(store.image_reference_snapshot, project_id)
+    plans = []
+    for node_id in node_ids:
+        agent_refs.identifier(node_id, 'node_id')
+        plan = await asyncio.to_thread(resolve_generation, project_id, node_id, canvas, catalog,
+                                       saved=canvas, prompt_override=prompt)
+        node = _snapshot_node(canvas, node_id)
+        source = {**node, **agent_batch_prompt.prompt_update(node, prompt, legacy=True)}
+        approved_input = _legacy_batch_input(project_id, node_id, canvas, catalog, prompt, plan, source=source)
+        plans.append(replace(plan, batch_input=deepcopy(approved_input), provider=deepcopy(plan.provider)))
     return prompt, tuple(plans)
 
 
@@ -3142,7 +3099,24 @@ async def batch_edit_core(project_id: str, node_ids, prompt, agent_node_id: str 
 
         for index, node_id in enumerate(node_ids):
             plan = plans[index] if plans is not None else None
-            triggered = await trigger_generation_core(project_id, node_id, agent_node_id=agent_node_id, plan=plan)
+            admission = {}
+            if plan is not None and plan.batch_input is not None:
+                def validate_start(_task_id, _result_id, *, node_id=node_id, plan=plan):
+                    # Child result cards change the canvas; only this child's approved inputs
+                    # must still match under the lifecycle's persistence lock.
+                    try:
+                        current_canvas, catalog = store.image_reference_snapshot(project_id)
+                        current = resolve_generation(project_id, node_id, current_canvas, catalog,
+                                                     saved=current_canvas, prompt_override=prompt,
+                                                     providers=_app_main.load_api_providers(read_only=True))
+                        actual = _legacy_batch_input(project_id, node_id, current_canvas, catalog, prompt, current)
+                    except (HTTPException, ProjectStoreError, OSError, ValueError) as exc:
+                        raise conflict() from exc
+                    if actual != plan.batch_input:
+                        raise conflict()
+                admission = {'validate_start': validate_start, 'approved_provider': plan.provider}
+            triggered = await trigger_generation_core(project_id, node_id, agent_node_id=agent_node_id,
+                                                       plan=plan, **admission)
             if not context:
                 tasks.append({"node_id": node_id, "task_id": str(triggered.get("task_id") or "")})
         result = {"success": True, "count": len(tasks), "prompt": prompt, "tasks": tasks}
@@ -3470,6 +3444,7 @@ async def erase_node_image_core(project_id: str, node_id, rect, prompt) -> dict:
 
 
 @router.post("/edit_erase", dependencies=_AGENT_WRITE)
+@resumable
 async def canvas_edit_erase(project_id: str, request: Request, agent_node_id: str = Query(default=""), x_agent_project: str = Header(default="")):
     """#290 canvas.edit_erase: 按 prompt 擦除节点图选区内容。
     #357：agent 调用经服务端确认门。"""
@@ -3506,6 +3481,5 @@ async def _server_confirm_gate(request: Request, project_id: str, tool: str,
     if decision.get("reason") == "rejected":
         raise agent_error(409, "CONFIRM_REJECTED", f"用户在画布上拒绝了操作：{tool}",
                           "用户拒绝了这个操作；不要重试同一参数，先问用户想要什么。", retryable=False)
-    raise agent_error(409, "CONFIRM_PENDING",
-                      f"确认超时（{int(AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS)} 秒）：{tool} 未获确认",
-                      "画布标签页可能已关闭，或确认仍在等待——先调用 canvas.view 查看画布状态，再决定是否重试。")
+    raise agent_error(409, "CONFIRM_PENDING", f"操作仍在等待确认：{tool}",
+                      "结束响应并等待系统确认，不要重复询问或重复调用。", details=decision)

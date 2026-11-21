@@ -19,7 +19,8 @@ from app.constants import NODE_TYPE_AGENT, NODE_TYPE_GROUP, NODE_TYPE_IMAGE, NOD
 from app.services import agent_refs
 from app.services.agent_errors import agent_error
 from app.services.agent_ops_async import run_blocking_to_completion
-from app.services.agent_ops_context import agent_ops_scope
+from app.services.agent_ops_context import agent_ops_scope, current_agent_ops_context
+from app.services.agent_confirmation import Origin
 from app.services.canvas_image_refs import ReferenceGraph
 from firefly_projects import ProjectNotFound, ProjectStoreError
 
@@ -179,6 +180,7 @@ class Preview:
     providers: str
     blockers: tuple
     deadline: float
+    prepared: dict = field(default_factory=dict)
     batch: object = None
 
 
@@ -189,7 +191,10 @@ class Batch:
     loop: object
     models: tuple
     max_retries: int
-    deadline: float
+    origin: Origin
+    turn_id: str | None
+    confirm_id: str = field(default_factory=lambda: 'confirm-' + uuid4().hex[:12])
+    confirmations: int = 0
     status: str = 'awaiting_confirmation'
     reason: str | None = None
     concurrency: int = 1
@@ -305,13 +310,14 @@ def _read_preview(caller, args, loop):
         if _COPY.search(plan.final_prompt) or any(line.strip() and line.strip() in plan.final_prompt for line in
                                                 str(nodes[node].get('overlay_plan') or '').splitlines()):
             warnings.append({'node_id': node, 'code': 'COPY_IN_PROMPT'})
-    total = sum(row['count'] for row in output)
+    prepared = {'items': output, 'blockers': blockers, 'warnings': warnings,
+                'total_images': sum(row['count'] for row in output), 'models_used': used}
+    total = prepared['total_images']
     if total > _api().GENERATION_SESSION_LIMIT:
         blockers.append({'node_id': None, 'code': 'BUDGET_EXCEEDED'})
     # A blocked request needs no retained execution snapshot.
     return (Preview(caller, key, loop, args, () if blockers else tuple(items), _digest(providers),
-                    tuple(blockers), time.monotonic() + _TTL),
-            {'items': output, 'blockers': blockers, 'warnings': warnings, 'total_images': total, 'models_used': used})
+                    tuple(blockers), time.monotonic() + _TTL, prepared), prepared)
 
 
 def _fresh(preview, item=None):
@@ -347,6 +353,11 @@ def _options(args):
 
 async def call(tool, caller, args):
     api = _api()
+    from app.services.agent_host import agent_host_manager as host
+    context = current_agent_ops_context()
+    originating_turn = context.turn_id if context else host.get_current_turn_id(caller.project, caller.actor)
+    originating_session = host.conversation_session(caller.project, caller.actor)
+    captured_origin = Origin.capture(originating_session, originating_turn) if originating_session else None
     if tool == 'generate.preflight':
         agent_refs.require_object(args, tool, optional=('node_ids', 'group_id'))
         if len(args) != 1:
@@ -419,24 +430,37 @@ async def call(tool, caller, args):
                 return _receipt(preview.batch)
         raise
     loop = asyncio.get_running_loop()
+    session = await host.get_or_create_session(caller.project, key[2][0], recover_history=False)
+    node = next(n for n in canvas['nodes'] if n['id'] == key[2][0])
+    if node.get('agentCli') and node['agentCli'] != session.agent_cli and not session.is_busy:
+        from app.routers.api_agent_nodes import _apply_node_host
+        _apply_node_host(caller.project, key[2][0], session)
+    session.autonomy = node.get('autonomy') or session.autonomy or 'standard'
+    turn = originating_turn
+    origin = captured_origin or Origin.capture(session, turn)
+    origin.turn = turn
+    if caller.client:
+        origin.hosted = False
     with _LOCK:
         if _PREFLIGHTS.get(ident) is not preview:
             raise agent_error(409, 'PREFLIGHT_STALE', 'Preflight session ended')
         if preview.batch:
             return _receipt(preview.batch)
         preview.deadline = time.monotonic() + _TTL
-        batch = Batch(uuid4().hex, preview, loop, models, retries,
-                      time.monotonic() + api.AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS,
+        batch = Batch(uuid4().hex, preview, loop, models, retries, origin, turn,
                       rows=[{'node_id': item.node, 'status': 'queued', 'attempts': 0, 'model': item.plan.route.model,
                              'result_node_id': None, 'task_id': None, 'failure': None} for item in preview.items])
         preview.batch = _BATCHES[batch.id] = batch
-        # Never inherit the REST/MCP turn's ContextVars or external turn lease.
+        # Retain only the originating turn, not the request's ContextVars or external lease.
         api._track_lifetime_task(contextvars.Context().run(asyncio.create_task, _run(batch)))
         return _receipt(batch)
 
 
 def _receipt(batch):
-    return {'batch_id': batch.id, 'status': 'approved' if batch.approved_count else 'awaiting_confirmation'}
+    automatic = batch.origin.session.autonomy == 'autonomous'
+    return {'batch_id': batch.id,
+            'status': 'approved' if automatic or batch.approved_count else 'awaiting_confirmation',
+            **({'confirm_id': batch.confirm_id} if not automatic else {})}
 
 
 def _fail(batch, reason):
@@ -448,32 +472,26 @@ def _fail(batch, reason):
         batch.signal()
 
 
-async def _confirm(batch, project, actor, options, count):
-    from app.services.agent_host import agent_host_manager as host
+async def _confirm(batch, project, actor, options, count, item=None):
     api = _api()
     gate_key = (batch.loop, project, actor)
     with _LOCK:
         gate = _GATES.setdefault(gate_key, asyncio.Lock())
-    try:
-        await asyncio.wait_for(gate.acquire(), max(0, batch.deadline - time.monotonic()))
-    except TimeoutError:
-        return {'approved': False, 'reason': 'timeout'}
-    try:
-        if batch.cancelled.is_set():
+    async with gate:
+        if batch.cancelled.is_set() or not batch.origin.valid():
             return {'approved': False, 'reason': 'stopped'}
-        session = await host.get_or_create_session(project, actor, recover_history=False)
-        decision = await api.request_confirmation_core(
-            project, actor, 'generate.request_batch', {**options, 'total_images': count},
-            f'批准整批生成 {count} 张图片（消耗外部额度）\n'
+        prepared = deepcopy(batch.preview.prepared)
+        if item is not None:
+            prepared['items'] = [row for row in prepared['items'] if row['node_id'] == item.node]
+            prepared['total_images'] = count
+        confirm_id = batch.confirm_id if not batch.confirmations else 'confirm-' + uuid4().hex[:12]
+        batch.confirmations += 1
+        return await api.request_confirmation_core(
+            project, actor, 'generate.request_batch', {**options, 'total_images': count, 'preflight': prepared},
+            f'批准生成 {count} 张图片（消耗外部额度）\n'
             f'备选模型：{json.dumps(options["fallback_models"], ensure_ascii=False)}\n'
             f'允许自动重试次数：{min(batch.max_retries, 2)}',
-            max(0, batch.deadline - time.monotonic()), allow_automatic=False,
-            transient_session=session, cancel_event=batch.cancelled)
-        if host.conversation_session(project, actor) is not session or session._stopping:
-            return {'approved': False, 'reason': 'session_ended'}
-        return decision
-    finally:
-        gate.release()
+            None, transient_session=batch.origin.session, cancel_event=batch.cancelled, confirm_id=confirm_id)
 
 
 async def _run(batch):
@@ -484,7 +502,10 @@ async def _run(batch):
     count = sum(item.plan.request.count for item in preview.items)
     options = {'batch_id': batch.id, 'fallback_models': list(batch.models), 'max_retries': batch.max_retries}
     try:
-        decision = await _confirm(batch, project, actor, options, count)
+        cautious = batch.origin.session.autonomy == 'cautious'
+        first = preview.items[0] if cautious else None
+        admitted_count = first.plan.request.count if first else count
+        decision = await _confirm(batch, project, actor, options, admitted_count, first)
         if not decision.get('approved'):
             with _LOCK:
                 _fail(batch, decision.get('reason'))
@@ -494,11 +515,14 @@ async def _run(batch):
             # Check the exact inputs and debit the existing shared session counter once.
             with store._lock:
                 providers = deepcopy(_fresh(preview))
+                if not batch.origin.valid():
+                    raise agent_error(409, 'CONFIRM_STALE', 'Owning Agent turn changed',
+                                      '重新预检并请求批准，不复用旧批准。', retryable=False)
                 with _LOCK:
                     if batch.status != 'awaiting_confirmation' or _BATCHES.get(batch.id) is not batch:
                         return None
-                    api.enforce_generation_limit(project, actor, count)
-                    batch.approved_count = count
+                    api.enforce_generation_limit(project, actor, admitted_count)
+                    batch.approved_count = admitted_count
                 return providers
 
         providers = await run_blocking_to_completion(approve)
@@ -507,7 +531,8 @@ async def _run(batch):
         with _LOCK:
             batch.status = 'running'
             batch.signal()
-        with agent_ops_scope(project_id=project, agent_node_id=actor, tool='generate.request_batch', args=options) as op:
+        with agent_ops_scope(project_id=project, agent_node_id=actor, turn_id=batch.turn_id,
+                             tool='generate.request_batch', args=options) as op:
             journal_batch = {'root': op.op_id, 'root_exists': False, 'ids': set(), 'tokens': {op.op_id},
                              'tasks': [], 'unregistered': {}}
             token = api._BATCH_GENERATION.set(journal_batch)
@@ -515,12 +540,24 @@ async def _run(batch):
                 for item, row in zip(preview.items, batch.rows):
                     if batch.cancelled.is_set() or batch.status == 'paused':
                         break
+                    if cautious and item is not first:
+                        decision = await _confirm(batch, project, actor, options, item.plan.request.count, item)
+                        if not decision.get('approved'):
+                            with _LOCK:
+                                _fail(batch, decision.get('reason'))
+                            break
+                        with store._lock:
+                            _fresh(preview, item)
+                            if batch.cancelled.is_set() or not batch.origin.valid():
+                                break
+                            api.enforce_generation_limit(project, actor, item.plan.request.count)
+                            batch.approved_count += item.plan.request.count
                     await _run_item(batch, row, item, actor, providers)
             finally:
                 api.release_batch_journal(store, project, op.op_id, journal_batch, journal_batch['ids'])
                 api._BATCH_GENERATION.reset(token)
         with _LOCK:
-            if not batch.cancelled.is_set() and batch.status != 'paused':
+            if not batch.cancelled.is_set() and batch.status not in TERMINAL and batch.status != 'paused':
                 batch.status = 'done'
             batch.signal()
     except asyncio.CancelledError:
@@ -533,6 +570,9 @@ async def _run(batch):
         _LOG.exception('Agent generation batch %s failed', batch.id)
         with _LOCK:
             _fail(batch, 'BATCH_FAILED')
+    finally:
+        if not batch.cancelled.is_set():
+            await batch.origin.continue_with(batch.status_dict())
 
 
 async def _run_item(batch, row, item, actor, providers):
@@ -558,7 +598,8 @@ async def _run_item(batch, row, item, actor, providers):
                 retry.check_tip(store, project, *parent)
             _fresh(batch.preview, item)
             with _LOCK:
-                if batch.status != 'running' or _BATCHES.get(batch.id) is not batch:
+                if (batch.status != 'running' or _BATCHES.get(batch.id) is not batch
+                        or not batch.origin.valid()):
                     raise agent_error(409, 'BATCH_STOPPED', 'Batch stopped before this item started')
                 submitted = task_id
                 row.update(status='running', attempts=attempt + 1, task_id=task_id,

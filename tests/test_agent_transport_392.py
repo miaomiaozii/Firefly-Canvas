@@ -260,13 +260,24 @@ class GenerationIdentity392Tests(_Transport392):
         self.start_patch(self.main, "route_image_generation", Mock(return_value=route_stub()))
         self.plans = []
         prepare = self.tools.prepare_generation
+        prepare_batch = self.tools.prepare_batch_generation
 
         async def record_plan(*args, **kwargs):
             plan = await prepare(*args, **kwargs)
             self.plans.append(plan)
             return plan
 
+        async def record_batch(*args, **kwargs):
+            prompt, plans = await prepare_batch(*args, **kwargs)
+            self.plans.extend(plans)
+            return prompt, plans
+
         self.prepared = self.start_patch(self.tools, "prepare_generation", AsyncMock(side_effect=record_plan))
+        self.prepared_batch = self.start_patch(self.tools, "prepare_batch_generation", AsyncMock(side_effect=record_batch))
+
+    def confirmation_input(self, identity, prompt, count):
+        return {"node_id": identity, "final_prompt": prompt, "user_prompt": prompt, "refs": [],
+                "model": "mock", "provider": "mock", "aspect_ratio": "1:1", "size": "1024x1024", "count": count}
 
     def test_trigger_and_batch_forward_explicit_resolved_node_not_argument_override(self):
         self.seed({"id": "owner", "type": NODE_TYPE_AGENT})
@@ -314,7 +325,11 @@ class GenerationIdentity392Tests(_Transport392):
                 self.assertEqual(gate.await_args.args[:3], (self.pid, "owner", name))
                 gate.assert_awaited_once()
                 confirmation.assert_awaited_once()
-                self.assertEqual(confirmation.await_args.args[:4], (self.pid, "owner", name, gate_args))
+                preflight = (self.confirmation_input("source", "before source", 2) if name == "generate.trigger" else [
+                    self.confirmation_input("source", "edit", 2), self.confirmation_input("source-2", "edit", 1),
+                ])
+                self.assertEqual(confirmation.await_args.args[:4],
+                                 (self.pid, "owner", name, {**gate_args, "preflight": preflight}))
                 limit.assert_called_once_with(self.pid, "owner", count=count)
                 carrier.assert_not_awaited()
         self.assertEqual(self.canvas(), before)
@@ -322,7 +337,7 @@ class GenerationIdentity392Tests(_Transport392):
     def test_generation_arguments_cannot_override_bound_identity(self):
         self.seed({"id": "owner", "type": NODE_TYPE_AGENT})
         before = copy.deepcopy(self.canvas())
-        # #396（2cc0361）明确拒绝付费工具的额外字段，不再静默忽略伪造身份。
+        # #396: 付费工具拒绝额外字段，伪造身份不能到达预检或确认门。
         for name, args, core_name in [
             ("generate.trigger", {"node_id": "source", "agent_node_id": "forged"}, "trigger_generation_core"),
             ("canvas.batch_edit", {"node_ids": ["source"], "prompt": "edit", "agent_node_id": "forged"},
@@ -339,6 +354,7 @@ class GenerationIdentity392Tests(_Transport392):
                 self.assertTrue(is_agent_error_shape(result["structuredContent"]), result)
                 self.assertEqual(result["structuredContent"]["code"], "INVALID_ARGUMENT")
                 self.prepared.assert_not_awaited()
+                self.prepared_batch.assert_not_awaited()
                 core.assert_not_awaited()
                 confirmation.assert_not_awaited()
                 limit.assert_not_called()

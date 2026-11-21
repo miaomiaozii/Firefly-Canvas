@@ -5,7 +5,6 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from fastapi.testclient import TestClient
@@ -212,8 +211,9 @@ class LayoutTests(unittest.TestCase):
 
     def confirmation(self, *, approved=True, before_response=None, autonomy="cautious", named=()):
         events = []
-        session = SimpleNamespace(autonomy=autonomy, confirm_handlers=[], event_handlers=[],
-                                  _current_turn_id="hosted-turn", _turn_layout_refs=set(named))
+        session = AgentSession(node_id="agent", project_id=self.pid, autonomy=autonomy)
+        session._current_turn_id = "hosted-turn"
+        session._turn_layout_refs = set(named)
         self.enterContext(patch.dict(agent_host_manager.sessions, {f"{self.pid}:agent": session}))
         async def on_event(session, event):
             if event["type"] == "confirm":
@@ -285,7 +285,7 @@ class LayoutTests(unittest.TestCase):
         self.write(self.card("a", 100, 30), self.card("b", 300, 60, owner=""))
         args = {"node_ids": ["a", "b"], "edge": "top", "include_user_nodes": True}
         events = self.confirmation(before_response=lambda: self.write({**self.nodes()["b"], "y": 72}))
-        self.assertEqual(self.request("align", args)["code"], "CANVAS_CONFLICT")
+        self.assertEqual(self.request("align", args)["code"], "CONFIRM_STALE")
         self.assertEqual(self.nodes()["b"]["y"], 72)
         self.assertEqual(len(events), 1)
         self.confirmation()
@@ -295,7 +295,7 @@ class LayoutTests(unittest.TestCase):
             if kwargs.get("phase") == "start":
                 self.write({**self.nodes()["a"], "title": "Concurrent edit", "userTouchedAt": 50})
         with patch.object(tools, "_broadcast_canvas_updated", side_effect=concurrent_edit):
-            self.assertEqual(self.request("align", args, mcp=True)["code"], "CANVAS_CONFLICT")
+            self.assertEqual(self.request("align", args, mcp=True)["code"], "CONFIRM_STALE")
         self.assertEqual([n["phase"] for n in notified], ["start", "end"])
         self.assertEqual(notified[-1]["touched_node_ids"], [])
         self.assertEqual(self.nodes()["b"]["y"], 72)

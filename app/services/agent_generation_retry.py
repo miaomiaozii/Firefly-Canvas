@@ -244,9 +244,10 @@ async def execute(caller, args):
     decision = await api.request_confirmation_core(
         caller.project, caller.actor, 'generate.retry',
         {'task_id': parent[1], 'node_id': node, 'n': count, 'model': plan.route.model, 'provider': plan.route.provider_id,
-         'use_snapshot': args.get('use_snapshot', True)},
+         'use_snapshot': args.get('use_snapshot', True),
+         'preflight': api.generation_confirmation_input(caller.project, node, plan)},
         f'重新生成 {count} 张图片（重新消耗外部额度）\n模型：{plan.route.model} · {plan.route.provider_id}\n{plan.final_prompt}',
-        api.AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS, allow_automatic=False, transient_session=session,
+        api.AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS, transient_session=session,
         cancel_event=asyncio.Event())
     if not decision.get('approved') or session._stopping or host.conversation_session(caller.project, caller.actor) is not session:
         raise agent_error(409, 'CONFIRM_REJECTED' if decision.get('reason') == 'rejected' else 'CONFIRM_PENDING',

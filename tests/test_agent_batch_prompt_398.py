@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+from queue import Queue
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -129,7 +130,8 @@ def test_stale_preview_never_partially_applies(canvas, during_confirmation):
         user_edit()
     args = {'apply': True, 'diff_id': diff}
     assert tool(client, project, args, mcp=False, actor='wrong')['code'] == 'DIFF_STALE'
-    assert tool(client, project, args, mcp=False)['code'] == 'DIFF_STALE'
+    expected = 'CONFIRM_STALE' if during_confirmation else 'DIFF_STALE'
+    assert tool(client, project, args, mcp=False)['code'] == expected
     assert len(seen) == int(during_confirmation)
     nodes = {node['id']: node for node in store.canvas(project)['nodes']}
     assert nodes['a']['text'] == 'manual'
@@ -151,9 +153,16 @@ def test_legacy_rest_requires_agent_project_header(canvas):
 
 @pytest.mark.parametrize('mcp', [False, True])
 @pytest.mark.parametrize('approved', [False, True])
-def test_legacy_batch_uses_same_confirmation_before_any_write_or_task(canvas, mcp, approved):
+def test_legacy_batch_uses_same_confirmation_before_any_write_or_task(canvas, mcp, approved, monkeypatch):
     client, store, project, host = canvas
+    from app.services.agent_confirmation import Origin
     from app.routers import api_agent_tools as routes
+    completed = Queue()
+
+    async def finished(origin, result):
+        completed.put(result)
+
+    monkeypatch.setattr(Origin, 'continue_with', finished)
     from tests.agent_image_task_fakes import stub_providers
     before = store.canvas(project)
     seen = confirmation(client, host, project, approved)
@@ -163,8 +172,16 @@ def test_legacy_batch_uses_same_confirmation_before_any_write_or_task(canvas, mc
          patch.object(routes, 'trigger_generation_core', new=fake_task):
         result = tool(client, project, {'node_ids': ['a', 'b'], 'prompt': 'replacement'}, mcp=mcp, name='batch_edit')
     assert len(seen) == 1
-    assert seen[0]['params'] == {'node_count': 2, 'user_edited_count': 1, 'n': 2}
+    params = seen[0]['params']
+    assert {key: params[key] for key in ('node_count', 'user_edited_count', 'n')} == {
+        'node_count': 2, 'user_edited_count': 1, 'n': 2}
+    assert [item['node_id'] for item in params['preflight']] == ['a', 'b']
+    assert all(item['final_prompt'] == 'replacement' for item in params['preflight'])
     assert 'replacement' not in seen[0]['message']
+    if result.get('code') == 'CONFIRM_PENDING':
+        assert result['status'] == 'awaiting_confirmation' and result['confirm_id'] == seen[0]['confirm_id']
+        result = completed.get(timeout=5)
+        result = result.get('error', result)
     if not approved:
         assert result['code'] == 'CONFIRM_REJECTED' and '用户已取消' in result['message']
         assert store.canvas(project) == before

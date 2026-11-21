@@ -104,7 +104,7 @@ class NodeModelAutonomySeedingTests(LifecycleBase):
         self._agent_node("agent-m1", model="provider/deepseek-v3", autonomy="autonomous")
         session = self._run(self.manager.get_or_create_session(self.project_id, "agent-m1"))
         self.assertEqual(session.model, "")
-        self.assertEqual(session.autonomy, "cautious")
+        self.assertEqual(session.autonomy, "standard")
         _apply_node_host(self.project_id, "agent-m1", session)
         self.assertEqual(session.model, "provider/deepseek-v3")
         self.assertEqual(session.autonomy, "autonomous")
@@ -113,7 +113,7 @@ class NodeModelAutonomySeedingTests(LifecycleBase):
         self._agent_node("agent-m2", autonomy="yolo")
         session = self._run(self.manager.get_or_create_session(self.project_id, "agent-m2"))
         _apply_node_host(self.project_id, "agent-m2", session)
-        self.assertEqual(session.autonomy, "cautious")
+        self.assertEqual(session.autonomy, "standard")
         self.assertIn("yolo", "cautious standard autonomous yolo")  # 白名单外不播种
         for ok in AGENT_AUTONOMY_WHITELIST:
             self.assertNotEqual(session.autonomy, "yolo")

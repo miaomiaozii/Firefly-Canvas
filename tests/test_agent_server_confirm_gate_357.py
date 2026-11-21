@@ -121,7 +121,7 @@ class ServerConfirmGate357Tests(unittest.TestCase):
             f"/api/projects/{self.pid}/canvas/nodes/image-1?agent_node_id=prompt-1",
             headers=self._agent_headers())
         self.assertEqual(r.status_code, 409)
-        self.assertIn("确认超时", r.text)
+        self.assertIn("CONFIRM_PENDING", r.text)
 
     # ── DELETE /edges 同样走门（#357 点名）──────────────────────────
     def test_edge_delete_gated(self):
