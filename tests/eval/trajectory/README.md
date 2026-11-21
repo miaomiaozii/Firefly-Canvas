@@ -32,8 +32,12 @@ PYTHONUTF8=1 python D:/ff-qa/404-405-326/run_pytest.py b2-worker-UNIQUE tests/ev
 This includes an actual private server bootstrap **without any native model prompt**,
 and synthetic workbook -> real MCP plan tools -> actual confirmations -> batch jobs ->
 actual OpenAI provider adapter -> fault-injected HTTP -> valid 8x8 PNG archive tests.
-All application injection, stores, network fences and event-loop policies are scoped
-and restored. It does not assert real-model behavior.
+Pipeline cases each use a fresh offline child process: cached product root constants and
+singletons never enter the pytest process. The fixture replaces inherited runtime/projects,
+all homes/temp/Pi/Codex directories and credential environment before imports; HTTP/socket
+and subprocess fences cover imports and TestClient startup too. Scoped patches, stores and
+loop policies are restored even on import failure. Synthetic inherited-directory sentinels
+must remain unchanged after the full pipeline. It does not assert real-model behavior.
 
 ## Parent-only live run
 
@@ -106,6 +110,25 @@ fixture/gold SHA256, final canvas/jobs, injections, completion and §2.2 compari
 Raw `backend.jsonl` separates `tool_*` from `stub_*` events; `driver.jsonl` records actual
 user/script actions and polled host events. `evidence-hashes.json` seals the retained
 files for accidental-tampering detection, not cryptographic proof of authorship.
+Finalized live recordings require `seed.json`, `config.json`, `completion.json`,
+`final-canvas.json`, `final-status.json` and `final-jobs.json`, in addition to the raw
+traces/provenance/gold/fixture manifest. Replay requires all of them in the hash manifest.
+The seed must contain unique node IDs, the actor, both protected user-node snapshots and
+the matching explicitly provisioned product asset. Complete fence metadata must agree in
+the seed and backend, with the backend receipt preceding native/tool activity. Config,
+terminal completion, canvas/history, host identity/state and batch state are validated.
+Missing/invalid safety inputs make finalized real metrics unavailable/null (including
+out-of-bounds and billing), never an available zero. Older incomplete recordings are not
+upgraded by guessing a baseline. Direct `measure()` arithmetic fixtures intentionally
+remain independent of this finalized-recording contract.
+
+Malformed finalized JSONL is rejected, including corrupt middle/tail records before a
+blocked-event receipt. Only explicit active polling may ignore a recognized incomplete
+JSON prefix on the final **unterminated** line; earlier corruption is never ignored.
+Recorded input roots/files cannot be symlinks or junctions, and hash-manifest names cannot
+escape the root (including Windows separators, drives or alternate data streams). Inputs
+are read-only; hashes detect accidental changes, not authored fraud or concurrent swaps.
+
 A spawn receipt alone or a synthetic unit trace is not real-model evidence. Failure to
 bootstrap/infer/dispatch records unavailable evidence, never success. Exit 2 means no
 real-model evidence; exit 0 means recording finished, **not that B2 passed**. Inspect the

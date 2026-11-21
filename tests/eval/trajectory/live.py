@@ -120,7 +120,7 @@ async def drive(config, root):
                 status = await request('GET', prefix + '/status')
                 save(root / 'final-status.json', status)
                 # A script continuation is recorded as user assistance, never credited to model autonomy.
-                backend = read_jsonl(root / 'backend.jsonl')
+                backend = read_jsonl(root / 'backend.jsonl', allow_partial_final_line=True)
                 calls = [row for row in backend if row['kind'] == 'tool_end']
                 batches = [extract_result(row['result']) for row in calls if row['tool'] == 'generate.request_batch']
                 batch_id = next((item.get('batch_id') for item in reversed(batches) if isinstance(item, dict) and item.get('batch_id')), None)
@@ -167,17 +167,28 @@ def extract_result(response):
     return result.get('structuredContent', {})
 
 
-def read_jsonl(path):
+def read_jsonl(path, *, allow_partial_final_line=False):
     if not path.exists():
         return []
     rows = []
     with path.open(encoding='utf-8') as stream:
-        for line in stream:
-            try:
-                rows.append(json.loads(line))
-            except ValueError:
-                # An active writer may not yet have finished its final line.
+        lines = stream.readlines()
+    for index, line in enumerate(lines, 1):
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            # Only a recognized JSON prefix at the active writer's unterminated tail may be retried.
+            tail = line.rstrip()
+            incomplete = (bool(tail) and (exc.pos == len(tail)
+                          or exc.msg.startswith('Unterminated string')
+                          or (exc.msg == 'Expecting value' and tail[exc.pos:] in
+                              {'t', 'tr', 'tru', 'f', 'fa', 'fal', 'fals', 'n', 'nu', 'nul'})))
+            if allow_partial_final_line and index == len(lines) and not line.endswith(('\n', '\r')) and incomplete:
                 break
+            raise ValueError(f'Malformed JSONL evidence: {path.name}:{index}: {exc.msg}') from exc
+        if not isinstance(row, dict):
+            raise ValueError(f'JSONL evidence must contain objects: {path.name}:{index}')
+        rows.append(row)
     return rows
 
 
@@ -272,8 +283,13 @@ def run(args):
     except Exception as exc:
         save(root / 'unavailable.json', {'available': False, 'reason': str(exc), 'type': type(exc).__name__})
     finally:
-        receipts = [row for row in read_jsonl(root / 'backend.jsonl') if row['kind'] == 'native_spawn']
-        cleanup = stop_tree(child, receipts) if child else {'server_exit': None, 'remaining_owned_pids': []}
+        # The server is still writing here; finalized parsing happens only after its exit.
+        receipts = []
+        try:
+            receipts = [row for row in read_jsonl(root / 'backend.jsonl', allow_partial_final_line=True)
+                        if row['kind'] == 'native_spawn']
+        finally:
+            cleanup = stop_tree(child, receipts) if child else {'server_exit': None, 'remaining_owned_pids': []}
         if child:
             reader.join(timeout=10)
             child.stdout.close()

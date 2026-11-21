@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from tests.eval.trajectory.safety import digest, external_new, save
+from tests.eval.trajectory.recording import REQUIRED_FILES, SAFETY_FILES, recorded_file, recording_root, safety_errors
 
 HUMAN_ONLY = {'QUOTA_EXHAUSTED', 'MODEL_UNAVAILABLE'}
 EXPECTED_CODES = {'no_channel': 'MODEL_UNAVAILABLE', 'transient': 'TRANSIENT', 'rate_limit': 'RATE_LIMITED',
@@ -267,13 +268,21 @@ def validate_annotations(annotations, records, backend):
 def report_from_root(root, annotations=None):
     from tests.eval.trajectory.live import read_jsonl
     from tests.eval.agent_plan.evaluator import evaluate
+    root = recording_root(root)
+
     def load(name, default=None):
-        path = root / name
+        path = recorded_file(root, name)
         return json.loads(path.read_text(encoding='utf-8')) if path.exists() else default
+
     provenance = load('provenance.json', {})
-    backend, driver = read_jsonl(root / 'backend.jsonl'), read_jsonl(root / 'driver.jsonl')
+    backend, driver = read_jsonl(recorded_file(root, 'backend.jsonl')), read_jsonl(recorded_file(root, 'driver.jsonl'))
     host = load('host-events.json', {}).get('events', [])
-    completed = load('completion.json', {}).get('terminal', False)
+    documents = {name: load(name) for name in sorted(SAFETY_FILES)} | {'provenance.json': provenance}
+    errors = safety_errors(documents, backend) if provenance.get('kind') == 'live-native-model' else []
+    if provenance.get('kind') == 'live-native-model':
+        errors.extend(f'Missing {name}' for name in sorted(REQUIRED_FILES) if not recorded_file(root, name).is_file())
+    completion = documents['completion.json']
+    completed = isinstance(completion, dict) and completion.get('terminal') is True
     spawn = [row for row in backend if row['kind'] == 'native_spawn']
     frames = [row for row in backend if row['kind'] == 'native_frame' and row['stream'] == 'stdout']
     actual = any(row['frame'].get('type') == 'turn.completed' for row in frames)
@@ -282,28 +291,38 @@ def report_from_root(root, annotations=None):
             and any(row['kind'] == 'tool_start' for row in backend)
             and all(row.get('model') == provenance.get('requested_model') for row in spawn))
     annotations = validate_annotations(annotations, host, backend)
-    config = load('config.json', {})
-    measured = measure(backend, host, driver, load('seed.json', {}), load('final-canvas.json'), real=real,
-                       complete=completed, annotations=annotations, autonomy=config.get('autonomy', 'standard'))
+    config = documents['config.json'] if isinstance(documents['config.json'], dict) else {}
+    measured = measure(backend, host, driver, {} if errors else documents['seed.json'] or {},
+                       None if errors else documents['final-canvas.json'], real=real,
+                       complete=completed and not errors, annotations=annotations, autonomy=config.get('autonomy', 'standard'))
+    if errors:
+        for metric in measured['metrics'].values():
+            metric.update(available=False, value=None, reason='; '.join(errors))
+        for target in measured['targets'].values():
+            target['status'] = 'UNAVAILABLE' if real else 'NOT_REAL_MODEL'
     gold = load('E0-gold.json')
     previews = [tool['result'].get('preview') for tool in measured['actual_tools']
                 if tool['tool'] == 'plan.import_excel' and isinstance(tool.get('result'), dict)]
     e0 = evaluate(gold, gold['variants'][0], previews[0] if previews else None) if gold else {'available': False}
-    final = load('final-canvas.json', {})
+    final = {} if errors else documents['final-canvas.json'] or {}
     plan_nodes = [n for n in final.get('nodes', []) if n.get('planTaskId') and n.get('type') == 'smart-image']
-    jobs = load('final-jobs.json', {})
+    jobs = documents['final-jobs.json'] or {}
     injected = [row for row in backend if row['kind'] == 'stub_outcome' and row.get('injected') != 'normal']
-    expected_faults = set(EXPECTED_CODES) if config.get('scenario') == 'campaign' else (
-        {config['scenario']} if config.get('scenario') in EXPECTED_CODES else set())
+    scenario = config.get('scenario') if isinstance(config.get('scenario'), str) else None
+    expected_faults = set(EXPECTED_CODES) if scenario == 'campaign' else (
+        {scenario} if scenario in EXPECTED_CODES else set())
     observed_faults = {row['injected'] for row in injected}
     coverage = {'expected': sorted(expected_faults), 'observed': sorted(observed_faults),
                 'missing': sorted(expected_faults - observed_faults)}
     statuses = [item['status'] for item in measured['targets'].values()]
     e0_passed = e0.get('semantic_status') == 'all_pass' and len(plan_nodes) == 15
-    b2_status = ('NOT_RUN' if not real else 'FAIL' if 'FAIL' in statuses or not e0_passed else
+    b2_status = ('NOT_RUN' if not real else 'UNAVAILABLE' if errors else
+                 'FAIL' if 'FAIL' in statuses or not e0_passed else
                  'UNAVAILABLE' if 'UNAVAILABLE' in statuses or coverage['missing'] or not completed else 'PASS')
-    fence_observed = any(row['kind'] == 'preflight' and row.get('installed') for row in backend)
+    fence_observed = not errors and any(row['kind'] == 'preflight' and row.get('installed') is True for row in backend)
     return {'schema': 1, 'provenance': provenance, 'real_model_evidence': real, 'completed': completed, 'b2_status': b2_status,
+            'recording_safety': {'applicable': provenance.get('kind') == 'live-native-model',
+                                 'available': provenance.get('kind') == 'live-native-model' and not errors, 'errors': errors},
             'e0_import': e0, 'final_plan_generation_nodes': len(plan_nodes), 'final_jobs': jobs,
             'injections': injected, 'fault_coverage': coverage, 'elapsed_s': load('run-timing.json', {}).get('elapsed_s'),
             'generation_billing': {'real_media_provider_calls': 0 if fence_observed else None,
@@ -336,15 +355,16 @@ def offline_report(destination):
 
 
 def replay(root, destination, annotations_path=None):
-    root = Path(root).resolve()
-    hashes = json.loads((root / 'evidence-hashes.json').read_text(encoding='utf-8'))
-    required = {'provenance.json', 'backend.jsonl', 'driver.jsonl', 'host-events.json', 'E0-gold.json', 'fixture-manifest.json'}
-    if not required <= hashes.keys():
-        raise ValueError('Incomplete real-recording provenance')
+    root = recording_root(root)
+    manifest = recorded_file(root, 'evidence-hashes.json')
+    hashes = json.loads(manifest.read_text(encoding='utf-8'))
+    if not isinstance(hashes, dict) or not REQUIRED_FILES <= hashes.keys():
+        raise ValueError('Incomplete real-recording provenance/safety inputs')
     for name, expected in hashes.items():
-        if Path(name).name != name or digest(root / name) != expected:
+        path = recorded_file(root, name)
+        if not isinstance(expected, str) or not path.is_file() or digest(path) != expected:
             raise ValueError('Recorded evidence hash mismatch')
-    provenance = json.loads((root / 'provenance.json').read_text(encoding='utf-8'))
+    provenance = json.loads(recorded_file(root, 'provenance.json').read_text(encoding='utf-8'))
     if provenance.get('kind') != 'live-native-model' or digest(root / 'E0-gold.json') != provenance.get('gold_sha256'):
         raise ValueError('Only provenance-checked REAL recordings can be replayed')
     if digest(root / 'fixture-manifest.json') != provenance.get('fixture_manifest_sha256'):

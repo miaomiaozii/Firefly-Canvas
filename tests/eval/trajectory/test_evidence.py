@@ -81,6 +81,8 @@ def test_replay_checks_hashes_and_rejects_spawn_only_evidence(tmp_path):
     save(root / 'provenance.json', {'kind': 'live-native-model', 'gold_sha256': digest(root / 'E0-gold.json'),
                                    'fixture_manifest_sha256': digest(root / 'fixture-manifest.json')})
     save(root / 'host-events.json', {'events': []})
+    for name in ['seed.json', 'config.json', 'completion.json', 'final-canvas.json', 'final-status.json', 'final-jobs.json']:
+        save(root / name, {})
     (root / 'driver.jsonl').write_text('', encoding='utf-8')
     (root / 'backend.jsonl').write_text('{"kind":"native_spawn","model":"fake"}\n', encoding='utf-8')
     save(root / 'evidence-hashes.json', {p.name: digest(p) for p in root.iterdir()})

@@ -1,18 +1,21 @@
 """Actual tools + plan/confirmation/jobs/media + HTTP seam. Host is OFFLINE, not B2 live evidence."""
 import asyncio
+from contextlib import ExitStack
 from io import BytesIO
 import os
 import json
 from pathlib import Path
 import shutil
+import subprocess
+import sys
 import time
 from unittest.mock import AsyncMock
 from zipfile import ZipFile
 
 import pytest
 
-from tests.eval.trajectory.safety import REPO, overlaps
-from tests.eval.trajectory.stub import Journal, MODELS, ProviderFence, providers, tiny_png
+from tests.eval.trajectory.safety import REPO, isolated_env
+from tests.eval.trajectory.stub import Journal, MODELS, ProviderFence, SafetyViolation, providers, tiny_png
 
 
 def workbook():
@@ -33,74 +36,97 @@ def workbook():
 
 
 @pytest.fixture
-def application(tmp_path, monkeypatch):
-    roots = [Path(os.environ[key]).resolve() for key in ('FIREFLY_RUNTIME_ROOT', 'FIREFLY_PROJECTS_ROOT')]
-    assert not overlaps(*roots) and not any(overlaps(root, REPO) for root in roots)
+def application(tmp_path, monkeypatch, *, autonomy='autonomous'):
     previous_policy = asyncio.get_event_loop_policy()
-    asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
-    import main
-    from app import core
-    from app.project_sessions import register_project_session, unregister_project_session
-    from app.routers import api_agent_nodes, api_agent_tools
-    from app.services import agent_host, agent_plan, agent_batch
-    from tests.eval.trajectory.backend import ToolObserver
-    from fastapi.testclient import TestClient
-    from firefly_projects import ProjectStore
-    store = ProjectStore(roots[1] / f'e2e-tabbit-405-{tmp_path.name}', snapshot_delay=0)
-    manager = agent_host.AgentHostManager()
-
-    async def offline_spawn(session, **kwargs):
-        session.status = 'running'
-        return True
-
-    monkeypatch.setattr(main, 'FIREFLY_PROJECT_STORE', store)
-    monkeypatch.setattr(main, 'load_api_providers', lambda **_: providers())
-    monkeypatch.setattr(main, 'GLOBAL_LOOP', None)
-    monkeypatch.setattr(core, 'GLOBAL_LOOP', None)
-    monkeypatch.setattr(agent_host, 'agent_host_manager', manager)
-    monkeypatch.setattr(agent_host, '_app_main', main)
-    monkeypatch.setattr(api_agent_nodes, 'agent_host_manager', manager)
-    monkeypatch.setattr(manager, 'spawn_session', offline_spawn)
-    monkeypatch.setattr(manager, 'send_command', AsyncMock())
-    monkeypatch.setenv('FIREFLY_AGENT_API_BASE', 'http://127.0.0.1:3194')
-    monkeypatch.setenv('API_PROVIDER_TRAJECTORY_STUB_KEY', 'inert-not-a-provider-key')
-    pid = store.create_project('e2e-tabbit-405-synthetic-plan')['id']
-    store.apply_mutations(pid, [{'op': 'upsert_node', 'node': {'id': 'actor', 'type': 'smart-agent', 'autonomy': 'autonomous'}}], base_revision=0)
-    asset = store.import_media(pid, tiny_png(), 'explicit-product.png', 'image/png')['asset_id']
-    token = object()
-    register_project_session(token, pid)
-    journal = Journal()
-    confirmations = []
     try:
-        observed = ToolObserver(main.app, journal=journal, store=store, project=pid)
-        with TestClient(observed, base_url='http://127.0.0.1:3194') as client:
-            async def subscribe():
-                session = await manager.get_or_create_session(pid, 'actor')
-                session.autonomy = 'autonomous'
+        with monkeypatch.context() as patch, ExitStack() as stack:
+            owned = tmp_path / 'application'
+            owned.mkdir(parents=True, exist_ok=False)
+            env, _ = isolated_env(owned)
+            for key in list(os.environ):
+                patch.delenv(key)
+            for key, value in env.items():
+                patch.setenv(key, value)
+            patch.setenv('FIREFLY_AGENT_API_BASE', 'http://127.0.0.1:3194')
+            asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
+            journal = Journal()
+            fence = stack.enter_context(ProviderFence(journal=journal))
 
-                async def approve(_, event):
-                    if event['type'] == 'confirm':
-                        confirmations.append(event)
-                        for handler in list(session.confirm_handlers):
-                            await handler(event['confirm_id'], True)
-                session.event_handlers.append(approve)
-            client.portal.call(subscribe)
+            def no_subprocess(*args, **kwargs):
+                journal.emit('subprocess_blocked', reason='Offline pipeline cannot launch a host or generator')
+                raise SafetyViolation('Offline pipeline subprocess blocked')
+
+            patch.setattr(subprocess, 'Popen', no_subprocess)
+            # Cached product modules carry root constants/singletons; each real exercise gets a fresh process.
+            if any(name == 'main' or name == 'app' or name.startswith(('app.', 'firefly_')) for name in sys.modules):
+                raise SafetyViolation('Pipeline requires a fresh process, not cached application imports')
+            import main
+            from app import core
+            from app.project_sessions import register_project_session, unregister_project_session
+            from app.routers import api_agent_nodes, api_agent_tools
+            from app.services import agent_host, agent_plan, agent_batch
+            from tests.eval.trajectory.backend import ToolObserver
+            from fastapi.testclient import TestClient
+            from firefly_projects import ProjectStore
+            assert fence.preflight()['installed']
+            initial_store = main.FIREFLY_PROJECT_STORE
+            stack.callback(initial_store.close)
+            assert Path(initial_store.root).resolve() == Path(env['FIREFLY_PROJECTS_ROOT']).resolve()
+            store = ProjectStore(Path(env['FIREFLY_PROJECTS_ROOT']) / 'e2e-tabbit-405-pipeline', snapshot_delay=0)
+            stack.callback(store.close)
+            manager = agent_host.AgentHostManager()
+
+            async def offline_spawn(session, **kwargs):
+                session.status = 'running'
+                return True
+
+            patch.setattr(main, 'FIREFLY_PROJECT_STORE', store)
+            patch.setattr(main, 'load_api_providers', lambda **_: providers())
+            patch.setattr(main, 'GLOBAL_LOOP', None)
+            patch.setattr(core, 'GLOBAL_LOOP', None)
+            patch.setattr(agent_host, 'agent_host_manager', manager)
+            patch.setattr(agent_host, '_app_main', main)
+            patch.setattr(api_agent_nodes, 'agent_host_manager', manager)
+            patch.setattr(manager, 'spawn_session', offline_spawn)
+            patch.setattr(manager, 'send_command', AsyncMock())
+            pid = store.create_project('e2e-tabbit-405-synthetic-plan')['id']
+            store.apply_mutations(pid, [{'op': 'upsert_node', 'node': {'id': 'actor', 'type': 'smart-agent', 'autonomy': autonomy}}], base_revision=0)
+            asset = store.import_media(pid, tiny_png(), 'explicit-product.png', 'image/png')['asset_id']
+            token = object()
+            register_project_session(token, pid)
+            confirmations = []
             try:
-                yield client, store, manager, pid, asset, journal, confirmations
+                observed = ToolObserver(main.app, journal=journal, store=store, project=pid)
+                assert fence.preflight()['installed']
+                with TestClient(observed, base_url='http://127.0.0.1:3194') as client:
+                    async def subscribe():
+                        session = await manager.get_or_create_session(pid, 'actor')
+                        session.autonomy = autonomy
+
+                        async def approve(_, event):
+                            if event['type'] == 'confirm':
+                                confirmations.append(event)
+                                for handler in list(session.confirm_handlers):
+                                    await handler(event['confirm_id'], True)
+                        session.event_handlers.append(approve)
+                    client.portal.call(subscribe)
+                    try:
+                        yield client, store, manager, pid, asset, journal, confirmations
+                    finally:
+                        client.portal.call(agent_batch.shutdown, client.portal.call(asyncio.get_running_loop))
+                        session = client.portal.call(manager.get_or_create_session, pid, 'actor')
+                        client.portal.call(manager._dispatch_event, session, {'type': 'agent_end'})
+                        client.portal.call(manager.stop_session, session)
             finally:
-                client.portal.call(agent_batch.shutdown, client.portal.call(asyncio.get_running_loop))
-                session = client.portal.call(manager.get_or_create_session, pid, 'actor')
-                client.portal.call(manager._dispatch_event, session, {'type': 'agent_end'})
-                client.portal.call(manager.stop_session, session)
+                api_agent_tools.reset_generation_counts(pid)
+                unregister_project_session(token)
+                with agent_plan._LOCK:
+                    agent_plan._CACHE.pop(store, None)
+                store.close()
+                shutil.rmtree(store.root)
+                assert not store.root.exists()
     finally:
-        api_agent_tools.reset_generation_counts(pid)
-        unregister_project_session(token)
-        with agent_plan._LOCK:
-            agent_plan._CACHE.pop(store, None)
-        store.close()
-        shutil.rmtree(store.root)
         asyncio.set_event_loop_policy(previous_policy)
-        assert not store.root.exists()
 
 
 @pytest.mark.parametrize('scenario,expected_attempts,code,expected_status', [
@@ -108,7 +134,28 @@ def application(tmp_path, monkeypatch):
     ('no_channel', 2, 'MODEL_UNAVAILABLE', 'succeeded'), ('size_mismatch', 2, 'INVALID_PARAMS', 'succeeded'),
     ('transient', 2, 'TRANSIENT', 'succeeded'), ('quota_exhausted', 1, 'QUOTA_EXHAUSTED', 'paused'),
     ('content_refusal', 1, 'CONTENT_REJECTED', 'failed')])
-def test_real_plan_tools_batch_provider_adapter_and_media_pipeline(application, scenario, expected_attempts, code, expected_status):
+def test_real_plan_tools_batch_provider_adapter_and_media_pipeline(tmp_path, scenario, expected_attempts, code, expected_status, autonomy='autonomous'):
+    inherited = tmp_path / 'child'
+    env, folders = isolated_env(inherited)
+    for relative in set(folders.values()):
+        (inherited / relative / 'synthetic-sentinel.txt').write_text('not application-owned', encoding='utf-8')
+    sentinels = {p.relative_to(inherited): p.read_bytes() for p in inherited.rglob('*') if p.is_file()}
+    before = set(sys.modules)
+    previous_policy = asyncio.get_event_loop_policy()
+    result = subprocess.run([sys.executable, '-B', '-m', 'tests.eval.trajectory.test_pipeline', str(tmp_path / 'owned'),
+                             json.dumps([scenario, expected_attempts, code, expected_status, autonomy])],
+                            cwd=REPO, env=env, capture_output=True, text=True, encoding='utf-8', timeout=90)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert {p.relative_to(inherited): p.read_bytes() for p in inherited.rglob('*') if p.is_file()} == sentinels
+    assert not {'main', 'app.core'} & (set(sys.modules) - before)
+    assert asyncio.get_event_loop_policy() is previous_policy
+
+
+def test_standard_pipeline_requires_one_generation_confirmation(tmp_path):
+    test_real_plan_tools_batch_provider_adapter_and_media_pipeline(tmp_path, 'normal', 1, None, 'succeeded', autonomy='standard')
+
+
+def exercise_pipeline(application, scenario, expected_attempts, code, expected_status, autonomy):
     import main
     from app.services import generation
     client, store, manager, pid, asset, journal, confirmations = application
@@ -174,4 +221,25 @@ def test_real_plan_tools_batch_provider_adapter_and_media_pipeline(application, 
         with Image.open(store.root / pid / 'media' / item['filename']) as image:
             image.load()
             assert image.size == (8, 8)
-    assert len(confirmations) == 2 and confirmations[1]['tool'] == 'generate.request_batch'
+    # ADR0022/#402：自主模式免花钱门，标准模式整批确认；计划落地仍须单独批准。
+    expected_confirmations = {
+        'autonomous': ['plan.apply'],
+        'standard': ['plan.apply', 'generate.request_batch'],
+    }[autonomy]
+    assert [event['tool'] for event in confirmations] == expected_confirmations
+
+
+if __name__ == '__main__':
+    previous_env = dict(os.environ)
+    previous_policy = asyncio.get_event_loop_policy()
+    original_popen = subprocess.Popen
+    with pytest.MonkeyPatch.context() as patch:
+        case = json.loads(sys.argv[2])
+        fixture = application.__wrapped__(Path(sys.argv[1]), patch, autonomy=case[-1])
+        try:
+            exercise_pipeline(next(fixture), *case)
+        finally:
+            fixture.close()
+    assert dict(os.environ) == previous_env
+    assert asyncio.get_event_loop_policy() is previous_policy
+    assert subprocess.Popen is original_popen
