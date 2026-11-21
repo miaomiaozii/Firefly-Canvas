@@ -16,8 +16,12 @@ from plan_ir.text_utils import contains_any, compact_line, join_row
 from plan_ir.row_classifier import looks_like_task_row, try_get_section_marker
 
 
+# #470：真实 E0 使用“示例图”；“示意图/意向图”限定为同类图列，不泛化匹配“示例”。
+_INTENTION_HEADER_ALIASES = ("示例图", "示意图", "意向图")
+
+
 def header_cell_score(compact: str) -> int:
-    """C# HeaderCellScore:2195 — 表头单元格关键词计分（入参需已 CompactLine）。"""
+    """检测和映射使用同一组意向图别名，避免图列在检测阶段漏判（#470）。"""
     if not compact or not compact.strip():
         return 0
     if contains_any(compact, "图序", "图号", "序号", "顺序"):
@@ -26,7 +30,7 @@ def header_cell_score(compact: str) -> int:
         return 2
     if contains_any(compact, "内容/要素", "内容要素", "展示元素", "运营需求", "画面需求", "作图需求", "要求"):
         return 2
-    if contains_any(compact, "图片示例", "参考图", "参考图片", "效果图") or compact == "参考":
+    if contains_any(compact, "图片示例", "参考图", "参考图片", "效果图", *_INTENTION_HEADER_ALIASES) or compact == "参考":
         return 2
     if contains_any(compact, "图类型", "画面类型", "输出类型", "方案类型", "图片类型"):
         return 2
@@ -60,7 +64,7 @@ def looks_like_composite_header_cell(compact: str) -> bool:
 _COLUMN_NAME_EXACT = (
     "顺序", "序号", "图序", "图号", "要求", "需求", "运营需求", "画面需求", "作图需求",
     "内容", "内容/要素", "内容要素", "展示元素", "图片示例", "参考图", "参考图片", "参考",
-    "效果图", "文案", "卖点文案", "文字", "字幕", "叠字", "比例", "尺寸", "宽高", "像素",
+    "效果图", *_INTENTION_HEADER_ALIASES, "文案", "卖点文案", "文字", "字幕", "叠字", "比例", "尺寸", "宽高", "像素",
     "类型", "名称", "标题", "类目", "描述", "布局", "场景", "备注", "方案", "运营",
     "提示词", "prompt", "板块", "所属", "分类", "方案类型", "图片类型", "输出类型",
     "图类型", "画面类型", "任务", "模块", "图片",
@@ -128,12 +132,12 @@ def _add_map(col_map: Dict[str, List[int]], key: str, index: int) -> None:
 
 
 def map_headers(header_row: List[str]) -> Dict[str, List[int]]:
-    """C# MapHeaders:2218 — 有序优先级链（先匹配先占用，同键多列）。"""
+    """图列必须先匹配，防止含“图片/需求”的图列名被泛化为任务或要求（#470）。"""
     col_map: Dict[str, List[int]] = {}
     for i, h in enumerate(header_row or []):
         if not h or not h.strip():
             continue
-        if compact_line(h) == "参考" or contains_any(h, "效果图", "图片示例", "参考图", "参考图补充", "参考图片", "图片参考"):
+        if compact_line(h) == "参考" or contains_any(h, "效果图", "图片示例", "参考图", "参考图补充", "参考图片", "图片参考", *_INTENTION_HEADER_ALIASES):
             _add_map(col_map, "operationRef", i)
         elif contains_any(h, "图序", "图号", "序号", "顺序"):
             _add_map(col_map, "name", i)
