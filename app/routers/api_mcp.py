@@ -574,6 +574,13 @@ async def _impl_edit_erase(project_id, agent_node_id, args):
         raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
 
 
+async def _impl_present(project_id, agent_node_id, args, *, owner=('hosted',), external_turn=None):
+    from app.services import agent_present
+    from app.services.agent_host import agent_host_manager
+    return await agent_present.call(_app_main.FIREFLY_PROJECT_STORE, agent_host_manager,
+                                    project_id, agent_node_id, args, owner=owner, external_turn=external_turn)
+
+
 async def _impl_chat(project_id, agent_node_id, args, *, tool):
     from app.routers.api_agent_chat import chat_core
     return await chat_core(project_id, agent_node_id, tool, args)
@@ -606,6 +613,7 @@ _MEDIA_REF_TOOL_IMPLS = {
 }
 
 TOOL_IMPLS = {
+    'agent.present': _impl_present,
     **{name: partial(_impl_chat, tool=name) for name in ('chat.history', 'chat.search')},
     "ops.list": _impl_ops_list,
     "ops.undo": _impl_ops_undo,
@@ -700,7 +708,7 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
         params = {}
     name = str(params.get("name") or "")
     args = params.get("arguments", params.get("args", {}))
-    if name not in LAYOUT_TOOLS | PLAN_TOOLS | agent_batch.TOOLS | {"canvas.batch_prompt_edit", "chat.history", "chat.search"} and not isinstance(args, dict):
+    if name not in LAYOUT_TOOLS | PLAN_TOOLS | agent_batch.TOOLS | {"agent.present", "canvas.batch_prompt_edit", "chat.history", "chat.search"} and not isinstance(args, dict):
         args = params.get("args")
         if not isinstance(args, dict):
             args = {}
@@ -726,6 +734,11 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
             writes = isinstance(parse(args), str)
         if name in LAYOUT_TOOLS:
             agent_layout.validate_args(name, args)
+        if name == 'agent.present':
+            from app.services import agent_present
+            agent_present.validate(args)
+            if not request.query_params.get('project') or not request.query_params.get('node'):
+                raise agent_error(400, 'INVALID_ARGUMENT', 'Presentation requires explicit project and existing Agent node')
         attachment_archive = name == "media.upload" and "attachment_id" in args
         if (name in PLAN_TOOLS or attachment_archive) and not (
             request.query_params.get("project") and request.query_params.get("node")
@@ -738,7 +751,7 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
                 raise file_not_allowed()
             raise ValueError("Expected a JSON object")
         project_id = resolve_project(str(request.query_params.get("project") or ""))
-        if name in ('chat.history', 'chat.search'):
+        if name in ('agent.present', 'chat.history', 'chat.search'):
             declared = request.headers.get('X-Agent-Project')
             if declared is not None and declared != project_id:
                 raise agent_error(403, 'PROJECT_MISMATCH', 'X-Agent-Project does not match the requested project',
@@ -762,6 +775,12 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
                 turn_id = agent_host_manager.get_current_turn_id(project_id, node_param)
                 if not turn_id:
                     raise ValueError("hosted write requires an active turn")
+        if name == 'agent.present':
+            owner = ('hosted',) if caller == 'hosted' else ('mcp', request.headers.get(SESSION_HEADER))
+            if turn_id is not None and len(turn_id) > 128:
+                raise agent_error(400, 'INVALID_ARGUMENT', 'turn_id is limited to 128 characters')
+            result = await TOOL_IMPLS[name](project_id, node_param, args, owner=owner, external_turn=turn_id)
+            return _rpc_response(200, msg_id, sid, result={'content': _tool_result_content_blocks(result), 'isError': False})
         if name in agent_batch.TOOLS:
             # A10 cannot create/rebind a carrier or reserve an external turn before approval.
             binding = (agent_batch.Caller(project_id, node_param) if caller == 'hosted' else
@@ -811,7 +830,9 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
                 elif name in LAYOUT_TOOLS:
                     result = await TOOL_IMPLS[name](project_id, node_id, args, hosted=caller == 'hosted')
                 elif name == "canvas.batch_prompt_edit":
-                    binding = ("agent", node_param) if node_param else ("mcp", sid)
+                    binding = (("agent", node_param) if node_param and (
+                                   caller == 'hosted' or not request.headers.get(SESSION_HEADER)) else
+                               ("mcp", sid, node_param) if node_param else ("mcp", sid))
                     result = await TOOL_IMPLS[name](project_id, node_id, args, binding=binding)
                 elif name in PLAN_TOOLS:
                     binding = "hosted" if caller == "hosted" else ("mcp", sid)

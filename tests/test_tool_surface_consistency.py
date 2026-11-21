@@ -656,7 +656,26 @@ class DualPathEquivalenceTests(unittest.TestCase):
             resp = client.request("GET", "/api/projects/x/canvas/edit_erase")
             self.assertNotEqual(resp.status_code, 404, "REST 孪生路由必须存在")
 
+        def presentation_run():
+            client, store, pid_a, pid_b = self._fixture()
+            before = [store.canvas(pid) for pid in (pid_a, pid_b)]
+            for pid in (pid_a, pid_b):
+                # Only the liveness boundary is needed: presentation never writes stdin.
+                agent_host_manager.sessions[f'{pid}:{self.ACTOR}'].process = type(
+                    'LiveProcessBoundary', (), {'returncode': None, 'poll': lambda self: self.returncode,
+                        'terminate': lambda self: setattr(self, 'returncode', 0), 'wait': lambda self: 0})()
+            args = {'action': 'show', 'kind': 'plan', 'title': 'Proposal',
+                    'steps': [{'id': 'inspect', 'text': 'Inspect canvas'}]}
+            a = self._mcp_call(client, pid_a, 'agent.present', args)
+            b = self._rest(client, 'POST', f'/api/projects/{pid_b}/agent/present?agent_node_id={self.ACTOR}',
+                           args, {'X-Agent-Project': pid_b})
+            self._assert_pair(a, b, 'agent.present')
+            self.assertTrue(a['ok'], a)
+            self.assertEqual(json.loads(a['text'])['presentation']['state'], 'presented')
+            self.assertEqual([store.canvas(pid) for pid in (pid_a, pid_b)], before)
+
         cases = {
+            'agent.present': presentation_run,
             "chat.history": pair("chat.history", {"node_id": self.ACTOR}, "GET", f"/chat/history?node_id={self.ACTOR}"),
             "chat.search": pair("chat.search", {"query": "firefly"}, "GET", "/chat/search?query=firefly"),
             "ops.list": ops_list_run,

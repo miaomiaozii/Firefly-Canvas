@@ -1,6 +1,20 @@
 (function(){
     if(!window.StudioI18n) return;
     window.StudioI18n.register({
+        "smart.agentPresentEmpty": { zh: "暂无内容", en: "No content" },
+        "smart.agentPresentProposal": { zh: "提议，尚未执行", en: "Proposal; not executed" },
+        "smart.agentPresentReadonly": { zh: "历史记录只读", en: "Read-only history" },
+        "smart.agentPresentSending": { zh: "正在确认回答…", en: "Confirming answer…" },
+        "smart.agentPresentAnswerUnconfirmed": { zh: "回答未获确认，可重试核验。", en: "Answer not confirmed; retry to check." },
+        "smart.agentPresentDeliveryUnconfirmed": { zh: "回答已记录，但宿主投递未获确认；请检查错误，不要重复提交。", en: "Answer recorded, but host delivery is unconfirmed; check the error without resubmitting." },
+        "smart.agentPresentRequestRejected": { zh: "本次回答提交失败，请核对回执。", en: "This answer submission failed; check the receipt." },
+        "smart.agentPresentInvalidReceipt": { zh: "回答回执无效", en: "Invalid answer receipt" },
+        "smart.agentPresentRecommended": { zh: "推荐", en: "Recommended" },
+        "smart.agentPresentSelected": { zh: "已选择", en: "Selected" },
+        "smart.agentPresentPending": { zh: "等待回答", en: "Awaiting answer" },
+        "smart.agentPresentAnswered": { zh: "已回答", en: "Answered" },
+        "smart.agentPresentExpired": { zh: "已过期，不能继续回答", en: "Expired; answers are no longer accepted" },
+        "smart.agentPresentStartRecommended": { zh: "按推荐开始", en: "Start with recommendations" },
         "smart.title": { zh: "核心画布", en: "Core Canvas" },
         "smart.globalSettings": { zh: "全局设置", en: "Global settings" },
         "smart.settingsHint": { zh: "设置悬浮在画布上，不会离开或重建画布。" },

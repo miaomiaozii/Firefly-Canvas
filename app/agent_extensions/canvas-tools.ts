@@ -136,6 +136,8 @@ async function readChat(tool: string, params: any) {
 }
 
 const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any>> = {
+    "agent.present": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/agent/present${gateQuery()}`, "POST", params)),
     "chat.history": async (_toolCallId, params) => readChat("history", params),
     "chat.search": async (_toolCallId, params) => readChat("search", params),
     "ops.list": async (_toolCallId, params) => {

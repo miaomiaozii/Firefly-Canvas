@@ -4035,6 +4035,12 @@ button.prompt-flow-context-image { cursor:pointer; }
 .agent-tui-msg-actions > button:disabled { opacity:.45; cursor:not-allowed; }
 .agent-tui-msg-system { padding:4px 0; border:0; background:transparent; color:var(--ink-2, var(--muted)); font-size:12px; }
 .agent-tui-msg-role { color:var(--ink-2, var(--muted)); font-weight:600; margin-right:4px; }
+.agent-tui-presentation { white-space:normal; }
+.agent-tui-presentation ol { list-style:decimal; padding-inline-start:22px; }
+.agent-tui-presentation ul { list-style:disc; padding-inline-start:22px; }
+.agent-tui-presentation li { white-space:pre-wrap; }
+.agent-tui-presentation pre { max-height:300px; overflow:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
+.agent-tui-presentation > .agent-tui-btn { width:auto; height:auto; margin-top:6px; padding:5px 10px; }
 
 .agent-tui-tool { display:block; min-width:0; font-size:12px; }
 .agent-tui-tool-icon { flex:none; font-size:12px; }

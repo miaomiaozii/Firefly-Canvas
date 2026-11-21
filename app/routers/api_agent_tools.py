@@ -58,6 +58,21 @@ def require_agent_project(request: Request) -> None:
 _AGENT_WRITE = [Depends(require_agent_project)]
 
 
+@confirm_router.post('/present', dependencies=_AGENT_WRITE)
+async def present_agent(project_id: str, request: Request):
+    from app.services import agent_present
+    from app.services.agent_host import agent_host_manager
+    if request.headers.get('X-Agent-Project') != project_id:
+        raise agent_error(403, 'PROJECT_MISMATCH', 'X-Agent-Project must match the requested project')
+    _validate_project(project_id)
+    try:
+        args = await request.json()
+    except ValueError as exc:
+        raise agent_refs.invalid('Expected a JSON object') from exc
+    return await agent_present.call(_app_main.FIREFLY_PROJECT_STORE, agent_host_manager, project_id,
+                                    request.query_params.get('agent_node_id', ''), args)
+
+
 # Global viewport state per project
 VIEWPORT_STATE = {}
 

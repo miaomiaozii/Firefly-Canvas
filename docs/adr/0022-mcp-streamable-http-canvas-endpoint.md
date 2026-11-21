@@ -168,3 +168,41 @@ search 额外字段：
 - timestamp 为事件时间的 epoch **秒**；无有效值为 0。搜索命中和会话摘要按最近消息的 `(timestamp, node_id, host, seq)` **降序**，同值顺序确定。message_count 仅为本次保留扫描内的消息数，不是假称终生总数。title 最多 200 字，snippet 最多 240 字；search 摘要围绕第一次匹配，history 摘要取开头。
 - 每请求最多检查目录前 500 个条目（顺序取文件系统枚举，超限不承诺全局最新；选中的文件按名字排序），每文件最多读取尾部 2 MiB / 2000 行，全请求最多 16 MiB；丢弃被裁断的首行和未完成的最后一行。消息正文最多 16000 字，超出标 `text_truncated`，超出的正文不参与匹配。路径越界/链接文件不跟随，记录内 project/node 不符则丢弃，不读取相邻项目。
 - `has_more` 仅指扫描内还有超过 limit 的结果（node 可用 next_before_seq 继续；canvas/search 可缩小范围或提高 limit），不是无限游标或完整性证明。`truncated` 表示扫描预算、目录上限或个别文件读取失败，可能还有未扫描历史；保留策略已经删除的历史不能找回。不建全局索引，不保证全库精确总数。空命中正常返回空数组、has_more=false；项目缺失为 `404 PROJECT_NOT_FOUND`，画布/历史目录不安全或不可读为 `409 CHAT_HISTORY_UNAVAILABLE`，均使用现有 Agent 错误工厂。
+
+## 修订（#406 / C1）：只呈现的结构化事件与人工答题回执
+
+`agent.present` 是 manifest 的共享能力，REST 为 `POST /api/projects/{project_id}/agent/present?agent_node_id={agent_id}`，MCP/Pi 同名。REST、MCP 的项目仲裁和现有同源守卫仍是权限边界；可选 `X-Agent-Project` 不得与真实项目不同。必须指向已有 Agent，呈现不建节点、不重绑宿主、不批准、不执行、不扩文件权限。外部 MCP 可以建立仅用于事件记录的内存会话，不启动原生进程。
+
+### #411 接入合同
+
+输入为以下互斥对象；各层未知字段均拒绝，身份/轮次/执行状态不接受客户端声明：
+
+```typescript
+{ action: "show", kind: "plan", title: string, steps: {id: string, text: string}[] }
+{ action: "show", kind: "question", title: string, questions:
+  {id: string, text: string, options: {id: string, text: string}[], recommended: string}[] }
+{ action: "show", kind: "diff", title: string, op_id: string } // 与 diff_id 二选一
+{ action: "show", kind: "diff", title: string, diff_id: string }
+{ action: "get", presentation_id: string }
+```
+
+- show/get 成功均返回 `{presentation: P}`。P 精确为 `{schema: 1, id: string, kind: "plan"|"question"|"diff", title: string, state: "presented"|"pending"|"answered"|"expired", data: object, answers?: Record<string,string>}`。ID 由服务端生成；plan/diff 为 presented，question 初始 pending，答题后 answered，失效后 expired；answers 仅为实际人工选择的题 ID → 选项 ID。
+- plan 的 data 是 `{steps}`，仅是提案，不改执行 todo。question 的 data 是 `{questions}`；推荐值必须存在于该题选项，题 ID/题内选项 ID 必须唯一，多题同卡。C1 仅显示选项/推荐与“按推荐开始”，不做 #411 的编辑、勾选等完整交互。
+- diff 的 data 从本调用者有权读取的真实引用解析，不接受助手自述“已应用”：operation 为 `{source:"operation", op_id, turn_id, tool, before, after, undone}`，preview 为 `{source:"preview", diff_id, items, applied:false}`。读取 preview 不消费原确认/CAS 对象；没有真实操作或预览回执不能伪造差异卡。
+- live 事件为 `{type: P.kind, presentation: P, turn_id, host, generation, seq, ...既有事件元数据}`，同一 payload 进入已有 /events、/events/page 和 JSONL；项目、节点、host/generation、原 turn 和 seq 均来自服务端，不猜原生协议、不回填旧轮次。展示、人工决策和投递失败更新沿用同一 presentation ID，TUI 原位更新，历史回放只读。普通助手正文不解析成这些事件。
+- 宿主投递失败时，question 事件可另带顶层 `delivery_error`（标准 Agent 错误对象），并保存/回放；它不是 P 内的答案字段。“answered”只证明人工选择已记录，不证明原生宿主已收到、执行或确认。UI 必须显示真实投递错误；真实 HTTP 拒绝也不能被已记录的答案遮掉。
+
+### 人工回答不是执行确认
+
+`GET /api/projects/{project_id}/agent-nodes/{node_id}/questions/{id}` 返回 `{presentation:P, answerable:boolean, delivery_error?:AgentError}`，不创建/恢复会话。前端先查当前回执，再向同路径 `/answers` POST `{answers:Record<string,string>, request_id?:string}`，必须为所有题各提交一个合法选项。成功为 `{presentation:P, input:既有输入准入回执|null}`。
+
+- hosted 的回答经真实用户输入入口和 FIFO；忙时排为 follow-up，实际投递才产生新用户轮，不借 #402 确认门、不自动批准、不造同轮系统续接。队列准入成功不等于原生投递成功。相同答案重发只读原回执，不重复写管道；不同答案冲突。已记录的管道错误也原样重回，不因另一 POST 重试不确定副作用。
+- 任何新输入、停止、host/generation/输入 epoch/原轮或节点身份变化均重新校验；陈旧按钮不能跨宿主提交。UI 失焦、宿主/项目切换后的迟到响应不能更新新视图。
+- external MCP 的答案只存储；必须用原项目、节点和显式 Mcp-Session-Id 的 get 读取，不能向应用内另一宿主注入、自动开跑或冒充 hosted。show/get 不承诺服务重启后恢复执行；只读历史事件不等于可回答的活动对象。
+- 每个 ProjectStore 最多 256 个内存回执，30 分钟有效，最旧项会被淘汰；失效读取/回答为 409 CONFLICT。参数/解析差异最多 65536 UTF-8 字节；标题最多 200 字，ID 最多 128 字，题目/步骤/选项文本最多 2000 字；步骤 1..50、题 1..10、每题选项 2..10。内存状态不代替持久执行或无限历史查询。
+
+### 提示词与验证边界
+
+Pi/Codex 的首次与恢复提交共用一份默认策略；三档 suffix 仅保留空兼容值，确认档位只由服务端执行。策略要求先一次性提问、真实计划/差异回执、保护人工内容、附件和参考图角色按 §13、按真实错误与现有两次预算恢复、pending 后结束当前响应而非 abort、一句结果加真实差异。Pi 的工具 allowlist 包含共享扩展命名空间；不开放内置文件、shell 或网络工具。
+
+#406 的本地桩只证明文本、真实提交边界、工具/确认管线和 TUI，不证明模型行为；#405 保持 OPEN，真实 B2 指标 NOT_RUN/null。plan.apply 超出同步窗口当前返回 PLAN_NOT_CONFIRMED，通用 resumable 尚未接通，作为独立缺口交 review 另开票；本票不承诺自动恢复，也不暗改此行为。

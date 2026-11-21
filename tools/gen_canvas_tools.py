@@ -13,6 +13,7 @@ tests/test_tool_surface_consistency.py 钉住「每个清单工具都有执行�
 """
 import argparse
 import io
+import json
 import os
 import sys
 
@@ -120,7 +121,12 @@ def render() -> str:
         out.write("    {\n")
         out.write(f"        name: {ts_str(tool['name'])},\n")
         out.write(f"        description: {ts_str(tool['description'])},\n")
-        out.write(f"        parameters: Type.Object({render_props(tool['inputSchema'])}),\n")
+        if tool['name'] == 'agent.present':
+            # Keep disjoint actions and nested bounds intact without a second Pi schema.
+            schema = json.dumps(tool['inputSchema'], ensure_ascii=False, separators=(',', ':'))
+            out.write(f"        parameters: Type.Unsafe({schema}),\n")
+        else:
+            out.write(f"        parameters: Type.Object({render_props(tool['inputSchema'])}),\n")
         out.write("    },\n")
     out.write(FOOTER)
     return out.getvalue()

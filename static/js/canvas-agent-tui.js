@@ -1045,13 +1045,28 @@ function loadOlderAgentEvents(nodeId, state) {
                 }
                 agentTimelineSync(older);
             } finally { agentTuiState.set(nodeId, state); }
+            // A receipt can be on a newer page than its original question. Keep its
+            // newest data and stable anchor, but restore the original chronological slot.
+            const moved = new Set();
+            for (const entry of older.timeline || []) {
+                const id = entry.message?.presentation?.id;
+                const existing = id && state.messages.find(message => message.presentation?.id === id);
+                if (!existing) continue;
+                const currentEntry = state.timelineMessages.get(existing);
+                const index = older.messages.indexOf(entry.message);
+                older.messages[index] = existing;
+                entry.message = existing;
+                if (currentEntry) { entry.key = currentEntry.key; moved.add(entry); }
+                state.messages.splice(state.messages.indexOf(existing), 1);
+                state.timeline = state.timeline.filter(item => item !== currentEntry);
+            }
             const prefix = `older:${++state.olderPageSerial}:`;
             for (const [id, activity] of older.toolActivities) {
                 state.toolActivities.set(prefix + id, activity);
                 state.timelineTools.set(prefix + id, activity);
             }
             for (const entry of older.timeline || []) {
-                entry.key = prefix + entry.key;
+                if (!moved.has(entry)) entry.key = prefix + entry.key;
                 if (entry.kind === 'tools') entry.items.forEach(item => { item.toolCallId = prefix + item.toolCallId; });
                 else if (entry.message) state.timelineMessages.set(entry.message, entry);
             }
@@ -1119,8 +1134,28 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
     let streamingText = null;
 
     switch (eventType) {
+        case 'plan':
+        case 'question':
+        case 'diff': {
+            const p = event.presentation;
+            if (!p || p.schema !== 1 || p.kind !== eventType || typeof p.id !== 'string' || !p.id || !p.data) break;
+            const row = state.messages.find(message => message.presentation?.id === p.id);
+            const deliveryError = event.delivery_error ? agentNodeRefsError({ detail: event.delivery_error }, tr('smart.agentPresentDeliveryUnconfirmed')) : '';
+            if (row) {
+                row.presentation = p;
+                if (deliveryError) row.presentationDeliveryError = deliveryError;
+                if (p.state === 'answered' || p.state === 'expired') {
+                    row.presentationError = '';
+                    row.presentationSending = false;
+                }
+            } else {
+                finalizeAgentStreamingTurn(state);
+                agentAppendMessage(state, { role: 'presentation', presentation: p, presentationReadonly: Boolean(state._applyingReplay), presentationDeliveryError: deliveryError });
+            }
+            break;
+        }
         case 'user_prompt':
-            // #318 票 C：回放里的 user 侧（live 不广播此事件，无回声双气泡风险）。
+            // user_prompt 仅回放，live 不广播，避免乐观用户消息产生回声。
             agentAppendMessage(state, { role: 'user', text: String(event.text || ''),
                 ...(recordedAt !== undefined ? { timestamp: recordedAt } : {}) });
             break;
@@ -1132,7 +1167,6 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
                 state.stopStatusError = '';
                 state.queuedInputs.clear();
             }
-            // #280：后端确认会话就绪 = 连接成功，清退避状态（失败计数/触顶标志/失败原因）。
             state.retryCount = 0;
             state.reconnectStopped = false;
             state.lastError = '';
@@ -1140,7 +1174,6 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
                 clearTimeout(state.reconnectTimer);
                 state.reconnectTimer = null;
             }
-            // #318 票 C：会话确认=拉历史回放（刷新/断线后消息区重建）。
             replayAgentEvents(nodeId, state);
             break;
         case 'agent_start':
@@ -1151,7 +1184,7 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
             state._turnFailed = false;
             state._aborted = false;
             state.status = 'busy';
-            state._turnSeq = (state._turnSeq || 0) + 1; // #322 票 D：工具段分组边界
+            state._turnSeq = (state._turnSeq || 0) + 1;
             break;
         case 'agent_end':
             if (event.willRetry !== true) {
@@ -1182,10 +1215,7 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
                 .filter(c => c && c.type === 'text')
                 .map(c => c.text || '')
                 .join('');
-            // #222：streaming 标记只在追加增量时写入，之前没有任何地方清它。
-            // 后果是下一轮的 text_delta / thinking_delta 直接续写到上一轮末尾，
-            // 相邻两轮回复在历史区显示成一条。turn_end 就是「本轮结束」的边界，
-            // 在这里把末条流式消息定型。
+            // 轮次结束必须定型，避免下一轮增量续写上一轮回复（#222）。
             const lastMessage = state._turnTextMessage || state.messages[state.messages.length - 1];
             const streamedThisTurn = Boolean(state._turnTextMessage || (lastMessage && lastMessage.role === 'assistant' && lastMessage.streaming));
             const nativeTime = agentMessageTimestamp(msg.timestamp);
@@ -1196,12 +1226,10 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
                 const knownTime = nativeTime ?? lastMessage.timestamp ?? recordedAt;
                 if (knownTime !== undefined) lastMessage.timestamp = knownTime;
             } else if (text) {
-                // 流式增量已经把文本写进历史，turn_end 再推一遇就是重复回复。
                 agentAppendMessage(state, { role: 'assistant', text,
                     ...(timestamp !== undefined ? { timestamp } : {}) });
             }
-            // #288：上游 4xx（百炼额度耗尽/模型 ID 不存在等）时 pi 回空 content+errorMessage，
-            // 此前前端只渲染 text → 用户看到的是“永久无响应”。错误必须可见、可操作。
+            // Pi 错误可只有 errorMessage 而没有 content，仍须显示原因（#288）。
             if (msg.stopReason === 'error' || msg.errorMessage) {
                 state._turnFailed = true;
                 const em = String(msg.errorMessage || '未知错误').slice(0, 300);
@@ -1217,7 +1245,6 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
             if (ame.type === 'text_delta') {
                 const delta = ame.delta || '';
                 archiveAgentThinking(state);
-                // Append to last assistant message or create new
                 const last = state.messages[state.messages.length - 1];
                 const nativeTime = agentMessageTimestamp(event.message?.timestamp);
                 const timestamp = nativeTime ?? recordedAt;
@@ -1232,7 +1259,7 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
                 }
                 state._turnTextMessage = state.messages[state.messages.length - 1];
             } else if (ame.type === 'thinking_delta') {
-                // Seal text at a visible thought boundary; the thought keeps its timeline slot.
+                // Thought boundaries must not move behind later text deltas.
                 const textMessage = state.messages[state.messages.length - 1];
                 if (textMessage) delete textMessage.streaming;
                 if (!state.thinking) state.thinking = [];
@@ -1260,7 +1287,7 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
                 args: event.args,
                 result: null,
                 isError: false,
-                turn: state._turnSeq || 0, // #322：连续 tool 段按轮分组
+                turn: state._turnSeq || 0,
                 duration_ms: null,
             });
             agentTimelineTool(state, toolCallId, state.toolActivities.get(toolCallId));
@@ -1306,12 +1333,9 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
             finalizeAgentStreamingTurn(state);
             break;
         case 'confirm': {
-            // Confirmation request from agent for destructive operation
             state.confirm = event;
             state.status = 'waiting_confirm';
-            // #357：确认门移到服务端后，画布收到确认事件即弹 ffDialog（与 #347 删除
-            // 确认同一机制、danger 样式）；卡片内联批准/取消按钮保留作模态关闭后的
-            // 兑底——两路都走 sendAgentConfirm，state.confirm 清空后互斥不会双发。
+            // 模态关闭后仍可内联确认；两路共用 sendAgentConfirm，清空 confirm 防双发（#357）。
             if (!agentIsReadonly(state) && !state._applyingReplay && window.ffDialog && state.confirmModalShown !== event.confirm_id) {
                 state.confirmModalShown = event.confirm_id;
                 window.ffDialog.ask({
@@ -1330,9 +1354,7 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
             break;
         }
         case 'confirm_resolved': {
-            // #389：确认门终态记录（live 与刷新回放共用）。已决卡不再重放：清
-            // state.confirm，并静默关掉仍挂着的 ffDialog（close 不 settle promise，
-            // 上面 ask().then 的 state.confirm 守卫保证不会误发决议）。
+            // 已决卡不能重放；close 不 settle promise，confirm 守卫阻止旧模态误发决议（#389）。
             if (state.confirm && state.confirm.confirm_id === event.confirm_id) {
                 state.confirm = null;
                 if (state.status === 'waiting_confirm') state.status = 'busy';
@@ -1345,12 +1367,8 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
             break;
         }
         case 'response':
-            // Command response, ignore for now
             break;
         case 'error': {
-            // #280：后端失败事件（stream 端点在 spawn 失败时发送 {"type":"error","message":...}）。
-            // 此前 default 分支静默吞掉，节点上完全看不到失败。现在渲染失败状态 + 原因
-            // （agentNodeBodyHtml 的横幅 + 卡片状态），并保留手动「重试连接」入口。
             state.status = 'failed';
             state._turnFailed = true;
             const errMsg = String(event.message || 'Agent 会话启动失败');
@@ -1365,7 +1383,6 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
             break;
     }
 
-    // Fall back for new rows, timestamp changes, replay, or an unmounted view.
     if (state._applyingReplay || !streamingText || !updateAgentStreamingText(state, streamingText)) renderAgentNode(nodeId);
 }
 
@@ -2313,6 +2330,34 @@ function agentMessageBylineHtml(msg, date) {
     return `<div class="agent-tui-msg-byline"><span>${author}</span>${time}</div>`;
 }
 
+function agentPresentationHtml(message, readonly) {
+    const p = message.presentation;
+    const empty = `<div>${escapeHtml(tr('smart.agentPresentEmpty'))}</div>`;
+    let content = '';
+    if (p.kind === 'plan') {
+        const steps = Array.isArray(p.data.steps) ? p.data.steps : [];
+        content = `<div>${escapeHtml(tr('smart.agentPresentProposal'))}</div>`
+            + (steps.length ? `<ol>${steps.map(step => `<li>${escapeHtml(step?.text || '')}</li>`).join('')}</ol>` : empty);
+    } else if (p.kind === 'diff') {
+        // Only server-resolved data is displayed; it never becomes HTML or an apply action.
+        content = Object.keys(p.data).length ? `<pre>${escapeHtml(JSON.stringify(p.data, null, 2))}</pre>` : empty;
+    } else if (p.kind === 'question') {
+        const questions = Array.isArray(p.data.questions) ? p.data.questions.filter(question => question && typeof question === 'object') : [];
+        content = questions.length ? questions.map(question => `<div><div>${escapeHtml(question.text || '')}</div><ul>${(Array.isArray(question.options) ? question.options.filter(option => option && typeof option === 'object') : []).map(option =>
+            `<li>${escapeHtml(option.text || '')}${option.id === question.recommended ? ` <small>${escapeHtml(tr('smart.agentPresentRecommended'))}</small>` : ''}${p.answers?.[question.id] === option.id ? ` <small>${escapeHtml(tr('smart.agentPresentSelected'))}</small>` : ''}</li>`).join('')}</ul></div>`).join('') : empty;
+        const status = p.state === 'answered' ? tr('smart.agentPresentAnswered') : p.state === 'expired' ? tr('smart.agentPresentExpired') : tr('smart.agentPresentPending');
+        content += `<div role="status">${escapeHtml(status)}</div>`;
+        if (message.presentationSending) content += `<div role="status">${escapeHtml(tr('smart.agentPresentSending'))}</div>`;
+        if (message.presentationError) content += `<div role="alert">${escapeHtml(tr('smart.agentPresentAnswerUnconfirmed'))} ${escapeHtml(message.presentationError)}</div>`;
+        if (message.presentationDeliveryError) content += `<div role="alert">${escapeHtml(tr('smart.agentPresentDeliveryUnconfirmed'))} ${escapeHtml(message.presentationDeliveryError)}</div>`;
+        else if (message.presentationRequestError && p.state === 'answered') content += `<div role="alert">${escapeHtml(tr('smart.agentPresentRequestRejected'))} ${escapeHtml(message.presentationRequestError)}</div>`;
+        if (readonly || message.presentationReadonly) content += `<div>${escapeHtml(tr('smart.agentPresentReadonly'))}</div>`;
+        const answerable = questions.length && questions.every(q => typeof q.id === 'string' && Array.isArray(q.options) && q.options.some(option => option && typeof option.id === 'string' && option.id === q.recommended));
+        if (p.state === 'pending' && answerable && !readonly && !message.presentationReadonly) content += `<button type="button" class="agent-tui-btn" data-agent-question-answer="${escapeAttr(p.id)}"${message.presentationSending ? ' disabled' : ''}>${escapeHtml(tr('smart.agentPresentStartRecommended'))}</button>`;
+    }
+    return `<div class="agent-tui-msg agent-tui-presentation" data-agent-presentation="${escapeAttr(p.id)}"><strong>${escapeHtml(p.title || '')}</strong>${content}</div>`;
+}
+
 function agentNodeBodyHtml(node) {
     const nodeId = node.id;
     const state = getAgentTuiState(nodeId);
@@ -2326,7 +2371,6 @@ function agentNodeBodyHtml(node) {
     const dateHeaders = new Map();
     const today = new Date().toDateString();
     const title = typeof node.title === 'string' ? node.title.trim() : '';
-    // The topic is the last segment of a qualified title (e.g. project · topic).
     const topic = title.split(' · ').at(-1);
     const dateSuffix = topic && !/^agent$/i.test(topic) ? ` · ${escapeHtml(topic)}` : '';
     const forkAnchors = agentMessageForkAnchors(state.messages);
@@ -2343,7 +2387,6 @@ function agentNodeBodyHtml(node) {
         }
         let messagesHtml = '';
         if (msg.role === 'user') {
-            // #268：附件名列表（小字跟在消息下方）
             const attachNames = (msg.attachments || []).filter(Boolean);
             const attachHtml = attachNames.length
                 ? `<div class="agent-tui-msg-attach">${agentIco('paperclip')} ${attachNames.map(escapeHtml).join(' · ')}</div>` : '';
@@ -2356,6 +2399,8 @@ function agentNodeBodyHtml(node) {
             const open = state.thoughtExpanded && state.thoughtExpanded[entry.key] !== undefined
                 ? state.thoughtExpanded[entry.key] : state.thinkingVisible;
             messagesHtml += `<details class="agent-tui-thought${live ? ' agent-tui-thought-live' : ''}" data-agent-thought="${escapeAttr(entry.key)}"${open ? ' open' : ''}><summary>${agentIco('brain')} ${live ? '思考中' : '思考了'}</summary><div class="agent-tui-thinking-text">${escapeHtml(msg.text)}</div></details>`;
+        } else if (msg.role === 'presentation') {
+            messagesHtml += agentPresentationHtml(msg, readonly);
         } else if (msg.role === 'system') {
             messagesHtml += `<div class="agent-tui-msg agent-tui-msg-system"><span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span></div>`;
         }
@@ -2363,10 +2408,7 @@ function agentNodeBodyHtml(node) {
         rowHtml.set(entry.key, messagesHtml);
     }
 
-    // D2: only consecutive executions share a collapsed group; keep the original detail cards.
-    // todo 类工具改渲染 checklist（无数据不显示，不造假）；长输出 >300px CSS 截断+
-    // 卡内「展开全文」二级开关（scope-add #322）。
-    // codex 宿主实发名是 todo_list（codex_adapter 直传 item type），必须覆盖。
+    // Only consecutive executions share a group. Native Codex emits todo_list; empty lists stay hidden.
     const isTodoTool = (name) => /^(todo|write_todos|todowrite|todo_list)$/i.test(String(name || ''));
     const checklistHtml = (args) => {
         const items = args && (args.todos || args.updates);
@@ -2433,11 +2475,10 @@ function agentNodeBodyHtml(node) {
     // Expansion, selection and the global brain toggle are UI changes, not new unread content.
     const timelineContent = JSON.stringify([timeline.map(entry => entry.kind === 'tools'
         ? [entry.key, entry.items.map(({ toolCallId, activity: a }) => [toolCallId, a.name, a.status, a.args, a.result, a.update, a.duration_ms])]
-        : [entry.key, entry.message.text, entry.message.attachments]), state.confirm || null]);
+        : [entry.key, entry.message.text, entry.message.attachments, entry.message.presentation]), state.confirm || null]);
     if (state._timelineContent != null && state._timelineContent !== timelineContent && state.scrollState && !state.scrollState.atBottom) state.scrollState.unread = true;
     state._timelineContent = timelineContent;
 
-    // Render confirmation card if waiting for user decision
     let confirmHtml = '';
     if (state.confirm) {
         const c = state.confirm;
@@ -2477,10 +2518,9 @@ function agentNodeBodyHtml(node) {
     const readonlyBanner = readonly ? `<div class="agent-tui-readonly-banner" role="status">只读查看 ${escapeHtml(state.viewHost)} · 当前活跃宿主 ${escapeHtml(state.activeHost)}
         <button type="button" data-agent-view-current>返回当前会话</button><button type="button" data-agent-resume-host${agentParametersLocked(state) ? ' disabled' : ''}>切回此宿主继续</button></div>` : '';
 
-    // #268：待发送附件行（缩略图 + 文件名 + 说明 + 移除）
     const pendingImages = state.pendingImages || [];
     let pendingHtml = '';
-    if (state.attachWorking) { // #317：附件处理进度提示（长转码不再静默）
+    if (state.attachWorking) {
         pendingHtml += `<div class="agent-tui-attach-working">${agentIco('loader-2')} ${escapeHtml(tr('smart.agentAttachWorking').replace('{name}', state.attachWorking))}</div>`;
     }
     if (pendingImages.length) {
@@ -2496,7 +2536,6 @@ function agentNodeBodyHtml(node) {
         pendingHtml += `<div class="agent-tui-attach-row">${chips}</div>`;
     }
 
-    // #301：空会话给 body 加类，空状态垂直居中，缓解「中间大空白」的失衡感。
     const hasTuiContent = Boolean(timeline.length || state.confirm);
 
     return `<div class="agent-tui-card">
@@ -2510,7 +2549,7 @@ function agentNodeBodyHtml(node) {
         <div class="agent-tui-body-wrap">
         <nav class="agent-message-navigation" aria-label="用户消息导航"></nav>
         <div class="agent-tui-body${hasTuiContent ? '' : ' agent-tui-body-empty'}" data-agent-tui-body="${escapeAttr(nodeId)}">
-            <div class="agent-tui-messages" data-agent-tui-messages="${escapeAttr(nodeId)}" aria-live="polite" aria-atomic="false"> <!-- #317：流式输出对读屏可见 -->
+            <div class="agent-tui-messages" data-agent-tui-messages="${escapeAttr(nodeId)}" aria-live="polite" aria-atomic="false">
                 ${state.historyHasMore ? `<button type="button" data-agent-events-older${state.historyLoadingOlder ? ' disabled' : ''}>${state.historyLoadingOlder ? '加载中…' : '加载更早的消息'}</button>` : ''}
                 ${timelineHtml || '<div class="agent-tui-empty">Agent TUI 已就绪：在下方输入创作指令，Enter 发送 / Shift+Enter 换行</div>'}
                 ${confirmHtml}
@@ -2522,7 +2561,7 @@ function agentNodeBodyHtml(node) {
         ${pendingHtml}
         <div class="agent-tui-input-row">
             <div class="agent-tui-input-line">
-                <textarea class="agent-tui-input" data-agent-tui-input="${escapeAttr(nodeId)}" placeholder="继续描述你的想法…" title="Enter 发送 / Shift+Enter 换行；运行中 Enter 排队为后续指令" aria-label="Agent 指令输入框" rows="3" style="min-height:96px"${readonly ? ' disabled' : ''}>${escapeHtml(state.draft || '')}</textarea> <!-- #314：草稿随重建恢复 -->
+                <textarea class="agent-tui-input" data-agent-tui-input="${escapeAttr(nodeId)}" placeholder="继续描述你的想法…" title="Enter 发送 / Shift+Enter 换行；运行中 Enter 排队为后续指令" aria-label="Agent 指令输入框" rows="3" style="min-height:96px"${readonly ? ' disabled' : ''}>${escapeHtml(state.draft || '')}</textarea>
             </div>
             ${toolbarHtml}
             <div class="agent-tui-action-row">
@@ -2575,6 +2614,7 @@ function agentTaskNodeBodyHtml(node){
 }
 
 function agentProjectId(){ return canvas?.project_id || canvas?.project || sourceProjectId || ''; }
+function agentViewCanvasId(){ return canvasId || ''; }
 
 // #403：steer 和排队输入携带项目内附件引用，不传 inline 媒体。
 // #313：输入框随内容自动增高，上限 140px（与 CSS max-height 一致）后出内部滚动
@@ -2853,15 +2893,62 @@ function bindAgentMessageActions(el, nodeId, projectId) {
     });
 }
 
+async function answerAgentPresentation(nodeId, projectId, state, epoch, message) {
+    const originalProject = agentProjectId();
+    const current = () => agentTuiState.get(nodeId) === state && state.viewEpoch === epoch && !state.closing
+        && !agentIsReadonly(state) && agentViewCanvasId() === projectId && agentProjectId() === originalProject
+        && canvasState.nodes.some(node => node.id === nodeId && isSmartAgentNode(node) && agentNodeHost(node) === state.viewHost)
+        && state.messages.includes(message);
+    if (!current() || state.stopPending || state.settingsPending || message.presentationReadonly
+        || message.presentationSending || message.presentation.state !== 'pending') return;
+    const id = message.presentation.id;
+    const url = `/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/questions/${encodeURIComponent(id)}`;
+    const read = async (response, isAnswer = false) => {
+        const data = await response.json();
+        if (!response.ok) throw Object.assign(new Error(agentNodeRefsError(data, `HTTP ${response.status}`)), { answerRejected: isAnswer });
+        const p = data.presentation;
+        if (!p || p.schema !== 1 || p.id !== id || p.kind !== 'question' || !p.data || !Array.isArray(p.data.questions)
+            || !['pending', 'answered', 'expired'].includes(p.state)) throw new Error(tr('smart.agentPresentInvalidReceipt'));
+        if (data.delivery_error && current()) message.presentationDeliveryError = agentNodeRefsError({ detail: data.delivery_error }, tr('smart.agentPresentDeliveryUnconfirmed'));
+        return p;
+    };
+    message.presentationSending = true;
+    message.presentationError = '';
+    message.presentationRequestError = '';
+    renderAgentNode(nodeId);
+    try {
+        // A replayed/persisted pending record is not proof that its original runtime still accepts input.
+        const fresh = await read(await fetch(url));
+        if (!current()) return;
+        if (message.presentation.state !== 'pending') return;
+        message.presentation = fresh;
+        if (fresh.state !== 'pending') return;
+        const questions = fresh.data?.questions;
+        if (!Array.isArray(questions) || !questions.length || questions.some(q => !q || typeof q.id !== 'string'
+            || !Array.isArray(q.options) || !q.options.some(option => option && typeof option.id === 'string' && option.id === q.recommended))) throw new Error(tr('smart.agentPresentInvalidReceipt'));
+        const answers = Object.fromEntries(questions.map(q => [q.id, q.recommended]));
+        const receipt = await read(await fetch(`${url}/answers`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answers }) }), true);
+        if (!current()) return;
+        if (receipt.state !== 'answered' || !receipt.answers || Object.keys(receipt.answers).length !== questions.length
+            || questions.some(q => receipt.answers[q.id] !== answers[q.id])) throw new Error(tr('smart.agentPresentInvalidReceipt'));
+        message.presentation = receipt;
+    } catch (error) {
+        // A lost response is ambiguous; an explicit server rejection must remain visible even after answer storage.
+        if (current() && error.answerRejected) message.presentationRequestError = String(error.message || error);
+        if (current() && message.presentation.state !== 'answered') message.presentationError = String(error.message || error);
+    } finally {
+        message.presentationSending = false;
+        if (current()) renderAgentNode(nodeId);
+    }
+}
+
 function bindAgentNodeControls(el, node){
     agentSyncHostView(node, getAgentTuiState(node.id));
     agentNodeRefsBind(el, node);
-    // TUI-style agent node: bind terminal input
     const nodeId = node.id;
-    const projectId = canvasId || '';
+    const projectId = agentViewCanvasId();
 
-    // Connect WebSocket when node is rendered
-    // #280：普通路径不再无条件建连——退避在途/已触顶停止时直接跳过（见 connectAgentWebSocket）。
+    // Normal binding must honor reconnect backoff instead of starting a new connection on each render (#280).
     connectAgentWebSocket(nodeId, projectId);
     const initialState = getAgentTuiState(nodeId);
     if (!initialState.historyLoaded && !initialState.historyBlocked && !initialState._replayInFlight) replayAgentEvents(nodeId, initialState);
@@ -2890,7 +2977,6 @@ function bindAgentNodeControls(el, node){
         pollAgentStopStatus(nodeId, projectId, state, state.viewEpoch);
     });
 
-    // #280：手动重试——点「重试连接」清退避上限并强制立即重连（仅失败横幅里存在）。
     const retryBtn = el.querySelector('[data-agent-retry]');
     if (retryBtn) {
         retryBtn.addEventListener('mousedown', event => event.stopPropagation());
@@ -2904,8 +2990,16 @@ function bindAgentNodeControls(el, node){
     }
 
     bindAgentMessageActions(el, nodeId, projectId);
+    const presentationState = getAgentTuiState(nodeId), presentationEpoch = presentationState.viewEpoch;
+    el.querySelectorAll('[data-agent-question-answer]').forEach(button => {
+        const message = presentationState.messages.find(row => row.presentation?.id === button.getAttribute('data-agent-question-answer'));
+        button.addEventListener('mousedown', event => event.stopPropagation());
+        button.addEventListener('click', event => {
+            event.stopPropagation();
+            if (message) answerAgentPresentation(nodeId, projectId, presentationState, presentationEpoch, message);
+        });
+    });
 
-    // Bind tool activity row toggle (collapsible)
     const toolRows = el.querySelectorAll('[data-tool-call-id]');
     toolRows.forEach(row => {
         row.addEventListener('click', event => {
@@ -2920,7 +3014,6 @@ function bindAgentNodeControls(el, node){
         });
     });
 
-    // #322 票 D：工具段分组展开态持久在 state（重渲染不丢）
     el.querySelectorAll('[data-tool-group]').forEach(groupEl => {
         groupEl.addEventListener('mousedown', event => event.stopPropagation());
         groupEl.addEventListener('toggle', () => {
@@ -2953,7 +3046,6 @@ function bindAgentNodeControls(el, node){
         });
     });
 
-    // #322 票 D：长输出「展开全文/收起」二级开关（scope-add）
     el.querySelectorAll('[data-expand-output]').forEach(btn => {
         btn.addEventListener('mousedown', event => event.stopPropagation());
         btn.addEventListener('click', event => {
@@ -2967,16 +3059,15 @@ function bindAgentNodeControls(el, node){
         });
     });
 
-    // Bind input
     const inputEl = el.querySelector('[data-agent-tui-input]');
-    const state0 = getAgentTuiState(nodeId); // #314：草稿/IME/重渲染状态
+    const state0 = getAgentTuiState(nodeId);
     if (inputEl) {
         inputEl.addEventListener('mousedown', event => event.stopPropagation());
-        inputEl.addEventListener('input', () => { // #313/#314：随内容增高 + 草稿入状态
+        inputEl.addEventListener('input', () => {
             state0.draft = inputEl.value;
             agentTuiAutoGrow(inputEl);
         });
-        inputEl.addEventListener('compositionstart', () => { state0.composing = true; }); // #314：IME 保护
+        inputEl.addEventListener('compositionstart', () => { state0.composing = true; });
         inputEl.addEventListener('compositionend', () => {
             state0.composing = false;
             state0.draft = inputEl.value;
@@ -2985,7 +3076,7 @@ function bindAgentNodeControls(el, node){
                 renderAgentNode(nodeId);
                 // renderAgentNode restores focus and the current selection, not forcibly the end.
             }
-            // #407 D1：组合期间被推迟的停靠切换，组合结束后补执行（与 pendingRerender 同机制）
+            // Dock changes must wait for compositionend to preserve the IME session (#407).
             if (state0.pendingDock !== undefined) {
                 const request = state0.pendingDock;
                 state0.pendingDock = undefined;
@@ -3002,7 +3093,6 @@ function bindAgentNodeControls(el, node){
         });
     }
 
-    // #301：「发送」按钮——行为与 Enter 发送完全一致（空输入 no-op）
     const sendBtn = el.querySelector('[data-agent-send]');
     if (sendBtn) {
         sendBtn.addEventListener('mousedown', event => event.stopPropagation());
@@ -3012,7 +3102,6 @@ function bindAgentNodeControls(el, node){
         });
     }
 
-    // Bind steer button
     const steerBtn = el.querySelector('[data-agent-steer]');
     if (steerBtn) {
         steerBtn.addEventListener('mousedown', event => event.stopPropagation());
@@ -3022,7 +3111,6 @@ function bindAgentNodeControls(el, node){
         });
     }
 
-    // Bind follow-up button
     const followupBtn = el.querySelector('[data-agent-followup]');
     if (followupBtn) {
         followupBtn.addEventListener('mousedown', event => event.stopPropagation());
@@ -3032,7 +3120,6 @@ function bindAgentNodeControls(el, node){
         });
     }
 
-    // Bind abort button
     el.querySelectorAll('[data-agent-abort]').forEach(abortBtn => {
         abortBtn.addEventListener('mousedown', event => event.stopPropagation());
         abortBtn.addEventListener('click', event => {
@@ -3041,7 +3128,6 @@ function bindAgentNodeControls(el, node){
         });
     });
 
-    // Bind confirm approve button
     const approveBtn = el.querySelector('[data-agent-confirm-approve]');
     if (approveBtn) {
         approveBtn.addEventListener('mousedown', event => event.stopPropagation());
@@ -3051,7 +3137,6 @@ function bindAgentNodeControls(el, node){
         });
     }
 
-    // Bind confirm reject button
     const rejectBtn = el.querySelector('[data-agent-confirm-reject]');
     if (rejectBtn) {
         rejectBtn.addEventListener('mousedown', event => event.stopPropagation());
@@ -3115,7 +3200,6 @@ function bindAgentNodeControls(el, node){
 
     bindAgentMoreControls(el, node);
 
-    // Bind fork button
     const forkBtn = el.querySelector('[data-agent-fork]');
     if (forkBtn) {
         forkBtn.addEventListener('mousedown', event => event.stopPropagation());
@@ -3126,7 +3210,6 @@ function bindAgentNodeControls(el, node){
         });
     }
 
-    // #325 票 G：外部 CLI 接管按钮（fetch 异步，失败已在 fetchAgentCliSnippet 内 console.error）。
     const cliBtn = el.querySelector('[data-agent-cli]');
     if (cliBtn) {
         cliBtn.addEventListener('mousedown', event => event.stopPropagation());
@@ -3136,7 +3219,6 @@ function bindAgentNodeControls(el, node){
         });
     }
 
-    // #268：附件按钮 + 隐藏 file input + 待发送附件移除
     const attachBtn = el.querySelector('[data-agent-attach]');
     const fileInput = el.querySelector('[data-agent-tui-file]');
     if (attachBtn && fileInput) {

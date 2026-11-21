@@ -489,11 +489,13 @@ def _prepare_input(project_id: str, node_id: str, input_type: str, body: dict) -
     return resolved
 
 
-async def _send_input(project_id: str, node_id: str, input_type: str, body: dict, session=None) -> dict:
+async def _send_input(project_id: str, node_id: str, input_type: str, body: dict, session=None, *, admission_guard=None) -> dict:
     # Only admission holds the lock, never the lifetime of inference. Steer,
     # follow-up, abort and confirm stay usable while native RPCs are pending.
     if input_type == "prompt":
         async with agent_host_manager.node_lock(project_id, node_id):
+            if admission_guard is not None:
+                admission_guard()
             return await _send_input_admitted(project_id, node_id, input_type, body, session)
     return await _send_input_admitted(project_id, node_id, input_type, body, session)
 
@@ -532,6 +534,28 @@ async def _send_input_admitted(project_id: str, node_id: str, input_type: str, b
     if "request_id" in body:
         accepted["request_id"] = body["request_id"]
     return accepted
+
+
+@router.get('/{node_id}/questions/{presentation_id}')
+async def get_agent_question(project_id: str, node_id: str, presentation_id: str):
+    from app.services import agent_present
+    return agent_present.question_status(_app_main.FIREFLY_PROJECT_STORE, agent_host_manager,
+                                         project_id, node_id, presentation_id)
+
+
+@router.post('/{node_id}/questions/{presentation_id}/answers')
+async def answer_agent_question(project_id: str, node_id: str, presentation_id: str, request: Request):
+    from app.services import agent_present
+    try:
+        body = await request.json()
+    except ValueError as exc:
+        raise agent_error(400, 'INVALID_ARGUMENT', 'Expected a JSON object') from exc
+
+    async def send(body, guard):
+        return await _send_input(project_id, node_id, 'prompt', body, admission_guard=guard)
+
+    return await agent_present.answer(_app_main.FIREFLY_PROJECT_STORE, agent_host_manager,
+                                      project_id, node_id, presentation_id, body, send)
 
 
 @router.post("/{node_id}/attachments")

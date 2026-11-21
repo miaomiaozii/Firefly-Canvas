@@ -116,7 +116,10 @@ CHAT_PROPERTIES = {
     "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "最多 200 条，默认 50。"},
 }
 
+from app.services.agent_present import TOOL as PRESENT_TOOL
+
 TOOLS = [
+    PRESENT_TOOL,
     {"name": "chat.history", "description": "只读当前项目 Agent 对话：node 返回最近用户/助手纯文本消息（seq 升序），canvas 返回按最近消息倒序的会话摘要，包含 retired 节点；不启动/切换宿主，不读工具内部。范围、截断与 IDs 见 ADR 0022。", "inputSchema": {
         "type": "object", "properties": {**CHAT_PROPERTIES, "before_seq": {"type": "integer", "minimum": 1, "description": "仅 node：读取此 seq 之前的消息。"}}, "required": [], "additionalProperties": False}},
     {"name": "chat.search", "description": "只读当前项目 Agent 保留对话的用户/助手文字，字面量大小写不敏感搜索；默认 canvas，含 retired 节点，结果按最近消息倒序；不搜索工具/思考/系统续接/附件内部或其他项目。每次扫描有界，truncated 表示非完整历史。", "inputSchema": {
