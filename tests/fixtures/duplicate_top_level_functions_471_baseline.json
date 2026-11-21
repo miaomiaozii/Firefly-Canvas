@@ -3066,7 +3066,7 @@
         {
           "module": "tests/history_drawer_browser.py",
           "ordinal": 1,
-          "ast_sha256": "d5a69de40316e29e72dc19f3d42d33f03226a8e7ef8ea0e1f1a6369d47228a24"
+          "ast_sha256": "e3f260403282c3fda5ee7d040596d212eb79aa9466693155be0c72cce138ba56"
         },
         {
           "module": "tests/history_time_browser.py",

@@ -7,9 +7,11 @@ No application data, .env values, online providers, or paid models are used.
 
 from __future__ import annotations
 
+import errno
 import http.server
 import json
 import os
+import random
 import socket
 import sys
 import tempfile
@@ -31,7 +33,12 @@ from tests.native_browser import NativeBrowser
 
 CLIENT_SCRIPT = ROOT / "tests" / "history_drawer_browser_client.js"
 VIEWPORTS = [(1424, 805), (1008, 673)]
-PORT = 3193
+
+
+def _history_port_candidates_477() -> list[int]:
+    ports = list(range(3100, 3300))
+    random.SystemRandom().shuffle(ports)
+    return ports
 
 
 class ExclusiveHistoryHTTPServer(http.server.ThreadingHTTPServer):
@@ -485,10 +492,21 @@ class HistoryBrowserServer:
                 except ProjectStoreError as exc:
                     self.api_error(str(exc), 400)
 
-        try:
-            self.httpd = ExclusiveHistoryHTTPServer(("127.0.0.1", PORT), Handler)
-        except OSError as exc:
-            raise RuntimeError(f"Cannot bind isolated history browser server to 127.0.0.1:{PORT}") from exc
+        last_bind_error = None
+        # Keep the successful listener: probing then rebinding races other runners (#477).
+        for port in _history_port_candidates_477():
+            try:
+                self.httpd = ExclusiveHistoryHTTPServer(("127.0.0.1", port), Handler)
+            except OSError as exc:
+                if exc.errno != errno.EADDRINUSE and getattr(exc, "winerror", None) != 10048:
+                    raise
+                last_bind_error = exc
+            else:
+                break
+        else:
+            raise RuntimeError(
+                "Cannot bind isolated history browser server to 127.0.0.1:3100-3299: all 200 candidate ports are in use"
+            ) from last_bind_error
         self.thread = threading.Thread(target=self.httpd.serve_forever, name="issue-12-history-browser", daemon=True)
 
     @property
@@ -582,7 +600,6 @@ def main():
         previous_roots = {name: os.environ.get(name) for name in roots}
         os.environ.update(roots)
         try:
-            print(json.dumps({"port": PORT, **roots}, ensure_ascii=False), file=sys.stderr, flush=True)
             store = ProjectStore(projects_root, snapshot_delay=0)
             try:
                 server = HistoryBrowserServer(store)
@@ -592,6 +609,7 @@ def main():
                     server.httpd.server_close()
                     raise
                 try:
+                    print(json.dumps({"port": server.httpd.server_port, **roots}, ensure_ascii=False), file=sys.stderr, flush=True)
                     results = []
                     for viewport in VIEWPORTS:
                         fixture = seed_store(store)
