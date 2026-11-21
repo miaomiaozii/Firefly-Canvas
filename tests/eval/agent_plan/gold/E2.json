@@ -1,0 +1,27 @@
+{
+  "schema":1,"case":"E2",
+  "authority":"用户 #399 裁定；eb1715e plan_ir/agent_preview.py:97；MESSAGES.md:3355–3359：one main/A+ brief = one task; references description-only, no automatic attachments/wiring. Supersedes old splitting/dependency-wiring expectations.",
+  "authorship":"Hand-authored from raw 图片方案 rows1–17, and literal E3/E6/E12/E14 in each approved revision, before measurement.",
+  "decisions":["9 main + 6 A+ briefs; A+ identifiers 1,3,4,5,6,7: never invent A+2", "Row11 is a separator; 视频方案 is not image work", "Preserve reference tokens as descriptions only; never read referenced photography paths, H33 projects or files", "Multiple panel prompts in E6 stay inside one task"],
+  "variants":[
+    {"id":"original","fixture":"E2/original/plan.xlsx","sheets":[{"name":"图片方案","rows":[2,3,4,5,6,7,8,9,10,12,13,14,15,16,17]}]},
+    {"id":"scene","fixture":"E2/scene/plan.xlsx","sheets":[{"name":"图片方案","rows":[2,3,4,5,6,7,8,9,10,12,13,14,15,16,17]}],"checks":[{"sheet":"图片方案","row":3,"field":"base_prompt","contains":["@1 10.jpg","@2 C3","灰色短绒"]},{"sheet":"图片方案","row":12,"field":"base_prompt","contains":["@3 已生成的图 2"]},{"sheet":"图片方案","row":6,"field":"base_prompt","contains":["图 5 ①","图 5 ④"]}]},
+    {"id":"revised","fixture":"E2/revised/plan.xlsx","sheets":[{"name":"图片方案","rows":[2,3,4,5,6,7,8,9,10,12,13,14,15,16,17]}],"checks":[{"sheet":"图片方案","row":3,"field":"base_prompt","contains":["@1 10.jpg","@2 C3","真实商业广告摄影"]},{"sheet":"图片方案","row":12,"field":"base_prompt","contains":["@3 E3 成图"]},{"sheet":"图片方案","row":14,"field":"base_prompt","contains":["复用本表 E6 的 ①至④"]}]},
+    {"id":"example","fixture":"E2/example/plan.xlsx","sheets":[{"name":"图片方案","rows":[2,3,4,5,6,7,8,9,10,12,13,14,15,16,17]}],"checks":[{"sheet":"图片方案","row":3,"field":"base_prompt","contains":["@图片1 10.jpg","@图片2 C3","提示词：生成一张"]},{"sheet":"图片方案","row":12,"field":"base_prompt","contains":["@图片3 E3 成图"]},{"sheet":"图片方案","row":14,"field":"base_prompt","contains":["复用本表 E6 的 ①至④"]}]}
+  ],
+  "absent_rows":["图片方案!11"],"absent_sheets":["视频方案"],
+  "checks":[
+    {"sheet":"图片方案","row":2,"field":"name","equals":"1主图"},
+    {"sheet":"图片方案","row":3,"field":"overlay_plan","contains":["15000mAh Power Bank"]},
+    {"sheet":"图片方案","row":5,"field":"base_prompt","contains":["VS半躺沙发上使用插线款"]},
+    {"sheet":"图片方案","row":6,"field":"base_prompt","contains":["四宫格拼接","①14岁女儿","④30岁丈夫"]},
+    {"sheet":"图片方案","row":9,"field":"base_prompt","contains":["丈夫送给妻子","妻子送给丈夫"]},
+    {"sheet":"图片方案","row":13,"field":"base_prompt","contains":["使用H33原图"]},
+    {"sheet":"图片方案","row":13,"field":"name","contains":["3视频封面"]},
+    {"sheet":"图片方案","row":14,"field":"same_as_main","equals":true},
+    {"sheet":"图片方案","row":14,"field":"linked_main_index","equals":5},
+    {"sheet":"图片方案","row":15,"field":"linked_main_index","equals":4},
+    {"sheet":"图片方案","row":16,"field":"base_prompt","contains":["同主图图3"]},
+    {"sheet":"图片方案","row":17,"field":"base_prompt","contains":["同H33A+礼物图","换成H37大尺寸理疗垫"]}
+  ]
+}

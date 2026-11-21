@@ -1,0 +1,23 @@
+{
+  "schema":1,"case":"E9",
+  "authority":"用户 #399 裁定；eb1715e plan_ir/agent_preview.py:97；MESSAGES.md:3355–3359：ONE main/A+ brief = ONE task even with six sizes, no automatic attachment/wiring. Supersedes old six-size splitting and numeric reordering expectations.",
+  "authorship":"Manual raw S-3XL rows1–18, before measurement.",
+  "decisions":["17 tasks main9+A8, never split main1/main7 into6", "Preserve physical source row order: main1 then main7 then main2; display numbering must not erase source identity", "Size/model continuity is descriptive intent, not automatic reference wiring", "R1 global material constraint must be preserved in visual brief descriptions"],
+  "variants":[{"id":"original","fixture":"E9/original/plan.xlsx","sheets":[{"name":"S-3XL","rows":[2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18]}]}],
+  "absent_rows":["S-3XL!1"],
+  "all_prompt_fragments":["不用蜂窝加热"],
+  "checks":[
+    {"sheet":"S-3XL","row":2,"field":"name","equals":"主图1"},
+    {"sheet":"S-3XL","row":3,"field":"name","contains":["主图7"]},
+    {"sheet":"S-3XL","row":4,"field":"name","equals":"主图2"},
+    {"sheet":"S-3XL","row":2,"field":"base_prompt","contains":["S：偏瘦","3XL：大体型"]},
+    {"sheet":"S-3XL","row":2,"field":"overlay_plan","contains":["一个尺码用相同的模特","6个尺码"]},
+    {"sheet":"S-3XL","row":3,"field":"base_prompt","contains":["相同尺码用一个模特的脸"]},
+    {"sheet":"S-3XL","row":3,"field":"overlay_plan","contains":["FIND YOUR BEST FIT","53\"-56\""]},
+    {"sheet":"S-3XL","row":6,"field":"base_prompt","contains":["15000mAh","12V/20W"]},
+    {"sheet":"S-3XL","row":12,"field":"overlay_plan","contains":["12个场景拼接大图","BUILT FOR REAL WINTER SCENARIOS"]},
+    {"sheet":"S-3XL","row":14,"field":"same_as_main","equals":true},
+    {"sheet":"S-3XL","row":15,"field":"overlay_plan","contains":["主图用深色系布局，A+用浅色系布局"]},
+    {"sheet":"S-3XL","row":17,"field":"base_prompt","contains":["模特和主图一致"]}
+  ]
+}

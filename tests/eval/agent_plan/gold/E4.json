@@ -1,0 +1,17 @@
+{
+  "schema":1,"case":"E4",
+  "authority":"用户 #399 裁定；eb1715e plan_ir/agent_preview.py:97；MESSAGES.md:3355–3359：one brief = one task; description-only references, no automatic attachment/wiring.",
+  "authorship":"Manual raw five sheets rows1–9, before measurement; no parser output projection used.",
+  "decisions":["5+2+2+7+6 edit briefs, never treat public-drive header as task", "Original image B and examples D–F are descriptions only, not automatically attached", "Flower A row9 is a new white-background image with no original", "11 beauty renders copied; 22 masks excluded by copier"],
+  "variants":[{"id":"original","fixture":"E4/original/plan.xlsx","sheets":[{"name":"槽板A","rows":[3,4,5,6,7]},{"name":"槽板B","rows":[3,4]},{"name":"槽板C","rows":[3,4]},{"name":"花园A","rows":[3,4,5,6,7,8,9]},{"name":"花园C","rows":[3,4,5,6,7,8]}]}],
+  "absent_rows":["槽板A!1","槽板A!2","槽板B!1","槽板C!1","花园A!1","花园C!1"],
+  "checks":[
+    {"sheet":"槽板A","row":4,"field":"base_prompt","contains":["红框处不要","Load up to 300 LBS","参考右2"]},
+    {"sheet":"槽板B","row":4,"field":"base_prompt","contains":["Load up to 450 LBS"]},
+    {"sheet":"槽板C","row":4,"field":"base_prompt","contains":["Load up to 600 LBS"]},
+    {"sheet":"槽板A","row":5,"field":"base_prompt","contains":["字体颜色与图2统一","右1"]},
+    {"sheet":"花园A","row":9,"field":"base_prompt","contains":["不带工具","不标尺寸","纯空架子白底图"]},
+    {"sheet":"花园C","row":5,"field":"base_prompt","contains":["用改完的花园A的场景图","产品换成花园C"]},
+    {"sheet":"槽板A","row":4,"field":"suggested_refs","nonempty":true}
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "schema":1,"case":"E8",
+  "authority":"用户 #399 裁定；eb1715e plan_ir/agent_preview.py:97；MESSAGES.md:3355–3359：one brief = one task; references description-only; no automatic attachment/wiring.",
+  "authorship":"Manual raw 图片方案 rows1–27, before measurement.",
+  "decisions":["Raw main3 is duplicated: 11 actual briefs (rows3–13), not stale spec10", "11 A+ briefs rows17–27; carousel already has four separate source rows, keep four identities, do not merge or split them", "Second header16 and global note1 are not tasks", "13 beauty renders external,26 masks excluded"],
+  "variants":[{"id":"original","fixture":"E8/original/plan.xlsx","sheets":[{"name":"图片方案","rows":[3,4,5,6,7,8,9,10,11,12,13,17,18,19,20,21,22,23,24,25,26,27]}]}],
+  "absent_rows":["图片方案!1","图片方案!2","图片方案!16"],
+  "checks":[
+    {"sheet":"图片方案","row":5,"field":"name","contains":["3场景图"]},
+    {"sheet":"图片方案","row":6,"field":"name","contains":["3场景图"]},
+    {"sheet":"图片方案","row":19,"field":"name","contains":["第三张大图"]},
+    {"sheet":"图片方案","row":20,"field":"name","contains":["第三张大图"]},
+    {"sheet":"图片方案","row":21,"field":"base_prompt","contains":["和前面花园场景的动作不要完全一样"]},
+    {"sheet":"图片方案","row":22,"field":"base_prompt","contains":["外国男人钓鱼的场景"]},
+    {"sheet":"图片方案","row":23,"field":"overlay_plan","contains":["bathing pets"]},
+    {"sheet":"图片方案","row":24,"field":"base_prompt","contains":["户外野餐的场景"]},
+    {"sheet":"图片方案","row":27,"field":"overlay_plan","contains":["具体数据可问开发"]},
+    {"sheet":"图片方案","row":18,"field":"overlay_plan","contains":["不变"]},
+    {"sheet":"图片方案","row":4,"field":"suggested_refs","nonempty":true}
+  ]
+}

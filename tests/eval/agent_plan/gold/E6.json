@@ -1,0 +1,28 @@
+{
+  "schema":1,"case":"E6",
+  "authority":"用户 #399 裁定；eb1715e plan_ir/agent_preview.py:97；MESSAGES.md:3355–3359：one main/A+ brief = one task; references description-only; no automatic attachment/wiring.",
+  "authorship":"Manual raw rows1–18 in all five color/version sheets, before measurement.",
+  "decisions":["Row11 separator is never a task; row13 has identity only: accept omission OR explicit needs-review warning", "Expected 9 main +6 nonempty A+ per color; optional empty row13 does not affect nonempty-brief counts", "Video sheets excluded; original8-Zone/9V3A versus V2 5-Zone/9V2A must not mix", "Outside-row images must cause a warning, not attachment to the last brief"],
+  "variants":[{"id":"original","fixture":"E6/original/plan.xlsx","sheets":[
+    {"name":"图片方案-藏青加热毯","rows":[2,3,4,5,6,7,8,9,10,12,14,15,16,17,18],"optional_review_rows":[13]},
+    {"name":"图片方案-酱紫红色加热毯","rows":[2,3,4,5,6,7,8,9,10,12,14,15,16,17,18],"optional_review_rows":[13]},
+    {"name":"图片方案-灰色加热毯","rows":[2,3,4,5,6,7,8,9,10,12,14,15,16,17,18],"optional_review_rows":[13]},
+    {"name":"加热毯酱紫红色V2","rows":[2,3,4,5,6,7,8,9,10,12,14,15,16,17,18],"optional_review_rows":[13]},
+    {"name":"加热毯灰色V2","rows":[2,3,4,5,6,7,8,9,10,12,14,15,16,17,18],"optional_review_rows":[13]}
+  ]}],
+  "absent_sheets":["V2视频方案","老款视频方案"],
+  "warning_codes":["ANCHOR_OUT_OF_RANGE"],
+  "checks":[
+    {"sheet":"图片方案-藏青加热毯","row":2,"field":"base_prompt","contains":["使用原图","H-968"]},
+    {"sheet":"图片方案-酱紫红色加热毯","row":4,"field":"overlay_plan","contains":["9V3A"]},
+    {"sheet":"图片方案-灰色加热毯","row":5,"field":"overlay_plan","contains":["8-Zone Heating Design"]},
+    {"sheet":"加热毯酱紫红色V2","row":4,"field":"overlay_plan","contains":["9V2A"]},
+    {"sheet":"加热毯酱紫红色V2","row":5,"field":"base_prompt","contains":["发热片从8片改成5片"]},
+    {"sheet":"加热毯灰色V2","row":5,"field":"overlay_plan","contains":["5-Zone Heating Design"]},
+    {"sheet":"加热毯灰色V2","row":12,"field":"overlay_plan","contains":["9V 2A"]},
+    {"sheet":"图片方案-藏青加热毯","row":15,"field":"same_as_main","equals":true},
+    {"sheet":"图片方案-藏青加热毯","row":15,"field":"linked_main_index","equals":3},
+    {"sheet":"加热毯灰色V2","row":17,"field":"linked_main_index","equals":6},
+    {"sheet":"加热毯灰色V2","row":6,"field":"base_prompt","contains":["四宫格","户外树林坐在帐篷旁"]}
+  ]
+}

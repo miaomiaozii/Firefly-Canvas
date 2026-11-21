@@ -1,0 +1,16 @@
+{
+  "schema":1,"case":"E5",
+  "authority":"用户 #399 裁定；eb1715e plan_ir/agent_preview.py:97；MESSAGES.md:3355–3359：one brief = one task; no automatic attachment/wiring.",
+  "authorship":"Hand-authored from literal Sheet1 A1/A11 and E4–54, and evalset four-brief interpretation, before measurement.",
+  "decisions":["No header: white background, dimensions, two scene edits; E25–27 belong to dimensions, not a fifth brief", "Scene brief identities use first textual row39/52; keep original ordering", "Sheet2/3 are empty, not tasks"],
+  "variants":[{"id":"original","fixture":"E5/original/plan.xlsx","sheets":[{"name":"Sheet1","rows":[1,11,39,52]}]}],
+  "absent_sheets":["Sheet2","Sheet3"],
+  "checks":[
+    {"sheet":"Sheet1","row":1,"field":"name","contains":["白底主图"]},
+    {"sheet":"Sheet1","row":1,"field":"base_prompt","contains":["参考左图","不用加草"]},
+    {"sheet":"Sheet1","row":11,"field":"name","contains":["尺寸图"]},
+    {"sheet":"Sheet1","row":11,"field":"base_prompt","contains":["标注总高度","右上放大耙子部分","文案用右图顶部"]},
+    {"sheet":"Sheet1","row":39,"field":"base_prompt","contains":["背景和色调做更换","左边可以放人用手拔草","文案不变"]},
+    {"sheet":"Sheet1","row":52,"field":"base_prompt","contains":["把上面的换成泥土","下面的石头背景换个类似的","文案不变"]}
+  ]
+}

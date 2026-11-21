@@ -1,0 +1,21 @@
+{
+  "schema":1,"case":"E1",
+  "authority":"用户 #399 裁定；eb1715e plan_ir/agent_preview.py:97；MESSAGES.md:3355–3359：one brief = one task, no automatic attachment/wiring. Overrides old split/wiring expectations globally.",
+  "authorship":"Manual raw workbook rows1–17 in both X2 sheets, before measurement.",
+  "decisions":["Two variants stay distinct; four scenes in row9 remain one task", "Row15 has no identity: continuation belongs to row14, not a new brief", "Video COVER row11 is an image brief, not excluded as a video"],
+  "variants":[{"id":"original","fixture":"E1/original/plan.xlsx","sheets":[{"name":"X2凉感重力眼罩-连帽款-图片方案","rows":[2,3,4,5,6,7,8,9,10,11,12,13,14,16,17]},{"name":"X2凉感重力眼罩-无帽款-图片方案","rows":[2,3,4,5,6,7,8,9,10,11,12,13,14,16,17]}]}],
+  "absent_rows":["X2凉感重力眼罩-连帽款-图片方案!15","X2凉感重力眼罩-无帽款-图片方案!15"],
+  "checks":[
+    {"sheet":"X2凉感重力眼罩-连帽款-图片方案","row":9,"field":"base_prompt","contains":["四个场景轮播","飞机上白天"]},
+    {"sheet":"X2凉感重力眼罩-连帽款-图片方案","row":11,"field":"name","contains":["视频封面"]},
+    {"sheet":"X2凉感重力眼罩-连帽款-图片方案","row":14,"field":"base_prompt","contains":["玻璃重力珠","ASMR"]},
+    {"sheet":"X2凉感重力眼罩-连帽款-图片方案","row":10,"field":"overlay_plan","contains":["画面太挤用四个文案","画面不挤用这四个文案"]},
+    {"sheet":"X2凉感重力眼罩-连帽款-图片方案","row":8,"field":"overlay_plan","contains":["Evenly distributed for gentle, consistent pressure."]},
+    {"sheet":"X2凉感重力眼罩-无帽款-图片方案","row":5,"field":"base_prompt","contains":["与连帽款场景不一样"]},
+    {"sheet":"X2凉感重力眼罩-无帽款-图片方案","row":2,"field":"base_prompt","contains":["无帽款眼罩"]},
+    {"sheet":"X2凉感重力眼罩-无帽款-图片方案","row":11,"field":"name","contains":["视频封面"]},
+    {"sheet":"X2凉感重力眼罩-无帽款-图片方案","row":14,"field":"base_prompt","contains":["玻璃重力珠","ASMR"]},
+    {"sheet":"X2凉感重力眼罩-无帽款-图片方案","row":3,"field":"overlay_plan","contains":["2 x 130g","WEIGHTED INSERTS"]},
+    {"sheet":"X2凉感重力眼罩-连帽款-图片方案","row":9,"field":"suggested_refs","nonempty":true}
+  ]
+}

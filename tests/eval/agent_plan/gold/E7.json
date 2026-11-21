@@ -1,0 +1,18 @@
+{
+  "schema":1,"case":"E7",
+  "authority":"用户 #399 裁定；eb1715e plan_ir/agent_preview.py:97；MESSAGES.md:3355–3359：one brief = one task; no automatic attachment/wiring, including multi-reference columns.",
+  "authorship":"Manual raw OOXML sharedStrings and 3图片方案 rows1–20, before measurement; raw XlsxParser rejects unrelated oversized worksheet, not used to reduce gold.",
+  "decisions":["Main rows3 and6 request no remake/no change, row11 video is not image work", "Raw A+ identities are ①,3,4,5,6,7,8 (7 briefs) + scene supplement1, not stale evalset8+1", "G1 URL is metadata, never a task or filesystem input", "Do not modify the oversized workbook to make transport green"],
+  "variants":[{"id":"original","fixture":"E7/original/plan.xlsx","sheets":[{"name":"3图片方案","rows":[2,4,5,7,8,9,10,13,14,15,16,17,18,19,20]}]}],
+  "absent_sheets":["主图视频","5视频方案","视频镜头+文案"],
+  "absent_rows":["3图片方案!1","3图片方案!3","3图片方案!6","3图片方案!11","3图片方案!12"],
+  "excluded_rows":[{"source_row":"3图片方案!3","skip_reason":"no_remake"},{"source_row":"3图片方案!6","skip_reason":"no_remake"},{"source_row":"3图片方案!11","skip_reason":"video"}],
+  "checks":[
+    {"sheet":"3图片方案","row":2,"field":"base_prompt","contains":["参考竞品D列","换成右视图"]},
+    {"sheet":"3图片方案","row":7,"field":"base_prompt","contains":["陈列布局参考F列"]},
+    {"sheet":"3图片方案","row":7,"field":"overlay_plan","contains":["2X 36Wh BATTERY PACKS","UP TO 30 MIN RUNTIME"]},
+    {"sheet":"3图片方案","row":8,"field":"base_prompt","contains":["滚刀转速900RPM","参考F列图"]},
+    {"sheet":"3图片方案","row":20,"field":"overlay_plan","contains":["Newly laid lawn","Sidewalks"]},
+    {"sheet":"3图片方案","row":10,"field":"suggested_refs","nonempty":true}
+  ]
+}
