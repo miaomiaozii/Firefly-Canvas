@@ -21,7 +21,7 @@ from app.services.canvas_view import DEFAULT_VIEW_MAX_PX, MAX_VIEW_MAX_PX
 #: 公共参数片段（#266 票面：公共参数片段 + additionalProperties:false）
 PARAM_MAX_PX = {
     "type": "integer",
-    "description": f"最长边像素，默认 {DEFAULT_VIEW_MAX_PX}，上限 {MAX_VIEW_MAX_PX}（ComfyArt maxPx 契约）",
+    "description": f"预览最长边像素，默认 {DEFAULT_VIEW_MAX_PX}，上限 {MAX_VIEW_MAX_PX}；PNG 超过 1 MiB 时继续等比缩小，不改媒体原件（#352）",
     "minimum": 64,
     "maximum": MAX_VIEW_MAX_PX,
 }
@@ -196,7 +196,7 @@ TOOLS = [
     {"name": "canvas.search_projects", "description": "跨项目搜索（只读，票 F/ADR-0026）：按关键词搜所有项目画布节点的标题/prompt/正文与项目名，返回按项目分组命中（node_id/kind/field/snippet）；不搜 agent 会话内容，不建索引", "inputSchema": {"type": "object", "properties": {"query": {"type": "string", "minLength": 1, "maxLength": 200, "description": "搜索关键词（大小写不敏感）"}, "limit": {"type": "integer", "minimum": 1, "maximum": 200, "description": "命中总数上限（默认 50）"}}, "required": ["query"], "additionalProperties": False}},
     # #266 只读视图工具（ComfyArt §59.4 语义；只读不走确认门——#242 语义：写操作才需确认）
     {"name": "canvas.view", "description": f"整页/选区节点媒体导出为一张图（contact sheet，以 MCP image 内容块返回，文本块仅含元数据）喂模型（只读）。{VIEW_TIMEOUT_NOTE}；超时时先调低 max_px 或改用 selection 缩小批量，再重试", "inputSchema": {"type": "object", "properties": {"scope": {"type": "string", "enum": ["page", "selection"], "description": "page=整页（所有带媒体节点）；selection=指定 node_ids"}, "node_ids": PARAM_NODE_IDS, "max_px": PARAM_MAX_PX}, "required": ["scope"], "additionalProperties": False}},
-    {"name": "canvas.view_media", "description": f"查看单节点媒体：图像下缩放，视频抽帧拼图（contact sheet）（只读）。{VIEW_TIMEOUT_NOTE}", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "max_px": PARAM_MAX_PX, "frames": {"type": "integer", "description": "视频抽帧数 1..16，默认 4", "minimum": 1, "maximum": 16}}, "required": ["node_id"], "additionalProperties": False}},
+    {"name": "canvas.view_media", "description": f"查看单节点媒体：图像下缩放，视频抽帧拼图（contact sheet），以 image 内容块返回，文本仅含元数据（只读）。{VIEW_TIMEOUT_NOTE}", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "max_px": PARAM_MAX_PX, "frames": {"type": "integer", "description": "视频抽帧数 1..16，默认 4", "minimum": 1, "maximum": 16}}, "required": ["node_id"], "additionalProperties": False}},
     # #266 edit_* 首批（包装 canvas-image-editor.js 已有能力）：本地 PIL，写操作走确认门（#242 语义）
     {"name": "canvas.edit_crop", "description": "裁剪节点图像选区并覆写节点图（本地 PIL，不消耗外部生成；写操作：需画布确认门批准，阻塞最长 90s，原资源保留在资源库可恢复）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}, "rect": PARAM_RECT}, "required": ["node_id", "rect"], "additionalProperties": False}},
     {"name": "canvas.batch_prompt_edit", "description": "批量编辑文本或图像/视频节点的提示词，不触发生图。先以 apply:false + edits 预览，再以 apply:true + diff_id 应用。浏览器整批确认（含用户改过的提示词），取消零写入；每个预览只可尝试应用一次。", "inputSchema": {

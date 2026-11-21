@@ -2712,12 +2712,8 @@ def _find_node_for_view(project_id: str, node_id: str) -> dict:
 
 
 async def canvas_view_core(project_id: str, scope: str = "page", node_ids=None, max_px=None) -> dict:
-    """#266 canvas.view: 整页/选区导出为一张 contact sheet（base64 PNG）喂模型（只读）。
-
-    ComfyArt §59.4 契约：max_px = min(2048, args.max_px || 1024)；视频资产用单帧
-    预览图代表（无 ffmpeg 时摘除）；错误文案带下一步建议（票面规范）。
-    """
-    from app.services.canvas_view import clamp_view_max_px, compose_contact_sheet
+    """#352：只读预览最多 1568px、1 MiB；视频无可用预览时保留其余媒体的查看能力。"""
+    from app.services.canvas_view import clamp_view_max_px, compose_contact_sheet, encode_view_png
 
     scope = str(scope or "page").strip().lower()
     if scope not in ("page", "selection"):
@@ -2754,14 +2750,14 @@ async def canvas_view_core(project_id: str, scope: str = "page", node_ids=None, 
             try:
                 record = await asyncio.to_thread(store.media_record, project_id, asset_id)
             except Exception:
-                continue  # dangling asset 引用——跳过，不整单失败
+                continue  # 媒体引用失效时保留其余节点的可查看结果。
             path = str(record.get("path") or "")
             if not path:
                 continue
             if kind == "video":
                 tile = await asyncio.to_thread(_video_frame_or_none, path, 256)
                 if tile is None:
-                    continue  # 无 ffmpeg/不可读——可用 canvas.view_media 查看 ffmpeg 下一步提示
+                    continue  # 无法抽帧时保留其余媒体，详细诊断交给 canvas.view_media。
                 tile_kind = kind
             else:
                 tile = await asyncio.to_thread(_load_image_or_none, path)
@@ -2784,13 +2780,12 @@ async def canvas_view_core(project_id: str, scope: str = "page", node_ids=None, 
     sheet = await asyncio.to_thread(compose_contact_sheet, [(it["node_id"], it.pop("tile")) for it in items], px)
     import base64
 
-    from local_edit import encode_png
-
-    data_url = "data:image/png;base64," + base64.b64encode(encode_png(sheet)).decode("ascii")
+    png, (width, height) = await asyncio.to_thread(encode_view_png, sheet, px)
+    data_url = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
     return {
         "image_data_url": data_url,
-        "width": sheet.width,
-        "height": sheet.height,
+        "width": width,
+        "height": height,
         "max_px": px,
         "node_count": len({it["node_id"] for it in items}),
         "items": items,
@@ -2798,14 +2793,11 @@ async def canvas_view_core(project_id: str, scope: str = "page", node_ids=None, 
 
 
 async def view_media_core(project_id: str, node_id, max_px=None, frames=None) -> dict:
-    """#266 canvas.view_media: 查看单节点媒体（图像下缩放 / 视频抽帧拼图，只读）。
-
-    视频抽帧复用 generate_video_preview_image 链路（均匀采样，contact sheet 拼贴）；
-    全部帧失败时报错带 ffmpeg 下一步建议（票面规范）。
-    """
+    """#352：图片与视频拼图共用预览预算；尺寸元数据必须匹配最终编码结果。"""
     from app.services.canvas_view import (
         MAX_VIDEO_FRAMES,
         clamp_view_max_px,
+        encode_view_png,
         fit_tile,
         video_contact_sheet,
         video_duration_seconds,
@@ -2849,14 +2841,13 @@ async def view_media_core(project_id: str, node_id, max_px=None, frames=None) ->
         sheet, kind, frames_used = fit_tile(src, px, px), "image", 1
     import base64
 
-    from local_edit import encode_png
-
-    data_url = "data:image/png;base64," + base64.b64encode(encode_png(sheet)).decode("ascii")
+    png, (width, height) = await asyncio.to_thread(encode_view_png, sheet, px)
+    data_url = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
     return {
         "kind": kind,
         "image_data_url": data_url,
-        "width": sheet.width,
-        "height": sheet.height,
+        "width": width,
+        "height": height,
         "frames": frames_used,
         "asset_id": str(picked["asset_id"]),
         "name": str(picked.get("name") or record.get("name") or ""),

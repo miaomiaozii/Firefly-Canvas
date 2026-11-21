@@ -2,22 +2,24 @@
 
 ComfyArt §59 语义（docs/reference-comfyart-canvas.md §59.4）：
 - canvas.view：整页/选区导出图片喂模型（contact sheet，base64 PNG，
-  max_px = min(2048, args.max_px || 1024)；慢操作独立 90s 超时契约）
+  max_px = min(1568, args.max_px || 1024)，PNG 不超过 1 MiB（#352）；慢操作独立 90s 超时契约）
 - canvas.view_media：单节点媒体查看（图像下缩放 / 视频抽帧拼图，
   复用 generate_video_preview_image 链路）
 
 票面规范：工具参数 additionalProperties:false + 公共参数片段 + 错误文案带下一步建议。
 #352：canvas.view / canvas.view_media 成功结果以 MCP image 内容块返回（content[0]），
-text 块仅含元数据（不再包含 image_data_url）。
+text 块仅含元数据，禁止包含 image_data_url 或图片 base64。
 Mock 边界：无网络（媒体走 store.import_media 本地字节，视频抽帧用 monkeypatch 替身，
 不依赖本机 ffmpeg/联网）。慢超时契约用缩小的超时值验证 wait_for 接线。
 """
 import base64
 import io
 import json
+import random
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -46,6 +48,31 @@ def _image_blocks(result):
     return [b for b in result["content"] if b.get("type") == "image"]
 
 
+def _noise_png(size=(1536, 1536)):
+    image = Image.frombytes("RGB", size, random.Random(352).randbytes(size[0] * size[1] * 3))
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _assert_bounded_preview(test, result, data, max_px=1024):
+    test.assertFalse(result.get("isError"), data)
+    test.assertEqual([block["type"] for block in result["content"]], ["image", "text"])
+    block = _image_blocks(result)[0]
+    test.assertEqual(block["mimeType"], "image/png")
+    text = result["content"][1]["text"]
+    for forbidden in ("image_data_url", "base64", "data:image", block["data"]):
+        test.assertNotIn(forbidden, text)
+    raw = base64.b64decode(block["data"], validate=True)
+    with Image.open(io.BytesIO(raw)) as image:
+        test.assertEqual(image.format, "PNG")
+        test.assertEqual(image.size, (data["width"], data["height"]))
+        test.assertGreaterEqual(min(image.size), 1)
+        test.assertLessEqual(max(image.size), max_px)
+    test.assertLessEqual(len(raw), 1048576)
+    test.assertLessEqual(len(block["data"]), 1398104)
+
+
 class CanvasViewSurfaceTests(McpTestBase):
     """声明表机制：新工具必须进 api_mcp.TOOLS 声明表（ADR 0022）。"""
 
@@ -68,6 +95,10 @@ class CanvasViewSurfaceTests(McpTestBase):
         self.assertEqual(media["required"], ["node_id"])
         self.assertIn("max_px", media["properties"])
         self.assertIn("frames", media["properties"])
+        for schema in (view, media):
+            maximum = schema["properties"]["max_px"]
+            self.assertEqual(maximum["maximum"], 1568)
+            self.assertIn("1 MiB", maximum["description"])
         # 慢操作 90s 超时契约必须写进工具描述（ComfyArt 慢工具超时模式）
         for name in ("canvas.view", "canvas.view_media"):
             self.assertIn("90", tools[name]["description"])
@@ -129,18 +160,17 @@ class CanvasViewTests(McpTestBase):
         self.add_media_node("img-a")
         self.add_media_node("img-b", png=_png_bytes(color=(30, 200, 30)))
         result, data = self.call("canvas.view", {"scope": "page"})
-        self.assertIsNone(data) if result.get("isError") else None
         self.assertFalse(result.get("isError"), data)
         images = _image_blocks(result)
-        self.assertEqual(len(images), 1, result["content"])  # #352：成功结果是 image 内容块
+        self.assertEqual(len(images), 1, result["content"])
         self.assertEqual(images[0]["mimeType"], "image/png")
-        self.assertEqual(result["content"][0]["type"], "image")  # image 在前，文本块仅元数据
+        self.assertEqual(result["content"][0]["type"], "image")
         self.assertNotIn("image_data_url", data)
         self.assertEqual(data["node_count"], 2)
-        self.assertLessEqual(data["width"], 2048)
-        self.assertLessEqual(data["height"], 2048)
+        self.assertLessEqual(data["width"], 1568)
+        self.assertLessEqual(data["height"], 1568)
         img = Image.open(io.BytesIO(base64.b64decode(images[0]["data"])))
-        self.assertLessEqual(max(img.size), 2048)
+        self.assertLessEqual(max(img.size), 1568)
         self.assertEqual({item["node_id"] for item in data["items"]}, {"img-a", "img-b"})
 
     def test_view_text_block_contains_no_base64_blob(self):
@@ -166,12 +196,63 @@ class CanvasViewTests(McpTestBase):
         self.assertIn("ghost", text)
         self.assertIn("canvas.list_nodes", text)
 
-    def test_view_max_px_clamped_to_2048(self):
+    def test_view_max_px_clamped_to_1568(self):
         self.add_media_node("img-a", png=_png_bytes(size=(4096, 4096)))
-        result, data = self.call("canvas.view", {"scope": "page", "max_px": 99999})
-        self.assertFalse(result.get("isError"), data)
-        self.assertLessEqual(data["max_px"], 2048)
-        self.assertLessEqual(data["width"], 2048)
+        for tool, args in (
+            ("canvas.view", {"scope": "page", "max_px": 99999}),
+            ("canvas.view_media", {"node_id": "img-a", "max_px": 99999}),
+        ):
+            with self.subTest(tool=tool):
+                result, data = self.call(tool, args)
+                _assert_bounded_preview(self, result, data, max_px=1568)
+                self.assertEqual(max(data["width"], data["height"]), 1568)
+                if tool == "canvas.view":
+                    self.assertEqual(data["max_px"], 1568)
+
+    def test_view_high_entropy_previews_obey_image_budget(self):
+        source = _noise_png()
+        asset_id = self.add_media_node("preview-352", png=source)
+        source_path = Path(self.store.media_record(self.project_id, asset_id)["path"])
+        before_canvas = self.store.canvas(self.project_id)
+        for tool, args in (
+            ("canvas.view", {"scope": "page"}),
+            ("canvas.view_media", {"node_id": "preview-352"}),
+        ):
+            with self.subTest(tool=tool):
+                result, data = self.call(tool, args)
+                self.assertEqual(source_path.read_bytes(), source)
+                self.assertEqual(self.store.canvas(self.project_id), before_canvas)
+                _assert_bounded_preview(self, result, data)
+                self.assertLess(max(data["width"], data["height"]), 1024)
+                self.assertGreaterEqual(max(data["width"], data["height"]), 512)
+                if tool == "canvas.view":
+                    self.assertEqual(data["max_px"], 1024)
+                else:
+                    self.assertEqual(data["width"], data["height"])
+                    self.assertEqual(data["asset_id"], asset_id)
+
+    def test_view_high_entropy_video_previews_obey_image_budget(self):
+        source = b"preview-352-video-source"
+        asset_id = self.add_media_node("video-352", png=source, kind="video", name="clip.mp4")
+        source_path = Path(self.store.media_record(self.project_id, asset_id)["path"])
+        with Image.open(io.BytesIO(_noise_png())) as frame:
+            with patch("app.routers.api_agent_tools._video_frame_or_none", return_value=frame), \
+                 patch("app.services.canvas_view.video_duration_seconds", return_value=8.0), \
+                 patch("app.services.generation.generate_video_preview_image", side_effect=lambda *a: frame.copy()):
+                for tool, args in (
+                    ("canvas.view", {"scope": "page"}),
+                    ("canvas.view_media", {"node_id": "video-352", "frames": 4}),
+                ):
+                    with self.subTest(tool=tool):
+                        result, data = self.call(tool, args)
+                        self.assertEqual(source_path.read_bytes(), source)
+                        _assert_bounded_preview(self, result, data)
+                        if tool == "canvas.view_media":
+                            self.assertEqual(data["kind"], "video")
+                            self.assertEqual(data["frames"], 4)
+                            self.assertEqual(data["asset_id"], asset_id)
+                        else:
+                            self.assertEqual(data["items"][0]["kind"], "video")
 
     def test_view_selection_without_node_ids_is_error(self):
         self.add_media_node("img-a")
@@ -235,13 +316,14 @@ class CanvasViewMediaTests(McpTestBase):
     def test_view_media_image_returns_downscaled_png(self):
         self.add_media_node("img-a", png=_png_bytes(size=(64, 32)))
         result, data = self.call("canvas.view_media", {"node_id": "img-a"})
-        self.assertFalse(result.get("isError"), data)
+        _assert_bounded_preview(self, result, data)
         self.assertEqual(data["kind"], "image")
         images = _image_blocks(result)
-        self.assertEqual(len(images), 1, result["content"])  # #352：image 内容块
+        self.assertEqual(len(images), 1, result["content"])
         img = Image.open(io.BytesIO(base64.b64decode(images[0]["data"])))
         self.assertLessEqual(max(img.size), 1024)
         self.assertEqual(img.size[0] >= 1, True)
+        self.assertEqual(img.size, (64, 32))
 
     def test_view_media_missing_node_is_error_with_next_step(self):
         text = self.call_error("canvas.view_media", {"node_id": "ghost"})
