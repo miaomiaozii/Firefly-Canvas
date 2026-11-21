@@ -222,6 +222,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
         self._recovery_marks: Dict[str, Dict[str, Any]] = {}
         self._histories: Dict[str, List[Dict[str, Any]]] = {}
         self._timers: Dict[str, threading.Timer] = {}
+        self._snapshot_workers: Dict[threading.Timer, str] = {}
         self._saved_revisions: Dict[str, int] = {}
         self._project_operations: Dict[str, threading.RLock] = {}
         self._generation_written_assets: Dict[str, set] = {}
@@ -3489,10 +3490,30 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
         }
 
     def close(self) -> None:
+        """调用方须先停止写入；在锁外回收全部工作者后才允许清理项目目录。
+
+        不永久关闭 store；同步保存仍在首个异常处停止，但异常路径也必须 drain。
+        """
+        if self._lock._is_owned():
+            raise RuntimeError("ProjectStore.close() cannot run while the caller owns the store lock")
         with self._lock:
-            pending = list(self._timers)
-        for project_id in pending:
-            self.flush(project_id)
+            if threading.current_thread() in self._snapshot_workers:
+                raise RuntimeError("ProjectStore.close() cannot run from its own snapshot Timer")
+        try:
+            with self._lock:
+                pending = list(self._timers)
+            for project_id in pending:
+                self.flush(project_id)
+        finally:
+            with self._lock:
+                # 保留未 flush 的项目登记，失败后再次 close 仍可重试（#474）。
+                for timer in self._timers.values():
+                    timer.cancel()
+                workers = self._live_snapshot_workers()
+            for timer in workers:
+                timer.join()
+            with self._lock:
+                self._live_snapshot_workers()
 
     def _project_record(self, metadata: Dict[str, Any]) -> Dict[str, Any]:
         return {
@@ -3583,37 +3604,55 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             return {"items": {}}
 
     def wait_for_snapshot(self, project_id: str, timeout: float = 30.0) -> bool:
-        """等该项目的后台快照真的落盘完成（issue #231 的确定性同步点）。
+        """等待项目快照线程静默，不把取消标志或 pending 表为空当作完成。
 
-        后台快照由 threading.Timer 触发，而 flush 在全局 _lock 里做磁盘写：
-        别的线程持锁（另一项目的写盘/刷库/删除）或 CPU 被抢时，落盘时间没有
-        上界——所以“等它写完”只能等事件，不能睡固定秒数（门里并行步骤抢资
-        源时，任何墙钟窗口都会报假红）。返回 True 表示已写完或本来就没待写
-        快照；False 表示超超时仍未写完。
-
-        不能在持 _lock 时 join：Timer 线程里的 flush 正是要那把锁，会死锁。
+        所有工作者共用一个 deadline；持业务锁或身处回调时不能 join，
+        此时若仍有工作者则返回 False，而不新增异步保存错误的抛出协议。
         """
         project_id = _clean_project_id(project_id)
         deadline = time.monotonic() + max(0.0, float(timeout))
+        owns_lock = self._lock._is_owned()
         while True:
             with self._lock:
-                timer = self._timers.get(project_id)
-            if timer is None:
-                return True
-            timer.join(max(0.0, deadline - time.monotonic()))
-            if timer.is_alive() or time.monotonic() >= deadline:
-                with self._lock:
-                    return project_id not in self._timers
+                workers = self._live_snapshot_workers(project_id)
+                pending = project_id in self._timers
+            if not workers:
+                return not pending
+            if owns_lock or threading.current_thread() in workers:
+                return False
+            for timer in workers:
+                timer.join(max(0.0, deadline - time.monotonic()))
+            with self._lock:
+                if not self._live_snapshot_workers(project_id) and project_id not in self._timers:
+                    return True
+            if time.monotonic() >= deadline:
+                return False
+
+    def _flush_snapshot(self, project_id: str, timer: threading.Timer) -> None:
+        # 身份检查与写盘共用锁；finished 仅作取消令牌，线程退出另由 is_alive 证明（#474）。
+        with self._lock:
+            if self._timers.get(project_id) is not timer or timer.finished.is_set():
+                return
+            self.flush(project_id)
+
+    def _live_snapshot_workers(self, project_id: str | None = None) -> List[threading.Timer]:
+        # cancel 只设标志；未进入回调的 Timer 也必须等线程退出后才回收（#474）。
+        self._snapshot_workers = {
+            timer: owner for timer, owner in self._snapshot_workers.items() if timer.is_alive()
+        }
+        return [timer for timer, owner in self._snapshot_workers.items() if project_id is None or owner == project_id]
 
     def _schedule_snapshot(self, project_id: str) -> None:
+        self._live_snapshot_workers()
         previous = self._timers.pop(project_id, None)
         if previous is not None:
             previous.cancel()
         if self.snapshot_delay <= 0:
             return
-        timer = threading.Timer(self.snapshot_delay, self.flush, args=(project_id,))
+        timer = threading.Timer(self.snapshot_delay, lambda: self._flush_snapshot(project_id, timer))
         timer.daemon = True
         self._timers[project_id] = timer
+        self._snapshot_workers[timer] = project_id
         timer.start()
 
     def _apply_mutation(

@@ -3,6 +3,7 @@ import json
 import io
 import hashlib
 import os
+import shutil
 import sys
 import tempfile
 import threading
@@ -2796,6 +2797,295 @@ class BackgroundSnapshotLockContentionTests(unittest.TestCase):
             self.assertTrue(store.wait_for_snapshot(project["id"], timeout=0.0))
         finally:
             store.close()
+
+
+class BackgroundSnapshotLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.store = ProjectStore(self.root, snapshot_delay=1.2)
+        self.project_id = self.store.create_project("快照生命周期")["id"]
+        self.timers = []
+        self.gates = []
+        self.real_timer = threading.Timer
+        self.join_observed = threading.Event()
+        self.before_callback = None
+        self.callback_errors = []
+
+    def tearDown(self):
+        for entered, release in self.gates:
+            release.set()
+        try:
+            for timer in self.timers:
+                timer.join(5.0)
+                self.assertFalse(timer.is_alive(), "测试保存线程未退出")
+            self.assertEqual(self.callback_errors, [], "保存回调出现未预期异常")
+        finally:
+            self.store.close()
+            self._tmp.cleanup()
+
+    def controlled_timer(self, interval, function, args=None, kwargs=None):
+        entered, release = threading.Event(), threading.Event()
+
+        def callback():
+            try:
+                entered.set()
+                if not release.wait(5.0):
+                    raise RuntimeError("测试没有放行保存回调")
+                if self.before_callback is not None:
+                    self.before_callback()
+                return function(*(args or ()), **(kwargs or {}))
+            except BaseException as error:
+                self.callback_errors.append(error)
+                raise
+
+        owner = self
+
+        class ObservedTimer(self.real_timer):
+            def join(self, timeout=None):
+                owner.join_observed.set()
+                return super().join(timeout)
+
+        timer = ObservedTimer(0.0, callback)
+        self.gates.append((entered, release))
+        self.timers.append(timer)
+        return timer
+
+    def mutate(self, node_id, x):
+        revision = self.store.open_project(self.project_id)["canvas"]["revision"]
+        return self.store.apply_mutations(self.project_id, [
+            {"op": "upsert_node", "node": {"id": node_id, "x": x, "y": 10}},
+        ], base_revision=revision)
+
+    def test_retired_callback_cannot_persist_or_cancel_its_successor(self):
+        persisted = []
+        self.store.add_persisted_canvas_listener(lambda project_id, canvas: persisted.append(canvas))
+        with patch("firefly_projects.threading.Timer", side_effect=self.controlled_timer):
+            self.mutate("accepted", 1)
+            self.assertTrue(self.gates[0][0].wait(5.0))
+            self.mutate("accepted", 9)
+            self.assertTrue(self.gates[1][0].wait(5.0))
+            self.gates[0][1].set()
+            self.timers[0].join(5.0)
+            self.assertFalse(self.timers[0].is_alive())
+            self.assertEqual(persisted, [], "退休回调不应触发保存回执或替后继回调写盘")
+            self.assertFalse(self.store.wait_for_snapshot(self.project_id, timeout=0.0))
+            self.gates[1][1].set()
+            self.assertTrue(self.store.wait_for_snapshot(self.project_id, timeout=5.0))
+        canvas = json.loads((self.root / self.project_id / "canvas.json").read_text(encoding="utf-8"))
+        self.assertEqual(canvas["nodes"], [{"id": "accepted", "x": 9, "y": 10}])
+        self.assertEqual(len(persisted), 1)
+
+    def test_close_drains_retired_worker_before_returning_and_keeps_latest_snapshot(self):
+        completed = threading.Event()
+        failures = []
+
+        def close_store():
+            try:
+                self.store.close()
+            except BaseException as error:
+                failures.append(error)
+            finally:
+                completed.set()
+                self.join_observed.set()
+
+        with patch("firefly_projects.threading.Timer", side_effect=self.controlled_timer):
+            self.mutate("accepted", 9)
+            self.assertTrue(self.gates[0][0].wait(5.0))
+            self.store.flush(self.project_id)
+            closer = threading.Thread(target=close_store, daemon=True)
+            closer.start()
+            try:
+                self.assertTrue(self.join_observed.wait(5.0))
+                self.assertFalse(completed.is_set(), "close 不得遗漏已经 pop/cancel 的在途线程")
+            finally:
+                self.gates[0][1].set()
+                closer.join(5.0)
+            self.assertFalse(closer.is_alive(), "close 不能持业务锁等待回调")
+            self.assertEqual(failures, [])
+            self.assertFalse(self.timers[0].is_alive())
+        canvas = json.loads((self.root / self.project_id / "canvas.json").read_text(encoding="utf-8"))
+        self.assertEqual(canvas["nodes"], [{"id": "accepted", "x": 9, "y": 10}])
+        self.store.close()
+
+    def test_wait_for_snapshot_includes_a_retired_worker(self):
+        with patch("firefly_projects.threading.Timer", side_effect=self.controlled_timer):
+            self.mutate("accepted", 9)
+            self.assertTrue(self.gates[0][0].wait(5.0))
+            self.store.flush(self.project_id)
+            self.assertFalse(self.store.wait_for_snapshot(self.project_id, timeout=0.0))
+            self.gates[0][1].set()
+            self.assertTrue(self.store.wait_for_snapshot(self.project_id, timeout=5.0))
+            self.assertFalse(self.timers[0].is_alive())
+
+    def test_close_rejects_calling_with_the_store_lock_owned(self):
+        with self.store._lock:
+            with self.assertRaisesRegex(RuntimeError, "caller owns.*lock"):
+                self.store.close()
+        self.store.close()
+        self.mutate("accepted-after-close", 7)
+        self.store.close()
+        self.assertEqual(self.store.open_project(self.project_id)["canvas"]["nodes"], [
+            {"id": "accepted-after-close", "x": 7, "y": 10},
+        ])
+
+    def test_close_rejects_its_own_timer_before_flushing(self):
+        errors, receipt_counts = [], []
+        persisted = []
+        self.store.add_persisted_canvas_listener(lambda project_id, canvas: persisted.append(canvas))
+
+        def close_from_timer():
+            try:
+                self.store.close()
+            except RuntimeError as error:
+                errors.append(error)
+            receipt_counts.append(len(persisted))
+
+        self.before_callback = close_from_timer
+        with patch("firefly_projects.threading.Timer", side_effect=self.controlled_timer):
+            self.mutate("accepted", 9)
+            self.assertTrue(self.gates[0][0].wait(5.0))
+            self.gates[0][1].set()
+            self.timers[0].join(5.0)
+            self.assertFalse(self.timers[0].is_alive())
+        self.assertEqual(len(errors), 1)
+        self.assertIn("snapshot Timer", str(errors[0]))
+        self.assertEqual(receipt_counts, [0], "编程错误必须在 flush 或 join 之前拒绝")
+        self.assertEqual(len(persisted), 1)
+
+    def test_close_preserves_the_original_error_and_stops_at_the_first_failed_project(self):
+        other_id = self.store.create_project("后续项目")["id"]
+        original = OSError("同步保存的原异常")
+        real_replace = os.replace
+        failed_path = self.root / self.project_id / "canvas.json"
+        completed, failures = threading.Event(), []
+
+        def replace(source, target):
+            if Path(target) == failed_path:
+                raise original
+            return real_replace(source, target)
+
+        def close_store():
+            try:
+                self.store.close()
+            except BaseException as error:
+                failures.append(error)
+            finally:
+                completed.set()
+                self.join_observed.set()
+
+        with patch("firefly_projects.threading.Timer", side_effect=self.controlled_timer):
+            self.mutate("accepted", 9)
+            self.assertTrue(self.gates[0][0].wait(5.0))
+            self.store.apply_mutations(other_id, [
+                {"op": "upsert_node", "node": {"id": "later", "x": 7, "y": 10}},
+            ], base_revision=0)
+            self.assertTrue(self.gates[1][0].wait(5.0))
+            with patch("firefly_projects.os.replace", side_effect=replace):
+                closer = threading.Thread(target=close_store, daemon=True)
+                closer.start()
+                try:
+                    self.assertTrue(self.join_observed.wait(5.0))
+                    self.assertFalse(completed.is_set(), "原异常必须等 finally 回收工作者后再透传")
+                finally:
+                    for entered, release in self.gates:
+                        release.set()
+                    closer.join(5.0)
+                self.assertFalse(closer.is_alive())
+                self.assertEqual(len(failures), 1)
+                self.assertIs(failures[0], original)
+                self.assertTrue(all(not timer.is_alive() for timer in self.timers))
+            later = json.loads((self.root / other_id / "canvas.json").read_text(encoding="utf-8"))
+            self.assertEqual(later["nodes"], [], "main 的 close 在首个同步保存异常处停止，不继续 flush 后续项目")
+            self.assertFalse(self.store.wait_for_snapshot(other_id, timeout=0.0))
+            self.store.close()
+            later = json.loads((self.root / other_id / "canvas.json").read_text(encoding="utf-8"))
+            self.assertEqual(later["nodes"], [{"id": "later", "x": 7, "y": 10}])
+            self.store.flush(self.project_id)
+
+    def test_wait_for_snapshot_shares_one_deadline_across_retired_and_current_workers(self):
+        timeouts = []
+        with patch("firefly_projects.threading.Timer", side_effect=self.controlled_timer):
+            self.mutate("accepted", 1)
+            self.assertTrue(self.gates[0][0].wait(5.0))
+            self.mutate("accepted", 9)
+            self.assertTrue(self.gates[1][0].wait(5.0))
+            with (
+                patch.object(self.timers[0], "join", side_effect=lambda timeout: timeouts.append(timeout)),
+                patch.object(self.timers[1], "join", side_effect=lambda timeout: timeouts.append(timeout)),
+                patch("firefly_projects.time.monotonic", side_effect=[100.0, 100.0, 100.75, 101.0]),
+            ):
+                self.assertFalse(self.store.wait_for_snapshot(self.project_id, timeout=1.0))
+            self.assertEqual(timeouts, [1.0, 0.25])
+            self.assertTrue(all(timer.is_alive() for timer in self.timers))
+
+    def test_retired_callback_cannot_recreate_deleted_canvas_or_history(self):
+        directory = self.root / self.project_id
+        with patch("firefly_projects.threading.Timer", side_effect=self.controlled_timer):
+            self.mutate("accepted", 9)
+            self.assertTrue(self.gates[0][0].wait(5.0))
+            self.store.flush(self.project_id)
+            shutil.rmtree(directory)
+            self.gates[0][1].set()
+            self.timers[0].join(5.0)
+            self.assertFalse(self.timers[0].is_alive())
+            self.assertFalse((directory / "canvas.json").exists())
+            self.assertFalse((directory / "history.json").exists())
+            self.assertFalse(directory.exists(), "退休回调不得把已删除的项目目录写回来")
+
+    def test_retired_callback_cannot_write_after_project_trash(self):
+        with patch("firefly_projects.threading.Timer", side_effect=self.controlled_timer):
+            self.mutate("accepted", 9)
+            self.assertTrue(self.gates[0][0].wait(5.0))
+            result = self.store.trash_project(self.project_id)
+            target = Path(result["path"])
+            before = {name: (target / name).read_bytes() for name in ("canvas.json", "history.json")}
+            self.gates[0][1].set()
+            self.timers[0].join(5.0)
+            self.assertFalse(self.timers[0].is_alive())
+            self.assertFalse((self.root / self.project_id).exists())
+            self.assertEqual({name: (target / name).read_bytes() for name in before}, before)
+            restored = self.store.restore_project(self.project_id)
+            self.assertEqual(restored["id"], self.project_id)
+            self.assertEqual(self.store.open_project(self.project_id)["canvas"]["nodes"], [
+                {"id": "accepted", "x": 9, "y": 10},
+            ])
+
+    def test_close_cancels_and_drains_timers_that_have_not_entered_the_callback(self):
+        def delayed_timer(interval, function, args=None, kwargs=None):
+            timer = self.real_timer(60.0, function, args=args, kwargs=kwargs)
+            self.timers.append(timer)
+            return timer
+
+        with patch("firefly_projects.threading.Timer", side_effect=delayed_timer):
+            for x in range(4):
+                self.mutate("accepted", x)
+            self.store.close()
+            self.assertTrue(all(not timer.is_alive() for timer in self.timers))
+            self.assertTrue(self.store.wait_for_snapshot(self.project_id, timeout=0.0))
+        self.assertEqual(self.store.open_project(self.project_id)["canvas"]["nodes"], [
+            {"id": "accepted", "x": 3, "y": 10},
+        ])
+
+    def test_wait_for_snapshot_does_not_join_while_the_caller_owns_the_lock(self):
+        with patch("firefly_projects.threading.Timer", side_effect=self.controlled_timer):
+            self.mutate("accepted", 9)
+            self.assertTrue(self.gates[0][0].wait(5.0))
+            with self.store._lock:
+                self.assertFalse(self.store.wait_for_snapshot(self.project_id, timeout=30.0))
+            self.assertFalse(self.join_observed.is_set())
+
+    def test_wait_for_snapshot_from_its_own_timer_reports_not_quiescent(self):
+        results = []
+        self.before_callback = lambda: results.append(self.store.wait_for_snapshot(self.project_id, timeout=30.0))
+        with patch("firefly_projects.threading.Timer", side_effect=self.controlled_timer):
+            self.mutate("accepted", 9)
+            self.assertTrue(self.gates[0][0].wait(5.0))
+            self.gates[0][1].set()
+            self.timers[0].join(5.0)
+            self.assertFalse(self.timers[0].is_alive())
+            self.assertEqual(results, [False])
+            self.assertEqual(self.callback_errors, [])
 
 
 def agent_binding_node(node_id="agent-original"):
