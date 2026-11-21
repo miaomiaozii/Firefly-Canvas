@@ -10,10 +10,15 @@ import re
 import shutil
 import sys
 
+REPO = Path(__file__).resolve().parents[1]
+# The standalone CLI must resolve the shared writer even when cwd is outside the repository.
+if str(REPO) not in sys.path:
+    sys.path.insert(0, str(REPO))
+from firefly_json_io import write_json_atomic
+
 SOURCE_ROOT = Path('Z:/设计/3D/2026')
 REVISIONS = Path('C:/Users/Administrator/Documents/Codex/2026-11-12/new-chat/outputs')
 DEFAULT_TARGET = Path('D:/ff-qa/404-405-326/fixtures-v1')
-REPO = Path(__file__).resolve().parents[1]
 CASES = {
     'E0': ('10月/金属雪铲V2', '金属雪铲V2-图片方案0910.xlsx', '出图/渲染', 6),
     'E1': ('10月/X2凉感重力眼罩', 'X2凉感重力眼罩图片方案.xlsx', None, 0),
@@ -136,7 +141,7 @@ def copy_selection(target: Path, selected: list[dict], excluded: list[dict], *, 
                     'authority': '#404 B1; #399 one brief = one task; no automatic attachment/wiring',
                     'files': records, 'excluded': excluded,
                     'total_files': len(records), 'total_bytes': sum(record['bytes'] for record in records)}
-        (target / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+        write_json_atomic(target / 'manifest.json', manifest)
         return manifest
     except BaseException:
         # A partial copy must never look like an available dataset.

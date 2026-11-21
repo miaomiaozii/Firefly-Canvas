@@ -1,6 +1,8 @@
 """Copy safety uses owned synthetic files; default pytest never touches Z: or C: revisions."""
 from pathlib import Path
 import json
+import subprocess
+import sys
 
 import pytest
 
@@ -34,6 +36,50 @@ def test_copy_preserves_source_and_provenance(tmp_path, source):
     assert (before.st_size, before.st_mtime_ns) == (file.stat().st_size, file.stat().st_mtime_ns)
     assert copier.sha256(file) == digest
     assert copier.sha256(tmp_path / 'copy/E0/original/plan.xlsx') == digest
+
+
+def test_manifest_is_published_by_shared_atomic_writer(tmp_path, source, monkeypatch):
+    root, file = source
+    target = tmp_path / 'atomic-copy'
+    original = copier.write_json_atomic
+    published = []
+
+    def publish(path, value):
+        assert path == target / 'manifest.json' and not path.exists()
+        assert (target / 'E0/original/plan.xlsx').read_bytes() == file.read_bytes()
+        published.append(path)
+        original(path, value)
+
+    monkeypatch.setattr(copier, 'write_json_atomic', publish)
+    manifest = copier.copy_selection(target, selection(root, file), [], roots=[root])
+    assert published == [target / 'manifest.json']
+    assert json.loads((target / 'manifest.json').read_text(encoding='utf-8')) == manifest
+    assert list(target.glob('.manifest.json.*.tmp')) == []
+
+
+def test_interrupted_manifest_publication_removes_partial_dataset(tmp_path, source, monkeypatch):
+    root, file = source
+    target = tmp_path / 'interrupted-copy'
+    before = file.read_bytes(), file.stat().st_mtime_ns
+
+    def interrupted(value, handle, **kwargs):
+        handle.write('{"half"')
+        handle.flush()
+        raise OSError('manifest publication interrupted')
+
+    monkeypatch.setattr(copier.json, 'dump', interrupted)
+    with pytest.raises(OSError, match='manifest publication interrupted'):
+        copier.copy_selection(target, selection(root, file), [], roots=[root])
+    assert not target.exists()
+    assert (file.read_bytes(), file.stat().st_mtime_ns) == before
+
+
+def test_copy_cli_help_works_outside_repository(tmp_path):
+    process = subprocess.run([sys.executable, str(Path(copier.__file__).resolve()), '--help'],
+                             cwd=tmp_path, capture_output=True, text=True, timeout=20)
+    assert process.returncode == 0, process.stderr
+    assert '--target' in process.stdout
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize('target_kind', ['same', 'child', 'parent', 'repo'])
