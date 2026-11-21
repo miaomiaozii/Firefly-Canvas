@@ -24,10 +24,12 @@ def load_gold() -> list[dict]:
             if not variant['sheets'] or not all(sheet['rows'] for sheet in variant['sheets']):
                 raise ValueError(f'Empty expected rows: {case}/{variant["id"]}')
             for check in value['checks'] + variant.get('checks', []):
-                if set(check) - {'sheet', 'row', 'field', 'equals', 'contains', 'nonempty'}:
+                if set(check) - {'sheet', 'row', 'field', 'equals', 'contains', 'nonempty', 'length'}:
                     raise ValueError(f'Unknown criterion: {check}')
-                if sum(key in check for key in ('equals', 'contains', 'nonempty')) != 1:
+                if sum(key in check for key in ('equals', 'contains', 'nonempty', 'length')) != 1:
                     raise ValueError(f'A criterion must have exactly one comparison: {check}')
+                if 'length' in check and (type(check['length']) is not int or check['length'] < 0):
+                    raise ValueError(f'List length must be a nonnegative integer: {check}')
         result.append(value)
     return result
 
@@ -81,7 +83,8 @@ def _guard(name: str, preview: dict, tasks: list[dict]) -> bool:
                    and ref.get('kind') == 'workbook_image' for task in tasks for ref in task.get('suggested_refs', []))
     if name == 'no_binary_or_paths':
         forbidden = {'path', 'file_path', 'data', 'base64', 'asset_id', 'url', 'attachment_id'}
-        return all(not (forbidden & ref.keys()) for task in tasks for ref in task.get('suggested_refs', []))
+        return all(isinstance(ref, dict) and not (forbidden & ref.keys())
+                   for task in tasks for ref in task.get('suggested_refs', []))
     if name == 'one_task_per_brief':
         return all('split_from_row' not in task and len(task.get('source_rows', [])) == 1
                    and task['source_rows'] == [task.get('source_row')] for task in tasks)
@@ -138,6 +141,8 @@ def _check(check: dict, preview: dict) -> tuple[bool, object]:
             return type(actual) is type(expected['equals']) and actual == expected['equals'], actual
         if 'contains' in expected:
             return isinstance(actual, str) and all(fragment in actual for fragment in expected['contains']), actual
+        if 'length' in expected:
+            return isinstance(actual, list) and len(actual) == expected['length'], actual
         return bool(actual) == expected['nonempty'], actual
     raise ValueError(f'Unknown criterion kind: {kind}')
 

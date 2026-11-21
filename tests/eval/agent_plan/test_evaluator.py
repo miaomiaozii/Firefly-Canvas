@@ -44,6 +44,43 @@ def test_all_hand_authored_gold_has_ruling_and_literal_row_identity():
                 assert len(sheet['rows']) == len(set(sheet['rows']))
 
 
+@pytest.mark.parametrize('count', [0, 1, 2, 3])
+def test_exact_suggestion_length_rejects_both_missing_and_extra_images(example, count):
+    gold, variant, preview = deepcopy(example)
+    gold['checks'].append({'sheet': 'plan', 'row': 2, 'field': 'suggested_refs', 'length': 2})
+    preview['tasks'][0]['suggested_refs'] *= count
+    criterion = evaluate(gold, variant, preview)['criteria'][-1]
+    assert criterion['passed'] is (count == 2)
+
+
+@pytest.mark.parametrize('actual', ['ab', {'a': 1, 'b': 2}, None])
+def test_exact_suggestion_length_requires_a_list(example, actual):
+    gold, variant, preview = deepcopy(example)
+    gold['checks'].append({'sheet': 'plan', 'row': 2, 'field': 'suggested_refs', 'length': 2})
+    preview['tasks'][0]['suggested_refs'] = actual
+    assert not evaluate(gold, variant, preview)['criteria'][-1]['passed']
+
+
+@pytest.mark.parametrize('invalid', [-1, True, 2.0, '2'])
+def test_invalid_gold_list_length_is_rejected(tmp_path, monkeypatch, invalid):
+    from tests.eval.agent_plan import evaluator
+
+    for case in load_gold():
+        if case['case'] == 'E0':
+            case['checks'][-1] = {'sheet': 'plan', 'row': 2, 'field': 'suggested_refs', 'length': invalid}
+        (tmp_path / f"{case['case']}.json").write_text(json.dumps(case), encoding='utf-8')
+    monkeypatch.setattr(evaluator, 'GOLD', tmp_path)
+    with pytest.raises(ValueError, match='nonnegative integer'):
+        load_gold()
+
+
+def test_e0_image_pair_is_an_explicit_470_positive_regression():
+    e0 = load_gold()[0]
+    assert e0['checks'][-1] == {'sheet': '图片方案-金属雪铲', 'row': 3,
+                              'field': 'suggested_refs', 'length': 2}
+    assert e0['sections'] == {'主图方案': 8, '高级A+方案': 7}
+
+
 def test_perfect_preview_is_all_pass(example):
     result = evaluate(*example)
     assert result['available'] and result['semantic_status'] == 'all_pass'

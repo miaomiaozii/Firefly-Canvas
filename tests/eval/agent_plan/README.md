@@ -71,7 +71,18 @@ python D:/ff-qa/404-405-326/run_pytest.py b1-default-collection-01 --collect-onl
 
 #470 独立修复表头别名，之后另补 E0 行3精确两图的正向 gold；这是新授权的可见性回归，不恢复原先未经批准的非空硬门。原裁定记录见 `docs/design/agent-plan-evaluation-contract-399.md`。
 
+## #470 后的 gold v3（当前工具层结果）
+
+#470 commit `acbe405` 只改 `header_detector` 与回归测试。新增有限别名：`示例图` 来自 E0 实际表头；`意向图` 来自 #399/#470 的业务术语；`示意图` 作为该术语的常见同义表达。不把“示例/示意/意向”单字样泛化为图列。原别名/顺序不变；同一组别名进入检测计分、精确列名与映射阶段。
+
+- `alias470-red-real`：6 failed /11 passed；3个检测别名和3个真实投影的两图条件失败。更早 `alias470-red` 含本次新测试的二维行构造错误，原日志保留，不将那3个错误充当产品红测。
+- `alias470-green`：新回归 +既有 builder/#399 共132 passed /4.89s；断言15任务、物理行3精确两图、禁用/description_only、零refs/零路径、其余行无建议图。
+- gold 现在按 `MESSAGES.md:3381` 对 E0 行3增加 **list length=2** 正向回归；不能接受仅非空、多图或非列表。新增反例/非法gold验证后，`b1-count2-deterministic` 68 passed /1.81s。
+- `b1-count2-corpus` 真实全夹具为 **10 passed /3 failed /5.33s**（传输测试）；E0 REST/MCP 各 **43/43**，准确15任务、行3两张禁用描述图；完整回包、逐项评分与新的前测快照在 `b1-count2-corpus-report/`。E1仍15/23、E4仍22/23、E5仍10/18；E6/E9附件413、E7导入NOT_XLSX。未改这些产品行为，不声称数据集全绿。
+
 ## 首次冻结 gold v1 的基线结果（历史，不是全绿验收）
+
+以下保留裁定前原始状态；其中“未提交/不能宣告成功/等待裁定”等句只代表当时，不是当前结论。
 
 确定性：**53新增 +2条既有 #399 回归 =55 passed**，exit0。
 
@@ -104,14 +115,14 @@ E1 续行未合并、备注备选文案丢失；E4 描述建议缺失；E5 无�
 - 只读追踪 `e0-image-trace.json`：E0 的“示例图”表头未被识别为 `operationRef`；两张行3浮动图及字节均存在。只给字段映射副本补该别名时，同一 resolver 返回两图。诊断没有改变真实API回包、产品或评分，不能当通过。
 - `D:/ff-qa/404-405-326/BLOCKER-E0-SUGGESTIONS.md` 保存合同问题、精确失败、基线与重跑路径。未提交 #404，未开始 #405/#326，未跑交付 full/fast。
 
-## 证据与清理
+## 首次测量证据与清理（历史）
 
 统一根：`D:/ff-qa/404-405-326/`。
 
 - `b1-report-02/report.json`、`report.md`：逐条件期望/实际、每case汇总、E0门和不可用原因；`*-actual.json` 为真实API回包。
-- `b1-report-01/` 保留首轮；`b1-report-02/gold-before-measurement/` 与首轮及当前文件字节一致；`fixture-manifest.json` 保存复制来源与哈希。
+- `b1-report-01/` 保留首轮；`b1-report-02/gold-before-measurement/` 与首轮 gold v1 字节一致；v2/v3 的 E0 裁定修改各有独立快照，不能与当前文件混同；`fixture-manifest.json` 保存复制来源与哈希。
 - `runs/<label>/command.json`、`pytest.log`、`pytest.xml`、`exit.txt`：精确命令、HEAD、隔离目录、原始结果。早期确定性 `b1-deterministic-01` 为42通过1失败；`b1-deterministic-02` 为44通过；子代理结束时为上述55通过，随后父会话56项结果见上节。
 - 安全负例暴露 Windows `/absolute.xlsx` 是 rooted 而非 fully absolute 路径：初次测试曾生成 `D:/absolute.xlsx`（30字节合成内容），核验内容后已删除；复制器改为拒绝 `anchor/drive`，新增对应回归。未改任何用户文件。这是唯一意外范围外临时文件。
 - 两次传输结束时独立 projects 根均为空；wrapper 的本次 runtime/projects/tmp/home 等数据根在留存日志后删除；只保留外部 fixtures、报告、命令和测试日志。不清理父代理既有 probe/fixtures。
 - 产品 shutdown 每例有一条无条件 `unresolved cleanup remains guarded` 警告（`api_agent_tools.py:121`）；未修改/屏蔽产品日志，不据此声称恢复路径已验证。
-- 未启动真实LLM、图像/视频生成或监听服务，未接入其他实例，未 commit/push/post。
+- 该子代理移交时未启动真实LLM、图像/视频生成或监听服务，未接入其他实例，未 commit/push/post；父会话后续提交和测量以上述 v2/v3 段为准。
