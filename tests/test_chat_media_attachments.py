@@ -17,6 +17,7 @@ import subprocess
 import tempfile
 import unittest
 import wave
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -171,16 +172,52 @@ class AudioCardTests(unittest.TestCase):
         _make_wav(self.wav, seconds=1.0, freq=440.0)
 
     def test_audio_card_end_to_end(self):
-        result = audio_card_from_path(self.wav, name='tone.wav')
+        # #473：已知时长的卡片契约不能依赖测试机是否安装 ffprobe。
+        ffprobe = os.path.join(self.tmpdir, 'ffprobe')
+        real_which = shutil.which
+        real_run = subprocess.run
+
+        def which(command, *args, **kwargs):
+            return ffprobe if command == 'ffprobe' else real_which(command, *args, **kwargs)
+
+        def run(command, *args, **kwargs):
+            if command[0] == ffprobe:
+                return subprocess.CompletedProcess(
+                    command, 0, stdout='{"format": {"duration": "1.000000"}}', stderr='',
+                )
+            return real_run(command, *args, **kwargs)
+
+        with patch.object(cma.shutil, 'which', side_effect=which), \
+                patch.object(cma.subprocess, 'run', side_effect=run):
+            result = audio_card_from_path(self.wav, name='tone.wav')
         self.assertTrue(result['data_url'].startswith('data:image/jpeg;base64,'))
         self.assertEqual(result['kind'], 'audio_card')
         self.assertEqual(result['name'], 'tone.wav')
         self.assertIsNone(result['transcription'])
         self.assertIsNotNone(result['duration_s'])
         self.assertAlmostEqual(result['duration_s'], 1.0, delta=0.4)
-        img = Image.open(io.BytesIO(base64.b64decode(result['data_url'].split(',', 1)[1])))
-        self.assertEqual(img.format, 'JPEG')
+        with Image.open(io.BytesIO(base64.b64decode(result['data_url'].split(',', 1)[1]))) as img:
+            self.assertEqual(img.format, 'JPEG')
+            img.load()
         self.assertIn('transcription', result)
+
+    def test_audio_card_without_ffprobe(self):
+        real_which = shutil.which
+
+        def which(command, *args, **kwargs):
+            return None if command == 'ffprobe' else real_which(command, *args, **kwargs)
+
+        with patch.object(cma.shutil, 'which', side_effect=which):
+            result = audio_card_from_path(self.wav, name='tone.wav')
+        self.assertTrue(result['data_url'].startswith('data:image/jpeg;base64,'))
+        self.assertEqual(result['kind'], 'audio_card')
+        self.assertEqual(result['name'], 'tone.wav')
+        self.assertIsNone(result['duration_s'])
+        self.assertIsNone(result['transcription'])
+        self.assertRegex(result['subtitle'], r'时长未知|duration unknown')
+        with Image.open(io.BytesIO(base64.b64decode(result['data_url'].split(',', 1)[1]))) as img:
+            self.assertEqual(img.format, 'JPEG')
+            img.load()
 
     def test_audio_card_default_name(self):
         result = audio_card_from_path(self.wav)
