@@ -143,6 +143,7 @@ CATEGORY_BY_NAME = {
     "syncAgentInputNodeRefs": "hub",  # #409: TUI-owned draft/DOM synchronization, not a pure lower-layer utility.
     "canvasForStorage": "hub",  # #392: canonical storage service; also reads project/default/UI compatibility state.
     "canvasAgentActivity": "hub",  # #410: public activity adapter, configured by canvas orchestration.
+    "canvasAgentCompletion": "hub",  # #413: public completion adapter; project identity is injected by canvas orchestration.
     # #418: classify actual responsibilities, without filtering either direction.
     "focusRevealNode": "hub",
     "isNodeSelected": "hub",

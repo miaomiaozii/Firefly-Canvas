@@ -52,6 +52,29 @@ function getAgentTuiState(nodeId) {
     return agentTuiState.get(nodeId);
 }
 function agentIsReadonly(state) { return state.viewHost !== state.activeHost; }
+function agentCompletionBridge() {
+    const completion = window.canvasAgentCompletion;
+    completion?.configure({
+        getView: id => agentTuiState.get(id),
+        getViews: () => Array.from(agentTuiState.entries()),
+        hasNode: id => canvasState.nodes.some(node => node.id === id && isSmartAgentNode(node)),
+        refreshView: renderAgentNode,
+        append: agentAppendMessage,
+        locked: state => agentParametersLocked(state) || !canvasState.nodes.some(node =>
+            agentTuiState.get(node.id) === state && agentNodeHost(node) === state.viewHost),
+        ask: async message => Boolean(await window.ffDialog?.ask({title: '确认撤销 Agent 操作', message, confirmText: '确认撤销', cancelText: '取消'})),
+        reload: project => window.waitForCanvasRefresh?.(project),
+        revealRow: (state, body, row) => {
+            const rect = body.getBoundingClientRect();
+            body.scrollTop += (row.getBoundingClientRect().top - rect.top) * agentScrollGeometryScale(body, rect);
+            captureAgentScroll(state, body, true);
+            if (state.scrollBinding) state.scrollBinding.programTop = body.scrollTop;
+            updateAgentBackLatest(state);
+        },
+        marks: (project, marks) => window.canvasAgentActivity?.setDiffMarks(project, marks),
+    });
+    return completion;
+}
 function agentCaptureComposer(state, nodeId) {
     const input = agentNodeRefsInput(nodeId);
     if (input && !input.disabled && !state.viewNeedsMount) {
@@ -73,6 +96,7 @@ function agentChangeHostView(nodeId, state, host) {
     state.viewHost = host;
     state.viewNeedsMount = true;
     state.viewEpoch++;
+    agentCompletionBridge()?.invalidate();
     state._replayInFlight = false;
     state._replayBuffer = [];
     closeAgentModelPicker(state);
@@ -525,7 +549,7 @@ function agentNodeRefsBind(el, node) {
     agentNodeRefsRefreshPanel(nodeId);
 }
 
-// D2: display metadata is memory-only; the source records retain their existing shape.
+// Display metadata is memory-only; the source records retain their existing shape.
 function resetAgentTimeline(state) {
     disposeAgentScroll(state);
     state.timeline = [];
@@ -542,6 +566,7 @@ function resetAgentTimeline(state) {
     state.timelineSourceMessages = state.messages;
     state.timelineSourceTools = state.toolActivities;
     state._timelineGeneration = (state._timelineGeneration || 0) + 1;
+    agentCompletionBridge()?.invalidate();
 }
 
 function agentTimelineMessage(state, message, kind = 'message') {
@@ -1070,8 +1095,10 @@ function loadOlderAgentEvents(nodeId, state) {
                 if (entry.kind === 'tools') entry.items.forEach(item => { item.toolCallId = prefix + item.toolCallId; });
                 else if (entry.message) state.timelineMessages.set(entry.message, entry);
             }
-            state.messages.unshift(...older.messages);
-            state.timeline.unshift(...(older.timeline || []));
+            const duplicateCards = new Set(older.messages.filter(message => message.completion?.turnId
+                && state.messages.some(existing => existing.completion?.turnId === message.completion.turnId)));
+            state.messages.unshift(...older.messages.filter(message => !duplicateCards.has(message)));
+            state.timeline.unshift(...(older.timeline || []).filter(entry => !duplicateCards.has(entry.message)));
             state.historyCursor = d.cursor || null;
             state.historyHasMore = d.has_more;
             state.eventsError = '';
@@ -1204,6 +1231,7 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
             finalizeAgentStreamingTurn(state);
             if (event.willRetry !== true && !state._applyingReplay && !state._turnFailed && !state._aborted && !['crashed', 'failed', 'error'].includes(state.status)) agentMarkBackgroundCompletion();
             state.status = event.willRetry === true ? 'retrying' : 'idle';
+            agentCompletionBridge()?.complete(nodeId, state, event);
             break;
         case 'turn_start':
             finalizeAgentStreamingTurn(state);
@@ -1580,8 +1608,10 @@ function sendAgentAbort(nodeId, projectId) {
 // #392：四个人工设置共享节点级顺序，跨设置的旧完成也不能重建新 UI/清新会话。
 // token 只属于当前 TUI 生命周期；cleanup 后同 id 的新条目不继承在途响应。
 function agentSettingsHistoryFingerprint(state) {
-    // #408 adds live thoughts/turns and buffered seq events outside messages/tools.
-    return JSON.stringify([state.messages, [...state.toolActivities], state.thinking || [],
+    // #413: read-only completion refreshes must not keep an old branch alive; new rows/turn identities and host activity still forbid a reset.
+    const messages = state.messages.map(message => message.completion
+        ? {...message, completion: {turnId: message.completion.turnId}} : message);
+    return JSON.stringify([messages, [...state.toolActivities], state.thinking || [],
         state._turnSeq || 0, state.lastSeq || 0, state._replayBuffer || []]);
 }
 
@@ -2410,12 +2440,14 @@ function agentNodeBodyHtml(node) {
             messagesHtml += agentPresentationHtml(msg, readonly);
         } else if (msg.role === 'system') {
             messagesHtml += `<div class="agent-tui-msg agent-tui-msg-system"><span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span></div>`;
+        } else if (msg.role === 'completion') {
+            messagesHtml += agentCompletionBridge()?.html(msg.completion, state) || '';
         }
         messagesHtml += agentNodeRefsMessageHtml(msg);
         rowHtml.set(entry.key, messagesHtml);
     }
 
-    // Only consecutive executions share a group. Native Codex emits todo_list; empty lists stay hidden.
+    // 仅连续执行合组；空待办隐藏，未知工具仍保留原始详情。
     const isTodoTool = (name) => /^(todo|write_todos|todowrite|todo_list)$/i.test(String(name || ''));
     const checklistHtml = (args) => {
         const items = args && (args.todos || args.updates);
@@ -2482,7 +2514,8 @@ function agentNodeBodyHtml(node) {
     // Expansion, selection and the global brain toggle are UI changes, not new unread content.
     const timelineContent = JSON.stringify([timeline.map(entry => entry.kind === 'tools'
         ? [entry.key, entry.items.map(({ toolCallId, activity: a }) => [toolCallId, a.name, a.status, a.args, a.result, a.update, a.duration_ms])]
-        : [entry.key, entry.message.text, entry.message.attachments, entry.message.presentation]), state.confirm || null]);
+        : [entry.key, entry.message.text, entry.message.attachments, entry.message.presentation,
+            entry.message.completion ? agentCompletionBridge()?.fingerprint(entry.message.completion) : null]), state.confirm || null]);
     if (state._timelineContent != null && state._timelineContent !== timelineContent && state.scrollState && !state.scrollState.atBottom) state.scrollState.unread = true;
     state._timelineContent = timelineContent;
 
@@ -3268,6 +3301,7 @@ function bindAgentNodeControls(el, node){
     });
 
     bindAgentScroll(el, getAgentTuiState(nodeId));
+    agentCompletionBridge()?.bind(el, nodeId, initialState);
     const bodyEl = el.querySelector('[data-agent-tui-body]');
     if (bodyEl) {
         // #314/#317：左键仍阻止冒泡（防误拖节点/选区）；中键放行——从消息区起手即可平移画布（shell pan 支持 button 0/1）
@@ -3281,11 +3315,9 @@ function renderAgentNode(nodeId) {
     if (st314 && st314._batchHistory) return;
     if (st314 && st314.composing) { st314.pendingRerender = true; return; }
 
-    // Find the rendered element for this node and re-render its body
     const el = document.querySelector(`[data-id="${nodeId}"]`);
     if (!el) return;
 
-    // #314：重建前捕获阅读位置与输入焦点/光标，重建后恢复
     const prevBody = el.querySelector('[data-agent-tui-body]');
     const prevInput = el.querySelector('[data-agent-tui-input]');
     const mountingHost = st314 && st314.viewNeedsMount;
@@ -3296,7 +3328,6 @@ function renderAgentNode(nodeId) {
     if (prevBody && st314 && !mountingHost) captureAgentScroll(st314, prevBody);
     if (prevInput && st314 && !mountingHost) st314.draft = prevInput.value;
 
-    // Find the node data
     const node = canvasState.nodes.find(n => n.id === nodeId);
     if (!node) return;
 
@@ -3305,23 +3336,18 @@ function renderAgentNode(nodeId) {
     const changedHost = st314 && (mountingHost || previousHost !== st314.viewHost);
     const restoreFocus = changedHost ? st314.inputFocus : null;
 
-    // Get the layout
     const imgs = node.images || [];
     const scale = nodeScale(node);
     const layout = imageLayout(imgs, scale, node);
     if (!layout) return;
 
-    // Re-render just the body
     const body = nodeBodyHtml(node, layout);
     const bodyContainer = el.querySelector('.node-body');
     if (bodyContainer) {
         if (st314) disposeAgentScroll(st314);
         bodyContainer.innerHTML = body;
-        // Re-bind controls
         bindAgentNodeControls(bodyContainer, node);
         if (st314) st314.viewNeedsMount = false;
-        // bindAgentScroll restores the pre-rebuild follow/reading anchor.
-        // #314：焦点在输入框时重建——恢复焦点与光标（草稿已由模板注入）
         const focus = restoreFocus || (!changedHost && st314 ? st314.inputFocus : null);
         if ((focus && focus.focused) || (!changedHost && hadFocus)) {
             const newInput = bodyContainer.querySelector('[data-agent-tui-input]');
@@ -3339,7 +3365,6 @@ function renderAgentNode(nodeId) {
         bindAgentMoreControls(more, node);
         bindAgentHeadControls(more, node);
     }
-    // Update node card status light + last line preview
     const headMeta = el.querySelector('.node-head-meta');
     if (headMeta) {
         headMeta.innerHTML = agentCardStatusHtml(nodeId);
@@ -3721,6 +3746,7 @@ function cleanupAgentTuiState(nodeId) {
             try { state.socket.close(); } catch (e) { /* #348: 防御性——close 可能因已关闭再抛，清理流程继续 */ }
         }
         agentTuiState.delete(nodeId);
+        agentCompletionBridge()?.invalidate();
         if (!agentTuiState.size) agentClearCompletionTitle();
     }
     agentDockUnmount(nodeId);

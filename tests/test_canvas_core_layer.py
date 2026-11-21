@@ -219,6 +219,7 @@ REVERSE_REFERENCE_CEILINGS = {
     "canvas-agent-tui.js": 40,  # #418 measured dock/navigation drift; #200 实测持平：-2 被搬名字 + 2 搬回代码块新增引用（providerChatModels、chatApiProviders）
     "canvas-agent-navigation.js": 0,  # #421 新模块，核心总引用实测为 0。
     "canvas-agent-activity.js": 0,  # #410 callback-only activity painter.
+    "canvas-agent-completion.js": 0,  # #413 explicit lazy DI only.
     # #324 新建跨项目搜索面板（#359 补登记）：实测 2 处均来自同一行 `window.focusAndSelectNode`
     # 的 typeof 守卫 + 调用——那是 smart-canvas.js 经 window 暴露的契约，不是裸词法全局引用；
     # 本模块自带 escapeHtml，零 canvasCore 接口引用。钉 2 是防日后出现真·核心顶层名引用而漏计。
@@ -266,6 +267,7 @@ FREE_GLOBAL_REFERENCE_CEILINGS = {
     "canvas-agent-tui.js": 36,
     "canvas-agent-navigation.js": 0,  # #421 新模块，自由全局引用实测为 0。
     "canvas-agent-activity.js": 0,  # #410 no free canvas globals.
+    "canvas-agent-completion.js": 0,  # #413 no free canvas globals.
     # #324 新建跨项目搜索面板：同上 2 处 `window.focusAndSelectNode`（未接口化，自由侧等于反向侧）。
     "canvas-search.js": 2,
     "canvas-state.js": 0,

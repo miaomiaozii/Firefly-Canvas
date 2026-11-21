@@ -5360,28 +5360,31 @@ function applyMergedServerCanvas(serverCanvas, options={}){
     }
     return true;
 }
-async function mergeReloadCanvasNow(){
-    if(!canvasId) return;
+async function mergeReloadCanvasNow(expectedProjectId=canvasId){
+    if(!canvasId || expectedProjectId !== canvasId) return false;
+    const projectId = canvasId;
     if(dragState || selectionState){
-        // 用户正在拖拽/框选，稍后再合并，别打断操作
         scheduleCanvasMergeReload(600);
-        return;
+        return false;
     }
     try {
-        const res = await fetch(`/api/canvases/${encodeURIComponent(canvasId)}`);
-        if(!res.ok) return;
+        const res = await fetch(`/api/canvases/${encodeURIComponent(projectId)}`);
+        if(!res.ok) return false;
         const data = await res.json();
-        // #375: 标志在此消费（而不是触发它的 handleCanvasUpdatedMessage）——
-        // 保存窗口补偿合并、轮询兜底等所有合并路径都经过这里，不逐处穿参。
+        // A delayed refresh must never install another project's canvas (#413).
+        if(canvasId !== projectId) return false;
+        // Consume here so every reload path retains legacy Agent undo coalescing (#375).
         const agentUndo = pendingAgentMergeUndo;
         pendingAgentMergeUndo = false;
-        if(data && data.canvas) applyMergedServerCanvas(data.canvas, {agentUndo});
-    } catch(e) { /* #348: 跨页同步的合并拉取——失败等下次变更/轮询再合并，不提示用户 */ }
+        return Boolean(data && data.canvas && applyMergedServerCanvas(data.canvas, {agentUndo}));
+    } catch(e) {
+        console.warn('[smart-canvas] 权威画布刷新未确认', e);
+        return false;
+    }
 }
 
-// 导出刷新函数供外部模块调用
 window.refreshSmartCanvas = () => mergeReloadCanvasNow();
-window.waitForCanvasRefresh = () => mergeReloadCanvasNow();
+window.waitForCanvasRefresh = projectId => mergeReloadCanvasNow(projectId);
 window.fitBoundsViewport = fitBoundsViewport;
 
 function scheduleCanvasMergeReload(delay=200, minUpdatedAt=0){
@@ -5396,6 +5399,7 @@ function scheduleCanvasMergeReload(delay=200, minUpdatedAt=0){
     }, delay);
 }
 function smartCanvasAgentActivityBridge(){
+    window.canvasAgentCompletion?.configure({getProjectId: () => canvasId});
     const activity = window.canvasAgentActivity;
     if(!activity) return null;
     activity.configure({

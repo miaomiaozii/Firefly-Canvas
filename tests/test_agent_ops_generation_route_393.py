@@ -159,8 +159,20 @@ class GenerationJournalTests(unittest.IsolatedAsyncioTestCase):
         task = await routes.get_task_status(self.pid, result['task_id'])
         self.assertEqual(task['status'], 'succeeded', task)
         self.assertTrue(task['result']['project_asset_ids'])
+        media = self.store.list_media(self.pid)
+        history = deepcopy(self.store.canvas(self.pid)['history'])
+        trash_path = self.store.root / self.pid / 'trash' / 'index.json'
+        trash = json.loads(trash_path.read_text(encoding='utf-8'))
+        originals = {asset: Path(self.store.media_record(self.pid, asset)['path']).read_bytes()
+                     for asset in task['result']['project_asset_ids']}
         self.assertEqual(self.undo(result['op_id'])['status'], 'reverted')
         self.assertEqual([n['id'] for n in self.store.canvas(self.pid)['nodes']], ['source'])
+        # #413: undoing generated nodes must not turn retained originals into seven-day trash.
+        self.assertEqual(self.store.list_media(self.pid), media)
+        self.assertEqual(self.store.canvas(self.pid)['history'], history)
+        self.assertEqual(json.loads(trash_path.read_text(encoding='utf-8')), trash)
+        for asset, content in originals.items():
+            self.assertEqual(Path(self.store.media_record(self.pid, asset)['path']).read_bytes(), content)
 
     async def test_sidecar_append_failure_does_not_block_provider_or_terminal_status(self):
         from app.services import agent_ops_store

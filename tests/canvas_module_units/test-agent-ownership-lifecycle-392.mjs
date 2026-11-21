@@ -58,6 +58,120 @@ function editor(initial=seed()){
     };
 }
 
+test('#413 completion GET is not branch activity, while new messages and completion turns still protect history', async t=>{
+    for(const [handler,args,fields] of [
+        ['forkAgentSession',['entry','Fork'],{branches:[{id:'old'},{id:'new'}],current_branch:'new'}],
+        ['switchAgentBranch',['new'],{current_branch:'new'}],
+    ]) for(const activity of ['ready','error','live-message','new-completion']) await t.test(`${handler}/${activity}`,async()=>{
+        const initial=seed();Object.assign(initial.nodes[0],{type:'smart-agent',agentCli:'pi',branches:[{id:'old'}],current_branch:'old'});
+        const e=editor(initial);e.ctx.agentTuiState=new Map();e.ctx.renderAgentNode=()=>{};
+        const state=e.ctx.getAgentTuiState('prompt');state.projectId=initial.id;
+        state.messages.push({role:'assistant',text:'old transcript'});state.historyLoaded=true;
+        state.historyCursor=7;state.historyHasMore=true;state.lastSeq=7;state._timelineGeneration=0;state.draft='unsent 中文';
+        loadModules(e.ctx,['canvas-agent-completion.js']);const api=e.ctx.canvasAgentCompletion;
+        api.configure({getProjectId:()=>e.ctx.canvasId,getView:()=>state,getViews:()=>[['prompt',state]],
+            hasNode:()=>true,append:e.ctx.agentAppendMessage,refreshView:()=>{},marks:()=>{}});
+        const reads=[],writes=[];
+        e.ctx.fetch=(url,opts)=>new Promise(resolve=>(opts?writes:reads).push({url,resolve}));
+        api.complete('prompt',state,{type:'agent_end',host:'pi',turn_id:'old-turn'});
+        const card=state.messages.find(row=>row.completion).completion;assert.equal(card.phase,'loading');
+        const pending=e.call(handler,'prompt',initial.project_id,...args);
+        assert.equal(reads.length,1);assert.equal(writes.length,1);
+        reads[0].resolve({ok:activity!=='error',json:async()=>activity==='error'?{detail:'unreadable'}:{operations:[]}});
+        await new Promise(resolve=>setImmediate(resolve));assert.equal(card.phase,activity==='error'?'error':'ready');
+        if(activity==='live-message') e.call('handleAgentEvent','prompt',{type:'user_prompt',text:'new live text',seq:8,host:'pi'});
+        if(activity==='new-completion') {
+            api.complete('prompt',state,{type:'agent_end',host:'pi',turn_id:'new-turn'});
+            assert.equal(reads.length,2);reads[1].resolve({ok:true,json:async()=>({operations:[]})});
+            await new Promise(resolve=>setImmediate(resolve));
+        }
+        const next=copy(initial);next.revision=5;next.updated_at=500;Object.assign(next.nodes[0],fields);
+        writes[0].resolve({ok:true,json:async()=>({success:true,canvas:next,...(handler==='forkAgentSession'?{branch:{id:'new'}}:{})})});
+        await pending;assert.equal(e.node().current_branch,'new','real authority receiver adopts the confirmed branch');
+        const genuine=activity==='live-message'||activity==='new-completion';
+        assert.equal(state.messages.length,genuine?3:0);
+        assert.equal(state.historyLoaded,genuine);assert.equal(state.historyCursor,genuine?7:null);
+        assert.equal(state.historyHasMore,genuine);assert.equal(state._timelineGeneration,genuine?0:1);
+        assert.equal(state.draft,'unsent 中文');
+        if(activity==='live-message') assert.equal(state.messages[2].text,'new live text');
+        if(activity==='new-completion') assert.equal(state.messages[2].completion.turnId,'new-turn');
+    });
+});
+
+test('#413 accepted ops undo uses real authority receiver and preserves unrelated pending human edits', async()=>{
+    const initial=seed();
+    initial.nodes.push({id:'agent',type:'smart-agent',agentCli:'pi'}, {id:'agent-result',type:'smart-prompt',text:'Agent addition'});
+    const e=editor(initial);
+    e.edit('unrelated human edit',{userTouchedAt:1234,promptEditedByUser:true});
+    loadModules(e.ctx,['canvas-agent-completion.js']);
+    const state={...e.ctx.createAgentHostView(),projectId:initial.id,activeHost:'pi',viewHost:'pi',viewEpoch:0};
+    const api=e.ctx.canvasAgentCompletion;
+    Object.assign(e.ctx,{dragState:null,selectionState:null});
+    api.configure({getProjectId:()=>e.ctx.canvasId,getView:()=>state,getViews:()=>[['agent',state]],
+        hasNode:()=>true,refreshView:()=>{},append:e.ctx.agentAppendMessage,locked:()=>false,
+        ask:async()=>true,reload:project=>e.ctx.mergeReloadCanvasNow(project),marks:()=>{}});
+    const op={op_id:'create',turn_id:'logical',agent_node_id:'agent',tool:'canvas.create_node',
+        before:[{entity:'node',id:'agent-result',path:[],before:{present:false}}],
+        after:[{entity:'node',id:'agent-result',path:[],after:{present:true,value:initial.nodes[2]}}],
+        touched_node_ids:['agent-result'],irreversible_effects:[],undone:false};
+    const remote=copy(initial);remote.revision=5;remote.updated_at=500;remote.nodes=remote.nodes.filter(n=>n.id!=='agent-result');
+    const calls=[];
+    e.ctx.fetch=async(url,options)=>{
+        calls.push({url,options});
+        if(options){op.undone=true;return {ok:true,json:async()=>({status:'reverted',reverted:['create'],already_reverted:[],conflicts:[],irreversible_effects:[],error:null})};}
+        return {ok:true,json:async()=>url.includes('/ops?')?{operations:[copy(op)]}:{canvas:remote}};
+    };
+    api.complete('agent',state,{type:'agent_end',host:'pi',turn_id:'logical'});
+    for(let i=0;i<8;i++) await Promise.resolve();
+    await api.undo('agent',state,state.messages[0].completion,null);
+    assert.deepEqual(calls.map(c=>c.options?'POST':c.url.includes('/ops?')?'ops':'canvas'),['ops','POST','canvas','ops']);
+    assert.equal(e.live().nodes.some(n=>n.id==='agent-result'),false);
+    assert.equal(e.node().text,'unrelated human edit');
+    assert.equal(e.node().userTouchedAt,1234);assert.equal(e.node().promptEditedByUser,true);
+    assert.match(state.messages[0].completion.notice,/已接收权威画布/);
+});
+
+test('#413 UNDO_CONFLICT leaves same-target human edits, pending save and composer draft intact', async()=>{
+    const initial=seed();
+    initial.nodes.push({id:'agent',type:'smart-agent',agentCli:'pi'});
+    const e=editor(initial);
+    e.edit('human 中文 edit',{userTouchedAt:2345,promptEditedByUser:true});
+    loadModules(e.ctx,['canvas-agent-completion.js']);
+    const state={...e.ctx.createAgentHostView(),projectId:initial.id,activeHost:'pi',viewHost:'pi',viewEpoch:0,
+        draft:'unsent 中文 draft',inputFocus:{focused:true,start:2,end:5,direction:'forward'}};
+    const api=e.ctx.canvasAgentCompletion;
+    api.configure({getProjectId:()=>e.ctx.canvasId,getView:()=>state,getViews:()=>[['agent',state]],
+        hasNode:()=>true,refreshView:()=>{},append:e.ctx.agentAppendMessage,locked:()=>false,
+        ask:async()=>true,reload:project=>e.ctx.mergeReloadCanvasNow(project),marks:()=>{}});
+    const op={op_id:'edit',turn_id:'logical',agent_node_id:'agent',tool:'canvas.update_node',
+        before:[{entity:'node',id:'prompt',path:['text'],before:{present:true,value:'old'}}],
+        after:[{entity:'node',id:'prompt',path:['text'],after:{present:true,value:'before'}}],
+        irreversible_effects:[],undone:false};
+    const calls=[];
+    e.ctx.fetch=async(url,options)=>{
+        calls.push({url,options});
+        return options?{ok:false,status:409,json:async()=>({detail:{code:'UNDO_CONFLICT',message:'Human edit',
+            details:{status:'conflict',conflicts:[{node_id:'prompt',reason:'changed'}],reverted:[],already_reverted:[]}}})}
+            :{ok:true,json:async()=>({operations:[op]})};
+    };
+    api.complete('agent',state,{type:'agent_end',host:'pi',turn_id:'logical'});
+    for(let i=0;i<8;i++) await Promise.resolve();
+    await api.undo('agent',state,state.messages[0].completion,'edit');
+    assert.deepEqual(calls.map(c=>c.options?'POST':'ops'),['ops','POST'],'conflict must never invoke the authority receiver');
+    assert.equal(state.messages[0].completion.operations[0].undone,false);
+    assert.match(state.messages[0].completion.notice,/撤销未执行/);
+    assert.equal(state.draft,'unsent 中文 draft');
+    assert.deepEqual(state.inputFocus,{focused:true,start:2,end:5,direction:'forward'});
+    assert.equal(e.node().text,'human 中文 edit');
+    assert.equal(e.node().userTouchedAt,2345);assert.equal(e.node().promptEditedByUser,true);
+    const saved=[];
+    e.ctx.fetch=async(url,options)=>{saved.push(JSON.parse(options.body));return {ok:true,status:200,json:async()=>({saved:true,revision:5,updated_at:500})};};
+    assert.equal(await e.call('saveCanvas'),true);
+    const update=saved.flatMap(batch=>batch.mutations||[]).find(item=>item.node?.id==='prompt');
+    assert.equal(update?.node.text,'human 中文 edit','conflict cannot acknowledge or discard the pending human body');
+    assert.equal(update.node.userTouchedAt,2345);assert.equal(update.node.promptEditedByUser,true);
+});
+
 test('R1: repeated old broadcasts keep unsaved body and metadata, and body is still sent', async()=>{
     const e=editor();
     e.edit('human body',{userTouchedAt:1234,promptEditedByUser:true});
