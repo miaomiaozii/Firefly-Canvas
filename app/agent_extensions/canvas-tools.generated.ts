@@ -68,12 +68,12 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     },
     {
         name: "canvas.update_node",
-        description: "更新节点属性并返回 prev；runSettings 只合并指定的生图字段，仅可改未被人工编辑的自有 Agent 节点的生成参数。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        description: "更新节点属性并返回 prev；未被人工接管或锁定的自有节点可直接修改，其他节点须逐次确认，autonomous 也不豁免；批准绑定当时内容和本次 patch，runSettings 只合并指定的生图字段。确认门由服务端按操作及档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
         parameters: Type.Object({ node_id: Type.String(), title: Type.Optional(Type.String({description: "新标题"})), text: Type.Optional(Type.String({description: "新正文"})), prompt: Type.Optional(Type.String({description: "新提示词"})), x: Type.Optional(Type.Number({description: "画布 X 坐标"})), y: Type.Optional(Type.Number({description: "画布 Y 坐标"})), w: Type.Optional(Type.Number({description: "节点宽度"})), h: Type.Optional(Type.Number({description: "节点高度"})), runSettings: Type.Optional(Type.Object({ model: Type.Optional(Type.String()), provider_id: Type.Optional(Type.String()), aspect_ratio: Type.Optional(Type.String({description: "宽高比，例如 16:9"})), count: Type.Optional(Type.Integer({minimum: 1, maximum: 8})), routingMode: Type.Optional(Type.Union([Type.Literal("auto"), Type.Literal("manual")])) })) }),
     },
     {
         name: "canvas.delete_node",
-        description: "删除节点（按档位确认；本轮自建且未被用户改动的节点可直接清理）。确认门按档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        description: "删除节点（按档位确认；本轮自建且未被用户改动的节点可直接清理）。确认门由服务端按操作及档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
         parameters: Type.Object({ node_id: Type.String() }),
     },
     {
@@ -83,7 +83,7 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     },
     {
         name: "canvas.disconnect",
-        description: "删除节点连线（按档位确认；Agent 自建且未改动的连线可直接清理）。确认门按档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        description: "删除节点连线（按档位确认；Agent 自建且未改动的连线可直接清理）。确认门由服务端按操作及档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
         parameters: Type.Object({ from_node: Type.String(), to_node: Type.String() }),
     },
     {
@@ -143,7 +143,7 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     },
     {
         name: "canvas.edit_crop",
-        description: "裁剪节点图像选区并覆写节点图（本地 PIL，不消耗外部生成；写操作按档位确认，原资源保留在资源库可恢复）。确认门按档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        description: "裁剪节点图像选区并覆写节点图（本地 PIL，不消耗外部生成；写操作按档位确认，原资源保留在资源库可恢复）。确认门由服务端按操作及档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
         parameters: Type.Object({ node_id: Type.String(), rect: Type.Object({ x: Type.Number(), y: Type.Number(), width: Type.Number(), height: Type.Number() }, {description: "选区（原图像素坐标，x/y 左上角 + width/height）"}) }),
     },
     {
@@ -153,37 +153,37 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     },
     {
         name: "canvas.batch_edit",
-        description: "批量生成：把同一句 prompt 写入最多 10 个选中节点并逐节点触发一次生成（消耗外部生成任务，区别于 edit_* 的本地处理；结果放各自旁边 = 各节点自身输出）。总是请求浏览器整批确认提示词覆盖和生图费用，每 agent 会话按张数计入生成上限；返回各节点的 task_id，用 generate.status 轮询 / generate.wait 等待完成。确认门按档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        description: "批量生成：把同一句 prompt 写入最多 10 个选中节点并逐节点触发一次生成（消耗外部生成任务，区别于 edit_* 的本地处理；结果放各自旁边 = 各节点自身输出）。总是请求浏览器整批确认提示词覆盖和生图费用，每 agent 会话按张数计入生成上限；返回各节点的 task_id，用 generate.status 轮询 / generate.wait 等待完成。确认门由服务端按操作及档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
         parameters: Type.Object({ node_ids: Type.Array(Type.String(), {description: "节点 ID 列表（1..10）", minItems: 1, maxItems: 10}), prompt: Type.String({description: "批量 prompt，写入每个节点", minLength: 1}) }),
     },
     {
         name: "canvas.edit_rotate",
-        description: "旋转节点图像（90/180/270 逆时针）并覆写节点图（本地 PIL，不消耗外部生成；写操作按档位确认，原资源保留在资源库可恢复）。确认门按档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        description: "旋转节点图像（90/180/270 逆时针）并覆写节点图（本地 PIL，不消耗外部生成；写操作按档位确认，原资源保留在资源库可恢复）。确认门由服务端按操作及档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
         parameters: Type.Object({ node_id: Type.String(), angle: Type.Union([Type.Literal(90), Type.Literal(180), Type.Literal(270)], {description: "逆时针旋转角度，90/180/270 之一"}) }),
     },
     {
         name: "canvas.edit_flip",
-        description: "镜像节点图像（horizontal 左右 / vertical 上下）并覆写节点图（本地 PIL，不消耗外部生成；写操作按档位确认，原资源保留在资源库可恢复）。确认门按档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        description: "镜像节点图像（horizontal 左右 / vertical 上下）并覆写节点图（本地 PIL，不消耗外部生成；写操作按档位确认，原资源保留在资源库可恢复）。确认门由服务端按操作及档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
         parameters: Type.Object({ node_id: Type.String(), direction: Type.Union([Type.Literal("horizontal"), Type.Literal("vertical")], {description: "horizontal=左右镜像，vertical=上下镜像"}) }),
     },
     {
         name: "canvas.edit_outpaint",
-        description: "复刻站内红底扩图链：扩大画布用高饱和红（#ff0044）填充、原图按 offset 贴回，覆写节点图（本地 PIL，不消耗外部生成；外区红底供 generate.trigger 重绘填充，不向模型发 mask——ADR 0007；写操作按档位确认，原资源保留在资源库可恢复）。确认门按档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        description: "复刻站内红底扩图链：扩大画布用高饱和红（#ff0044）填充、原图按 offset 贴回，覆写节点图（本地 PIL，不消耗外部生成；外区红底供 generate.trigger 重绘填充，不向模型发 mask——ADR 0007；写操作按档位确认，原资源保留在资源库可恢复）。确认门由服务端按操作及档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
         parameters: Type.Object({ node_id: Type.String(), outpaint_size: Type.Object({ width: Type.Integer(), height: Type.Integer() }, {description: "目标画布尺寸（像素；须大于原图像素）"}), offset: Type.Optional(Type.Object({ x: Type.Optional(Type.Integer()), y: Type.Optional(Type.Integer()) }, {description: "原图在新画布中的位置（像素，默认 0,0 左上角）"})) }),
     },
     {
         name: "canvas.edit_erase",
-        description: "按 prompt 擦除节点图选区内容：裁出选区送 bailian 局部编辑模型（qwen-image-edit-max-2026-01-16）重绘后合成回节点图（消耗一次外部模型调用；不向模型发 mask——ADR 0007；写操作按档位确认，原资源保留在资源库可恢复）。确认门按档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        description: "按 prompt 擦除节点图选区内容：裁出选区送 bailian 局部编辑模型（qwen-image-edit-max-2026-01-16）重绘后合成回节点图（消耗一次外部模型调用；不向模型发 mask——ADR 0007；写操作按档位确认，原资源保留在资源库可恢复）。确认门由服务端按操作及档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
         parameters: Type.Object({ node_id: Type.String(), rect: Type.Object({ x: Type.Number(), y: Type.Number(), width: Type.Number(), height: Type.Number() }, {description: "选区（原图像素坐标，x/y 左上角 + width/height）"}), prompt: Type.String({description: "描述要擦除什么、如何填充该区域", minLength: 1}) }),
     },
     {
         name: "generate.trigger",
-        description: "按节点保存的 runSettings 和画布参考图生图，返回 task_id。参考图必须已归档到当前项目。按本次请求图片张数确认和计入会话额度（无需确认档自动放行）；结果写入项目历史。确认门按档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        description: "按节点保存的 runSettings 和画布参考图生图，返回 task_id。参考图必须已归档到当前项目。按本次请求图片张数确认和计入会话额度（无需确认档自动放行）；结果写入项目历史。确认门由服务端按操作及档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
         parameters: Type.Object({ node_id: Type.String() }),
     },
     {
         name: "generate.retry",
-        description: "在同一项目和 Agent 作用域内，按 task_id 或 node_id 重试失败且无产物的生图（恰传一个）；默认使用服务端快照。每次均须用户重新确认并计入生成额度，最多两次；可指定已经批准的 model。不支持重放已撤回或自动归档的历史参考图。确认门按档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        description: "在同一项目和 Agent 作用域内，按 task_id 或 node_id 重试失败且无产物的生图（恰传一个）；默认使用服务端快照。每次均须用户重新确认并计入生成额度，最多两次；可指定已经批准的 model。不支持重放已撤回或自动归档的历史参考图。确认门由服务端按操作及档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
         parameters: Type.Object({ task_id: Type.Optional(Type.String()), node_id: Type.Optional(Type.String()), model: Type.Optional(Type.String()), use_snapshot: Type.Optional(Type.Boolean()) }),
     },
     {
@@ -193,7 +193,7 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     },
     {
         name: "generate.request_batch",
-        description: "请求整批生图批准；立即返回 batch_id，不等待浏览器确认；等待窗结束不令确认失效。同一 preflight_id 只提交一次。MCP 请沿用同一个 Mcp-Session-Id 并选用已存在的 Agent 节点。仅在已批准的模型范围内换模型，自动重试最多两次；额度用尽会暂停剩余项。确认门按档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。",
+        description: "请求整批生图批准；立即返回 batch_id，不等待浏览器确认；等待窗结束不令确认失效。同一 preflight_id 只提交一次。MCP 请沿用同一个 Mcp-Session-Id 并选用已存在的 Agent 节点。仅在已批准的模型范围内换模型，自动重试最多两次；额度用尽会暂停剩余项。确认门由服务端按操作及档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。",
         parameters: Type.Object({ preflight_id: Type.String(), fallback_models: Type.Optional(Type.Array(Type.String(), {maxItems: 20})), max_retries: Type.Optional(Type.Integer({minimum: 0})) }),
     },
     {
@@ -228,7 +228,7 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     },
     {
         name: "media.delete",
-        description: "删除媒体资源（需画布确认门批准）。确认门按档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        description: "删除媒体资源（需画布确认门批准）。确认门由服务端按操作及档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
         parameters: Type.Object({ asset_id: Type.String() }),
     },
     {

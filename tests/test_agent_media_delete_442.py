@@ -147,6 +147,13 @@ def test_turn_group_preflights_every_media_and_canvas_inverse(env):
     store, project, db = env
     first, original, _ = setup(store, project)
     second, second_record, _ = setup(store, project, color='blue')
+    # These undo positives need a real actor and an actor-owned sibling update (#486).
+    canvas = store.canvas(project)
+    target = store.find_canvas_node(project, 'red')
+    store.apply_mutations(project, [
+        {'op': 'upsert_node', 'node': {'id': 'actor', 'type': 'smart-agent'}},
+        {'op': 'upsert_node', 'node': {**target, 'createdBy': 'agent', 'agentNodeId': 'actor'}},
+    ], base_revision=canvas['revision'])
     async def run():
         with scope(project, 'canvas.update_node'):
             updated = await tools.update_node_core(project, 'red', {'prompt': 'agent change'})
@@ -342,6 +349,13 @@ def test_interrupted_native_transaction_recovers_without_sidecar_authority(env, 
 def test_sidecar_append_failure_blocks_entire_turn_but_preserves_native_recovery(env, monkeypatch):
     store, project, db = env
     asset, _, _ = setup(store, project)
+    # These undo positives need a real actor and an actor-owned sibling update (#486).
+    canvas = store.canvas(project)
+    target = store.find_canvas_node(project, 'red')
+    store.apply_mutations(project, [
+        {'op': 'upsert_node', 'node': {'id': 'actor', 'type': 'smart-agent'}},
+        {'op': 'upsert_node', 'node': {**target, 'createdBy': 'agent', 'agentNodeId': 'actor'}},
+    ], base_revision=canvas['revision'])
     async def update():
         with scope(project, 'canvas.update_node'):
             return await tools.update_node_core(project, 'red', {'prompt': 'agent change'})

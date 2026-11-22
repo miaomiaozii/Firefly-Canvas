@@ -110,7 +110,21 @@ class Guards355Tests(unittest.TestCase):
             self.assertIn("白名单", cm.exception.detail["message"])
 
     def test_core_allows_whitelisted_and_typechecks_geometry(self):
-        r = run_async(update_node_core(self.pid, "prompt-1", {"title": "T", "text": "X", "x": 12}))
+        from app.services.agent_ops_context import agent_ops_scope
+
+        # #486: field acceptance is tested on an owned target with a real Agent context.
+        canvas = self.store.canvas(self.pid)
+        prompt = next(node for node in canvas["nodes"] if node["id"] == "prompt-1")
+        self.store.apply_mutations(self.pid, [
+            {"op": "upsert_node", "node": {
+                **prompt, "createdBy": "agent", "agentNodeId": self.actor_id,
+                "userTouchedAt": None, "promptEditedByUser": False, "locked": False,
+            }},
+        ], base_revision=canvas["revision"])
+        updates = {"title": "T", "text": "X", "x": 12}
+        with agent_ops_scope(project_id=self.pid, agent_node_id=self.actor_id,
+                             tool="canvas.update_node", args={"node_id": "prompt-1", **updates}):
+            r = run_async(update_node_core(self.pid, "prompt-1", updates))
         self.assertTrue(r["success"])
         with self.assertRaises(HTTPException) as cm:
             run_async(update_node_core(self.pid, "prompt-1", {"x": "left"}))

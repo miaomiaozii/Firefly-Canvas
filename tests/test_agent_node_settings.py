@@ -788,6 +788,10 @@ class TestAgentSettingsOwnership(unittest.TestCase):
         self.assertEqual(self.host.session.model, "offline-model")
 
     def test_tool_broadcast_stays_agent_while_settings_use_empty_source(self):
+        # This broadcast positive needs the real actor's own target, not a foreign-owner bypass (#486).
+        owned = {**self.node, "agentNodeId": self.node["id"]}
+        self.store.apply_agent_host_mutations(self.project_id, [{"op": "upsert_node", "node": owned}],
+                                              base_revision=self.store.canvas(self.project_id)["revision"])
         broadcasts = []
         operation_starts = []
 

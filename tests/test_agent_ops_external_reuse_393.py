@@ -38,9 +38,16 @@ class ExternalTurnReuseTests(unittest.IsolatedAsyncioTestCase):
         return json.loads(result['content'][0]['text'])
 
     async def test_failed_turn_lookup_keeps_attribution_and_rejects_the_whole_undo(self):
+        # These turn-reuse positives are not foreign-node authorization tests (#486).
+        canvas = self.store.canvas(self.pid)
+        target = self.store.find_canvas_node(self.pid, 'n')
+        self.store.apply_mutations(self.pid, [
+            {'op': 'upsert_node', 'node': {'id': 'actor', 'type': 'smart-agent'}},
+            {'op': 'upsert_node', 'node': {**target, 'createdBy': 'agent', 'agentNodeId': 'actor'}},
+        ], base_revision=canvas['revision'])
         before = self.store.canvas(self.pid)
         self.store.apply_mutations(self.pid, [{'op': 'upsert_node', 'node':
-            {'id': 'n2', 'type': 'prompt', 'title': 'original'}}], base_revision=before['revision'])
+            {'id': 'n2', 'type': 'prompt', 'title': 'original', 'createdBy': 'agent', 'agentNodeId': 'actor'}}], base_revision=before['revision'])
         self.store.flush(self.pid)
         first = await self.call('a', 'changed text')
         request = Request({'type': 'http', 'method': 'POST', 'path': '/api/mcp',
@@ -61,6 +68,13 @@ class ExternalTurnReuseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.canvas(self.pid), after)
 
     async def test_pruned_turn_reuse_is_individually_undoable(self):
+        # These turn-reuse positives are not foreign-node authorization tests (#486).
+        canvas = self.store.canvas(self.pid)
+        target = self.store.find_canvas_node(self.pid, 'n')
+        self.store.apply_mutations(self.pid, [
+            {'op': 'upsert_node', 'node': {'id': 'actor', 'type': 'smart-agent'}},
+            {'op': 'upsert_node', 'node': {**target, 'createdBy': 'agent', 'agentNodeId': 'actor'}},
+        ], base_revision=canvas['revision'])
         with patch.object(ops, 'MAX_OPERATIONS', 2):
             a = await self.call('a', 'a')
             await self.call('b', 'b')

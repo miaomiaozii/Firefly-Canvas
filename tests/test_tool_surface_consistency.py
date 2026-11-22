@@ -90,7 +90,7 @@ class SourceSameOriginTests(unittest.TestCase):
 
     def test_confirmation_descriptions_do_not_expire_approvals(self):
         descriptions = {tool['name']: tool['description'] for tool in agent_tools_manifest.TOOLS}
-        for name in ('canvas.delete_node', 'canvas.disconnect', 'canvas.edit_crop',
+        for name in ('canvas.update_node', 'canvas.delete_node', 'canvas.disconnect', 'canvas.edit_crop',
                      'canvas.edit_rotate', 'canvas.edit_flip', 'canvas.edit_outpaint',
                      'canvas.edit_erase', 'canvas.batch_edit', 'generate.trigger',
                      'generate.retry', 'generate.request_batch', 'media.delete'):
@@ -99,6 +99,13 @@ class SourceSameOriginTests(unittest.TestCase):
                 self.assertNotIn('90 秒有效', descriptions[name])
                 self.assertIn('CONFIRM_PENDING', descriptions[name])
                 self.assertIn('勿重复提交', descriptions[name])
+
+    def test_update_description_requires_protected_confirmation_and_sealed_patch(self):
+        description = next(tool['description'] for tool in agent_tools_manifest.TOOLS
+                           if tool['name'] == 'canvas.update_node')
+        for requirement in ('autonomous', '确认', 'patch', 'CONFIRM_PENDING'):
+            self.assertIn(requirement, description)
+        self.assertNotIn('仅可改未被人工编辑的自有 Agent 节点', description)
 
     def test_codegen_fresh(self):
         """重跑 codegen diff 必须为空（拍板 a：进 fast 门/pytest）。"""
@@ -348,7 +355,7 @@ class DualPathEquivalenceTests(unittest.TestCase):
         ca, cb = self._canon_payload(a), self._canon_payload(b)
         self.assertEqual(ca, cb, f"{label}: MCP 与 REST 孪生结果不一致\n MCP={a}\n REST={b}")
 
-    def _confirmed_pair(self, client, pid_a, pid_b, name, args, method, url_path):
+    def _confirmed_pair(self, client, pid_a, pid_b, name, args, method, url_path, body=None):
         # Answer the real confirmation on each actor's session, not at the transport gate.
         seen = []
 
@@ -363,7 +370,7 @@ class DualPathEquivalenceTests(unittest.TestCase):
             agent_host_manager.on_event(session, approve)
         a = self._mcp_call(client, pid_a, name, args)
         b = self._rest(client, method, f"/api/projects/{pid_b}{url_path}?agent_node_id={self.ACTOR}",
-                       args if method == "POST" else None, headers={"X-Agent-Project": pid_b})
+                       args if method == "POST" else body, headers={"X-Agent-Project": pid_b})
         gate_tool = "canvas.delete_edge" if name == "canvas.disconnect" else name
         self.assertEqual(seen, [(pid, self.ACTOR, gate_tool) for pid in (pid_a, pid_b)], (a, b))
         return a, b
@@ -494,10 +501,10 @@ class DualPathEquivalenceTests(unittest.TestCase):
                 self.assertEqual([store.canvas(pid) for pid in (pid_a, pid_b)], before)
             return run
 
-        def gated(name, args, method, url_path, *, expected_error=None):
+        def gated(name, args, method, url_path, body=None, *, expected_error=None):
             def run():
                 client, store, pid_a, pid_b = self._fixture()
-                a, b = self._confirmed_pair(client, pid_a, pid_b, name, args, method, url_path)
+                a, b = self._confirmed_pair(client, pid_a, pid_b, name, args, method, url_path, body)
                 self._assert_pair(a, b, name)
                 if expected_error:
                     self.assertFalse(a["ok"], a)
@@ -683,7 +690,7 @@ class DualPathEquivalenceTests(unittest.TestCase):
             "canvas.list_nodes": pair("canvas.list_nodes", {}, "GET", "/canvas/nodes"),
             "canvas.get_node": pair("canvas.get_node", {"node_id": "prompt-1"}, "GET", "/canvas/nodes/prompt-1"),
             "canvas.create_node": pair("canvas.create_node", {"type": "smart-prompt", "title": "New"}, "POST", "/canvas/nodes", {"node": {"type": "smart-prompt", "title": "New"}}),
-            "canvas.update_node": pair("canvas.update_node", {"node_id": "prompt-1", "title": "NT", "text": "NX", "x": -32.5, "y": 48, "w": 360, "h": 260}, "PATCH", "/canvas/nodes/prompt-1", {"title": "NT", "text": "NX", "x": -32.5, "y": 48, "w": 360, "h": 260}),
+            "canvas.update_node": gated("canvas.update_node", {"node_id": "prompt-1", "title": "NT", "text": "NX", "x": -32.5, "y": 48, "w": 360, "h": 260}, "PATCH", "/canvas/nodes/prompt-1", {"title": "NT", "text": "NX", "x": -32.5, "y": 48, "w": 360, "h": 260}),
             "canvas.delete_node": gated("canvas.delete_node", {"node_id": "image-1"}, "DELETE", "/canvas/nodes/image-1"),
             "canvas.connect": pair("canvas.connect", {"from_node": "prompt-1", "to_node": "image-1", "kind": "input"}, "POST", "/canvas/edges", {"edge": {"from": "prompt-1", "to": "image-1", "kind": "input"}}),
             "canvas.disconnect": gated("canvas.disconnect", {"from_node": "prompt-1", "to_node": "image-1"}, "DELETE", "/canvas/edges/prompt-1/image-1"),

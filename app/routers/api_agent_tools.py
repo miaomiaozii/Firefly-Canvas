@@ -660,6 +660,7 @@ for _layout_tool in sorted(LAYOUT_TOOLS):
 
 
 @router.patch("/nodes/{node_id}", dependencies=_AGENT_WRITE)
+@resumable
 async def update_node(project_id: str, node_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Update an existing node's properties."""
     body = await request.json()
@@ -1241,16 +1242,20 @@ async def _edit_agent_references(project_id, target, edit):
 
 async def update_node_core(project_id: str, node_id: str, updates: dict) -> dict:
     """Update an existing node's properties (`updates` is a flat field dict)."""
+    from copy import deepcopy
+    from app.services.agent_node_update import BoundNodeUpdate
+
+    updates = deepcopy(updates)
     if not isinstance(updates, dict):
         raise agent_error(400, "INVALID_ARGUMENT", "updates must be an object",
                           "canvas.update_node 的 updates 需是 {字段: 值} 对象。")
-    # #355 W1：可更新字段白名单（清单在 manifest，两路共用）；白名单外一律 400。
+    # Manifest is the authority; neither transport may grant hidden-field writes.
     illegal = sorted(k for k in updates if k not in _UPDATABLE_NODE_FIELDS)
     if illegal:
         raise agent_error(
             400, "INVALID_ARGUMENT",
             "update_node 字段白名单外的键被拒: " + ",".join(illegal),
-            "只白名单内字段可改（x/y/w/h/title/locked 等）；先调用 canvas.get_node 查看当前字段。",
+            "只可改 title/text/prompt/x/y/w/h/status/runSettings；先调用 canvas.get_node 查看当前字段。",
             details={"rejected_keys": illegal})
     for key in ("x", "y", "w", "h"):
         if key in updates and (isinstance(updates[key], bool) or not isinstance(updates[key], (int, float))):
@@ -1268,7 +1273,6 @@ async def update_node_core(project_id: str, node_id: str, updates: dict) -> dict
             raise agent_error(400, "INVALID_ARGUMENT",
                               "会话框 items 由服务端落位链维护，canvas.update_node 不可覆写",
                               "会话框成员由服务端维护；不要改 items，用 canvas.create_node 在会话框内建节点。")
-        from app.services.agent_ops_context import current_agent_ops_context
         from app.services.agent_ops_delta import _equal
         fields = {key: value for key, value in updates.items() if key != "runSettings"}
         prev = {key: target_node.get(key) for key in fields}
@@ -1278,20 +1282,37 @@ async def update_node_core(project_id: str, node_id: str, updates: dict) -> dict
                 raise agent_image_settings.invalid("Saved runSettings is not an object")
             merged, prev["runSettings"] = agent_image_settings.merge_patch(stored or {}, run_patch)
             if not _equal(stored or {}, merged):
-                context = current_agent_ops_context()
-                owner = target_node.get("agentNodeId")
-                if (target_node.get("createdBy") != "agent" or not owner or
-                        target_node.get("userTouchedAt") is not None or
-                        (context and context.agent_node_id != owner)):
-                    raise agent_error(403, "NOT_ALLOWED_ON_USER_NODE", "Agent cannot overwrite user generation settings",
-                                      "请用户在节点参数面板修改设置，或改用未被人工编辑的自有节点。")
                 fields["runSettings"] = merged
         result["prev"] = prev
         if all(key in target_node and _equal(target_node[key], value) for key, value in fields.items()):
             return []
         return [{"op": "upsert_node", "node": {**target_node, **fields, "updated_at": updated_at}}]
 
-    await _apply_mutations_from_snapshot(project_id, build)
+    snapshot = _app_main.FIREFLY_PROJECT_STORE.canvas(project_id)
+    mutations = build(snapshot)
+    target = _snapshot_node(snapshot, node_id)
+    patch = {key: mutations[0]["node"][key] for key in updates
+             if key in mutations[0]["node"]} if mutations else {}
+    bound = BoundNodeUpdate.capture(project_id, node_id, target, patch, snapshot)
+    if not bound.patch:
+        return _op_result(result)
+    if bound.requires_confirmation:
+        parameters = bound.parameters()
+        # Confirmation cards display message, not params; consent must expose the sealed change.
+        message = (f"是否修改非自有或受保护节点 {node_id}？\n"
+                   f"修改前：{json.dumps(parameters['before'], ensure_ascii=False, sort_keys=True)}\n"
+                   f"拟写入：{json.dumps(parameters['patch'], ensure_ascii=False, sort_keys=True)}")
+        decision = await request_confirmation_core(project_id, bound.context.agent_node_id, "canvas.update_node",
+            parameters, message,
+            AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS, allow_automatic=False, prepared_target_node_ids=[node_id])
+        if not decision.get("approved"):
+            if decision.get("reason") == "pending":
+                return decision
+            code = "CONFIRM_REJECTED" if decision.get("reason") == "rejected" else "CONFIRM_STALE"
+            raise agent_error(409, code, "Protected node update was not approved",
+                              "重新读取节点；不要复用旧确认或自行重试。", details={"node_id": node_id})
+    await _apply_mutations_from_snapshot(project_id, lambda canvas: bound.mutations(canvas, updated_at),
+                                         recheck_before_cas=bound.verify)
     return _op_result(result)
 
 

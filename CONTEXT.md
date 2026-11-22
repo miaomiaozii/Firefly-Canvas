@@ -243,6 +243,14 @@ _Avoid_: 独立音频项目、音频工作站
 - 花钱确认立即回 `CONFIRM_PENDING` / `awaiting_confirmation` 和 `confirm_id`，确认事件携带准备好的生成输入。非花钱门的 90 秒是同步回包窗口，不是拒绝或批准的有效期；等待中的操作、处理器和回放卡保留到决定、停止或会话失效。执行前仍检查宿主、generation、原轮次及当前输入/CAS；拒绝不执行写入。已准入的图片任务保留原操作/轮次归属并独立结算，后续宿主、用户轮或服务商设置变化不能阻断已花钱结果的归档；新调用仍须重新过门。
 - 批准后的系统续接属于原用户逻辑轮，Pi/Codex 共用 FIFO，不伪造用户消息或新的用户轮次。待执行处理器仅在本次服务进程生命周期内存活；停止/关闭执行循环会取消未批准工作。
 
+### 通用节点更新确认（#486）
+
+- `canvas.update_node` 的 REST 与 MCP 平铺/旧 `updates` 适配共用字段白名单、规范化和确认实现。必须有项目、真实发起 Agent 与工具均匹配的服务端操作上下文；客户端归属字段不能授予权限。Pi 手写执行器的现有字段子集不扩大。
+- 仅 raw `createdBy:agent`、匹配 `agentNodeId`、T 缺失/null、P 缺失/null/严格 false 且未锁定的自有目标可直接改写；其它目标的实际改动都须确认，包含普通字段、`runSettings` 及混合 patch。三档均不自动批准这个保护门；同值/空 patch 不发确认、不写时间戳、revision、日志或画布广播。缺失、null、false 及 0 仍严格区分。
+- 确认卡的 message 展示目标 node_id、修改字段的 raw 旧值/存在位与拟写入 patch，和绑定参数同源，不只显示泛化询问。批准只绑定原项目、Agent、工具、节点、op_id、宿主/generation/原轮次、完整 raw before 的 SHA-256 及冻结的规范化有效 patch。操作准备与 `recheck_before_cas` 在最新画布/既有 CAS 锁内复核；内容、归属、保护元数据或身份失效返回 `CONFIRM_STALE`，真实 revision 竞争仍显式 `CANVAS_CONFLICT`，不盲目重建覆盖。既有整画布待决快照可以更保守地失效。
+- 等待窗后 `CONFIRM_PENDING` 不是拒绝或批准到期；沿用原处理器与确认卡，重复批准不重复提交。拒绝为 `CONFIRM_REJECTED`。已回 pending 的请求不会再收到第二个 HTTP 409；后续 stale/rejected 的执行任务按既有生命周期结算，不新建错误查询接口。停止/换宿主/原轮次失效会取消；外部 MCP 迟批不向 hosted Agent 注入续接。
+- 成功更新沿用实际 op/turn 的 journal、diff 和 `ops.undo`，只改批准字段及更新时间，不抢占 createdBy/owner/T/P；撤销恢复 raw 值及存在位，失败不伪造日志或 touched 目标。归属与人工保护仍遵守 [ADR 0029](docs/adr/0029-agent-node-ownership-and-local-undo-compatibility.md)。
+
 ### 事件关联与历史对话读口（#457）
 
 - 确认事件及其终态的顶层 `target_node_ids` 是按准备输入/实际参数稳定去重的目标，不是发起 Agent；批量改词仅含有变化的节点，逐项花钱确认只含当前项。批准/CAS 权限不由此字段决定。

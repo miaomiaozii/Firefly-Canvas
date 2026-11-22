@@ -1,4 +1,6 @@
 """Tests for agent canvas tools API endpoints (issue #119)."""
+from concurrent.futures import ThreadPoolExecutor
+from queue import Queue
 import sys
 import tempfile
 import unittest
@@ -13,7 +15,8 @@ if str(ROOT) not in sys.path:
 
 import main
 from firefly_projects import ProjectStore
-from app.routers import api_agent_tools
+from app.routers import api_agent_nodes, api_agent_tools
+from app.services.agent_host import AgentHostManager
 
 
 class AgentCanvasToolsTests(unittest.TestCase):
@@ -154,8 +157,61 @@ class AgentCanvasToolsTests(unittest.TestCase):
         self.assertTrue(data["node_id"].startswith("node-"))
 
     def test_update_node(self):
-        """canvas.update_node updates node properties."""
         self._add_actor()
+        host = AgentHostManager()
+        events = Queue()
+        with patch("app.services.agent_host.agent_host_manager", host), \
+                patch.object(api_agent_nodes, "agent_host_manager", host), \
+                patch.object(api_agent_tools, "AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS", 5), self.client:
+            session = self.client.portal.call(host.get_or_create_session, self.project_id, self.actor_id)
+            session.autonomy = "autonomous"
+
+            async def observe(_session, event):
+                if event.get("type") == "confirm":
+                    events.put(event)
+
+            session.event_handlers.append(observe)
+            url = f"/api/projects/{self.project_id}/canvas/nodes/prompt-1"
+            before = self.client.get(url).json()
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(self.client.patch, url,
+                    json={"title": "Updated Title", "text": "Updated text"},
+                    headers=self.agent_headers, params=self.actor_query)
+                event = None
+                try:
+                    event = events.get(timeout=5)
+                    self.assertFalse(future.done())
+                    self.assertEqual(self.client.get(url).json(), before)
+                    self.assertEqual(event["params"]["patch"], {"title": "Updated Title", "text": "Updated text"})
+                    confirmation = self.client.post(
+                        f"/api/projects/{self.project_id}/agent-nodes/{self.actor_id}/confirm",
+                        json={"confirm_id": event["confirm_id"], "approved": True})
+                    self.assertEqual(confirmation.status_code, 200)
+                    response = future.result(timeout=10)
+                finally:
+                    if event is not None and not future.done():
+                        self.client.post(f"/api/projects/{self.project_id}/agent-nodes/{self.actor_id}/confirm",
+                            json={"confirm_id": event["confirm_id"], "approved": False})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertTrue(response.json()["success"])
+            after = self.client.get(url).json()
+            self.assertEqual(after, {**before, "title": "Updated Title", "text": "Updated text",
+                                     "updated_at": after["updated_at"]})
+            operations = self.client.get(f"/api/projects/{self.project_id}/ops").json()["operations"]
+            self.assertEqual(len(operations), 1)
+            self.assertEqual(operations[0]["op_id"], event["params"]["op_id"])
+            self.assertFalse(session.confirm_handlers)
+
+    def test_update_owned_node(self):
+        self._add_actor()
+        canvas = self.store.canvas(self.project_id)
+        prompt = next(node for node in canvas["nodes"] if node["id"] == "prompt-1")
+        self.store.apply_mutations(self.project_id, [
+            {"op": "upsert_node", "node": {
+                **prompt, "createdBy": "agent", "agentNodeId": self.actor_id,
+                "userTouchedAt": None, "promptEditedByUser": False, "locked": False,
+            }},
+        ], base_revision=canvas["revision"])
         response = self.client.patch(
             f"/api/projects/{self.project_id}/canvas/nodes/prompt-1",
             json={"title": "Updated Title", "text": "Updated text"},
@@ -166,7 +222,6 @@ class AgentCanvasToolsTests(unittest.TestCase):
         data = response.json()
         self.assertTrue(data["success"])
 
-        # Verify the update
         response = self.client.get(f"/api/projects/{self.project_id}/canvas/nodes/prompt-1")
         self.assertEqual(response.json()["title"], "Updated Title")
         self.assertEqual(response.json()["text"], "Updated text")

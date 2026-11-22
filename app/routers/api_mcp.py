@@ -362,10 +362,10 @@ async def _impl_create_node(project_id, agent_node_id, args):
 async def _impl_update_node(project_id, agent_node_id, args):
     if "layoutFrame" in args:
         raise agent_layout.invalid("layoutFrame is assigned only by canvas.group_create")
-    # #356 D11：平铺字段为主；旧 `updates` 自由对象兼容一版（已弃用）。
+    # Preserve empty legacy objects and explicit nulls: the core compares key presence.
     updates = args.get("updates")
-    if not isinstance(updates, dict) or not updates:
-        updates = {k: v for k, v in args.items() if k != "node_id" and (v is not None or k == "runSettings")}
+    if not isinstance(updates, dict):
+        updates = {key: value for key, value in args.items() if key != "node_id"}
     elif "runSettings" in args:
         raise HTTPException(400, "Do not mix flat runSettings with the legacy updates object")
     updates = {**updates, **{key: args[key] for key in ownership_fields() if key in args}}
@@ -650,7 +650,7 @@ TOOL_IMPLS = {
 
 from app.services.agent_confirmation import confirmation_transport, resumable
 
-for _name in ('canvas.delete_node', 'canvas.disconnect', 'media.delete', 'generate.trigger', 'generate.retry',
+for _name in ('canvas.update_node', 'canvas.delete_node', 'canvas.disconnect', 'media.delete', 'generate.trigger', 'generate.retry',
               'canvas.edit_crop', 'canvas.edit_rotate', 'canvas.edit_flip', 'canvas.edit_outpaint',
               'canvas.edit_erase', 'canvas.batch_edit', 'canvas.batch_prompt_edit', *LAYOUT_TOOLS):
     TOOL_IMPLS[_name] = resumable(TOOL_IMPLS[_name])

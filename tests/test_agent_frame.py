@@ -123,17 +123,28 @@ class CreateNodePlacement(unittest.TestCase):
         with self.assertRaises(HTTPException) as cm:
             run_async(update_node_core(self.pid, "group-1", {"items": ["bogus"]}))
         self.assertEqual(cm.exception.status_code, 400)
-        self.assertIn("items", str(cm.exception.detail))  # #391 起 detail 为形状 dict
+        self.assertIn("items", str(cm.exception.detail))
         self.assertEqual(self._nodes()["group-1"]["items"], [], "store 内 items 未被篡改")
-        # 其他字段照常可改（护栏不扩大到整节点）。
-        r = run_async(update_node_core(self.pid, "group-1", {"title": "改名"}))
+        from app.services.agent_ops_context import agent_ops_scope
+
+        # #486: title remains writable on an owned frame; membership still uses the placement chain.
+        canvas = self.store.canvas(self.pid)
+        frame = next(node for node in canvas["nodes"] if node["id"] == "group-1")
+        self.store.apply_mutations(self.pid, [
+            {"op": "upsert_node", "node": {
+                **frame, "createdBy": "agent", "agentNodeId": "agent-1",
+                "userTouchedAt": None, "promptEditedByUser": False, "locked": False,
+            }},
+        ], base_revision=canvas["revision"])
+        with agent_ops_scope(project_id=self.pid, agent_node_id="agent-1",
+                             tool="canvas.update_node", args={"node_id": "group-1", "title": "改名"}):
+            r = run_async(update_node_core(self.pid, "group-1", {"title": "改名"}))
         self.assertTrue(r["success"])
         self.assertEqual(self._nodes()["group-1"]["title"], "改名")
-        # #355：普通 agent 节点的 items 同样被白名单拒绝（旧行为已作废）。
         with self.assertRaises(HTTPException) as cm2:
             run_async(update_node_core(self.pid, "agent-1", {"items": ["x"]}))
         self.assertEqual(cm2.exception.status_code, 400)
-        self.assertIn("白名单", str(cm2.exception.detail))  # #391：detail 形状 dict，hint 里保留「白名单」文案
+        self.assertIn("白名单", str(cm2.exception.detail))
 
 
 class _FakeStore:

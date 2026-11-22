@@ -211,26 +211,56 @@ class Ownership392Tests(unittest.TestCase):
         self.broadcast.assert_not_awaited()
 
     def test_update_rebuilds_from_latest_human_metadata_after_real_conflict(self):
-        self.seed(node("source", prompt="old", **ownership("original")))
-        with self.race(lambda: [upsert({**self.nodes()["source"], **HUMAN})]) as attempts:
-            run(self.tools.update_node_core(self.pid, "source", {"prompt": "agent edit"}))
-        self.assertEqual(len(attempts), 2)
+        from app.services.agent_ops_context import agent_ops_scope
+
+        self.seed(node("original", type=NODE_TYPE_AGENT),
+                  node("source", prompt="old", **ownership("original")))
+        self.store.flush(self.pid)
+        winner = {**self.nodes()["source"], **HUMAN, "prompt": "a newer human prompt"}
+
+        async def update():
+            with agent_ops_scope(project_id=self.pid, agent_node_id="original", tool="canvas.update_node",
+                                 args={"node_id": "source", "updates": {"prompt": "agent edit"}}):
+                return await self.tools.update_node_core(self.pid, "source", {"prompt": "agent edit"})
+
+        # A failed revision CAS cannot authorize rebuilding the patch over a human winner.
+        with self.race(lambda: [upsert(winner)]) as attempts:
+            self.assert_failure(update(), 409, "CANVAS_CONFLICT")
+        self.assertEqual(len(attempts), 1)
         current = self.nodes()["source"]
-        self.assertEqual(current["prompt"], "agent edit")
+        self.assertEqual(current, winner)
+        self.assertEqual(current["prompt"], "a newer human prompt")
         self.assert_metadata(current, HUMAN)
         self.assertEqual(current["customField"], HUMAN["customField"])
         self.assertNotIn("customField", attempts[0][0]["node"])
-        self.assertEqual(attempts[1][0]["node"]["customField"], HUMAN["customField"])
-        self.broadcast.assert_awaited_once_with(self.pid, source="agent")
+        calls = self.broadcast.await_args_list
+        self.assertEqual([entry.kwargs["phase"] for entry in calls], ["start", "end"])
+        self.assertEqual(calls[0].kwargs["op_id"], calls[1].kwargs["op_id"])
+        self.assertEqual(calls[1].kwargs["touched_node_ids"], [])
 
     def test_update_does_not_resurrect_target_deleted_before_retry(self):
-        self.seed(node("source"), node("unrelated"))
+        from app.services.agent_ops_context import agent_ops_scope
+
+        self.seed(node("original", type=NODE_TYPE_AGENT),
+                  node("source", **ownership("original")), node("unrelated"))
+        self.store.flush(self.pid)
+        unrelated = copy.deepcopy(self.nodes()["unrelated"])
+
+        async def update():
+            with agent_ops_scope(project_id=self.pid, agent_node_id="original", tool="canvas.update_node",
+                                 args={"node_id": "source", "updates": {"title": "edit"}}):
+                return await self.tools.update_node_core(self.pid, "source", {"title": "edit"})
+
         with self.race(lambda: [{"op": "remove_node", "node_id": "source"}]) as attempts:
-            self.assert_failure(self.tools.update_node_core(self.pid, "source", {"title": "edit"}),
-                                404, "NODE_NOT_FOUND")
+            self.assert_failure(update(), 409, "CANVAS_CONFLICT")
         self.assertEqual(len(attempts), 1)
-        self.assertEqual(set(self.nodes()), {"unrelated"})
-        self.broadcast.assert_not_awaited()
+        self.assertEqual(set(self.nodes()), {"original", "unrelated"})
+        self.assertEqual(self.nodes()["unrelated"], unrelated)
+        self.assert_failure(update(), 404, "NODE_NOT_FOUND")
+        calls = self.broadcast.await_args_list
+        self.assertEqual([entry.kwargs["phase"] for entry in calls], ["start", "end"])
+        self.assertEqual(calls[0].kwargs["op_id"], calls[1].kwargs["op_id"])
+        self.assertEqual(calls[1].kwargs["touched_node_ids"], [])
 
     def test_create_frame_retry_keeps_identity_and_latest_members_geometry_metadata(self):
         self.seed(node("owner", type=NODE_TYPE_AGENT, chatFrameId="frame"), node("first"),

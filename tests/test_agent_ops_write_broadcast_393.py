@@ -42,6 +42,8 @@ class WriteBroadcastTests(unittest.IsolatedAsyncioTestCase):
                                            'touched_node_ids': touched, 'phase': phase})
 
     async def test_rest_and_mcp_real_store(self):
+        self.store.apply_mutations(self.pid, [{'op': 'upsert_node', 'node':
+            {'id': 'actor', 'type': 'smart-agent'}}], base_revision=self.store.canvas(self.pid)['revision'])
         body = json.dumps({'agent_node_id': 'actor', 'node': {'type': 'prompt'}}).encode()
         async def receive():
             return {'type': 'http.request', 'body': body, 'more_body': False}
@@ -66,6 +68,8 @@ class WriteBroadcastTests(unittest.IsolatedAsyncioTestCase):
         self.check_pair(data['op_id'], record['touched_node_ids'])
 
     async def test_noop_and_validation_never_broadcast(self):
+        self.store.apply_mutations(self.pid, [{'op': 'upsert_node', 'node':
+            {'id': 'actor', 'type': 'smart-agent'}}], base_revision=self.store.canvas(self.pid)['revision'])
         with agent_ops_scope(project_id=self.pid, agent_node_id='actor', tool='canvas.create_node', args={}):
             created = await tools.create_node_core(self.pid, {'type': 'prompt', 'text': 'same'})
         self.broadcast.reset_mock()

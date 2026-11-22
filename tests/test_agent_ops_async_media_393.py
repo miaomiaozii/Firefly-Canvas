@@ -25,8 +25,10 @@ class AgentGenerationRegistryTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.main_patch.stop)
 
     async def test_unchanged_update_is_not_an_operation(self):
+        self.store.apply_mutations(self.project, [{'op': 'upsert_node', 'node':
+            {'id': 'actor', 'type': 'smart-agent'}}], base_revision=self.store.canvas(self.project)['revision'])
         with agent_ops_scope(project_id=self.project, agent_node_id="actor", tool="canvas.create_node", args={}):
-            node = await routes.create_node_core(self.project, {"type": "prompt", "text": "same"})
+            node = await routes.create_node_core(self.project, {"type": "prompt", "text": "same"}, agent_node_id="actor")
         before = self.store.canvas(self.project)
         with agent_ops_scope(project_id=self.project, agent_node_id="actor", tool="canvas.update_node", args={}):
             result = await routes.update_node_core(self.project, node["node_id"], {"text": "same"})

@@ -10,6 +10,7 @@ from PIL import Image
 from starlette.requests import Request
 
 import main
+from app.constants import NODE_TYPE_AGENT
 from app.routers import api_agent_tools as routes, api_mcp
 from app.services.agent_ops_store import get_operation, list_operations
 from firefly_opsdb import OpsDb
@@ -106,6 +107,17 @@ def test_failed_journal_broadcasts_only_proven_canvas_replace(env, monkeypatch, 
     from app.services.agent_ops_context import agent_ops_scope
 
     store, project, db = env
+    # #486: reach the persistence fault with an owned target; persist the baseline before injecting it.
+    canvas = store.canvas(project)
+    image = next(node for node in canvas['nodes'] if node['id'] == 'image')
+    store.apply_mutations(project, [
+        {'op': 'upsert_node', 'node': {
+            **image, 'createdBy': 'agent', 'agentNodeId': 'actor',
+            'userTouchedAt': None, 'promptEditedByUser': False, 'locked': False,
+        }},
+        {'op': 'upsert_node', 'node': {'id': 'actor', 'type': NODE_TYPE_AGENT}},
+    ], base_revision=canvas['revision'])
+    store.flush(project)
     manager = type('Manager', (), {})()
     manager.broadcast_canvas_updated = AsyncMock()
     monkeypatch.setattr(main, 'manager', manager)

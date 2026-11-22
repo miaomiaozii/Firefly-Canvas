@@ -13,8 +13,8 @@ tests/test_tool_surface_consistency.py）；canvas-tools.ts 保留手写执行�
   对象形状在 handler 里保留一版兼容，description 标注已弃用）。
 - 客户端不做参数默认值：x/y 缺省由服务端 frame 自动布局；edge id / node id 由
   服务端铸造；kind 缺省 "flow" 归服务端 core。
-- 字段白名单（#355）将在本清单的 create_node/update_node 条目上扩 `properties`
-  收紧，两边自动跟随——改这里之前先看 #355。
+- 字段白名单由 create_node/update_node 的 `properties` 与公共字段集合约束；
+  传输适配层不得借兼容参数形状扩大可写字段。
 """
 from app.services.canvas_view import DEFAULT_VIEW_MAX_PX, MAX_VIEW_MAX_PX
 
@@ -152,9 +152,8 @@ TOOLS = [
         "text": {"type": "string", "description": "正文（prompt 类节点）"},
         "prompt": {"type": "string", "description": "提示词（image/video 节点）"},
     }, "required": ["type"], "additionalProperties": False}},
-    # #356 D11：平铺形状（node_id + 可更新字段）；旧 `updates` 自由对象 handler 兼容
-    # 一版已弃用。#355 将在此条目落实字段白名单。
-    {"name": "canvas.update_node", "description": "更新节点属性并返回 prev；runSettings 只合并指定的生图字段，仅可改未被人工编辑的自有 Agent 节点的生成参数", "inputSchema": {"type": "object", "properties": {
+    # Public schema stays flat; legacy MCP `updates` compatibility must still use the same whitelist.
+    {"name": "canvas.update_node", "description": "更新节点属性并返回 prev；未被人工接管或锁定的自有节点可直接修改，其他节点须逐次确认，autonomous 也不豁免；批准绑定当时内容和本次 patch，runSettings 只合并指定的生图字段", "inputSchema": {"type": "object", "properties": {
         "node_id": {"type": "string"},
         "title": {"type": "string", "description": "新标题"},
         "text": {"type": "string", "description": "新正文"},
@@ -273,12 +272,12 @@ _EXTERNAL_MCP_TURN_NOTE = (
     "同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。"
 )
 _CONFIRMATION_RECEIPT_TOOLS = frozenset({
-    "canvas.delete_node", "canvas.disconnect", "canvas.edit_crop", "canvas.edit_rotate",
+    "canvas.update_node", "canvas.delete_node", "canvas.disconnect", "canvas.edit_crop", "canvas.edit_rotate",
     "canvas.edit_flip", "canvas.edit_outpaint", "canvas.edit_erase", "canvas.batch_edit",
     "generate.trigger", "generate.retry", "generate.request_batch", "media.delete",
 })
 _CONFIRMATION_RECEIPT_NOTE = (
-    "确认门按档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，"
+    "确认门由服务端按操作及档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，"
     "批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。"
 )
 for _tool in TOOLS:
