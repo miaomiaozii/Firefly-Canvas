@@ -223,7 +223,17 @@ def test_preview_and_apply_journal_undo(env, tmp_path, monkeypatch, mcp):
     assert nodes[first_task['prompt_node']]['planLineage']['source_attachment_id'] == source['id']
     assert first_task['ref_nodes'] == []
     assert nodes[result['groups'][0]['group_id']]['layoutFrame'] is True
-    assert invoke('plan.apply', args)['already_applied'] == [first]
+    duplicate = invoke('plan.apply', args)
+    assert duplicate['code'] == 'PLAN_ALREADY_APPLIED', duplicate
+    if not mcp:
+        rejected = client.post(f'/api/projects/{project}/plan/apply?agent_node_id=actor',
+                              headers={'X-Agent-Project': project}, json=args)
+        assert rejected.status_code == 409 and rejected.json()['detail']['code'] == 'PLAN_ALREADY_APPLIED'
+    draft = edit({'task_id': second, 'select': True})
+    assert draft['generation'] == args['generation'] + 1
+    assert draft['application']['state'] == 'ready'
+    assert draft['application']['receipt']['generation'] == args['generation']
+    args['generation'] = draft['generation']
     later = invoke('plan.apply', {**args, 'task_ids': [first, second]})
     assert [item['task_id'] for item in later['tasks']] == [second]
     assert [item['section'] for item in later['groups']] == ['新增']

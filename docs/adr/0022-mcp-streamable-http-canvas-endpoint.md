@@ -206,11 +206,11 @@ search 额外字段：
 
 Pi/Codex 的首次与恢复提交共用一份默认策略；三档 suffix 仅保留空兼容值，确认档位只由服务端执行。策略要求先一次性提问、真实计划/差异回执、保护人工内容、附件和参考图角色按 §13、按真实错误与现有两次预算恢复、pending 后结束当前响应而非 abort、一句结果加真实差异。Pi 的工具 allowlist 包含共享扩展命名空间；不开放内置文件、shell 或网络工具。
 
-#406 的本地桩只证明文本、真实提交边界、工具/确认管线和 TUI，不证明模型行为；#405 保持 OPEN，真实 B2 指标 NOT_RUN/null。plan.apply 超出同步窗口当前返回 PLAN_NOT_CONFIRMED，通用 resumable 尚未接通，作为独立缺口交 review 另开票；本票不承诺自动恢复，也不暗改此行为。
+#406 的本地桩只证明文本、真实提交边界、工具/确认管线和 TUI，不证明模型行为；#405 保持 OPEN，真实 B2 指标 NOT_RUN/null。原 Agent `plan.apply` 超出同步窗口仍返回 PLAN_NOT_CONFIRMED，通用 resumable 缺口归 #475；下文 #484 仅接通人工应用，不修复此缺口。
 
-## 修订（#482）：真实方案引用、人工预览编辑与原 Agent 应用
+## 修订（#482 / #484）：真实方案引用、人工预览编辑与统一人工应用
 
-此修订给 #411 提供后端接缝，不新增人工 apply、权限档位、持久方案或自动执行；旧 steps 卡、question/diff/get 和原 Agent scope 均保留。
+#484 取代 #482「卡片应用向原 Agent 发送真实用户输入」的约定：所有 hosted Pi/Codex、external MCP、REST 导入的预览统一返回 `apply_via:"human_apply"`，浏览器直接走人工应用接口。旧 steps 卡、question/diff/get、原 Agent 工具及精确 scope 保留；不增加权限档位、持久方案或自动执行。
 
 ### 引用不等于任务快照或执行权限
 
@@ -218,21 +218,50 @@ Pi/Codex 的首次与恢复提交共用一份默认策略；三档 suffix 仅保
 
 成功仍为 `{presentation:P}`，其中 `P.kind="plan"`、`P.state="presented"`、`P.data={source:"plan_preview",plan_id,generation}`；不把 tasks、warnings 等完整工作簿内容重复塞入既有 64 KiB 呈现预算。`source` 来自服务端，调用者不得提供。live、`/events`、`/events/page` 与持久 JSONL 共用原事件管线；顶层事件 generation 仍为宿主运行代次，`P.data.generation` 才是方案修订代次，两者不能互换。历史引用记录当时代次，不自动更新或恢复为活动执行对象。
 
-### 人工读写接口
+### 人工接口与完整预览
 
-- `GET /api/projects/{project_id}/plan/previews/{plan_id}?agent_node_id={agent_id}`：读取当前完整预览；可加唯一的正整数 `generation` 作陈旧检查。返回原 `{plan_id,generation,preview}`，包括 tasks（各自含 selected）、sections、warnings、excluded、suggested_refs 与 source。
-- `POST /api/projects/{project_id}/plan/previews/{plan_id}/edits?agent_node_id={agent_id}`：正文必须且只能为 `{generation:正整数,ops:[编辑对象]}`。每项必须有真实 task_id，并且只选 `select:boolean`、`rename:string`、`merge_into:task_id`、`set_section:string` 之一；不支持 split、set_refs 或新增动作。成功返回同一形状完整预览。
-- 两者均要求严格同源的 Origin 或 Referer，且 `X-Agent-Project` 必填并匹配路径项目；依赖现有 loopback/Host/项目守卫。来源由专用 HTTP handler 固定，不接收 caller/source/binding；未知字段、重复查询键以及 POST 查询中的 generation 均拒绝。服务端验证实际 Store、预览所属项目/节点和现存 Agent 节点；不创建或重绑宿主会话。
+- `GET /api/projects/{project_id}/plan/previews/{plan_id}?agent_node_id={actor}`：读取当前完整预览；可加唯一的正整数 `generation` 作陈旧检查。
+- `POST /api/projects/{project_id}/plan/previews/{plan_id}/edits?agent_node_id={actor}`：JSON 必须且只能为 `{generation:正整数,ops:[编辑对象]}`。每项必须有真实 task_id，并且只选 `select:boolean`、`rename:string`、`merge_into:task_id`、`set_section:string` 之一；不支持 split、set_refs 或新增动作。
+- `POST /api/projects/{project_id}/plan/previews/{plan_id}/apply?agent_node_id={actor}`：JSON 必须且只能为 `{"generation":正整数}`。actor 是导入预览的原 Agent 节点；只采用当前 selected，不接受 task_ids、layout、approved、turn_id 或来源/绑定字段。
+- 三者均要求严格同源的 Origin 或 Referer，且 `X-Agent-Project` 必填并匹配路径项目；依赖现有 loopback/Host/项目守卫。来源由专用 HTTP handler 固定，不接收 caller/source/binding/apply_via；未知字段、重复查询键以及 POST 查询中的 generation 均拒绝。正文 generation 不接受布尔值或浮点值。服务端验证实际 Store、预览所属项目/节点和现存 Agent 节点；不创建或重绑宿主会话。
 - 这是现有本地同源信任边界，**不是密码认证**；不承诺抵抗同源恶意代码或能伪造 HTTP 头的本机进程。
 
-### 原缓存、原 scope 与 CAS
+### 原 scope、CAS 与失效
 
-人工通道可以读写该 Store/project/actor 所属的有效预览，不要求浏览器冒充导入时的 MCP SID 或宿主；原 Agent 通道仍要求完整 scope 精确相等，没有新增 MCP human 模式。编辑复用原验证、深拷贝和缓存对象身份 CAS，POST 还必须带当前 generation；整批成功只加一，并发同代次只有一方成功。旧代次、错 scope、缺失/淘汰/过期预览为 `409 PLAN_STALE`；请求格式/参数非法为 `400 INVALID_ARGUMENT`，找不到任务沿用 `404 TASK_NOT_FOUND`。失败不部分回写，也不消耗 generation。
+人工读写有效预览只需该 Store/project/actor，不要求浏览器冒充导入时的 MCP SID 或宿主；原 Agent 通道仍要求完整 scope 精确相等，外部 MCP 必须保留原 SID，没有新增 MCP human 模式。编辑复用原验证、深拷贝和缓存对象身份 CAS，必须带当前 generation；整批成功只加一，并发同代次只有一方成功。旧代次、错 scope、缺失/淘汰/过期预览为 `409 PLAN_STALE`；请求格式/参数非法为 `400 INVALID_ARGUMENT`，找不到任务沿用 `404 TASK_NOT_FOUND`。编辑失败不部分回写或递增代次；成功编辑不改画布/媒体，不批准应用，旧 presentation 的引用代次也不随之回填。
 
-预览仍每 Store 最多 64 项、1800 秒，不因读写刷新 TTL；不落盘、不转移所有者，也不改画布/媒体或伪造确认、用户输入、已应用事件。人工编辑响应是当前预览权威状态；旧 presentation 的引用代次不随之回填。人工仍可查看原 Agent scope 已失效但尚未过期的预览，不代表新 Agent 可以使用旧绑定执行。
+人工仍可查看、编辑原 Agent scope 已失效但尚在 RAM 有效期内的预览，**应用不恢复失效 scope**。服务端从原 Preview 取得 binding，检查原会话、输入 epoch、host、branch、附件及摘要；会话失效/消失、原 epoch/host/branch 缺失或不再匹配、输入被 abort、节点身份改变、原附件缺失或摘要变化均为 `409 PLAN_STALE`，不唤起、重绑或复活会话。原会话可以不活跃但必须仍有效，不要求外部 Agent 正在运行。#411 必须将此失效显示为「方案已过期，请让 Agent 重新导入」；本票不实现卡片 UI。
 
-### #411「应用」不是浏览器直调旧 REST apply
+### 应用状态与原通道查询
 
-本票没有 `/previews/{plan_id}/apply`。卡片「应用」把真实用户输入（如「按当前勾选应用 plan_id/generation」）发给导入时的 Agent；Agent 用原通道取得最新 generation 后调用既有 `plan.apply`，继续走真实确认、输入/附件/画布复核和 CAS。省略 `task_ids` 才采用 selected；原显式 task_ids 合同不改。浏览器不能借已知 plan_id 穿透 MCP scope，外部 MCP 也不跨宿主自动开跑；排队或消息已发送不等于执行成功。
+人工 GET、edits、已完成的人工 apply，以及原通道幂等 `plan.import_excel` 均返回完整预览：`{plan_id,generation,agent_node_id,apply_via:"human_apply",preview,application}`。agent_node_id 来自服务端原 actor；preview 保留 tasks（各自含 selected）、sections、warnings、excluded、suggested_refs 与 source。application 为服务端状态：
 
-人工编辑不是应用批准：确认期间再次编辑使旧确认失效，拒绝或失效不写画布/媒体；成功应用仍使用原日志与 undo。后端离线/31xx HTTP 验证不证明真实模型、原生 SDK 或 #411 浏览器视觉验收，也不扩展通用超窗恢复。
+```typescript
+{
+  state: "ready" | "awaiting_confirmation" | "applied" | "unknown",
+  generation: number, // 当前方案代次
+  receipt: null | {
+    generation: number, // 真实已提交代次，不随编辑改写
+    applied_by: "human" | "agent",
+    result: {groups, tasks, already_applied, op_id, touched_node_ids} // 真实创建回执
+  },
+  confirm_id?: string, // 当前真实待确认 ID
+  error?: {code, message, hint, retryable, details?} // 最近一次实际应用错误
+}
+```
+
+ready 表示当前代次尚未提交且无待决应用；awaiting_confirmation 不是成功；applied 必须有当前代次提交证据；unknown 表示证据不足，须核对而非自动重试。只保留最近一次真实成功回执；编辑到新代次可以回到 ready，同时 receipt 保留实际上一已提交 generation，不能称新代次已应用。更早操作按既有 ops 合同查询。回执给出真实框、prompt_node/gen_node、已有项和操作 ID，不伪造生成 task_id 或「已生成」状态；空槽通过返回节点及画布读口查看，真实生成后才用既有 generate 查询。
+
+原 Agent 后续用同附件、摘要、sheet 和原 binding/scope 再次 `plan.import_excel`，读取同一 plan_id 的最新人工编辑与应用回执；正常同分支下一轮不因运行代次变化失去查询资格，新 SID/宿主/分支或已 abort 上下文不获此权限。该查询仍须原附件存在且有效。预览及回执仅 RAM，每 Store 最多 64 项、1800 秒，读、编辑、应用均不刷新 TTL；淘汰、过期或重启后不承诺恢复，也不承诺跨重启 exactly-once。已知 op_id 可按既有 ops 合同查询，不新增 `plan.get`、共享工具或 manifest 改动，不提供附件消失后的按 plan_id Agent 查询。
+
+### 人工执行、确认与代次消费（迁移 #399）
+
+人工应用直接复用准备变更、确切任务确认、输入/附件/画布复核、最终 CAS、operation journal 与 undo，不调用 `/prompt`，不向任何 Agent 注入输入或系统续接，不启动/恢复原生宿主。审计归属仍为原 Agent 节点与 `plan.apply`，人工来源由服务端记录，`turn_id=null`，不借旧 Agent 用户轮或制造新用户轮。只创建所选任务的非空提示词、input 边、空生图槽和板块框；不生图、不导入媒体、不连接产品图片，不覆盖幸存任务或扩张人工改过的框。原 Agent `plan.apply` 仍可用；省略 task_ids 才采用 selected，显式 task_ids 合同保留，但同受以下消费约束。
+
+仅人工应用接入 resumable，使用 `confirmation_transport(hosted=False)`，即使预览由 hosted 导入也不投递 Agent continuation。90 秒只是同步窗口；超窗返回真实 `CONFIRM_PENDING` / awaiting_confirmation 与 confirm_id，原执行继续等待人工决定，由 GET 查终态，不重发 POST 或 Agent apply 来回放，不把 pending 当成功。批准前不写画布/媒体；批准后仍复核原输入、附件、画布 revision、当时运行代次和确认归属，再执行最终 CAS。编辑、停止、节点/宿主/分支/输入 epoch/运行代次、画布或附件变化使旧确认失效；拒绝或已证明未提交的失败释放自身预留，不递增方案代次，也不能清理或覆盖新代次的状态。原 Agent 超窗缺口仍归 #475，不在本票扩展。
+
+**#484 显式取代 #399「同 generation 重复成功、再补另一批任务」的增量合同**：在 Store 锁内预留当前代次，任一来源（human 或 agent）的首次真实非空提交消费该 generation。当前代次已消费后，任一来源再 apply 均为 `409 PLAN_ALREADY_APPLIED`，details 含 plan_id/generation、真实来源和回执；待决竞争请求为 `409 CONFLICT`，不新增确认卡或第二次执行。追加任务须先编辑形成新 generation，再重新批准。undo 或人工删除节点不复活已消费代次；旧代次仍由 CAS 拒绝，最新 receipt 保留真实提交代次。人工零勾选为 `400 INVALID_ARGUMENT`；原 Agent 空操作保留；全部所选项已存在时仅返回真实 no_changes/已有项信息，均不消费代次、不伪造 applied 或无操作日志。
+
+消费只按既有 journal/persisted proof 与操作回执结算，批准、内存变化、start 广播或单独拿到 op_id 均不是提交证据。已证明落盘前失败不标 applied；已证明落盘后，即使 end 广播/HTTP 报错或 sidecar append_failed，仍消费代次并保留真实 receipt，同时如实保留错误与日志限制。公开的 `application.error` 保留真实错误 code/message，并将已证明提交的错误标为不可重试、提示勿重复提交；同项目后续 flush 不能抹去该错误。append_failed 的响应为错误而非无警告的成功，details 中说明日志状态与撤销不可用；与流错误同时发生时两个线索都保留。无法判定有无提交则为 unknown，不解锁自动重做。撤销仍走真实 `ops.undo`；append_failed 可能意味着撤销不可用，不能声称所有报错都可逆。
+
+这些是后端接缝，不等于真实模型、原生 SDK 或 #411 浏览器视觉验收；本地同源信任也不扩成 OS 沙盒。

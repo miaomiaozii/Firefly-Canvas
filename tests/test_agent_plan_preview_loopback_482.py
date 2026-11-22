@@ -93,13 +93,21 @@ def test_plan_reference_and_human_cas_use_real_loopback_http(env, request):
                     assert len(plans) == 1 and plans[0]['presentation'] == presentation
                     replay.append(plans)
                 assert replay[0] == replay[1]
-                no_apply = await http.post(path + '/apply', params=params, headers=headers, json={'generation': 2})
-                assert no_apply.status_code == 404, no_apply.text
+                invalid_apply = await http.post(path + '/apply', params=params, headers=headers,
+                                                json={'generation': 2, 'approved': True})
+                assert invalid_apply.status_code == 400, invalid_apply.text
+                assert invalid_apply.json()['detail']['code'] == 'INVALID_ARGUMENT'
+                stale_apply = await http.post(path + '/apply', params=params, headers=headers, json={'generation': 1})
+                assert stale_apply.status_code == 409, stale_apply.text
+                assert stale_apply.json()['detail']['code'] == 'PLAN_STALE'
+                assert latest['apply_via'] == 'human_apply' and latest['agent_node_id'] == 'actor'
+                assert latest['application'] == {'state': 'ready', 'generation': 2, 'receipt': None}
                 assert store.canvas(project) == before and store.list_media(project) == []
                 request.node.user_properties.append(('receipt', json.dumps({
                     'origin': origin, 'plan_id': draft['plan_id'], 'generation': 2, 'presentation_id': presentation['id'],
                     'same_origin_denial': denied.status_code, 'stale_cas': stale.status_code,
-                    'human_apply_absent': no_apply.status_code, 'event_seq': replay[0][0]['seq']})))
+                    'human_apply_validation': invalid_apply.status_code,
+                    'human_apply_stale': stale_apply.status_code, 'event_seq': replay[0][0]['seq']})))
         finally:
             server.should_exit = True
             try:

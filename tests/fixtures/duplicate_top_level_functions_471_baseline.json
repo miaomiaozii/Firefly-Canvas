@@ -4534,7 +4534,7 @@
         {
           "module": "app/services/agent_plan.py",
           "ordinal": 1,
-          "ast_sha256": "3d2f0c91f60b67aca80d5ef59252020797ffff652f40808c58795e7f94411f0d"
+          "ast_sha256": "035a0750bc8e37e2a310a9e8b085157bc7faba640b557c59aba6371ce1ee061c"
         }
       ]
     },
@@ -4609,7 +4609,7 @@
         {
           "module": "app/services/agent_confirmation.py",
           "ordinal": 1,
-          "ast_sha256": "f1fa54df4214517b2ca7486665d503256afc3b3f08f6c4103d17483a96671c75"
+          "ast_sha256": "72d2ce3795915d7ef2b8f93480e878a41e9cb77626ff63c1401805a80d762b7e"
         },
         {
           "module": "tests/tabbit_e2e_evidence.py",
@@ -5845,7 +5845,7 @@
         {
           "module": "app/services/agent_plan.py",
           "ordinal": 1,
-          "ast_sha256": "8df9815d2c27f443f001d8d1a2490c39180ba484844643981c9c611b6309af36"
+          "ast_sha256": "7425c4534244a063161706d3bdf01356ba37059e91008e3578d18b7a6d4685ed"
         }
       ]
     },

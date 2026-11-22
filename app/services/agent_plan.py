@@ -1,7 +1,7 @@
 """Session-scoped workbook previews and verified conversation references (#399)."""
 from collections import Counter, OrderedDict
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from hashlib import sha256
 import os
 from pathlib import Path
@@ -18,7 +18,7 @@ from fastapi import HTTPException
 
 from app.constants import NODE_TYPE_AGENT, NODE_TYPE_GROUP, NODE_TYPE_IMAGE
 from app.services.agent_attachments import AGENT_ATTACHMENT_MAX_BYTES, attachment_root, resolve_attachments
-from app.services.agent_errors import agent_error
+from app.services.agent_errors import agent_error, translate_detail
 from app.services.agent_node_state import ownership_fields
 from app.services.agent_refs import invalid, require_object
 from app.services.excel_plan_mutation import build_mutations
@@ -41,7 +41,12 @@ def file_not_allowed():
 
 def stale():
     return agent_error(409, "PLAN_STALE", "方案预览、画布、原附件或参考图已变化；未应用任何任务。",
-                       "请检查最新预览和参考图，再请求确认。")
+                       "方案已过期，请让 Agent 重新导入")
+
+
+def human_stale():
+    return agent_error(409, "PLAN_STALE", "方案已过期，请让 Agent 重新导入",
+                       "方案已过期，请让 Agent 重新导入", retryable=False)
 
 
 def ref_not_allowed():
@@ -159,6 +164,16 @@ def _key(*parts):
     return sha256(repr(parts).encode("utf-8")).hexdigest()[:32]
 
 
+@dataclass
+class Application:
+    state: str = "ready"
+    receipt: dict | None = None
+    reservation: object | None = None
+    confirm_id: str | None = None
+    cancel_event: object | None = None
+    error: dict | None = None
+
+
 @dataclass(frozen=True)
 class Preview:
     plan_id: str
@@ -170,9 +185,19 @@ class Preview:
     generation: int
     expires: float
     data: dict
+    application: Application = field(default_factory=Application, compare=False)
+    session: object | None = field(default=None, repr=False, compare=False)
 
     def response(self, records):
-        return {"plan_id": self.plan_id, "generation": self.generation, "preview": {
+        with _LOCK:
+            application = {"state": self.application.state, "generation": self.generation,
+                           "receipt": deepcopy(self.application.receipt)}
+            if self.application.state == "awaiting_confirmation" and self.application.confirm_id:
+                application["confirm_id"] = self.application.confirm_id
+            if self.application.error is not None:
+                application["error"] = deepcopy(self.application.error)
+        return {"plan_id": self.plan_id, "generation": self.generation,
+                "agent_node_id": self.scope[1], "apply_via": "human_apply", "application": application, "preview": {
             **deepcopy(self.data), "sections": dict(Counter(task["section"] for task in self.data["tasks"])),
             "suggested_refs": [], "source": {"attachment_id": self.attachment_id, "name": self.name,
                                                       "sheet": self.sheet, "sha256": self.digest},
@@ -193,7 +218,7 @@ def parse_workbook(content, sheet):
     return data
 
 
-def remember(store, scope, record, digest, sheet, data):
+def remember(store, scope, record, digest, sheet, data, *, session=None):
     with _LOCK:
         pending = _CACHE.setdefault(store, OrderedDict())
         now = monotonic()
@@ -211,7 +236,7 @@ def remember(store, scope, record, digest, sheet, data):
             ordinals[row] += 1
             task["task_id"] = "task-" + _key(digest, row, ordinals[row])
         _link_main(data["tasks"])
-        preview = Preview(key, scope, record["id"], digest, sheet, record["name"], 1, now + _TTL, data)
+        preview = Preview(key, scope, record["id"], digest, sheet, record["name"], 1, now + _TTL, data, session=session)
         pending[key] = preview
         return preview
 
@@ -289,12 +314,79 @@ def edit(store, project, actor, preview, ops, records):
         numbers[task["section"]] += 1
         task["display_no"] = build_display_no(task["section"], numbers[task["section"]])
     _link_main(tasks)
-    edited = replace(preview, generation=preview.generation + 1, data=data)
     with _LOCK:
         if _CACHE.get(store, {}).get(preview.plan_id) is not preview or preview.expires <= monotonic():
             raise stale()
+        edited = replace(preview, generation=preview.generation + 1, data=data,
+                         application=Application(receipt=deepcopy(preview.application.receipt)))
+        if preview.application.cancel_event is not None:
+            preview.application.cancel_event.set()
         _CACHE[store][preview.plan_id] = edited
     return edited
+
+
+def _apply_ready(store, preview):
+    if _CACHE.get(store, {}).get(preview.plan_id) is not preview or preview.expires <= monotonic():
+        raise stale()
+    application = preview.application
+    details = {"plan_id": preview.plan_id, "generation": preview.generation,
+               "state": application.state, "receipt": deepcopy(application.receipt)}
+    if application.state == "applied":
+        details.update(applied_by=application.receipt["applied_by"],
+                       op_id=application.receipt["result"]["op_id"])
+        raise agent_error(409, "PLAN_ALREADY_APPLIED", "此方案代次已经应用，不能重复执行。",
+                          "请先编辑方案产生新代次，再重新确认。", retryable=False, details=details)
+    if application.state != "ready":
+        if application.confirm_id:
+            details["confirm_id"] = application.confirm_id
+        raise agent_error(409, "CONFLICT", "方案正在等待确认或提交结果尚不确定。",
+                          "请查询方案状态和操作日志，不要重复应用。", retryable=False, details=details)
+
+
+def check_apply_ready(store, preview):
+    with _LOCK:
+        _apply_ready(store, preview)
+
+
+def reserve_apply(store, preview, confirm_id, cancel_event):
+    with _LOCK:
+        _apply_ready(store, preview)
+        reservation = object()
+        application = preview.application
+        application.state = "awaiting_confirmation"
+        application.reservation = reservation
+        application.confirm_id = confirm_id
+        application.cancel_event = cancel_event
+        application.error = None
+        return reservation
+
+
+def finish_confirmation(store, preview, reservation):
+    with _LOCK:
+        if (_CACHE.get(store, {}).get(preview.plan_id) is preview
+                and preview.application.reservation is reservation):
+            preview.application.confirm_id = None
+
+
+def finish_apply(store, preview, reservation, *, state, applied_by, result=None, error=None):
+    with _LOCK:
+        current = _CACHE.get(store, {}).get(preview.plan_id)
+        if current is None or current.scope != preview.scope:
+            return
+        application = current.application
+        if result is not None:
+            receipt = {"generation": preview.generation, "applied_by": applied_by, "result": deepcopy(result)}
+            if application.receipt is None or application.receipt["generation"] <= preview.generation:
+                application.receipt = receipt
+        # A late stream failure may retain an older receipt, never reset an edited generation.
+        if current is preview and application.reservation is reservation:
+            application.state = state
+            application.confirm_id = None
+            application.cancel_event = None
+            application.error = (translate_detail(getattr(error, "status_code", 500),
+                                                  getattr(error, "detail", str(error))) if error is not None else None)
+            if state == "ready":
+                application.reservation = None
 
 
 def selected(preview, args):

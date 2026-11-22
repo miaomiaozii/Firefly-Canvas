@@ -50,6 +50,7 @@ AGENT_ERROR_CODES = (
     "NOT_XLSX",
     "NO_PLAN_SHEET",
     "PLAN_STALE",
+    "PLAN_ALREADY_APPLIED",
     "PLAN_NOT_CONFIRMED",
     "REF_NOT_ALLOWED",
     # A10 generation batches

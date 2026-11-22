@@ -10,6 +10,8 @@ import json
 import logging
 from uuid import uuid4
 
+from fastapi import HTTPException
+
 from app.constants import NODE_TYPE_AGENT
 from app.services.agent_errors import agent_error, translate_detail
 from app.services.agent_ops_context import current_agent_ops_context
@@ -231,7 +233,8 @@ def target_node_ids(params, *, prepared=None, tool=None):
 
 
 async def request(project, actor, tool, params, message, timeout, *, allow_automatic=True,
-                  transient_session=None, cancel_event=None, confirm_id=None, prepared_target_node_ids=None):
+                  transient_session=None, cancel_event=None, confirm_id=None, prepared_target_node_ids=None,
+                  waiting_guard=None):
     from app.services.agent_host import agent_host_manager as host, SAFETY_FLOOR_TOOLS
     store = _api()._app_main.FIREFLY_PROJECT_STORE
     canvas = store.canvas(project)
@@ -274,9 +277,20 @@ async def request(project, actor, tool, params, message, timeout, *, allow_autom
             except Exception:
                 pass
 
+    def invalidated():
+        if cancel_event and cancel_event.is_set():
+            return True
+        # Opt-in guards reuse this waiter; stale human previews need no second task or user response.
+        if waiting_guard is not None:
+            try:
+                waiting_guard()
+            except HTTPException:
+                return True
+        return False
+
     async def response(cid, approved):
         if cid == confirm_id and type(approved) is bool and not decision.done():
-            valid = origin.valid() and not (cancel_event and cancel_event.is_set())
+            valid = origin.valid() and not invalidated()
             decision.set_result({'approved': approved and valid,
                                  'reason': ('rejected' if not approved else None) if valid else 'session_ended'})
 
@@ -287,7 +301,7 @@ async def request(project, actor, tool, params, message, timeout, *, allow_autom
             await publish({'type': 'confirm', 'confirm_id': confirm_id, 'tool': tool,
                            'params': deepcopy(params), 'message': message, **metadata})
             while not decision.done():
-                if not origin.valid() or (cancel_event and cancel_event.is_set()):
+                if not origin.valid() or invalidated():
                     decision.set_result({'approved': False, 'reason': 'stopped' if cancel_event and cancel_event.is_set() else 'session_ended'})
                     break
                 await asyncio.wait((decision,), timeout=.1)
