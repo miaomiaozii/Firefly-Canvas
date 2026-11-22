@@ -3138,7 +3138,8 @@ function agentRenderPresentation(nodeId) {
 async function agentReadPlanResponse(response, planId, allowPending = false) {
     const body = await response.json();
     if (!response.ok) throw Object.assign(new Error(agentNodeRefsError(body, `HTTP ${response.status}`)), {
-        planStale: response.status === 409 && body?.detail?.code === 'PLAN_STALE', detail: body?.detail,
+        planStale: response.status === 409 && body?.detail?.code === 'PLAN_STALE',
+        planAlreadyApplied: response.status === 409 && body?.detail?.code === 'PLAN_ALREADY_APPLIED', detail: body?.detail,
     });
     if (allowPending && body?.code === 'CONFIRM_PENDING' && body.status === 'awaiting_confirmation'
         && typeof body.confirm_id === 'string' && body.confirm_id.length > 0) return body;
@@ -3251,10 +3252,22 @@ async function agentPlanAction(nodeId, projectId, state, epoch, message, action,
             try {
                 const fresh = await read();
                 if (await resume()) { adopt(fresh, true); view.drafts.clear(); }
-            } catch (readError) { if (await resume()) view.error += ` · ${String(readError.message || readError)}`; }
+            } catch (readError) {
+                if (await resume()) {
+                    if (readError.planStale) { view.expired = true; view.notice = tr('smart.agentPlanExpired'); }
+                    view.error += ` · ${String(readError.message || readError)}`;
+                }
+            }
         } else if (postStarted) {
-            view.application = { ...view.application, state: 'unknown' };
-            view.applyError = error.detail?.code === 'PLAN_ALREADY_APPLIED' ? null : error.detail || { message: String(error.message || error) };
+            const details = error.planAlreadyApplied ? error.detail?.details : null;
+            const proof = details?.receipt;
+            const committed = details?.plan_id === planId && details.generation === generation && details.state === 'applied'
+                && details.op_id === proof?.result?.op_id && details.applied_by === proof?.applied_by
+                && agentPlanValidApplication({ state: 'applied', generation, receipt: proof }, generation);
+            // A matching 409 retains commit evidence, never authority over a possibly newer preview (#484).
+            view.application = { ...view.application, state: 'unknown', ...(committed ? { receipt: proof } : {}) };
+            view.authoritative = false;
+            view.applyError = error.planAlreadyApplied ? null : error.detail || { message: String(error.message || error) };
             // HTTP failure is not proof of rollback. Only GET reconciles the reserved generation (#484).
             try {
                 const canonical = await read();

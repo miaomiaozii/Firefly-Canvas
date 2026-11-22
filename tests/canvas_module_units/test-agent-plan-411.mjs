@@ -122,6 +122,19 @@ test('409 conflict reads latest without generation, never replays old ops, and e
     assert.match(h.html(), /1 \/ 2/); assert.equal(h.calls.length, 3);
 });
 
+test('an expired conflict refresh is terminal and never retries the unsaved edit', async () => {
+    const h = setup(); await loaded(h);
+    bind(h, 'data-agent-plan-select', 'a', { 'data-agent-plan-owner': reference.id, checked: true }).change();
+    reply(h.calls[1], { detail: { code: 'PLAN_STALE', message: 'generation changed' } }, 409); await flush();
+    reply(h.calls[2], { detail: { code: 'PLAN_STALE', message: 'cached preview expired' } }, 409); await flush();
+    assert.equal(h.calls.length, 3); assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 1);
+    assert.equal(h.html().match(/方案已过期，请让 Agent 重新导入/g)?.length, 1);
+    assert.doesNotMatch(h.html(), /data-agent-plan-(?:apply|select|save)=/);
+    bind(h, 'data-agent-plan-refresh', reference.id).click(); reply(h.calls[3], preview(2)); await flush();
+    bind(h, 'data-agent-plan-apply', reference.id).click(); assert.equal(h.calls.length, 4);
+    assert.match(h.html(), /方案已过期，请让 Agent 重新导入/); assertManualOnly(h);
+});
+
 test('network and malformed save receipts are visible, do not advance authority or show successful edits', async () => {
     for (const malformed of [false, true]) {
         const h = setup(); await loaded(h);
@@ -306,6 +319,45 @@ test('409 already-applied reads canonical real receipt once, and old receipt nev
         assert.match(h.html(), edited ? /当前版本尚未应用/ : /方案已应用/);
         if (edited) assert.doesNotMatch(h.html(), /方案已应用/);
         assert.equal(h.message.presentation.data.generation, 1); assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 1);
+    }
+});
+
+test('a matching already-applied proof survives failed reconciliation without granting current authority', async () => {
+    for (const expired of [false, true]) {
+        const h = setup(); await loaded(h); await posted(h); const receipt = applied().application.receipt;
+        reply(h.calls[2], { detail: { code: 'PLAN_ALREADY_APPLIED', message: 'already', details: {
+            plan_id: 'plan/411', generation: 1, state: 'applied', applied_by: 'human', op_id: receipt.result.op_id, receipt,
+        } } }, 409); await flush();
+        if (expired) reply(h.calls[3], { detail: { code: 'PLAN_STALE', message: 'expired after commit' } }, 409);
+        else h.calls[3].reject(new Error('canonical read unavailable'));
+        await flush(); const view = h.ctx.agentPlanView(h.state, h.message);
+        assert.match(h.html(), /实际应用回执 · 版本 1/); assert.match(h.html(), /real-op\/411/);
+        assert.equal(view.application.state, 'unknown'); assert.equal(view.authoritative, false);
+        assert.doesNotMatch(h.html(), /data-agent-plan-(?:apply|select|save)=/);
+        assert.doesNotMatch(h.html(), />方案已应用[。<]/);
+        bind(h, 'data-agent-plan-apply', reference.id).click(); assert.equal(h.calls.length, 4);
+        assert.equal(h.calls.filter(c => c.options.method === 'POST').length, 1); assertManualOnly(h);
+    }
+});
+
+test('already-applied fallback rejects wrong status, scope, generation and malformed commit proof', async () => {
+    for (const invalid of ['status', 'plan', 'generation', 'state', 'op', 'actor-kind', 'receipt-generation', 'result', 'missing-identity']) {
+        const h = setup(); await loaded(h); await posted(h); const receipt = applied().application.receipt;
+        const details = { plan_id: 'plan/411', generation: 1, state: 'applied', applied_by: 'human', op_id: receipt.result.op_id, receipt };
+        if (invalid === 'plan') details.plan_id = 'another-plan';
+        if (invalid === 'generation') details.generation = 2;
+        if (invalid === 'state') details.state = 'ready';
+        if (invalid === 'op') details.op_id = 'another-op';
+        if (invalid === 'actor-kind') details.applied_by = 'another-kind';
+        if (invalid === 'receipt-generation') receipt.generation = 2;
+        if (invalid === 'result') receipt.result.touched_node_ids = null;
+        if (invalid === 'missing-identity') delete details.plan_id;
+        reply(h.calls[2], { detail: { code: 'PLAN_ALREADY_APPLIED', message: 'invalid proof', details } }, invalid === 'status' ? 500 : 409); await flush();
+        h.calls[3].reject(new Error('canonical unavailable')); await flush();
+        const view = h.ctx.agentPlanView(h.state, h.message);
+        assert.equal(view.application.receipt, null, invalid);
+        assert.doesNotMatch(h.html(), /<summary>实际应用回执/, invalid);
+        bind(h, 'data-agent-plan-apply', reference.id).click(); assert.equal(h.calls.length, 4, invalid);
     }
 });
 
