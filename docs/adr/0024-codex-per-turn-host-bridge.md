@@ -58,7 +58,8 @@ resume 在开始轮前明确拒绝当前 thread（无 stdout、正常等到非�
 ## 4. 沙盒与审批策略
 
 - 宿主进程一律 `-s read-only`（默认档）：codex 可写盘即绕过画布治理；一切写操作必须经 MCP 端点（三级仲裁 + 确认闸兜底）。
-- 审批制实测项在票 B 编码期钉死（结论入 IMPL-NOTES，不改本 ADR 结构）：read-only 下 shell 写命令的 approval 行为、workspace-write+scratch cwd 放宽档的边界。默认不放宽。
+- 原生终端默认关闭（#464）：首轮和显式 ID 续轮均附加 `-c features.shell_tool=false`，值为 TOML boolean。`read-only` 只限制文件写入，不会移除终端工具；显式 false 覆盖普通 home 的开启配置，并阻断 `unified_exec` 与 one-shot `exec_command` 的共同注册入口。依据和边界见 [终端默认关闭](../design/agent-terminal-default-off-464.md)。
+- 本切片不增加开启开关、审批桥或权限档位；不执行 ACL/UAC/Windows sandbox 配置，不修改用户 home。是否开放及 OS 边界须在 #478 工具覆盖调查后由用户另行裁定。
 
 ## 后果
 

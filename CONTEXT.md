@@ -221,9 +221,15 @@ _Avoid_: 独立音频项目、音频工作站
 
 - 受限文件工具绑定已验证的 Pi SDK **1.5.1**；缺少服务端工作区根或 SDK 不兼容时不注册文件工具，不回退为裸内置工具。升级 SDK 须重新验证原生工厂、路径及媒体行为。
 - Pi 的进程工作目录及原生 `read` / `write` / `edit` 工具根固定为当前节点的 `agent_nodes/{node_id}/sessions`，由服务端绑定；模型参数、提示词或后续 cwd 变化不扩展该根。目录外文件工具访问拒绝，不能读写其他节点、项目或外部目录。
-- 模型文件工具不得写入 `system-prompt.txt` 或 sessions 根层的原生会话 `.jsonl`；宿主仍可维护这些控制文件。目录内普通工作文件可读写和精确编辑，不新增文件审批卡、不接入 `ops.undo`；既有画布/MCP 确认闸不变。Pi 不开放 bash、PowerShell 或 codemode，#464 终端方案不在本合同实施范围。
+- 模型文件工具不得写入 `system-prompt.txt` 或 sessions 根层的原生会话 `.jsonl`；宿主仍可维护这些控制文件。目录内普通工作文件可读写和精确编辑，不新增文件审批卡、不接入 `ops.undo`；既有画布/MCP 确认闸不变。Pi 不开放 bash、PowerShell 或 codemode；终端默认关闭的独立约束见下节。
 - 此边界是原生文件工具底层 I/O 的路径守卫，针对恶意路径和稳定链接，**不是整个 Pi 进程的操作系统沙盒**，不能防止其他进程并发替换重解析点（reparse points）；不承诺对抗此类并发 OS 行为者的硬隔离。
 - Codex 继续使用 `read-only`，不开放工作目录写入，不改为 `workspace-write`（ADR 0024 / #423）；不能由 Pi 的目录内能力推断 Codex 可写或外部读取已隔离。全局设置只作双语静态说明，不提供文件权限档位、开关或授权控件。#423 旧调查及已取代草案保留于 [外部目录访问记录](docs/design/agent-external-access-423.md)，不是 #445 的运行验收证据。
+
+### 原生终端默认关闭（#464）
+
+- Codex 首轮及显式 ID 续轮都提交 `-c features.shell_tool=false`（TOML boolean），继续使用 `-s read-only`；不依赖提示词或写沙盒移除原生终端。该 feature 在 `unified_exec` / one-shot `exec_command` 的共同注册入口前关闭，普通 home 配置不能重新开启。
+- Pi 继续以 `--no-extensions`、显式画布扩展、`--no-builtin-tools` 和业务命名空间/受限 `read,write,edit` allowlist 启动，不提供 bash、PowerShell 或 codemode。Pi 目录内文件能力不因此变为只读。
+- 不增加开启 UI、授权、审批桥或权限档位，不配置 ACL/UAC 或 Windows sandbox；是否开放须在 #478 覆盖调查后另行裁定。工具注册/选择约束不是整个进程的 OS 沙盒；原生配置和独立工具入口的准确边界见 [ADR 0024](docs/adr/0024-codex-per-turn-host-bridge.md) 及 [默认关闭依据](docs/design/agent-terminal-default-off-464.md)。
 
 ### 自治确认合同（#402）
 

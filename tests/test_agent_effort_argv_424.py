@@ -48,6 +48,7 @@ def _pi_prefix(session_dir):
 def _codex_prefix():
     return [
         CODEX_CLI, "exec", "-s", "read-only",
+        "-c", "features.shell_tool=false",
         "-c", 'developer_instructions="SYS PROMPT TEXT"',
         "-c", 'mcp_servers.firefly.url="' + MCP_URL + '"',
         "-c", 'mcp_servers.firefly.default_tools_approval_mode="approve"',
@@ -244,6 +245,7 @@ class CodexEffortArgvTests(ArgvFixture):
             system_prompt="", mcp_url=None, reasoning_effort="high"))
         self.assertEqual(argv, [
             CODEX_CLI, "exec", "-s", "read-only",
+            "-c", "features.shell_tool=false",
             "-c", 'developer_instructions="' + CANVAS_INSTRUCTIONS + '"',
             "-c", 'model_reasoning_effort="high"',
         ] + self.tail(False))

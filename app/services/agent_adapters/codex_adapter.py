@@ -84,21 +84,17 @@ class CodexAdapter(HostAdapter):
     cli = "codex"
 
     def build_argv(self, params: SpawnParams) -> Optional[List[str]]:
-        """首轮 argv。resume 场景由 agent_host 调 build_resume_argv。"""
-        import shutil
-
+        """首轮与续轮共用显式关闭终端的宿主参数。"""
         cli = shutil.which(self.cli)
         if not cli:
             return None
 
         cmd: List[str] = [cli, "exec"]
-        # 审批实测：exec 非交互模式 approval 不浮现，沙盒即边界（P2 实测 read-only 拦截、
-        # P3 workspace-write 放行）——默认最严档；画布写全部走 MCP。
-        cmd += ["-s", "read-only"]
-        # 系统提示主方案（监理实测 developer_instructions 生效）
+        # read-only 只限制写盘，不移除终端；显式 false 覆盖普通 home 的开启配置（#464）。
+        cmd += ["-s", "read-only", "-c", "features.shell_tool=false"]
         instr = params.system_prompt or CANVAS_INSTRUCTIONS
         cmd += ["-c", "developer_instructions=" + _toml_value(instr)]
-        # MCP 注入主方案（外层 -c 元素内含 内层双引号；list-form Popen 无 shell 引号问题）
+        # TOML 值必须单独编码；参数数组不经 shell 解释。
         if params.mcp_url:
             cmd += ["-c", "mcp_servers.firefly.url=" + _toml_value(params.mcp_url)]
             # 实测坑（0.162）：MCP 工具默认要审批，exec 的 approval_policy=never 会
