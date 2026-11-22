@@ -231,6 +231,11 @@ _Avoid_: 独立音频项目、音频工作站
 - Pi 继续以 `--no-extensions`、显式画布扩展、`--no-builtin-tools` 和业务命名空间/受限 `read,write,edit` allowlist 启动，不提供 bash、PowerShell 或 codemode。Pi 目录内文件能力不因此变为只读。
 - 不增加开启 UI、授权、审批桥或权限档位，不配置 ACL/UAC 或 Windows sandbox；是否开放须在 #478 覆盖调查后另行裁定。工具注册/选择约束不是整个进程的 OS 沙盒；原生配置和独立工具入口的准确边界见 [ADR 0024](docs/adr/0024-codex-per-turn-host-bridge.md) 及 [默认关闭依据](docs/design/agent-terminal-default-off-464.md)。
 
+### 浏览器功能与 Agent 工具覆盖调查（#478）
+
+- [覆盖对照](docs/design/agent-tool-coverage.md) 按浏览器动作、既有路由/前端本地能力与共享工具的真实参数区分已覆盖、部分覆盖、未覆盖及有来源依据的有意不给，列出后端复用成本及撤销/确认/归属接线缺口。
+- 该表仅供用户选择后续工具范围；不实施新工具、不创设禁令或授权，不把静态清单、服务端发送回执或未接线界面当作运行验收。
+
 ### 自治确认合同（#402）
 
 - 缺省 `autonomy` 为 `standard`（每批确认）；既有显式 `cautious`（每次花钱调用确认）不迁移。`autonomous` 自动执行花钱调用；`standard` 批次批准后不逐项重复确认。
