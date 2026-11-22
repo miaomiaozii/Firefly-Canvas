@@ -179,6 +179,7 @@ search 额外字段：
 
 ```typescript
 { action: "show", kind: "plan", title: string, steps: {id: string, text: string}[] }
+{ action: "show", kind: "plan", title: string, plan_id: string, generation: number } // #482，正整数；与 steps 互斥
 { action: "show", kind: "question", title: string, questions:
   {id: string, text: string, options: {id: string, text: string}[], recommended: string}[] }
 { action: "show", kind: "diff", title: string, op_id: string } // 与 diff_id 二选一
@@ -187,7 +188,7 @@ search 额外字段：
 ```
 
 - show/get 成功均返回 `{presentation: P}`。P 精确为 `{schema: 1, id: string, kind: "plan"|"question"|"diff", title: string, state: "presented"|"pending"|"answered"|"expired", data: object, answers?: Record<string,string>}`。ID 由服务端生成；plan/diff 为 presented，question 初始 pending，答题后 answered，失效后 expired；answers 仅为实际人工选择的题 ID → 选项 ID。
-- plan 的 data 是 `{steps}`，仅是提案，不改执行 todo。question 的 data 是 `{questions}`；推荐值必须存在于该题选项，题 ID/题内选项 ID 必须唯一，多题同卡。C1 仅显示选项/推荐与“按推荐开始”，不做 #411 的编辑、勾选等完整交互。
+- 旧 steps 形态 plan 的 data 是 `{steps}`，仅是提案，不改执行 todo；#482 的真实预览引用形态见下文。question 的 data 是 `{questions}`；推荐值必须存在于该题选项，题 ID/题内选项 ID 必须唯一，多题同卡。C1 仅显示选项/推荐与“按推荐开始”，不做 #411 的编辑、勾选等完整交互。
 - diff 的 data 从本调用者有权读取的真实引用解析，不接受助手自述“已应用”：operation 为 `{source:"operation", op_id, turn_id, tool, before, after, undone}`，preview 为 `{source:"preview", diff_id, items, applied:false}`。读取 preview 不消费原确认/CAS 对象；没有真实操作或预览回执不能伪造差异卡。
 - live 事件为 `{type: P.kind, presentation: P, turn_id, host, generation, seq, ...既有事件元数据}`，同一 payload 进入已有 /events、/events/page 和 JSONL；项目、节点、host/generation、原 turn 和 seq 均来自服务端，不猜原生协议、不回填旧轮次。展示、人工决策和投递失败更新沿用同一 presentation ID，TUI 原位更新，历史回放只读。普通助手正文不解析成这些事件。
 - 宿主投递失败时，question 事件可另带顶层 `delivery_error`（标准 Agent 错误对象），并保存/回放；它不是 P 内的答案字段。“answered”只证明人工选择已记录，不证明原生宿主已收到、执行或确认。UI 必须显示真实投递错误；真实 HTTP 拒绝也不能被已记录的答案遮掉。
@@ -206,3 +207,32 @@ search 额外字段：
 Pi/Codex 的首次与恢复提交共用一份默认策略；三档 suffix 仅保留空兼容值，确认档位只由服务端执行。策略要求先一次性提问、真实计划/差异回执、保护人工内容、附件和参考图角色按 §13、按真实错误与现有两次预算恢复、pending 后结束当前响应而非 abort、一句结果加真实差异。Pi 的工具 allowlist 包含共享扩展命名空间；不开放内置文件、shell 或网络工具。
 
 #406 的本地桩只证明文本、真实提交边界、工具/确认管线和 TUI，不证明模型行为；#405 保持 OPEN，真实 B2 指标 NOT_RUN/null。plan.apply 超出同步窗口当前返回 PLAN_NOT_CONFIRMED，通用 resumable 尚未接通，作为独立缺口交 review 另开票；本票不承诺自动恢复，也不暗改此行为。
+
+## 修订（#482）：真实方案引用、人工预览编辑与原 Agent 应用
+
+此修订给 #411 提供后端接缝，不新增人工 apply、权限档位、持久方案或自动执行；旧 steps 卡、question/diff/get 和原 Agent scope 均保留。
+
+### 引用不等于任务快照或执行权限
+
+`agent.present` 新增与 steps 互斥的 `{action:"show",kind:"plan",title,plan_id,generation}`。`generation` 必须为正整数；缺失、布尔值、浮点值或未知字段为 `400 INVALID_ARGUMENT`。服务端在原调用者的精确方案 scope 中解析真实预览，REST、hosted MCP 和 external MCP 的 binding 由各适配器传入，不从参数推断。换项目、节点、MCP 会话、宿主/输入分支/epoch 或方案 generation 后不能借呈现穿透原 scope。
+
+成功仍为 `{presentation:P}`，其中 `P.kind="plan"`、`P.state="presented"`、`P.data={source:"plan_preview",plan_id,generation}`；不把 tasks、warnings 等完整工作簿内容重复塞入既有 64 KiB 呈现预算。`source` 来自服务端，调用者不得提供。live、`/events`、`/events/page` 与持久 JSONL 共用原事件管线；顶层事件 generation 仍为宿主运行代次，`P.data.generation` 才是方案修订代次，两者不能互换。历史引用记录当时代次，不自动更新或恢复为活动执行对象。
+
+### 人工读写接口
+
+- `GET /api/projects/{project_id}/plan/previews/{plan_id}?agent_node_id={agent_id}`：读取当前完整预览；可加唯一的正整数 `generation` 作陈旧检查。返回原 `{plan_id,generation,preview}`，包括 tasks（各自含 selected）、sections、warnings、excluded、suggested_refs 与 source。
+- `POST /api/projects/{project_id}/plan/previews/{plan_id}/edits?agent_node_id={agent_id}`：正文必须且只能为 `{generation:正整数,ops:[编辑对象]}`。每项必须有真实 task_id，并且只选 `select:boolean`、`rename:string`、`merge_into:task_id`、`set_section:string` 之一；不支持 split、set_refs 或新增动作。成功返回同一形状完整预览。
+- 两者均要求严格同源的 Origin 或 Referer，且 `X-Agent-Project` 必填并匹配路径项目；依赖现有 loopback/Host/项目守卫。来源由专用 HTTP handler 固定，不接收 caller/source/binding；未知字段、重复查询键以及 POST 查询中的 generation 均拒绝。服务端验证实际 Store、预览所属项目/节点和现存 Agent 节点；不创建或重绑宿主会话。
+- 这是现有本地同源信任边界，**不是密码认证**；不承诺抵抗同源恶意代码或能伪造 HTTP 头的本机进程。
+
+### 原缓存、原 scope 与 CAS
+
+人工通道可以读写该 Store/project/actor 所属的有效预览，不要求浏览器冒充导入时的 MCP SID 或宿主；原 Agent 通道仍要求完整 scope 精确相等，没有新增 MCP human 模式。编辑复用原验证、深拷贝和缓存对象身份 CAS，POST 还必须带当前 generation；整批成功只加一，并发同代次只有一方成功。旧代次、错 scope、缺失/淘汰/过期预览为 `409 PLAN_STALE`；请求格式/参数非法为 `400 INVALID_ARGUMENT`，找不到任务沿用 `404 TASK_NOT_FOUND`。失败不部分回写，也不消耗 generation。
+
+预览仍每 Store 最多 64 项、1800 秒，不因读写刷新 TTL；不落盘、不转移所有者，也不改画布/媒体或伪造确认、用户输入、已应用事件。人工编辑响应是当前预览权威状态；旧 presentation 的引用代次不随之回填。人工仍可查看原 Agent scope 已失效但尚未过期的预览，不代表新 Agent 可以使用旧绑定执行。
+
+### #411「应用」不是浏览器直调旧 REST apply
+
+本票没有 `/previews/{plan_id}/apply`。卡片「应用」把真实用户输入（如「按当前勾选应用 plan_id/generation」）发给导入时的 Agent；Agent 用原通道取得最新 generation 后调用既有 `plan.apply`，继续走真实确认、输入/附件/画布复核和 CAS。省略 `task_ids` 才采用 selected；原显式 task_ids 合同不改。浏览器不能借已知 plan_id 穿透 MCP scope，外部 MCP 也不跨宿主自动开跑；排队或消息已发送不等于执行成功。
+
+人工编辑不是应用批准：确认期间再次编辑使旧确认失效，拒绝或失效不写画布/媒体；成功应用仍使用原日志与 undo。后端离线/31xx HTTP 验证不证明真实模型、原生 SDK 或 #411 浏览器视觉验收，也不扩展通用超窗恢复。

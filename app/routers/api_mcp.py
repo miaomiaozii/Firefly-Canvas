@@ -574,11 +574,11 @@ async def _impl_edit_erase(project_id, agent_node_id, args):
         raise  # #391：交给 tool/call 统一形状出口，不再 str() 压平
 
 
-async def _impl_present(project_id, agent_node_id, args, *, owner=('hosted',), external_turn=None):
+async def _impl_present(project_id, agent_node_id, args, *, binding, owner=('hosted',), external_turn=None):
     from app.services import agent_present
     from app.services.agent_host import agent_host_manager
     return await agent_present.agent_present_call(_app_main.FIREFLY_PROJECT_STORE, agent_host_manager,
-                                    project_id, agent_node_id, args, owner=owner, external_turn=external_turn)
+                                    project_id, agent_node_id, args, binding=binding, owner=owner, external_turn=external_turn)
 
 
 async def _impl_chat(project_id, agent_node_id, args, *, tool):
@@ -779,7 +779,9 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
             owner = ('hosted',) if caller == 'hosted' else ('mcp', request.headers.get(SESSION_HEADER))
             if turn_id is not None and len(turn_id) > 128:
                 raise agent_error(400, 'INVALID_ARGUMENT', 'turn_id is limited to 128 characters')
-            result = await TOOL_IMPLS[name](project_id, node_param, args, owner=owner, external_turn=turn_id)
+            binding = "hosted" if caller == "hosted" else ("mcp", sid)
+            result = await TOOL_IMPLS[name](project_id, node_param, args, binding=binding,
+                                           owner=owner, external_turn=turn_id)
             return _rpc_response(200, msg_id, sid, result={'content': _tool_result_content_blocks(result), 'isError': False})
         if name in agent_batch.TOOLS:
             # A10 cannot create/rebind a carrier or reserve an external turn before approval.

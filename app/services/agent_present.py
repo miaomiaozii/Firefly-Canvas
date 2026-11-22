@@ -37,6 +37,8 @@ _PROPERTIES = {
         ['id', 'text', 'options', 'recommended'], id=_ID, text=_TEXT, recommended=_ID,
         options={'type': 'array', 'minItems': 2, 'maxItems': 10,
                  'items': _object(['id', 'text'], id=_ID, text=_TEXT)})},
+    'plan_id': _ID,
+    'generation': {'type': 'integer', 'minimum': 1},
     'op_id': _ID,
     'diff_id': _ID,
     'presentation_id': _ID,
@@ -47,8 +49,11 @@ SCHEMA['oneOf'] = [
     *[_object(['action', 'kind', 'title', data], action={'type': 'string', 'enum': ['show']},
               kind={'type': 'string', 'enum': [kind]}, title=_PROPERTIES['title'], **{data: _PROPERTIES[data]})
       for kind, data in [('plan', 'steps'), ('question', 'questions'), ('diff', 'diff_id'), ('diff', 'op_id')]],
+    _object(['action', 'kind', 'title', 'plan_id', 'generation'],
+            action={'type': 'string', 'enum': ['show']}, kind={'type': 'string', 'enum': ['plan']},
+            title=_PROPERTIES['title'], plan_id=_ID, generation=_PROPERTIES['generation']),
 ]
-TOOL = {'name': 'agent.present', 'description': 'show 呈现计划提案、多题选择或真实 diff_id/op_id 差异；get 读取原收据与答案。问题推荐项必须是实际选项，外部 MCP 须沿用原 Mcp-Session-Id。不批准、不执行、不创建节点，不承诺重启续跑。', 'inputSchema': SCHEMA}
+TOOL = {'name': 'agent.present', 'description': 'show 呈现 steps 计划、真实 plan_id/generation 预览引用、多题选择或真实 diff_id/op_id 差异；get 读取原收据与答案。完整方案走人工预览 GET，编辑不批准应用。问题推荐项必须是实际选项，外部 MCP 须沿用原 Mcp-Session-Id。不批准、不执行、不创建节点，不承诺重启续跑。', 'inputSchema': SCHEMA}
 
 
 def _agent_present_valid(value, schema):
@@ -65,6 +70,8 @@ def _agent_present_valid(value, schema):
     if kind == 'array':
         return (isinstance(value, list) and schema['minItems'] <= len(value) <= schema['maxItems']
                 and all(_agent_present_valid(v, schema['items']) for v in value))
+    if kind == 'integer':
+        return type(value) is int and value >= schema['minimum']
     return False
 
 
@@ -275,7 +282,19 @@ def _resolve_diff(store, project, actor, owner, args):
             'items': [item.public() for item in items], 'applied': False}
 
 
-async def agent_present_call(store, manager, project, actor, args, *, owner=('hosted',), external_turn=None):
+def _resolve_plan(store, manager, project, actor, binding, args):
+    from app.services import agent_plan as plan
+
+    with store._lock:
+        try:
+            scope = (project, actor, binding, *plan.conversation(store, manager, project, actor))
+        except HTTPException:
+            raise plan.stale() from None
+        preview = plan.get(store, scope, args['plan_id'], args)
+        return {'source': 'plan_preview', 'plan_id': preview.plan_id, 'generation': preview.generation}
+
+
+async def agent_present_call(store, manager, project, actor, args, *, binding, owner=('hosted',), external_turn=None):
     agent_present_validate(args)
     node = _agent_present_node(store, project, actor)
     session = manager.conversation_session(project, actor)
@@ -304,6 +323,8 @@ async def agent_present_call(store, manager, project, actor, args, *, owner=('ho
         raise agent_present_stale()
     if args['kind'] == 'diff':
         data = _resolve_diff(store, project, actor, owner, args)
+    elif args['kind'] == 'plan' and 'plan_id' in args:
+        data = _resolve_plan(store, manager, project, actor, binding, args)
     else:
         data_key = 'questions' if args['kind'] == 'question' else 'steps'
         data = {data_key: deepcopy(args[data_key])}

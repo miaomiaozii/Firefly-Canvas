@@ -8,7 +8,7 @@ import sys as _sys
 from fastapi import APIRouter, Depends, HTTPException, Request
 from PIL import Image, UnidentifiedImageError
 
-from app.core import ensure_agent_same_origin
+from app.core import ensure_agent_same_origin, ensure_same_origin_request
 from app.routers import api_agent_tools as tools
 from app.services import agent_plan as plan
 from app.services.agent_ops_async import run_blocking_to_completion
@@ -131,6 +131,53 @@ async def plan_core(project, actor, args, *, tool, binding="rest"):
             raise plan.stale() from exc
         raise
     return tools._op_result(result)
+
+
+def _human_actor(request, *, allow_generation=False):
+    allowed = {"agent_node_id", "generation"} if allow_generation else {"agent_node_id"}
+    if request.query_params.keys() - allowed or any(
+            len(request.query_params.getlist(key)) != 1 for key in request.query_params):
+        raise invalid("Unknown or repeated human preview query fields")
+    return plan.text(request.query_params.get("agent_node_id"), "agent_node_id", 128)
+
+
+@router.get("/previews/{plan_id}", dependencies=[Depends(ensure_same_origin_request)])
+async def read_human_preview(project_id: str, plan_id: str, request: Request):
+    if request.headers.get("X-Agent-Project") != project_id:
+        raise agent_error(403, "PROJECT_MISMATCH", "X-Agent-Project must match the requested project")
+    tools._validate_project(project_id)
+    actor = _human_actor(request, allow_generation=True)
+    args = {}
+    if "generation" in request.query_params:
+        try:
+            generation = int(request.query_params["generation"])
+        except ValueError as exc:
+            raise invalid("generation must be a positive integer") from exc
+        if generation < 1:
+            raise invalid("generation must be a positive integer")
+        args["generation"] = generation
+    store = _app_main.FIREFLY_PROJECT_STORE
+    with store._lock:
+        return plan.get_human(store, project_id, actor, plan_id, args).response({})
+
+
+@router.post("/previews/{plan_id}/edits", dependencies=[Depends(ensure_same_origin_request)])
+async def edit_human_preview(project_id: str, plan_id: str, request: Request):
+    if request.headers.get("X-Agent-Project") != project_id:
+        raise agent_error(403, "PROJECT_MISMATCH", "X-Agent-Project must match the requested project")
+    tools._validate_project(project_id)
+    actor = _human_actor(request)
+    try:
+        args = await request.json()
+    except ValueError as exc:
+        raise invalid("Expected a JSON object") from exc
+    require_object(args, "human plan edit", required=("generation", "ops"))
+    if type(args["generation"]) is not int or args["generation"] < 1:
+        raise invalid("generation must be a positive integer")
+    store = _app_main.FIREFLY_PROJECT_STORE
+    with store._lock:
+        preview = plan.get_human(store, project_id, actor, plan_id, args)
+        return plan.edit(store, project_id, actor, preview, args["ops"], {}).response({})
 
 
 @router.post("/{operation}")

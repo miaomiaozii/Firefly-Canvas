@@ -225,6 +225,19 @@ def get(store, scope, plan_id, args):
         return preview
 
 
+def get_human(store, project, actor, plan_id, args):
+    node = store.find_canvas_node(project, actor)
+    if not node or node.get("type") not in (NODE_TYPE_AGENT, "agent"):
+        raise stale()
+    # The same-origin HTTP handler owns this lookup; Agent reads still require exact scope.
+    with _LOCK:
+        preview = _CACHE.get(store, {}).get(plan_id)
+        if not preview or preview.scope[:2] != (project, actor):
+            raise stale()
+        scope = preview.scope
+    return get(store, scope, plan_id, args)
+
+
 def _link_main(tasks):
     main = [task for task in tasks if "主图" in task["section"]]
     for task in tasks:

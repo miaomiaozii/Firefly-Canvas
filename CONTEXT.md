@@ -239,9 +239,10 @@ _Avoid_: 独立音频项目、音频工作站
 - `GET /api/projects/{project_id}/chat/history|search` 与共享 MCP/Pi 工具 `chat.history|search` 只读本项目的 Agent 用户/助手正文。history 默认节点活跃宿主，canvas 范围列出保留会话（含已删除 Agent）；search 默认 canvas，不读工具、思考、系统续接、附件内部或其他项目。不创建会话、切宿主、修复文件或变更画布。会话为节点+宿主的日志流，不是原生会话/分支身份；历史节点读取须显式 host。
 - 参数、精确回包、消息/会话 ID、排序、分页与扫描/正文/结果上限见 [ADR 0022「#457」](docs/adr/0022-mcp-streamable-http-canvas-endpoint.md)。既有活跃节点 `/agent-nodes/{node_id}/events` 与 `/events/page` 读口不改。
 
-### 结构化呈现与人工答题（#406）
+### 结构化呈现、方案预览与人工答题（#406/#482）
 
 - 共享 `agent.present` 只呈现 plan/question/diff，不批准、执行、建节点或扩权限；差异必须引用真实 op_id/diff_id，项目/宿主/generation/原轮及事件 seq 均来自服务端。多题同卡，推荐项来自真实选项；同一 ID 的答案/投递错误原位更新，历史只读。最薄 TUI 不代替 #411 完整交互。
+- 真实方案卡用 `plan_id/generation` 引用原预览，事件不复制任务；旧 steps 卡保留。人工 GET/POST edits 必须严格同源并带匹配项目头，只编辑预览、不批准或应用；原 Agent 的精确 scope 不变。#411 的「应用」发送真实用户输入给导入时的 Agent，由原通道带最新方案 generation 调 `plan.apply`，继续过确认/CAS，省略 `task_ids` 才采用勾选。精确接口、代次和失效边界见 [ADR 0022「#482」](docs/adr/0022-mcp-streamable-http-canvas-endpoint.md)。
 - 人工答案走独立用户输入与 FIFO，不是 #402 的同轮系统确认续接；queued/answered 不证明宿主收到或执行。外部 MCP 仅原绑定取回答案，不跨宿主注入、不自动开跑，不承诺重启续跑。真实投递失败必须可见，不把答案记录冒充投递成功。
 - 精确 schema、回执/答题 REST 路径、绑定与预算见 [ADR 0022「#406」](docs/adr/0022-mcp-streamable-http-canvas-endpoint.md)。Pi/Codex 默认策略共用，三档 suffix 仅空值兼容；离线交付不证明模型行为，#405 保持 OPEN、真实指标 NOT_RUN/null。plan.apply 超窗仍无通用恢复，不在本票修复。
 
