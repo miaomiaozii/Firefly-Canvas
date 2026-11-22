@@ -113,8 +113,7 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
         self.assertEqual(source.count("canvasForStorage({preserveLegacyDockCollapsed:true})"), 1)
 
     def test_agent_node_path_literals_match_backend_prefix(self):
-        # #170：#162 把裸全局 nodes 批量改成 canvasState.nodes 时，顺手污染了模板字符串里的
-        # 路径段 agent-nodes/，前端全部 Agent 节点端点因此 404。路径段必须跟后端前缀一致。
+        # #170 guards path corruption; #482/#411 also require the human plan router in the TUI.
         backend = (ROOT / "app" / "routers" / "api_agent_nodes.py").read_text(encoding="utf-8")
         match = re.search(r'prefix="(/api/projects/\{project_id\}/[^"]+)"', backend)
         self.assertIsNotNone(match, "未能从 api_agent_nodes.py 解析出路由前缀")
@@ -125,7 +124,13 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
             for m in re.finditer(r'/api/projects/\$\{[^}]*\}/([^/"\'`$\{]+)', source)
         }
         self.assertTrue(segments, "canvas-agent-tui.js 里找不到 Agent 节点端点字面量")
-        self.assertEqual(segments, {expected}, f"前端路径段 {segments} 与后端前缀 {expected} 不一致")
+        plan_backend = (ROOT / "app" / "routers" / "api_agent_plan.py").read_text(encoding="utf-8")
+        plan_match = re.search(r'prefix="(/api/projects/\{project_id\}/[^"]+)"', plan_backend)
+        self.assertIsNotNone(plan_match, "未能从 api_agent_plan.py 解析出路由前缀")
+        expected_plan = plan_match.group(1).split("/")[-1]
+        self.assertEqual(segments, {expected, expected_plan}, f"前端路径段 {segments} 与真实宿主/方案路由不一致")
+        self.assertIn('@router.get("/previews/{plan_id}"', plan_backend)
+        self.assertIn('@router.post("/previews/{plan_id}/edits"', plan_backend)
 
     def test_no_state_container_rename_inside_path_literals(self):
         # 同一批盲替换的通用守卫：状态容器名不得出现在 URL 字面量或路径注释里。

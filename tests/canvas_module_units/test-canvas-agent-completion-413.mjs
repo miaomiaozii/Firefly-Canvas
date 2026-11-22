@@ -17,12 +17,11 @@ function operation(op_id = 'op1', changes = [change('prompt1', ['text'], present
 }
 function setup() {
     const {ctx, harness} = createCanvasContext();
-    ctx.canvasId = 'project1';
     ctx.imageLayout = () => ({});
     ctx.centerViewportOnWorldPoint = () => { throw new Error('must not pan'); };
     ctx.render = () => {};
     loadModules(ctx, ['canvas-node-types.js', 'canvas-core.js', 'canvas-state.js', 'canvas-agent-activity.js', 'canvas-agent-completion.js', 'canvas-agent-tui.js']);
-    evaluate(ctx, `canvasState.nodes = [{id:'agent1',type:'smart-agent',agentCli:'pi'}, {id:'user1',type:'smart-prompt',text:'user unrelated'}];`);
+    evaluate(ctx, `canvasId='project1'; canvas={project_id:'project1'}; canvasState.nodes = [{id:'agent1',type:'smart-agent',agentCli:'pi'}, {id:'user1',type:'smart-prompt',text:'user unrelated'}];`);
     const state = ctx.getAgentTuiState('agent1');
     state.projectId = 'project1';
     state.historyLoaded = true;

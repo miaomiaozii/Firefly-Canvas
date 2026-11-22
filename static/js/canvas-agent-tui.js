@@ -32,6 +32,7 @@ function createAgentHostView() {
         _historyPrefetch: null, _replayAgain: false, _historyGapSince: null,
         confirm: null, confirmModalShown: null, stopPending: false, queuedInputs: new Set(),
         effortState: null, eventsError: '', stopStatusError: '', lastError: '', sessionModel: undefined,
+        planPreviews: new Map(),
     };
 }
 function agentNodeHost(node) { return node.agentCli || 'pi'; } // legacy nodes belong only to Pi
@@ -95,6 +96,11 @@ function agentCaptureComposer(state, nodeId) {
 }
 function agentChangeHostView(nodeId, state, host) {
     agentCaptureComposer(state, nodeId);
+    if (state.nodeRefsDraft) state.nodeRefsDraft.lastDepartureEpoch = state.viewEpoch;
+    for (const view of state.planPreviews.values()) if (view.busy) {
+        if (view.requestEpoch !== state.viewEpoch) view.invalidOwner = true;
+        view.departed = true;
+    }
     disposeAgentScroll(state);
     state.hostViews.set(state.viewHost, Object.fromEntries(Object.keys(createAgentHostView()).map(key => [key, state[key]])));
     state.hostViews.get(state.viewHost)._replayInFlight = false;
@@ -105,6 +111,11 @@ function agentChangeHostView(nodeId, state, host) {
     state.viewHost = host;
     state.viewNeedsMount = true;
     state.viewEpoch++;
+    state.nodeRefsDraft.lastArrivalEpoch = state.viewEpoch;
+    for (const view of state.planPreviews.values()) if (view.busy && view.departed && !view.invalidOwner) {
+        view.requestEpoch = state.viewEpoch;
+        view.departed = false;
+    }
     agentChatBridge()?.invalidate();
     agentCompletionBridge()?.invalidate();
     state._replayInFlight = false;
@@ -126,6 +137,7 @@ function agentChangeHostView(nodeId, state, host) {
             delete snapshot.deferredSettlement;
             agentNodeRefsSettle(nodeId, state, snapshot, receipt, error, uncertain);
         }
+        for (const view of state.planPreviews.values()) view.resume?.();
     });
 }
 function agentSyncHostView(node, state) {
@@ -204,21 +216,26 @@ function agentNodeRefsRefresh(nodeId) {
     // The hoisted composer adapter updates only references, not the focused/IME textarea.
     agentNodeRefsRefreshPanel(nodeId);
 }
-function agentNodeRefsPrepare(nodeId, kind, message, images = []) {
+function agentNodeRefsPrepare(nodeId, kind, message, images = [], options = {}) {
     const state = getAgentTuiState(nodeId), refs = agentNodeRefsInit(state);
+    const control = options.preserveComposer === true;
     const snapshot = {
         id: `input-${Date.now()}-${++agentNodeRefsRuntime.sequence}`, kind, message, host: state.viewHost,
         draft: state.nodeRefsControlDraft !== undefined ? state.nodeRefsControlDraft : message,
+        control, controlCurrent: options.current, controlRefs: control ? refs : null, controlEpoch: state.viewEpoch,
         images: images.slice(), selected: refs.selected.slice(), manual: refs.manual.slice(),
         dismissed: new Set(refs.dismissed), previousStatus: state.status, turn: state._turnSeq || 0,
-        labels: agentNodeRefsIds(state).map(id => ({ ...agentNodeRefsLabel(id, refs) })),
+        labels: control ? [] : agentNodeRefsIds(state).map(id => ({ ...agentNodeRefsLabel(id, refs) })),
     };
     delete state.nodeRefsControlDraft;
-    refs.selected = [];
-    refs.manual = [];
-    refs.menu = null;
-    refs.error = '';
-    snapshot.clearedRevision = ++refs.revision;
+    // Card actions are independent user inputs, not submissions of the unfinished composer (#411).
+    if (!control) {
+        refs.selected = [];
+        refs.manual = [];
+        refs.menu = null;
+        refs.error = '';
+        snapshot.clearedRevision = ++refs.revision;
+    }
     snapshot.row = {
         role: kind === 'prompt' ? 'user' : 'system',
         text: kind === 'prompt' ? message : `${kind === 'steer' ? '↪ steer' : '⏳ follow_up queued'}: ${message}`,
@@ -229,6 +246,7 @@ function agentNodeRefsPrepare(nodeId, kind, message, images = []) {
     if (kind === 'prompt') state.status = 'busy';
     else state.queuedInputs.add(snapshot.id);
     refs.pending.set(snapshot.id, snapshot);
+    options.onPrepared?.(snapshot);
     snapshot.timer = setTimeout(() => agentNodeRefsSettle(nodeId, state, snapshot, null, tr('smart.agentRefUnconfirmed'), true), 30000);
     return snapshot;
 }
@@ -240,6 +258,15 @@ function agentNodeRefsSettle(nodeId, state, snapshot, receipt, error = '', uncer
         return;
     }
     const refs = agentNodeRefsInit(state);
+    // A read-only host visit changes the render epoch, not the admitted input's owner (#411).
+    const restoredView = snapshot.control && refs === snapshot.controlRefs
+        && refs.lastDepartureEpoch >= snapshot.controlEpoch && refs.lastArrivalEpoch === state.viewEpoch;
+    if (snapshot.controlCurrent && !snapshot.controlCurrent(restoredView)) {
+        clearTimeout(snapshot.timer);
+        snapshot.controlRefs.pending.delete(snapshot.id);
+        state.queuedInputs.delete(snapshot.id);
+        return;
+    }
     if (!refs.pending.has(snapshot.id)) return;
     // A timeout is not a rejection: retain correlation for late REST/WS receipts.
     if (!uncertain) refs.pending.delete(snapshot.id);
@@ -257,7 +284,7 @@ function agentNodeRefsSettle(nodeId, state, snapshot, receipt, error = '', uncer
         snapshot.row.delivery_error = error;
         refs.error = error;
         // A late failure must not replace text/references/images typed for a newer input.
-        if (!uncertain && !state.draft && !(state.pendingImages || []).length && refs.revision === snapshot.clearedRevision) {
+        if (!snapshot.control && !uncertain && !state.draft && !(state.pendingImages || []).length && refs.revision === snapshot.clearedRevision) {
             state.draft = snapshot.draft;
             const input = agentNodeRefsInput(nodeId);
             if (input) input.value = snapshot.draft;
@@ -1185,6 +1212,7 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
             const row = state.messages.find(message => message.presentation?.id === p.id);
             const deliveryError = event.delivery_error ? agentNodeRefsError({ detail: event.delivery_error }, tr('smart.agentPresentDeliveryUnconfirmed')) : '';
             if (row) {
+                row.presentationVersion = (row.presentationVersion || 0) + 1;
                 row.presentation = p;
                 if (deliveryError) row.presentationDeliveryError = deliveryError;
                 if (p.state === 'answered' || p.state === 'expired') {
@@ -1193,7 +1221,9 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
                 }
             } else {
                 finalizeAgentStreamingTurn(state);
-                agentAppendMessage(state, { role: 'presentation', presentation: p, presentationReadonly: Boolean(state._applyingReplay), presentationDeliveryError: deliveryError });
+                agentAppendMessage(state, { role: 'presentation', presentation: p, presentationReadonly: Boolean(state._applyingReplay),
+                    presentationThread: agentPresentationThread(nodeId, state), presentationProject: agentProjectId(),
+                    presentationCanvas: agentViewCanvasId(), presentationDeliveryError: deliveryError });
             }
             break;
         }
@@ -1431,10 +1461,10 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
     if (state._applyingReplay || !streamingText || !updateAgentStreamingText(state, streamingText)) renderAgentNode(nodeId);
 }
 
-function sendAgentPrompt(nodeId, projectId, message, images = []) {
+function sendAgentPrompt(nodeId, projectId, message, images = [], options = {}) {
     if (agentIsReadonly(getAgentTuiState(nodeId))) return;
     return sendAgentCommand(nodeId, projectId, 'prompt', {
-        nodeRefsSubmission: agentNodeRefsPrepare(nodeId, 'prompt', message, images),
+        nodeRefsSubmission: agentNodeRefsPrepare(nodeId, 'prompt', message, images, options),
     });
 }
 
@@ -1573,10 +1603,10 @@ function sendAgentSteer(nodeId, projectId, message, attachments = []) {
     });
 }
 
-function sendAgentFollowUp(nodeId, projectId, message, attachments = []) {
+function sendAgentFollowUp(nodeId, projectId, message, attachments = [], options = {}) {
     if (agentIsReadonly(getAgentTuiState(nodeId))) return;
     return sendAgentCommand(nodeId, projectId, 'follow_up', {
-        nodeRefsSubmission: agentNodeRefsPrepare(nodeId, 'follow_up', message, attachments),
+        nodeRefsSubmission: agentNodeRefsPrepare(nodeId, 'follow_up', message, attachments, options),
     });
 }
 
@@ -2377,30 +2407,186 @@ function agentMessageBylineHtml(msg, date) {
     return `<div class="agent-tui-msg-byline"><span>${author}</span>${time}</div>`;
 }
 
-function agentPresentationHtml(message, readonly) {
+function agentPresentationThread(nodeId, state) {
+    const node = canvasState.nodes.find(item => item.id === nodeId);
+    const session = node?.agentHostSessions?.[state.viewHost];
+    // Runtime generation advances per Codex turn; only the thread/branch identifies the importer (#482).
+    return JSON.stringify([state.viewHost, session?.extSessionId ?? node?.extSessionId ?? '', session?.current_branch ?? node?.current_branch ?? '']);
+}
+
+function agentPresentationOwner(nodeId, projectId, state, epoch, message, allowReadonly = false) {
+    const project = agentProjectId(), host = state.viewHost;
+    return (restoredView = false) => agentTuiState.get(nodeId) === state && (restoredView || state.viewEpoch === epoch) && !state.closing
+        && (allowReadonly || (!agentIsReadonly(state) && message.presentationThread === agentPresentationThread(nodeId, state))) && state.viewHost === host
+        && agentViewCanvasId() === projectId && agentProjectId() === project
+        && message.presentationProject === project && message.presentationCanvas === projectId
+        && canvasState.nodes.some(node => node.id === nodeId && isSmartAgentNode(node)
+            && (allowReadonly || agentNodeHost(node) === host)) && state.messages.includes(message);
+}
+
+function agentPlanView(state, message) {
+    const id = message.presentation.data.plan_id;
+    if (!state.planPreviews.has(id)) state.planPreviews.set(id, { receipt: null, busy: '', attempted: false, error: '', notice: '', drafts: new Map(), serial: 0 });
+    return state.planPreviews.get(id);
+}
+
+function agentPlanValidResult(result, committed = true) {
+    return result && Array.isArray(result.groups) && Array.isArray(result.tasks) && Array.isArray(result.already_applied)
+        && result.groups.every(group => typeof group?.group_id === 'string' && typeof group.section === 'string')
+        && result.tasks.every(task => typeof task?.task_id === 'string' && typeof task.prompt_node === 'string' && typeof task.gen_node === 'string')
+        && result.already_applied.every(id => typeof id === 'string')
+        && (!committed || (typeof result.op_id === 'string' && result.op_id.length > 0
+            && Array.isArray(result.touched_node_ids) && result.touched_node_ids.every(id => typeof id === 'string')));
+}
+
+function agentPlanValidApplication(application, generation) {
+    if (!application || application.generation !== generation
+        || !['ready', 'awaiting_confirmation', 'applied', 'unknown'].includes(application.state)) return false;
+    const receipt = application.receipt;
+    if (receipt !== null && (!receipt || !Number.isSafeInteger(receipt.generation) || receipt.generation < 1 || receipt.generation > generation
+        || !['human', 'agent'].includes(receipt.applied_by) || !agentPlanValidResult(receipt.result))) return false;
+    return (application.state !== 'applied' || receipt?.generation === generation)
+        && (application.state !== 'awaiting_confirmation' || (typeof application.confirm_id === 'string' && application.confirm_id.length > 0));
+}
+
+function agentPlanCanRequestApply(view, nodeId) {
+    const receipt = view.receipt;
+    // Only a current manual GET supplies capability; presentations and native bindings do not (#484).
+    return Boolean(view.authoritative && receipt?.apply_via === 'human_apply' && receipt.agent_node_id === nodeId
+        && agentPlanValidApplication(receipt.application, receipt.generation));
+}
+
+function agentPlanApplicationHtml(view) {
+    const application = view.application;
+    if (!application) return '';
+    const text = key => escapeHtml(tr(`smart.agentPlan${key}`));
+    const error = application.error || view.applyError;
+    const status = view.expired ? 'Expired' : application.state === 'requesting' ? 'Requesting'
+        : application.state === 'awaiting_confirmation' ? 'AwaitingConfirmation'
+        : application.state === 'unknown' ? 'Unknown'
+        : application.state === 'applied' ? (error ? 'AppliedWithError' : 'Applied')
+        : error?.code === 'PLAN_NOT_CONFIRMED' ? 'Declined' : 'Ready';
+    let html = `<div class="agent-plan-notice" role="status">${text(status)}</div>`;
+    if (!view.expired && application.state === 'awaiting_confirmation') html += `<div class="agent-plan-meta">${text('ConfirmationId')} <code>${escapeHtml(application.confirm_id)}</code></div>`;
+    if (error) html += `<div class="agent-plan-error" role="alert">${escapeHtml([error.code, error.message, error.hint,
+        error.details ? JSON.stringify(error.details) : ''].filter(Boolean).join(' · '))}</div>`;
+    const receipt = application.receipt;
+    const resultHtml = result => {
+        let content = result.op_id ? `<div>${text('OperationId')} <code>${escapeHtml(result.op_id)}</code></div>` : '';
+        content += `<ul>${result.groups.map(group => `<li>${escapeHtml(group.section)} · <code>${escapeHtml(group.group_id)}</code></li>`).join('')}
+            ${result.tasks.map(task => `<li><code>${escapeHtml(task.task_id)}</code> · ${text('PromptNode')} <code>${escapeHtml(task.prompt_node)}</code> · ${text('EmptySlot')} <code>${escapeHtml(task.gen_node)}</code></li>`).join('')}</ul>`;
+        if (result.already_applied.length) content += `<div>${text('ExistingTasks')} ${result.already_applied.map(id => `<code>${escapeHtml(id)}</code>`).join(' · ')}</div>`;
+        return content;
+    };
+    if (receipt) html += `<details><summary>${text('Receipt')} ${receipt.generation} · ${escapeHtml(receipt.applied_by)}</summary>${resultHtml(receipt.result)}</details>`;
+    if (view.noChanges) html += `<div role="status">${text('NoChanges')}</div>${resultHtml(view.noChanges)}`;
+    return html;
+}
+
+function agentPlanIssueText(value, exclusion = false) {
+    const raw = typeof value === 'string' ? value : JSON.stringify(value);
+    let issue = value;
+    if (typeof value === 'string') {
+        try { issue = JSON.parse(value); } catch { return raw; }
+    }
+    if (!issue || typeof issue !== 'object' || Array.isArray(issue)) return raw;
+    const labels = exclusion
+        ? { video: 'ExcludedVideo', mask: 'ExcludedMask', no_remake: 'ExcludedNoRemake' }
+        : { CONTINUATION_OR_NON_TASK_ROW: 'IssueContinuation', ANCHOR_OUT_OF_RANGE: 'IssueAnchor', NO_WORKBOOK_IMAGE: 'IssueNoImage', PROMPT_NEEDS_REVIEW: 'IssuePrompt' };
+    const code = exclusion ? issue.skip_reason : issue.code;
+    if (!Object.hasOwn(labels, code)) return raw;
+    const where = typeof issue.source_row === 'string' || typeof issue.source_row === 'number' ? [String(issue.source_row)] : [];
+    if (Number.isInteger(issue.column) && issue.column > 0) where.push(`${tr('smart.agentPlanColumn')} ${issue.column}`);
+    return [...where, tr(`smart.agentPlan${labels[code]}`)].join(' · ');
+}
+
+function agentPlanHtml(message, readonly, state, nodeId) {
+    const ref = message.presentation.data, view = agentPlanView(state, message), receipt = view.receipt;
+    const live = !readonly && !message.presentationReadonly && message.presentation.state === 'presented'
+        && message.presentationThread === agentPresentationThread(nodeId, state)
+        && message.presentationProject === agentProjectId() && message.presentationCanvas === agentViewCanvasId() && !view.stale && !view.expired;
+    const canApply = agentPlanCanRequestApply(view, nodeId), editable = live && canApply;
+    const owner = escapeAttr(message.presentation.id), disabled = view.busy ? ' disabled' : '';
+    const text = key => escapeHtml(tr(`smart.agentPlan${key}`));
+    let html = `<div class="agent-plan-meta">${text('Reference')} ${escapeHtml(String(ref.generation))} · <code>${escapeHtml(ref.plan_id)}</code></div>`;
+    if (receipt) {
+        const { tasks, warnings, source } = receipt.preview;
+        html += `<div class="agent-plan-summary"><span>${text('Current')} ${receipt.generation}</span><span>${tasks.filter(task => task.selected).length} / ${tasks.length} ${text('Selected')}</span></div>`;
+        if (source?.name) html += `<div class="agent-plan-meta">${escapeHtml(source.name)}${source.sheet ? ` · ${escapeHtml(source.sheet)}` : ''}</div>`;
+        const groups = new Map();
+        tasks.forEach(task => { if (!groups.has(task.section)) groups.set(task.section, []); groups.get(task.section).push(task); });
+        for (const [section, items] of groups) {
+            html += `<section class="agent-plan-section"><h4>${escapeHtml(section)} <span>${items.length}</span></h4>`;
+            for (const task of items) {
+                const id = escapeAttr(task.task_id), attrs = `data-agent-plan-owner="${owner}"`;
+                const draft = view.drafts.get(task.task_id) || {};
+                html += `<div class="agent-plan-task"><label class="agent-plan-check">${editable
+                    ? `<input type="checkbox" data-agent-plan-select="${id}" ${attrs}${task.selected ? ' checked' : ''}${disabled}>`
+                    : `<span aria-label="${text(task.selected ? 'Selected' : 'NotSelected')}">${task.selected ? '☑' : '☐'}</span>`}<span>${escapeHtml(task.name)}</span></label>`;
+                const rows = Array.isArray(task.source_rows) ? task.source_rows : [task.source_row];
+                html += `<div class="agent-plan-meta">${text('SourceRow')} ${escapeHtml(rows.filter(row => row != null).join(', '))}</div>`;
+                if (editable) {
+                    const field = (name, label, value) => `<label>${text(label)}<input type="text" maxlength="200" value="${escapeAttr(value)}" data-agent-plan-draft="${id}" data-agent-plan-field="${name}" ${attrs}${disabled}></label>`;
+                    html += `<details class="agent-plan-editor" data-agent-plan-editor="${id}" ${attrs}${draft.open ? ' open' : ''}><summary>${text('Edit')}</summary><div class="agent-plan-fields">`
+                        + field('rename', 'Name', draft.rename ?? task.name) + field('set_section', 'Section', draft.set_section ?? task.section)
+                        + `<label>${text('MergeInto')}<select data-agent-plan-draft="${id}" data-agent-plan-field="merge_into" ${attrs}${disabled}><option value="">${text('NoMerge')}</option>${tasks.filter(other => other.task_id !== task.task_id).map(other => `<option value="${escapeAttr(other.task_id)}"${draft.merge_into === other.task_id ? ' selected' : ''}>${escapeHtml(`${other.section} · ${other.name}`)}</option>`).join('')}</select></label>`
+                        + `<div class="agent-plan-meta">${text('PreviewOnly')}</div><button type="button" data-agent-plan-save="${id}" ${attrs}${disabled}>${text('Save')}</button></div></details>`;
+                }
+                html += '</div>';
+            }
+            html += '</section>';
+        }
+        if (!tasks.length) html += `<div>${text('Empty')}</div>`;
+        if (warnings.length) html += `<div class="agent-plan-warnings"><strong>${text('Warnings')}</strong><ul>${warnings.map(warning => `<li>${escapeHtml(agentPlanIssueText(warning))}</li>`).join('')}</ul></div>`;
+        if (receipt.preview.excluded?.length) html += `<details><summary>${text('Excluded')} ${receipt.preview.excluded.length}</summary><ul>${receipt.preview.excluded.map(item => `<li>${escapeHtml(agentPlanIssueText(item, true))}</li>`).join('')}</ul></details>`;
+    } else html += `<div role="status">${text(view.busy ? 'Loading' : 'NotLoaded')}</div>`;
+    if (view.error) html += `<div class="agent-plan-error" role="alert">${text('Unconfirmed')} ${escapeHtml(view.error)}</div>`;
+    // Application status owns expiry when present; a failed first read has no application payload.
+    if (view.notice && (!view.expired || !view.application)) html += `<div class="agent-plan-notice" role="status">${escapeHtml(view.notice)}</div>`;
+    if (view.busy && receipt) html += `<div role="status">${text(view.busy === 'save' ? 'Saving' : 'Loading')}</div>`;
+    if (!live) html += `<div class="agent-plan-meta">${escapeHtml(tr('smart.agentPresentReadonly'))} · ${text('ReadCurrentOnly')}</div>`;
+    html += agentPlanApplicationHtml(view);
+    html += `<div class="agent-presentation-actions"><button type="button" data-agent-plan-refresh="${owner}"${disabled}>${text('Refresh')}</button>`;
+    if (editable) html += `<button type="button" class="agent-presentation-primary" data-agent-plan-apply="${owner}"${view.busy || agentPlanDirty(view) || view.application?.state !== 'ready' || !receipt.preview.tasks.some(task => task.selected) ? ' disabled' : ''}>${text('ApplyRequest')}</button>`;
+    return html + `</div><div class="agent-plan-meta">${text(canApply ? 'ApplyBoundary' : 'ApplyUnavailable')}</div>`;
+}
+
+function agentPresentationHtml(message, readonly, state, nodeId) {
     const p = message.presentation;
     const empty = `<div>${escapeHtml(tr('smart.agentPresentEmpty'))}</div>`;
     let content = '';
     if (p.kind === 'plan') {
         const steps = Array.isArray(p.data.steps) ? p.data.steps : [];
-        content = `<div>${escapeHtml(tr('smart.agentPresentProposal'))}</div>`
-            + (steps.length ? `<ol>${steps.map(step => `<li>${escapeHtml(step?.text || '')}</li>`).join('')}</ol>` : empty);
+        content = p.data.source === 'plan_preview' && typeof p.data.plan_id === 'string' && Number.isInteger(p.data.generation) && p.data.generation > 0
+            ? agentPlanHtml(message, readonly, state, nodeId)
+            : `<div>${escapeHtml(tr('smart.agentPresentProposal'))}</div>`
+                + (steps.length ? `<ol>${steps.map(step => `<li>${escapeHtml(step?.text || '')}</li>`).join('')}</ol>` : empty);
     } else if (p.kind === 'diff') {
         // Only server-resolved data is displayed; it never becomes HTML or an apply action.
         content = Object.keys(p.data).length ? `<pre>${escapeHtml(JSON.stringify(p.data, null, 2))}</pre>` : empty;
     } else if (p.kind === 'question') {
         const questions = Array.isArray(p.data.questions) ? p.data.questions.filter(question => question && typeof question === 'object') : [];
-        content = questions.length ? questions.map(question => `<div><div>${escapeHtml(question.text || '')}</div><ul>${(Array.isArray(question.options) ? question.options.filter(option => option && typeof option === 'object') : []).map(option =>
-            `<li>${escapeHtml(option.text || '')}${option.id === question.recommended ? ` <small>${escapeHtml(tr('smart.agentPresentRecommended'))}</small>` : ''}${p.answers?.[question.id] === option.id ? ` <small>${escapeHtml(tr('smart.agentPresentSelected'))}</small>` : ''}</li>`).join('')}</ul></div>`).join('') : empty;
+        const editable = p.state === 'pending' && !readonly && !message.presentationReadonly
+            && message.presentationThread === agentPresentationThread(nodeId, state)
+            && message.presentationProject === agentProjectId() && message.presentationCanvas === agentViewCanvasId();
+        content = questions.length ? questions.map(question => {
+            const options = Array.isArray(question.options) ? question.options.filter(option => option && typeof option === 'object') : [];
+            const chosen = message.presentationChoices?.[question.id] ?? question.recommended;
+            // Do not let the browser silently substitute its first option after a chosen ID disappears.
+            const missingChoice = options.some(option => option.id === chosen) ? '' : `<option value="" selected disabled>${escapeHtml(tr('smart.agentPresentChooseValid'))}</option>`;
+            const choices = editable ? `<label class="agent-question-choice"><span>${escapeHtml(question.text || '')}</span><select data-agent-question-choice="${escapeAttr(question.id)}" data-agent-question-owner="${escapeAttr(p.id)}"${message.presentationSending ? ' disabled' : ''}>${missingChoice}${options.map(option => `<option value="${escapeAttr(option.id)}"${chosen === option.id ? ' selected' : ''}>${escapeHtml(option.text || '')}${option.id === question.recommended ? ` · ${escapeHtml(tr('smart.agentPresentRecommended'))}` : ''}</option>`).join('')}</select></label>` : `<div>${escapeHtml(question.text || '')}</div>`;
+            return `<div class="agent-question">${choices}<ul>${options.map(option => `<li>${escapeHtml(option.text || '')}${option.id === question.recommended ? ` <small>${escapeHtml(tr('smart.agentPresentRecommended'))}</small>` : ''}${p.answers?.[question.id] === option.id ? ` <small>${escapeHtml(tr('smart.agentPresentSelected'))}</small>` : ''}</li>`).join('')}</ul></div>`;
+        }).join('') : empty;
         const status = p.state === 'answered' ? tr('smart.agentPresentAnswered') : p.state === 'expired' ? tr('smart.agentPresentExpired') : tr('smart.agentPresentPending');
         content += `<div role="status">${escapeHtml(status)}</div>`;
+        if (p.state === 'answered') content += `<div class="agent-plan-meta">${escapeHtml(tr('smart.agentPresentAnswerBoundary'))}</div>`;
         if (message.presentationSending) content += `<div role="status">${escapeHtml(tr('smart.agentPresentSending'))}</div>`;
         if (message.presentationError) content += `<div role="alert">${escapeHtml(tr('smart.agentPresentAnswerUnconfirmed'))} ${escapeHtml(message.presentationError)}</div>`;
         if (message.presentationDeliveryError) content += `<div role="alert">${escapeHtml(tr('smart.agentPresentDeliveryUnconfirmed'))} ${escapeHtml(message.presentationDeliveryError)}</div>`;
         else if (message.presentationRequestError && p.state === 'answered') content += `<div role="alert">${escapeHtml(tr('smart.agentPresentRequestRejected'))} ${escapeHtml(message.presentationRequestError)}</div>`;
-        if (readonly || message.presentationReadonly) content += `<div>${escapeHtml(tr('smart.agentPresentReadonly'))}</div>`;
+        if (readonly || message.presentationReadonly || (p.state === 'pending' && !editable)) content += `<div>${escapeHtml(tr('smart.agentPresentReadonly'))}</div>`;
         const answerable = questions.length && questions.every(q => typeof q.id === 'string' && Array.isArray(q.options) && q.options.some(option => option && typeof option.id === 'string' && option.id === q.recommended));
-        if (p.state === 'pending' && answerable && !readonly && !message.presentationReadonly) content += `<button type="button" class="agent-tui-btn" data-agent-question-answer="${escapeAttr(p.id)}"${message.presentationSending ? ' disabled' : ''}>${escapeHtml(tr('smart.agentPresentStartRecommended'))}</button>`;
+        if (editable && answerable) content += `<div class="agent-presentation-actions"><button type="button" class="agent-presentation-primary" data-agent-question-submit="${escapeAttr(p.id)}"${message.presentationSending ? ' disabled' : ''}>${escapeHtml(tr('smart.agentPresentSubmitChoices'))}</button></div><button type="button" class="agent-tui-btn" data-agent-question-answer="${escapeAttr(p.id)}"${message.presentationSending ? ' disabled' : ''}>${escapeHtml(tr('smart.agentPresentStartRecommended'))}</button>`;
     }
     return `<div class="agent-tui-msg agent-tui-presentation" data-agent-presentation="${escapeAttr(p.id)}"><strong>${escapeHtml(p.title || '')}</strong>${content}</div>`;
 }
@@ -2447,7 +2633,7 @@ function agentNodeBodyHtml(node) {
                 ? state.thoughtExpanded[entry.key] : state.thinkingVisible;
             messagesHtml += `<details class="agent-tui-thought${live ? ' agent-tui-thought-live' : ''}" data-agent-thought="${escapeAttr(entry.key)}"${open ? ' open' : ''}><summary>${agentIco('brain')} ${live ? '思考中' : '思考了'}</summary><div class="agent-tui-thinking-text">${escapeHtml(msg.text)}</div></details>`;
         } else if (msg.role === 'presentation') {
-            messagesHtml += agentPresentationHtml(msg, readonly);
+            messagesHtml += agentPresentationHtml(msg, readonly, state, nodeId);
         } else if (msg.role === 'system') {
             messagesHtml += `<div class="agent-tui-msg agent-tui-msg-system"><span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span></div>`;
         } else if (msg.role === 'completion') {
@@ -2524,7 +2710,7 @@ function agentNodeBodyHtml(node) {
     // Expansion, selection and the global brain toggle are UI changes, not new unread content.
     const timelineContent = JSON.stringify([timeline.map(entry => entry.kind === 'tools'
         ? [entry.key, entry.items.map(({ toolCallId, activity: a }) => [toolCallId, a.name, a.status, a.args, a.result, a.update, a.duration_ms])]
-        : [entry.key, entry.message.text, entry.message.attachments, entry.message.presentation,
+        : [entry.key, entry.message.text, entry.message.attachments, entry.message.presentation, entry.message.presentationDeliveryError,
             entry.message.completion ? agentCompletionBridge()?.fingerprint(entry.message.completion) : null]), state.confirm || null]);
     if (state._timelineContent != null && state._timelineContent !== timelineContent && state.scrollState && !state.scrollState.atBottom) state.scrollState.unread = true;
     state._timelineContent = timelineContent;
@@ -2943,23 +3129,249 @@ function bindAgentMessageActions(el, nodeId, projectId) {
     });
 }
 
-async function answerAgentPresentation(nodeId, projectId, state, epoch, message) {
-    const originalProject = agentProjectId();
-    const current = () => agentTuiState.get(nodeId) === state && state.viewEpoch === epoch && !state.closing
-        && !agentIsReadonly(state) && agentViewCanvasId() === projectId && agentProjectId() === originalProject
-        && canvasState.nodes.some(node => node.id === nodeId && isSmartAgentNode(node) && agentNodeHost(node) === state.viewHost)
-        && state.messages.includes(message);
-    if (!current() || state.stopPending || state.settingsPending || message.presentationReadonly
+function agentRenderPresentation(nodeId) {
+    const state = getAgentTuiState(nodeId);
+    state.presentationRenderAllowed = true;
+    try { renderAgentNode(nodeId); } finally { state.presentationRenderAllowed = false; }
+}
+
+async function agentReadPlanResponse(response, planId, allowPending = false) {
+    const body = await response.json();
+    if (!response.ok) throw Object.assign(new Error(agentNodeRefsError(body, `HTTP ${response.status}`)), {
+        planStale: response.status === 409 && body?.detail?.code === 'PLAN_STALE', detail: body?.detail,
+    });
+    if (allowPending && body?.code === 'CONFIRM_PENDING' && body.status === 'awaiting_confirmation'
+        && typeof body.confirm_id === 'string' && body.confirm_id.length > 0) return body;
+    const preview = body?.preview;
+    if (body?.plan_id !== planId || !Number.isSafeInteger(body.generation) || body.generation < 1
+        || !preview || !Array.isArray(preview.tasks) || !Array.isArray(preview.warnings)
+        || !preview.sections || typeof preview.sections !== 'object' || Array.isArray(preview.sections)
+        || preview.tasks.some(task => !task || typeof task.task_id !== 'string' || !task.task_id
+            || typeof task.name !== 'string' || typeof task.section !== 'string' || typeof task.selected !== 'boolean')
+        || new Set(preview.tasks.map(task => task.task_id)).size !== preview.tasks.length) throw new Error(tr('smart.agentPlanInvalidReceipt'));
+    return body;
+}
+
+function agentPlanDirty(view) {
+    return view.receipt?.preview.tasks.some(task => {
+        const draft = view.drafts.get(task.task_id);
+        return draft && ((draft.rename !== undefined && draft.rename !== task.name)
+            || (draft.set_section !== undefined && draft.set_section !== task.section) || draft.merge_into);
+    });
+}
+
+async function agentPlanAction(nodeId, projectId, state, epoch, message, action, ops = []) {
+    const map = state.planPreviews, view = agentPlanView(state, message), presentation = message.presentation;
+    const planId = presentation.data.plan_id, host = state.viewHost, thread = agentPresentationThread(nodeId, state);
+    const owns = agentPresentationOwner(nodeId, projectId, state, epoch, message, action === 'read');
+    const current = (restoredView = false) => owns(restoredView) && state.planPreviews === map && map.get(planId) === view
+        && message.presentation === presentation && presentation.data.plan_id === planId
+        && agentPresentationThread(nodeId, state) === thread && (action === 'read'
+            || (!message.presentationReadonly && presentation.state === 'presented'
+                && !state.stopPending && !state.settingsPending && message.presentationThread === agentPresentationThread(nodeId, state)));
+    if (!current() || view.busy || (action !== 'read' && (view.stale || view.expired))
+        || (action === 'apply' && (!agentPlanCanRequestApply(view, nodeId) || agentPlanDirty(view)
+            || view.application?.state !== 'ready' || !view.receipt.preview.tasks.some(task => task.selected)))
+        || (action === 'save' && (!agentPlanCanRequestApply(view, nodeId) || !ops.length))) return;
+    const serial = ++view.serial, generation = view.receipt?.generation;
+    view.requestEpoch = epoch; view.invalidOwner = false; view.departed = false;
+    const valid = () => !view.invalidOwner && current(true) && view.requestEpoch === state.viewEpoch && serial === view.serial;
+    // A read-only host visit suspends settlement, not ownership or a second application (#411).
+    const resume = () => state.viewHost === host ? Promise.resolve(valid()) : new Promise(resolve => {
+        view.resume = () => { delete view.resume; resolve(valid()); };
+    });
+    const base = `/api/projects/${encodeURIComponent(projectId)}/plan/previews/${encodeURIComponent(planId)}`;
+    const query = `?agent_node_id=${encodeURIComponent(nodeId)}`;
+    const headers = { 'X-Agent-Project': projectId };
+    const read = () => fetch(`${base}${query}`, { credentials: 'same-origin', cache: 'no-store', headers }).then(response => agentReadPlanResponse(response, planId));
+    const adopt = (receipt, fromRead = false) => {
+        if (view.receipt && receipt.generation < view.receipt.generation) throw new Error(tr('smart.agentPlanInvalidReceipt'));
+        const trusted = receipt.apply_via === 'human_apply' && receipt.agent_node_id === nodeId
+            && agentPlanValidApplication(receipt.application, receipt.generation);
+        if (!trusted && ['unknown', 'awaiting_confirmation', 'requesting'].includes(view.application?.state)) {
+            view.authoritative = false;
+            throw new Error(tr('smart.agentPlanInvalidReceipt'));
+        }
+        if (receipt.generation !== view.receipt?.generation) { view.applyError = null; view.noChanges = null; }
+        view.receipt = receipt;
+        view.application = trusted ? receipt.application : null;
+        if (fromRead) view.authoritative = true;
+        if (!trusted) view.authoritative = false;
+        if (trusted && receipt.application.error?.code === 'PLAN_STALE') view.expired = true;
+        view.stale = false;
+    };
+    let postStarted = false;
+    view.busy = action; view.busyCurrent = valid; view.attempted = true; view.error = ''; view.notice = '';
+    agentRenderPresentation(nodeId);
+    try {
+        const receipt = action === 'save'
+            ? await agentReadPlanResponse(await fetch(`${base}/edits${query}`, { method: 'POST', credentials: 'same-origin', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ generation, ops }) }), planId)
+            : await read();
+        if (!await resume()) return;
+        if ((generation && receipt.generation < generation) || (action === 'save' && receipt.generation !== generation + 1)) throw new Error(tr('smart.agentPlanInvalidReceipt'));
+        adopt(receipt, action !== 'save');
+        if (action === 'read') view.drafts.clear();
+        if (action === 'save') {
+            for (const op of ops) {
+                const draft = view.drafts.get(op.task_id);
+                if (draft) for (const field of ['rename', 'set_section', 'merge_into']) if (field in op) delete draft[field];
+            }
+            for (const id of view.drafts.keys()) if (!receipt.preview.tasks.some(task => task.task_id === id)) view.drafts.delete(id);
+            view.notice = tr('smart.agentPlanSaved');
+        }
+        if (action !== 'apply') return;
+        if (receipt.generation !== generation) { view.drafts.clear(); view.notice = tr('smart.agentPlanChanged'); return; }
+        if (!agentPlanCanRequestApply(view, nodeId)) throw new Error(tr('smart.agentPlanApplyUnavailable'));
+        if (view.expired || view.application.state !== 'ready') return;
+        if (!receipt.preview.tasks.some(task => task.selected)) throw new Error(tr('smart.agentPlanNoneSelected'));
+        view.application = { ...receipt.application, state: 'requesting' }; view.applyError = null; view.noChanges = null;
+        postStarted = true;
+        agentRenderPresentation(nodeId);
+        const applied = await agentReadPlanResponse(await fetch(`${base}/apply${query}`, {
+            method: 'POST', credentials: 'same-origin', headers: { ...headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ generation }),
+        }), planId, true);
+        if (!await resume()) return;
+        if (applied.code === 'CONFIRM_PENDING') {
+            view.application = { ...receipt.application, state: 'awaiting_confirmation', confirm_id: applied.confirm_id };
+        } else {
+            if (applied.generation !== generation || applied.apply_via !== 'human_apply' || applied.agent_node_id !== nodeId
+                || !agentPlanValidApplication(applied.application, generation)) throw new Error(tr('smart.agentPlanInvalidReceipt'));
+            adopt(applied);
+            if (applied.no_changes && agentPlanValidResult(applied.result, false)) view.noChanges = applied.result;
+        }
+    } catch (error) {
+        if (!await resume()) return;
+        if (error.planStale) {
+            if (action !== 'save') {
+                view.expired = true; view.notice = tr('smart.agentPlanExpired');
+                return;
+            }
+            view.error = String(error.message || error); view.stale = true; view.notice = tr('smart.agentPlanConflict');
+            // Editing CAS only refreshes review authority; it never resubmits old operations.
+            try {
+                const fresh = await read();
+                if (await resume()) { adopt(fresh, true); view.drafts.clear(); }
+            } catch (readError) { if (await resume()) view.error += ` · ${String(readError.message || readError)}`; }
+        } else if (postStarted) {
+            view.application = { ...view.application, state: 'unknown' };
+            view.applyError = error.detail?.code === 'PLAN_ALREADY_APPLIED' ? null : error.detail || { message: String(error.message || error) };
+            // HTTP failure is not proof of rollback. Only GET reconciles the reserved generation (#484).
+            try {
+                const canonical = await read();
+                if (await resume()) adopt(canonical, true);
+            } catch (readError) {
+                if (await resume()) {
+                    if (readError.planStale) view.expired = true;
+                    view.error = String(readError.message || readError);
+                }
+            }
+        } else view.error = String(error.message || error);
+    } finally {
+        if (serial === view.serial) {
+            view.busy = ''; view.busyCurrent = null;
+            if (postStarted && !valid() && view.application?.state === 'requesting') {
+                view.application = { ...view.application, state: 'unknown' }; view.authoritative = false;
+            }
+            if (valid()) agentRenderPresentation(nodeId);
+        }
+    }
+}
+
+function bindAgentPlanControls(el, nodeId, projectId, state, epoch) {
+    const messageFor = id => state.messages.find(row => row.presentation?.kind === 'plan' && row.presentation.id === id && row.presentation.data.source === 'plan_preview');
+    const attach = (attr, action) => el.querySelectorAll(`[${attr}]`).forEach(control => {
+        const message = messageFor(control.getAttribute('data-agent-plan-owner') || control.getAttribute(attr));
+        if (!message) return;
+        const owns = agentPresentationOwner(nodeId, projectId, state, epoch, message, action === 'read');
+        control.addEventListener('mousedown', event => event.stopPropagation());
+        const run = () => {
+            if (control.isConnected === false || !owns()) return;
+            const view = agentPlanView(state, message);
+            if (action === 'select') {
+                const task = view.receipt?.preview.tasks.find(task => task.task_id === control.getAttribute(attr));
+                if (!task) return;
+                const selected = control.checked;
+                control.checked = task.selected;
+                agentPlanAction(nodeId, projectId, state, epoch, message, 'save', [{ task_id: task.task_id, select: selected }]);
+            } else if (action === 'save') {
+                const id = control.getAttribute(attr), task = view.receipt?.preview.tasks.find(task => task.task_id === id), draft = view.drafts.get(id);
+                if (!task || !draft) return;
+                const ops = ['rename', 'set_section', 'merge_into'].filter(field => draft[field] !== undefined && (field === 'merge_into'
+                    ? Boolean(draft[field]) : draft[field] !== task[field === 'rename' ? 'name' : 'section'])).map(field => ({ task_id: id, [field]: draft[field] }));
+                agentPlanAction(nodeId, projectId, state, epoch, message, 'save', ops);
+            } else agentPlanAction(nodeId, projectId, state, epoch, message, action);
+        };
+        control.addEventListener(action === 'select' ? 'change' : 'click', event => { event.stopPropagation(); run(); });
+        if (action === 'read') {
+            const view = agentPlanView(state, message);
+            if (view.busy && !view.busyCurrent?.()) {
+                view.serial++; view.resume?.(); view.busy = ''; view.attempted = false; view.authoritative = false;
+                if (view.application?.state === 'requesting') view.application = { ...view.application, state: 'unknown' };
+            }
+            if (!view.attempted) run();
+        }
+    });
+    attach('data-agent-plan-refresh', 'read');
+    attach('data-agent-plan-select', 'select');
+    attach('data-agent-plan-save', 'save');
+    attach('data-agent-plan-apply', 'apply');
+    el.querySelectorAll('[data-agent-plan-draft]').forEach(input => {
+        const message = messageFor(input.getAttribute('data-agent-plan-owner'));
+        if (!message) return;
+        const owns = agentPresentationOwner(nodeId, projectId, state, epoch, message);
+        const update = () => {
+            if (input.isConnected === false || !owns() || message.presentationReadonly) return;
+            const view = agentPlanView(state, message), id = input.getAttribute('data-agent-plan-draft'), field = input.getAttribute('data-agent-plan-field');
+            if (view.busy || view.stale || view.expired || !agentPlanCanRequestApply(view, nodeId)
+                || !['rename', 'set_section', 'merge_into'].includes(field)) return;
+            view.drafts.set(id, { ...view.drafts.get(id), [field]: input.value, open: true });
+            el.querySelectorAll('[data-agent-plan-apply]').forEach(button => { button.disabled = true; });
+        };
+        input.addEventListener('mousedown', event => event.stopPropagation());
+        input.addEventListener('keydown', event => event.stopPropagation());
+        input.addEventListener('input', update); input.addEventListener('change', update);
+    });
+    el.querySelectorAll('[data-agent-plan-editor]').forEach(editor => {
+        editor.addEventListener('mousedown', event => event.stopPropagation());
+        editor.addEventListener('toggle', () => {
+            if (editor.isConnected === false) return;
+            const message = messageFor(editor.getAttribute('data-agent-plan-owner'));
+            if (!message || !agentPresentationOwner(nodeId, projectId, state, epoch, message)()) return;
+            const view = agentPlanView(state, message), id = editor.getAttribute('data-agent-plan-editor');
+            if (Boolean(view.drafts.get(id)?.open) !== editor.open) view.drafts.set(id, { ...view.drafts.get(id), open: editor.open });
+        });
+        editor.addEventListener('focusout', () => queueMicrotask(() => {
+            // Focus transfer precedes click; remounting another card control here would eat its action.
+            if (state.planDraftRerender && el.isConnected !== false && !el.contains?.(document.activeElement)
+                && !document.activeElement?.closest?.('[data-agent-plan-editor]')) {
+                state.planDraftRerender = false; renderAgentNode(nodeId);
+            }
+        }));
+    });
+}
+
+async function answerAgentPresentation(nodeId, projectId, state, epoch, message, useChoices = false) {
+    const owns = agentPresentationOwner(nodeId, projectId, state, epoch, message);
+    const current = () => owns() && !state.stopPending && !state.settingsPending;
+    if (!current() || message.presentationReadonly
         || message.presentationSending || message.presentation.state !== 'pending') return;
-    const id = message.presentation.id;
+    const id = message.presentation.id, version = message.presentationVersion || 0;
+    const chosen = Object.fromEntries((message.presentation.data.questions || []).map(q => [q.id, message.presentationChoices?.[q.id] ?? q.recommended]));
     const url = `/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/questions/${encodeURIComponent(id)}`;
+    let answerable = true;
     const read = async (response, isAnswer = false) => {
         const data = await response.json();
+        if (!isAnswer && data.answerable === false) answerable = false;
         if (!response.ok) throw Object.assign(new Error(agentNodeRefsError(data, `HTTP ${response.status}`)), { answerRejected: isAnswer });
         const p = data.presentation;
         if (!p || p.schema !== 1 || p.id !== id || p.kind !== 'question' || !p.data || !Array.isArray(p.data.questions)
-            || !['pending', 'answered', 'expired'].includes(p.state)) throw new Error(tr('smart.agentPresentInvalidReceipt'));
-        if (data.delivery_error && current()) message.presentationDeliveryError = agentNodeRefsError({ detail: data.delivery_error }, tr('smart.agentPresentDeliveryUnconfirmed'));
+            || !['pending', 'answered', 'expired'].includes(p.state)
+            || !p.data.questions.length || p.data.questions.some(q => !q || typeof q.id !== 'string' || !q.id
+                || typeof q.text !== 'string' || !Array.isArray(q.options) || q.options.length < 2
+                || q.options.some(option => !option || typeof option.id !== 'string' || !option.id || typeof option.text !== 'string')
+                || new Set(q.options.map(option => option.id)).size !== q.options.length || !q.options.some(option => option.id === q.recommended))
+            || new Set(p.data.questions.map(q => q.id)).size !== p.data.questions.length) throw new Error(tr('smart.agentPresentInvalidReceipt'));
+        if (data.delivery_error && current() && (message.presentationVersion || 0) === version) message.presentationDeliveryError = agentNodeRefsError({ detail: data.delivery_error }, tr('smart.agentPresentDeliveryUnconfirmed'));
         return p;
     };
     message.presentationSending = true;
@@ -2970,18 +3382,20 @@ async function answerAgentPresentation(nodeId, projectId, state, epoch, message)
         // A replayed/persisted pending record is not proof that its original runtime still accepts input.
         const fresh = await read(await fetch(url));
         if (!current()) return;
-        if (message.presentation.state !== 'pending') return;
+        if ((message.presentationVersion || 0) !== version || message.presentation.state !== 'pending') return;
         message.presentation = fresh;
         if (fresh.state !== 'pending') return;
+        if (!answerable) throw new Error(tr('smart.agentPresentReadonly'));
         const questions = fresh.data?.questions;
         if (!Array.isArray(questions) || !questions.length || questions.some(q => !q || typeof q.id !== 'string'
             || !Array.isArray(q.options) || !q.options.some(option => option && typeof option.id === 'string' && option.id === q.recommended))) throw new Error(tr('smart.agentPresentInvalidReceipt'));
-        const answers = Object.fromEntries(questions.map(q => [q.id, q.recommended]));
+        if (useChoices && (Object.keys(chosen).length !== questions.length || questions.some(q => !q.options.some(option => option?.id === chosen[q.id])))) throw new Error(tr('smart.agentPresentChoicesChanged'));
+        const answers = useChoices ? chosen : Object.fromEntries(questions.map(q => [q.id, q.recommended]));
         const receipt = await read(await fetch(`${url}/answers`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ answers }) }), true);
         if (!current()) return;
         if (receipt.state !== 'answered' || !receipt.answers || Object.keys(receipt.answers).length !== questions.length
             || questions.some(q => receipt.answers[q.id] !== answers[q.id])) throw new Error(tr('smart.agentPresentInvalidReceipt'));
-        message.presentation = receipt;
+        if ((message.presentationVersion || 0) === version) message.presentation = receipt;
     } catch (error) {
         // A lost response is ambiguous; an explicit server rejection must remain visible even after answer storage.
         if (current() && error.answerRejected) message.presentationRequestError = String(error.message || error);
@@ -3041,12 +3455,26 @@ function bindAgentNodeControls(el, node){
 
     bindAgentMessageActions(el, nodeId, projectId);
     const presentationState = getAgentTuiState(nodeId), presentationEpoch = presentationState.viewEpoch;
-    el.querySelectorAll('[data-agent-question-answer]').forEach(button => {
-        const message = presentationState.messages.find(row => row.presentation?.id === button.getAttribute('data-agent-question-answer'));
+    bindAgentPlanControls(el, nodeId, projectId, presentationState, presentationEpoch);
+    for (const attr of ['data-agent-question-answer', 'data-agent-question-submit']) el.querySelectorAll(`[${attr}]`).forEach(button => {
+        const message = presentationState.messages.find(row => row.presentation?.id === button.getAttribute(attr));
         button.addEventListener('mousedown', event => event.stopPropagation());
         button.addEventListener('click', event => {
             event.stopPropagation();
-            if (message) answerAgentPresentation(nodeId, projectId, presentationState, presentationEpoch, message);
+            if (message && button.isConnected !== false) answerAgentPresentation(nodeId, projectId, presentationState, presentationEpoch, message, attr === 'data-agent-question-submit');
+        });
+    });
+    el.querySelectorAll('[data-agent-question-choice]').forEach(input => {
+        const message = presentationState.messages.find(row => row.presentation?.id === input.getAttribute('data-agent-question-owner'));
+        if (!message) return;
+        const owns = agentPresentationOwner(nodeId, projectId, presentationState, presentationEpoch, message);
+        input.addEventListener('mousedown', event => event.stopPropagation());
+        input.addEventListener('keydown', event => event.stopPropagation());
+        input.addEventListener('change', event => {
+            event.stopPropagation();
+            if (!owns() || input.isConnected === false || message.presentationReadonly || message.presentationSending || message.presentation.state !== 'pending') return;
+            const id = input.getAttribute('data-agent-question-choice'), question = message.presentation.data.questions.find(q => q.id === id);
+            if (question?.options.some(option => option.id === input.value)) message.presentationChoices = { ...message.presentationChoices, [id]: input.value };
         });
     });
 
@@ -3320,13 +3748,25 @@ function bindAgentNodeControls(el, node){
 }
 
 function renderAgentNode(nodeId) {
-    // Rebuilding during composition destroys the native IME session; defer until compositionend.
     const st314 = agentTuiState.get(nodeId);
     if (st314 && st314._batchHistory) return;
+    // Native IME and in-progress plan edits must not be remounted by unrelated live events.
     if (st314 && st314.composing) { st314.pendingRerender = true; return; }
 
     const el = document.querySelector(`[data-id="${nodeId}"]`);
     if (!el) return;
+    const active = document.activeElement;
+    const planEditor = active?.closest?.('[data-agent-plan-editor]');
+    const planFocus = planEditor && el.contains?.(active) ? {
+        owner: active.getAttribute('data-agent-plan-owner'), task: active.getAttribute('data-agent-plan-draft'),
+        field: active.getAttribute('data-agent-plan-field'), start: active.selectionStart, end: active.selectionEnd,
+    } : null;
+    if (planFocus && st314 && !st314.presentationRenderAllowed && !st314.viewNeedsMount
+        && canvasState.nodes.some(node => node.id === nodeId && agentNodeHost(node) === st314.viewHost)) {
+        st314.planDraftRerender = true;
+        return;
+    }
+    if (st314) st314.planDraftRerender = false;
 
     const prevBody = el.querySelector('[data-agent-tui-body]');
     const prevInput = el.querySelector('[data-agent-tui-input]');
@@ -3365,6 +3805,14 @@ function renderAgentNode(nodeId) {
             if (focus?.focused || (!changedHost && hadFocus)) newInput.focus({ preventScroll: true });
             newInput.setSelectionRange(focus ? focus.start : selStart, focus ? focus.end : selEnd, focus?.direction);
             if (focus) newInput.scrollTop = focus.scrollTop;
+        }
+        if (planFocus && !changedHost) {
+            const input = [...bodyContainer.querySelectorAll('[data-agent-plan-draft]')].find(input => input.getAttribute('data-agent-plan-owner') === planFocus.owner
+                && input.getAttribute('data-agent-plan-draft') === planFocus.task && input.getAttribute('data-agent-plan-field') === planFocus.field);
+            if (input && !input.disabled) {
+                input.focus({ preventScroll: true });
+                if (typeof planFocus.start === 'number') input.setSelectionRange?.(planFocus.start, planFocus.end);
+            }
         }
     }
 
