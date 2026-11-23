@@ -7591,6 +7591,24 @@ function applyNodeMetaToImage(image, node){
 function inheritNodeMetaFromImage(node){
     if(!node) return;
     node.images = (node.images || []).map(img => stripImageGenerationMeta(img));
+    // #494: the image factory calls this before registration/render/save. Seed
+    // only new manual generation slots, never existing nodes, media copies or Agent policy.
+    if(node.type !== NODE_TYPE_IMAGE || node.createdBy !== 'user' || node.images.length
+        || Object.hasOwn(node, 'runSettings') || canvasState.nodes.some(item => item.id === node.id)) return;
+    const recent = recentSmartSettingsForMode();
+    const next = smartSettingsForNode();
+    if(!isApiLikeEngine(next.engine) || next.apiKind === 'video') return;
+    const selection = imageProviderSelection(recent);
+    if(!selection.error && selection.selectedModel){
+        next.provider_id = selection.providerId;
+        next.model = selection.selectedModel;
+    } else {
+        // An incomplete/stale pair is not consent to use a default provider or model.
+        next.engine = 'api';
+        next.provider_id = '';
+        next.model = '';
+    }
+    node.runSettings = settingsForStorage(next);
 }
 function cloneSmartNode(node, dx=0, dy=0){
     const copy = JSON.parse(JSON.stringify(node));

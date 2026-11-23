@@ -225,9 +225,14 @@ class CanvasCouplingReportTests(unittest.TestCase):
         rev = _cached_reverse()
         # 漂移原因统一记在 ADR 0020；这里守住精确计数，不因合法调用而豁免。
         self.assertEqual(rev["reverse_names"], 264)
-        self.assertEqual(rev["reverse_core_refs"], 992)
+        self.assertEqual(rev["reverse_core_refs"], 993)
         self.assertEqual(rev["core_dominant_names"], 177)
-        self.assertEqual(rev["core_dominant_core_refs"], 811)
+        self.assertEqual(rev["core_dominant_core_refs"], 812)
+        rows = {(row["owner"], row["name"]): row for row in rev["reverse_rows"]}
+        self.assertEqual(rows[("canvas-node-types.js", "NODE_TYPE_IMAGE")], {
+            "name": "NODE_TYPE_IMAGE", "owner": "canvas-node-types.js",
+            "core_refs": 18, "owner_refs": 1, "category": "unclassified",
+        })
         # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。
         self.assertNotIn("canvas-core.js", rev["by_owner"])
         self.assertNotIn("smart-canvas.js", rev["by_owner"])
