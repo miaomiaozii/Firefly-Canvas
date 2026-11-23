@@ -80,6 +80,12 @@ class ProductSurfaceBehaviorTests(unittest.TestCase):
         self.assertEqual(info.json(), {
             "name": "萤火画布",
             "version": main.current_app_version(),
+            "backend": {
+                "schema": 1,
+                "loaded": main.PROCESS_BACKEND_ID,
+                "source": main.PROCESS_BACKEND_ID,
+                "restart_required": False,
+            },
             "repo_url": "https://github.com/miaomiaozii/Firefly-Canvas",
             "repository": {
                 "label": "萤火画布",

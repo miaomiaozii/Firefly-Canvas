@@ -365,6 +365,10 @@ SCOPED_EXCEPTIONS = {
     ("tools/refresh_cache.py", LOGS_PATTERN): {
         '_SKIP_DIRS = {"node_modules", "data", "assets", "output", "logs", "tmp", "venv", "browser-profiles"}',
     },
+    # #488: This excluded diagnostics directory is not a history field; only this exact line is exempt.
+    ("app/backend_source.py", LOGS_PATTERN): {
+        '_SKIP_DIRS = {"__pycache__", "node_modules", "data", "assets", "output", "logs", "tmp", "runtime", "projects", "venv", "browser-profiles"}',
+    },
 }
 
 # #373 (ae997cb, ADR 0004 revision): remove only the exact option inside the
@@ -540,6 +544,7 @@ class TerminologyGuardTests(unittest.TestCase):
             ("tests/test_comfyui_generation_472.py", "ComfyUI", "assert 'ComfyUI' in error.value.detail", 'label = "ComfyUI 生图模式"'),
             ("app/services/generation.py", "外链", "现在全部走 store / 本地媒体解析，只有真正的外部 http(s) 外链才允许下网。", 'label = "项目媒体原件：外链"'),
             ("tests/test_server_logging.py", LOGS_PATTERN, 'self.assertEqual(directory, Path(tmp) / "logs")', 'history = data["logs"]'),
+            ("app/backend_source.py", LOGS_PATTERN, '_SKIP_DIRS = {"__pycache__", "node_modules", "data", "assets", "output", "logs", "tmp", "runtime", "projects", "venv", "browser-profiles"}', 'history = data["logs"]'),
         ]
         with tempfile.TemporaryDirectory() as tmpdir:
             test_file = Path(tmpdir) / "source.txt"

@@ -2,6 +2,12 @@
     if(!window.StudioI18n) return;
     window.StudioI18n.register({
         "common.productName": { zh: "萤火画布" },
+        "serviceVersion.restartTitle": { zh: "服务需要重启" },
+        "serviceVersion.unknownTitle": { zh: "服务版本未确认" },
+        "serviceVersion.stale": { zh: "后端已更新，需要重启服务。请在萤火画布托盘菜单选择“重启服务”；若使用 run.bat 启动，请先在原服务窗口按 Ctrl+C 停止，再运行 run.bat，然后重新载入页面。仅刷新缓存不会加载新的后端代码。" },
+        "serviceVersion.legacy": { zh: "当前服务未提供后端版本信息，无法确认已加载新代码。请在萤火画布托盘菜单选择“重启服务”；若使用 run.bat 启动，请先在原服务窗口按 Ctrl+C 停止，再运行 run.bat，然后重新载入页面。" },
+        "serviceVersion.unknown": { zh: "无法确认运行中的后端版本；这不代表代码版本不一致。请检查服务是否已启动，恢复连接后重新检查。" },
+        "serviceVersion.retry": { zh: "重新检查" },
         "common.apiSettings": { zh: "API 设置", en: "API Settings" },
         "common.darkMode": { zh: "黑夜模式", en: "Dark Mode" },
         "common.lightMode": { zh: "白天模式", en: "Light Mode" },

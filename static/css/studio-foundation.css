@@ -7,6 +7,36 @@
   display: none !important;
 }
 
+.service-version-notice {
+  position: fixed;
+  top: 64px;
+  right: 16px;
+  z-index: 10001;
+  display: grid;
+  gap: 8px;
+  max-width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 96px);
+  overflow: auto;
+  padding: 14px 16px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-panel);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow-overlay);
+  font: 400 13px/1.55 var(--font-sans);
+}
+.service-version-notice strong { color: var(--danger); }
+.service-version-notice button {
+  justify-self: start;
+  padding: 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-utility);
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
 :root {
   --page: #f5f5f5;
   --panel: #fafaf8;

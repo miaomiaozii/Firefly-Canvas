@@ -1,4 +1,7 @@
 """Firefly Canvas server - app assembly (auto-split from monolith)."""
+# Freeze the source snapshot before importing code that an update cannot reload (#488).
+from app.backend_version import PROCESS_BACKEND_ID
+
 import logging
 import os as _os_boot
 import sys
