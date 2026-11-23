@@ -268,6 +268,13 @@ let previewZoom = 1.0;
 let previewPan = {x:0, y:0};
 let previewComparePos = 50;
 let viewport = {x:0, y:0, scale:1};
+const smartAgentViewport = window.FireflyAgentViewport.create({
+    getProjectId: () => canvasProjectGone ? '' : canvasId,
+    getViewport: () => viewport,
+    getNodes: () => canvasState.nodes,
+    shell, world,
+    applyViewport: next => { Object.assign(viewport, next); applyViewport(); },
+});
 const PROJECT_VIEWPORT_STORAGE_PREFIX = 'firefly_canvas_viewport_v1:';
 function isProjectCanvasData(source=canvas){
     return source?.format === 'firefly-canvas-v1' || params.get('project_mode') === '1';
@@ -5464,13 +5471,13 @@ function connectAssetLibrarySyncSocket(){
     let socket;
     let retryTimer = null;
     let goneProbeInFlight = false;
+    let stopped = false;
     const scheduleReconnect = () => {
-        // #382：项目已确认没了就不再排重连（旧代码无条件每 3 秒重连，对已删项目刷 404）。
-        if(canvasProjectGone) return;
+        if(stopped || canvasProjectGone) return;
         retryTimer = setTimeout(connect, 3000);
     };
     const connect = () => {
-        if(canvasProjectGone) return;
+        if(stopped || canvasProjectGone) return;
         try {
             const projectQuery = canvasId ? `&project_id=${encodeURIComponent(canvasId)}` : '';
             socket = new WebSocket(`${protocol}://${host}/ws/stats?client_id=${clientId}${projectQuery}`);
@@ -5478,24 +5485,31 @@ function connectAssetLibrarySyncSocket(){
             scheduleReconnect();
             return;
         }
-        socket.onmessage = event => {
+        const activeSocket = socket;
+        activeSocket.onopen = () => {
+            if(stopped || socket !== activeSocket || canvasProjectGone) return;
+            smartAgentViewport.connect(activeSocket);
+        };
+        activeSocket.onmessage = event => {
+            if(stopped || socket !== activeSocket || canvasProjectGone) return;
+            if(typeof event.data !== 'string') return;
             try {
+                smartAgentViewport.handleMessage(activeSocket, event.data);
                 const data = JSON.parse(event.data);
                 if(data?.type === 'asset_library_updated') handleAssetLibraryUpdatedMessage(data);
                 if(data?.type === 'canvas_updated') handleCanvasUpdatedMessage(data);
             } catch(e) { /* #348: 素材同步 WS 的畸形消息——跳过该条，连接不受影响 */ }
         };
-        socket.onclose = (event) => {
-            if(canvasProjectGone) return;
+        activeSocket.onclose = (event) => {
+            smartAgentViewport.disconnect(activeSocket);
+            if(stopped || socket !== activeSocket || canvasProjectGone) return;
             // #382：1013 = 项目被删/清理，服务端主动断开（ProjectCleanupActive）——认定没了，停止重连。
             if(event && Number(event.code) === 1013){
                 markCanvasProjectGone();
                 return;
             }
-            // #382：项目被删后 /ws/stats 升级返回 404，浏览器只报 close 1006（和网络断线无法区分）。
-            // 重连前先摸一次画布 meta 确认项目还活着：404 = 没了 → markCanvasProjectGone
-            //（停自动保存 + 给用户导出/返回出口，复用 #377），之后不再重试；
-            // 200 或网络本身不通 = 普通断线 → 保持原 3 秒重连节奏。
+            // Failed WS upgrades hide HTTP 404 behind close 1006; probe meta
+            // before retrying so a deleted project cannot reconnect forever (#382).
             if(!canvasId || goneProbeInFlight){
                 scheduleReconnect();
                 return;
@@ -5517,12 +5531,15 @@ function connectAssetLibrarySyncSocket(){
                     goneProbeInFlight = false;
                 });
         };
-        socket.onerror = () => {
-            try { socket.close(); } catch(e) { /* #348: 防御性——close 可能再抛，重连由 onclose 定时器安排 */ }
+        activeSocket.onerror = () => {
+            if(stopped || socket !== activeSocket) return;
+            try { activeSocket.close(); } catch(e) { /* #348: Reconnect remains owned by onclose. */ }
         };
     };
     window.addEventListener('beforeunload', () => {
+        stopped = true;
         clearTimeout(retryTimer);
+        smartAgentViewport.destroy();
         try { socket?.close(); } catch(e) { /* #348: 页面卸载时的防御性关闭 */ }
     });
     connect();
@@ -6848,6 +6865,9 @@ async function retryCanvasRecovery(){
     if(loaded){
         syncApiKindToggleVisibility();
         render();
+        if(window.parent === window || !window.parent){
+            requestAnimationFrame(() => smartAgentViewport.ready());
+        }
     }
 }
 
@@ -7142,6 +7162,7 @@ function canvasProjectDeleted(){ return canvasProjectGone; }
 function markCanvasProjectGone(){
     if(canvasProjectGone) return false;
     canvasProjectGone = true;
+    smartAgentViewport.destroy();
     clearTimeout(debouncedSaveTimer);
     debouncedSaveTimer = null;
     contentDirty = false;
@@ -17608,5 +17629,8 @@ window.onload = async () => {
     if(canvasLoaded){
         syncApiKindToggleVisibility();
         render();
+        if(window.parent === window || !window.parent){
+            requestAnimationFrame(() => smartAgentViewport.ready());
+        }
     }
 };

@@ -15,6 +15,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 import json
 import sqlite3
+import math
 import uuid
 import weakref
 from typing import Callable
@@ -71,10 +72,6 @@ async def present_agent(project_id: str, request: Request):
         raise agent_refs.invalid('Expected a JSON object') from exc
     return await agent_present.agent_present_call(_app_main.FIREFLY_PROJECT_STORE, agent_host_manager, project_id,
                                     request.query_params.get('agent_node_id', ''), args, binding='rest')
-
-
-# Global viewport state per project
-VIEWPORT_STATE = {}
 
 
 class _JournalUnsettled(RuntimeError):
@@ -521,32 +518,6 @@ async def _broadcast_canvas_updated(project_id: str, source: str = "", *, update
         await manager.broadcast_canvas_updated(project_id, int(updated_at or _app_main.now_ms()), source=source, **operation)
     except Exception:
         pass  # broadcast is best-effort; never fail the mutation because of it
-
-
-async def _dispatch_viewport_command(project_id: str, command: dict) -> bool:
-    """#243: viewport commands go to ONE owning tab, targeted (not broadcast).
-
-    Resolves the tab's client_id by walking the manager's live connections
-    against the project_sessions registry (the registry is keyed by
-    id(token), so object-keyed lookup goes through session_project), then
-    uses send_personal_message (ADR 0022: 命令单 client 定向下发). Returns
-    False when the tab is not (or no longer) connected — the viewport state
-    was still updated server-side.
-    """
-    from app.project_sessions import session_project
-    manager = getattr(_app_main, "manager", None)
-    if manager is None:
-        return False
-    for connection in list(manager.active_connections):
-        if session_project(connection) != project_id:
-            continue
-        client_id = manager.connection_clients.get(connection)
-        if not client_id:
-            continue
-        message = {"type": "canvas_viewport_command", "project_id": project_id, **command}
-        await manager.send_personal_message(message, client_id)
-        return True
-    return False
 
 
 def _open_canvas(project_id: str) -> dict:
@@ -2565,75 +2536,95 @@ async def delete_media_core(project_id: str, asset_id: str) -> dict:
 # =============================================================================
 
 
+def _viewport_project_header(project_id: str, declared: str | None) -> None:
+    if declared is not None and declared != project_id:
+        raise agent_error(403, 'PROJECT_MISMATCH', 'X-Agent-Project does not match the requested project',
+                          '使用当前项目的 X-Agent-Project。')
+
+
+async def _viewport_body(request: Request) -> dict:
+    try:
+        body = await request.json()
+    except (ValueError, RecursionError) as exc:
+        raise agent_error(400, 'INVALID_ARGUMENT', 'Expected a JSON object', '检查 JSON 请求体。') from exc
+    if not isinstance(body, dict):
+        raise agent_error(400, 'INVALID_ARGUMENT', 'Expected a JSON object', '检查 JSON 请求体。')
+    return body
+
+
 @viewport_router.post("/focus", dependencies=_AGENT_WRITE)
 async def focus_node(project_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Scroll canvas to focus on a node."""
-    body = await request.json()
+    _viewport_project_header(project_id, request.headers.get('X-Agent-Project'))
+    body = await _viewport_body(request)
     return await focus_node_core(project_id, body.get("node_id"))
 
 
 @viewport_router.post("/zoom", dependencies=_AGENT_WRITE)
 async def set_zoom(project_id: str, request: Request, x_agent_project: str = Header(default="")):
     """Set the canvas zoom level."""
-    body = await request.json()
+    _viewport_project_header(project_id, request.headers.get('X-Agent-Project'))
+    body = await _viewport_body(request)
     return await set_zoom_core(project_id, body.get("level"))
 
 
-async def focus_node_core(project_id: str, node_id: str) -> dict:
-    """Focus the canvas viewport on a node (Request-free core).
+async def _viewport_project_snapshot(project_id: str):
+    # open_project repairs metadata and migrates legacy nodes, even for rejected view calls.
+    store = _app_main.FIREFLY_PROJECT_STORE
+    if store is None:
+        raise agent_error(500, 'SERVER_NOT_READY', 'Project store not initialized',
+                          '服务端未就绪；请用户重启服务后重试，不要反复调工具。')
+    try:
+        canvas, _ = await asyncio.to_thread(store.agent_inverse_snapshot, project_id)
+    except (ProjectStoreError, OSError, ValueError) as exc:
+        raise agent_error(404, 'PROJECT_NOT_FOUND', f'Project not found: {project_id}',
+                          '项目不存在或画布不可读；请先在浏览器中打开项目恢复。') from exc
+    return store, canvas
 
-    #243: besides updating the server-side viewport state, the command is
-    dispatched TARGETED to the single tab that has the project open (not
-    broadcast, ADR 0022). Frontend consumption of `canvas_viewport_command`
-    is a follow-up (smart-canvas.js is in a separate queue).
-    """
-    _validate_project(project_id)
-    if not node_id:
-        raise agent_error(400, "INVALID_ARGUMENT", "node_id is required",
+
+async def focus_node_core(project_id: str, node_id: str) -> dict:
+    """Validate the target before asking the owning browser for an applied receipt."""
+    store, canvas = await _viewport_project_snapshot(project_id)
+    if not isinstance(node_id, str) or not node_id.strip() or len(node_id) > 512:
+        raise agent_error(400, "INVALID_ARGUMENT", "node_id must be a nonempty string (maximum 512 characters)",
                           "先调用 canvas.list_nodes 获取节点 ID。")
 
-    # Get the node's position
-    target_node = _find_node(project_id, node_id)
-
-    # Store the viewport state
-    x = target_node.get("x", 0)
-    y = target_node.get("y", 0)
-    VIEWPORT_STATE[project_id] = {
-        "focus_node_id": node_id,
-        "x": x,
-        "y": y,
-        "scale": 1.0,
-        "updated_at": time.time(),
-    }
-
-    dispatched = await _dispatch_viewport_command(project_id, {"command": "focus", "node_id": node_id, "x": x, "y": y})
-    return {"success": True, "node_id": node_id, "dispatched": dispatched}
+    if not any(isinstance(node, dict) and str(node.get('id', '')) == node_id
+               for node in canvas.get('nodes', [])):
+        raise agent_error(404, 'NODE_NOT_FOUND', f'Node not found: {node_id}',
+                          '先调用 canvas.list_nodes 查看画布上的真实节点 ID。')
+    from app.services.canvas_viewport import request_viewport
+    receipt = await request_viewport(project_id, 'focus', store, node_id=node_id)
+    return {'success': True, 'node_id': node_id, 'dispatched': True,
+            'command_id': receipt['command_id'],
+            'viewport': {key: receipt[key] for key in ('x', 'y', 'scale')}}
 
 
 async def set_zoom_core(project_id: str, level) -> dict:
     """Set the canvas zoom level (Request-free core). See focus_node_core."""
-    _validate_project(project_id)
-    if level is None:
-        raise agent_error(400, "INVALID_ARGUMENT", "level is required",
-                          "viewport.set_zoom 需要数字 level（1.0 = 100%）。")
+    store, _ = await _viewport_project_snapshot(project_id)
+    if type(level) not in (int, float) or not 0.1 <= level <= 8 or not math.isfinite(level):
+        raise agent_error(400, "INVALID_ARGUMENT", "level must be a finite JSON number in 0.1..8",
+                          "viewport.zoom 需要数字 level（1.0 = 100%），不能使用字符串或布尔值。")
 
-    # Store the viewport state
-    current = VIEWPORT_STATE.get(project_id, {})
-    VIEWPORT_STATE[project_id] = {
-        **current,
-        "scale": float(level),
-        "updated_at": time.time(),
-    }
-
-    dispatched = await _dispatch_viewport_command(project_id, {"command": "zoom", "level": float(level)})
-    return {"success": True, "level": level, "dispatched": dispatched}
+    from app.services.canvas_viewport import request_viewport
+    receipt = await request_viewport(project_id, 'zoom', store, level=level)
+    return {'success': True, 'level': level, 'dispatched': True,
+            'command_id': receipt['command_id'],
+            'viewport': {key: receipt[key] for key in ('x', 'y', 'scale')}}
 
 
 @viewport_router.get("/state")
-async def get_viewport_state(project_id: str, x_agent_project: str = Header(default="")):
-    """Get the current viewport state."""
-    _validate_project(project_id)
-    return VIEWPORT_STATE.get(project_id, {"scale": 1.0, "x": 0, "y": 0})
+async def get_viewport_state(project_id: str, x_agent_project: str | None = Header(default=None)):
+    """Get a fresh browser observation; an omitted legacy GET header remains valid."""
+    _viewport_project_header(project_id, x_agent_project)
+    return await get_viewport_state_core(project_id)
+
+
+async def get_viewport_state_core(project_id: str):
+    store, _ = await _viewport_project_snapshot(project_id)
+    from app.services.canvas_viewport import request_viewport
+    return await request_viewport(project_id, 'state', store)
 
 
 # =============================================================================

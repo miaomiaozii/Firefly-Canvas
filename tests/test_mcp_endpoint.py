@@ -19,6 +19,8 @@ import tempfile
 import time
 import unittest
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -36,6 +38,7 @@ from app.routers.api_agent_tools import wait_for_task_core
 from app.services.agent_host import agent_host_manager
 from app.services.agent_tools_manifest import TOOL_NAMES
 from tests.fake_agent_host import FakeAgentProcess, install_stub_pi_cli, restore_stub_pi_cli
+from tests.test_canvas_viewport_485 import protocol_roundtrip, quiet_lifetime, open_socket
 
 
 def run_async(coro):
@@ -417,40 +420,35 @@ class McpToolBehaviorTests(McpTestBase):
         self.assertEqual(frames[-1].get("source"), "", frames[-1])
 
     def test_viewport_focus_targets_single_tab(self):
-        tab = self.open_tab()
-        import json as _json
-        rv = self.tool_result(self.tool_call("canvas.create_node",
-                                        {"node": {"type": "prompt", "x": 10, "y": 20}},
-                                        request_id=61))
-        vp_id = _json.loads(rv["content"][0]["text"])["node_id"]  # #343
-        other = self.store.create_project("Other Project")
-        other_tab = self.open_tab(project_id=other["id"])
-        result = self.tool_result(self.tool_call("viewport.focus", {"node_id": vp_id},
-                                                 request_id=62, project=self.project_id))
-        self.assertFalse(result["isError"], result)
-        body = json.loads(result["content"][0]["text"])
-        self.assertTrue(body["dispatched"], "owning tab is connected, dispatch expected")
-        cmds = tab.sent_of("canvas_viewport_command")
-        self.assertTrue(cmds, f"owning tab must receive the viewport command: {tab.sent}")
-        self.assertEqual(cmds[-1]["command"], "focus")
-        self.assertEqual(cmds[-1]["node_id"], vp_id)
-        self.assertEqual(cmds[-1]["x"], 10)
-        self.assertFalse(other_tab.sent_of("canvas_viewport_command"),
-                         "viewport command must be targeted, not broadcast")
+        self.store.apply_mutations(self.project_id, [{'op': 'upsert_node', 'node': {
+            'id': 'viewport-prompt', 'type': 'smart-prompt', 'x': 10, 'y': 20,
+        }}], base_revision=0)
+        other = self.store.create_project('Other Project')
+        with patch.object(main.app.router, 'lifespan_context', quiet_lifetime), patch(
+            'subprocess.Popen', side_effect=AssertionError('native startup forbidden')
+        ), TestClient(main.app, base_url='http://127.0.0.1') as client, ThreadPoolExecutor(max_workers=2) as pool:
+            with open_socket(client, other['id'], 'canvas_other') as other_tab:
+                result = self.tool_result(protocol_roundtrip(client, pool, self.project_id, 'focus',
+                                                            {'node_id': 'viewport-prompt'}, transport='mcp'))
+                self.assertFalse(result['isError'], result)
+                body = json.loads(result['content'][0]['text'])
+                self.assertTrue(body['dispatched'])
+                self.assertEqual(body['node_id'], 'viewport-prompt')
+                self.assertEqual(body['viewport'], {'x': -420, 'y': 73.5, 'scale': 1.75})
+                from tests.test_canvas_viewport_485 import frame
+                other_tab.send_text('ping')
+                self.assertEqual(frame(other_tab), {'type': 'pong'})
 
-    def test_viewport_zoom_without_connected_tab_still_updates_state(self):
-        self.open_tab()  # tab registered but... we test state fallback
-        # disconnect the tab's transport to simulate a closed tab
-        tab = self.tabs[0]
-        main.manager.user_connections.pop(tab.client_id, None)
-        main.manager.connection_clients.pop(tab, None)
-        main.manager.active_connections.remove(tab)
-        result = self.tool_result(self.tool_call("viewport.zoom", {"level": 1.5},
-                                                 request_id=63))
-        body = json.loads(result["content"][0]["text"])
-        self.assertFalse(body["dispatched"], "no live tab -> dispatch must be false")
-        state = self.tool_result(self.tool_call("viewport.state", {}, request_id=64))
-        self.assertEqual(json.loads(state["content"][0]["text"])["scale"], 1.5)
+    def test_viewport_zoom_without_ready_tab_rejects_without_cached_state(self):
+        with patch.object(main.app.router, 'lifespan_context', quiet_lifetime), TestClient(
+            main.app, base_url='http://127.0.0.1'
+        ) as client, open_socket(client, self.project_id):
+            from tests.test_canvas_viewport_485 import viewport_mcp
+            for command, args in (('zoom', {'level': 1.5}), ('state', {})):
+                result = self.tool_result(viewport_mcp(client, self.project_id, command, args))
+                self.assertTrue(result['isError'], result)
+                self.assertEqual(result['structuredContent']['code'], 'SERVER_NOT_READY')
+                self.assertEqual(result['structuredContent']['details']['reason'], 'VIEWPORT_NOT_READY')
 
     def test_generate_wait_timeout_honored(self):
         task_id = "task-mcp-wait-test"

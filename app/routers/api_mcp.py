@@ -68,7 +68,7 @@ from app.routers.api_agent_tools import (
     focus_node_core,
     get_node,
     get_task_status,
-    get_viewport_state,
+    get_viewport_state_core,
     list_media,
     list_nodes_core,
     request_confirmation_core,
@@ -478,7 +478,7 @@ async def _impl_media_delete(project_id, agent_node_id, args):
 
 
 async def _impl_viewport_focus(project_id, agent_node_id, args):
-    return await focus_node_core(project_id, str(args.get("node_id") or ""))
+    return await focus_node_core(project_id, args.get("node_id"))
 
 
 async def _impl_viewport_zoom(project_id, agent_node_id, args):
@@ -486,7 +486,7 @@ async def _impl_viewport_zoom(project_id, agent_node_id, args):
 
 
 async def _impl_viewport_state(project_id, agent_node_id, args):
-    return await get_viewport_state(project_id)
+    return await get_viewport_state_core(project_id)
 
 
 async def _impl_view(project_id, agent_node_id, args):
@@ -708,7 +708,7 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
         params = {}
     name = str(params.get("name") or "")
     args = params.get("arguments", params.get("args", {}))
-    if name not in LAYOUT_TOOLS | PLAN_TOOLS | agent_batch.TOOLS | {"agent.present", "canvas.batch_prompt_edit", "chat.history", "chat.search"} and not isinstance(args, dict):
+    if name not in LAYOUT_TOOLS | PLAN_TOOLS | agent_batch.TOOLS | {"agent.present", "canvas.batch_prompt_edit", "chat.history", "chat.search", "viewport.focus", "viewport.zoom", "viewport.state"} and not isinstance(args, dict):
         args = params.get("args")
         if not isinstance(args, dict):
             args = {}
@@ -726,8 +726,8 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
     slow_timeout = SLOW_TOOL_TIMEOUTS.get(name)
     turn_lease = None
     try:
-        if name in ('chat.history', 'chat.search') and not isinstance(args, dict):
-            raise agent_error(400, 'INVALID_ARGUMENT', 'Chat tool arguments must be a JSON object')
+        if name in ('chat.history', 'chat.search', 'viewport.focus', 'viewport.zoom', 'viewport.state') and not isinstance(args, dict):
+            raise agent_error(400, 'INVALID_ARGUMENT', 'Tool arguments must be a JSON object')
         writes = name in WRITE_TOOLS
         if name == "canvas.batch_prompt_edit":
             from app.services.agent_batch_prompt import parse
@@ -750,8 +750,13 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
             if name == "plan.import_excel":
                 raise file_not_allowed()
             raise ValueError("Expected a JSON object")
-        project_id = resolve_project(str(request.query_params.get("project") or ""))
-        if name in ('agent.present', 'chat.history', 'chat.search'):
+        explicit_project = str(request.query_params.get('project') or '').strip()
+        if name in ('viewport.focus', 'viewport.zoom', 'viewport.state') and explicit_project:
+            # Viewport readiness and project errors belong to the shared core, not legacy open-tab arbitration.
+            project_id = explicit_project
+        else:
+            project_id = resolve_project(explicit_project)
+        if name in ('agent.present', 'chat.history', 'chat.search', 'viewport.focus', 'viewport.zoom', 'viewport.state'):
             declared = request.headers.get('X-Agent-Project')
             if declared is not None and declared != project_id:
                 raise agent_error(403, 'PROJECT_MISMATCH', 'X-Agent-Project does not match the requested project',

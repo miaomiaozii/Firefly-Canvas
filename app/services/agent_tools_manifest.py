@@ -248,9 +248,9 @@ TOOLS = [
     {"name": "media.upload", "description": "单独导入项目媒体：file_path 为服务器本机路径；或使用 attachment_id 将已发送的会话图片在浏览器批准后明确归档。仅传其中一项。", "inputSchema": {"type": "object", "properties": {"file_path": {"type": "string"}, "attachment_id": _ATTACHMENT_ID}, "required": [], "oneOf": [{"required": ["file_path"]}, {"required": ["attachment_id"]}], "additionalProperties": False}},
     {"name": "media.list", "description": "列出项目媒体资源", "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}},
     {"name": "media.delete", "description": "删除媒体资源（需画布确认门批准）", "inputSchema": {"type": "object", "properties": {"asset_id": {"type": "string"}}, "required": ["asset_id"], "additionalProperties": False}},
-    {"name": "viewport.focus", "description": "画布视口聚焦到节点（定向下发给打开该项目的标签页）", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"], "additionalProperties": False}},
-    {"name": "viewport.zoom", "description": "设置画布缩放级别（定向下发给打开该项目的标签页）", "inputSchema": {"type": "object", "properties": {"level": {"type": "number", "minimum": 0.1, "maximum": 8.0, "description": "缩放倍率 0.1..8.0"}}, "required": ["level"], "additionalProperties": False}},
-    {"name": "viewport.state", "description": "读取当前视口状态（最近一次 focus/zoom 命令）", "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}},
+    {"name": "viewport.focus", "description": "将唯一就绪画布窗口中的浮动节点对齐 shell 中心，保留缩放；等待实际应用回执，停靠 Agent 拒绝聚焦，超时结果不明勿自动重试", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"], "additionalProperties": False}},
+    {"name": "viewport.zoom", "description": "将唯一就绪画布窗口设置为绝对缩放级别（0.1..8），保持 shell 中心世界点；等待实际应用回执，超时结果不明勿自动重试", "inputSchema": {"type": "object", "properties": {"level": {"type": "number", "minimum": 0.1, "maximum": 8.0, "description": "缩放倍率 0.1..8.0"}}, "required": ["level"], "additionalProperties": False}},
+    {"name": "viewport.state", "description": "向唯一就绪画布窗口发起新观测，读取真实 x/y/scale（含人工手势），不回命令缓存；无就绪或多窗口时拒绝", "inputSchema": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}},
 ]
 
 TOOL_NAMES = {t["name"] for t in TOOLS}

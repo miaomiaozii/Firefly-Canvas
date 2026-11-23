@@ -310,3 +310,13 @@ ready 表示当前代次尚未提交且无待决应用；awaiting_confirmation �
 - 本票批次审计为严格门：待决、修订、批准/拒绝等必要事件 `_persist_event` 失败以 `500 JOURNAL_WRITE_FAILED` 拒绝（仍在等待的 HTTP 调用返回该错误；后台错误不伪造第二次 HTTP 回包），不以 UI 广播或内存变化冒充写成，不放行未经审计的授权、扣款或任务。停止遇审计失败仍撤能力，但错误可见；不为补日志恢复旧许可。该严格规则不全局改写普通工具的旧 bool 日志合同。
 - 同一修订的旧门 resolution 与新门 pending 合为一次 JSONL append；在捕获到写入/flush 的 OSError 或短写时尝试 truncate 回原文件长度，再报告失败。**这是 handled-write rollback，不是 fsync、掉电安全、跨进程事务或 ACID**；rollback 本身也可能失败，seq 可有空洞。JSONL、RAM grant、额度和外部任务不构成跨介质 exactly-once；先审计后消费的进程崩溃可能留下未执行审计，不能据此自动重试未知副作用。
 - 批次/快照/门/token/grant 仅在本进程 RAM；读取/编辑不延寿，不新增 90 秒业务过期。重启、淘汰或真实 scope 失效后不从 JSONL 回放复活批准或执行，不承诺 RAM grant 重启续跑；真正持久任务仍按既有证据查询/结算。上述合同不代表真实模型、原生 SDK、付费服务商或完整 #412 UI 已验证。
+
+## 修订（#485）：真实画布视口与应用回执
+
+显式取代上文 #243 遗留的 `VIEWPORT_STATE` 命令缓存及「投递即成功」：`viewport.focus/zoom/state` 沿原 REST/MCP 参数面，经现有项目 stats WebSocket 下发到唯一就绪的顶层画布窗口，不创建新的 Agent、会话或控制 WebSocket。普通 stats、旧页面、项目尚未加载/恢复和内嵌画布不算就绪；同项目多个就绪窗口 fail-closed，错误说明实际窗口数并提示关闭多余窗口。
+
+- 连接以实际 socket + store + 项目 + 服务端随机代次绑定；client_id 只是既有 stats 身份，不授权路由。校验中的握手先登记但不算就绪，ready_ack 后才收命令；断连、项目关闭/成功回收或页面卸载同时退役该登记，失败回收不撤销现有能力。同一 Store 的目录回收后恢复也必须重新握手，旧异步校验完成不能恢复旧登记。项目库替换即使保留旧目录，也关闭旧传输并要求新连接重新握手，不复用旧库的就绪身份。pending 有界，不队列重放，不转投另一窗口；ACK 必须绑定命令 ID/动作/项目/socket/代次，未知、迟到及重复回执不能完成另一请求。
+- focus 保留 scale，以当前可渲染 DOM 几何对齐 shell 中心；不避让浮层，不改节点坐标、选择、焦点、草稿或停靠状态。停靠 Agent 明确拒绝；未存在目标为 NODE_NOT_FOUND。node_id 不作 CSS 拼接，最大 512 Unicode 码点。zoom 严格接受 JSON number 0.1..8 绝对级别，以 shell 中心世界点为锚，不接受 bool/string/null/非有限值或越界值。
+- focus/zoom 的成功仅来自绘制后的 applied 回执；state 每次新发只读观测并返回真实 x/y/scale，人工拖动、滚轮、minimap、快捷键和视口恢复后读口一致。不把实际 scale 误限制到工具 level 的范围，也不伪造 0/0/1 默认值。
+- 等待上限固定 3000ms，不新增参数。无就绪/忙碌为可说明的未就绪；发送后断连/超时为 TOOL_TIMEOUT、不可自动重试，details 明确 outcome unknown，建议先用 state 核实；不声称未应用或做补偿。未发出前失败与已投递后不确定结果区分，浏览器任意错误 code 不透传。
+- ready/state/reconnect 不移动 world，普通内容/资源/生成/批次事件不因此新增自动抢镜；视图不写 canvas.json/revision、undo、agent_ops、usage 或 provider/native，不计为工具写文档操作。沿用同源/Host 和原项目头规则：REST POST 要匹配 X-Agent-Project，GET 若给则必须匹配；工具参数不承载 Agent 身份或选窗口参数。

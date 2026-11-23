@@ -1,5 +1,7 @@
 """Tests for agent viewport tools API endpoints (issue #124)."""
 import sys
+from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,7 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import main
-from app.routers import api_agent_tools
+from tests.test_canvas_viewport_485 import protocol_roundtrip, quiet_lifetime
 from firefly_projects import ProjectStore
 
 
@@ -23,20 +25,28 @@ class AgentViewportToolsTests(unittest.TestCase):
         self.store = ProjectStore(Path(self.temp_dir.name) / "projects", snapshot_delay=0)
         self.previous_store = main.FIREFLY_PROJECT_STORE
         main.FIREFLY_PROJECT_STORE = self.store
+        self.lifetime_patch = patch.object(main.app.router, 'lifespan_context', quiet_lifetime)
+        self.lifetime_patch.start()
+        self.native_patch = patch('subprocess.Popen', side_effect=AssertionError('native startup forbidden'))
+        self.native_patch.start()
         self.client = TestClient(main.app, base_url="http://127.0.0.1", headers={"origin": "http://127.0.0.1"})
+        self.client.__enter__()
+        self.pool = ThreadPoolExecutor(max_workers=2)
 
         self.project_id = self.store.create_project("Viewport Tools Test")["id"]
         self.store.apply_mutations(
             self.project_id,
             [
-                {"op": "upsert_node", "node": {"id": "node-1", "type": "smart-image", "title": "Test Node", "x": 100, "y": 200}},
+                {"op": "upsert_node", "node": {"id": "node-1", "type": "smart-prompt", "title": "Test Node", "x": 100, "y": 200}},
             ],
             base_revision=0,
         )
 
     def tearDown(self):
-        api_agent_tools.VIEWPORT_STATE.pop(self.project_id, None)
-        self.client.close()
+        self.pool.shutdown(wait=True)
+        self.client.__exit__(None, None, None)
+        self.native_patch.stop()
+        self.lifetime_patch.stop()
         self.store.close()
         main.FIREFLY_PROJECT_STORE = self.previous_store
         self.temp_dir.cleanup()
@@ -50,7 +60,7 @@ class AgentViewportToolsTests(unittest.TestCase):
 
     def test_focus_node(self):
         """viewport.focus scrolls to a node."""
-        response = self._post_viewport("focus", {"node_id": "node-1"})
+        response = protocol_roundtrip(self.client, self.pool, self.project_id, 'focus', {'node_id': 'node-1'})
         self.assertEqual(response.status_code, 200, response.text)
         data = response.json()
         self.assertEqual(data["success"], True)
@@ -72,7 +82,7 @@ class AgentViewportToolsTests(unittest.TestCase):
 
     def test_set_zoom(self):
         """viewport.zoom sets the zoom level."""
-        response = self._post_viewport("zoom", {"level": 1.5})
+        response = protocol_roundtrip(self.client, self.pool, self.project_id, 'zoom', {'level': 1.5})
         self.assertEqual(response.status_code, 200, response.text)
         data = response.json()
         self.assertEqual(data["success"], True)
@@ -89,17 +99,17 @@ class AgentViewportToolsTests(unittest.TestCase):
 
     def test_get_viewport_state(self):
         """viewport.state returns the current viewport state."""
-        focus = self._post_viewport("focus", {"node_id": "node-1"})
+        focus = protocol_roundtrip(self.client, self.pool, self.project_id, 'focus', {'node_id': 'node-1'})
         self.assertEqual(focus.status_code, 200, focus.text)
-        zoom = self._post_viewport("zoom", {"level": 2.0})
+        zoom = protocol_roundtrip(self.client, self.pool, self.project_id, 'zoom', {'level': 2.0})
         self.assertEqual(zoom.status_code, 200, zoom.text)
 
-        response = self.client.get(
-            f"/api/projects/{self.project_id}/viewport/state"
-        )
+        response = protocol_roundtrip(self.client, self.pool, self.project_id, 'state',
+                                      snapshot={'x': -33, 'y': 42, 'scale': 2.0})
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertEqual(data["focus_node_id"], "node-1")
+        self.assertNotIn('focus_node_id', data)
+        self.assertEqual((data['x'], data['y']), (-33, 42))
         self.assertEqual(data["scale"], 2.0)
 
     def test_project_not_found(self):

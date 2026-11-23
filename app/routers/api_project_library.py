@@ -27,6 +27,7 @@ from app.services.agent_host import agent_host_manager
 from app.services.agent_errors import agent_error
 from app.services.agent_refs import with_role_prefix
 from app.services.canvas_image_selection import require_canvas_image_provider, route_canvas_image
+from app.services.canvas_viewport import invalidate_project
 from app.services.misc import run_routed_image_candidate
 from app.services.generation_failures import AGENT_IMAGE_ACCEPTED, AGENT_IMAGE_ATTEMPT, describe_failure, provider_failure, redact_failure_detail
 from app.core import is_registered_conversation_user_message
@@ -2948,9 +2949,9 @@ def _clean_leftover_live_dir(project_id: str) -> None:
         pass
 
 
-def project_lifecycle_store_call(method_name: str, project_id: str, *, block_active_import: bool=False):
+def project_lifecycle_store_call(method_name: str, project_id: str, *, block_active_import: bool=False, capture_store: bool=False):
     with project_lifecycle_lock(project_id):
-        # #387：守卫前先清残留目录（残留曾被 project_has_active_* 误判为活动任务→409）
+        # #387：无 project.json 的宿主残留不能被活动任务守卫误判为真实项目。
         _clean_leftover_live_dir(project_id)
         if block_active_import and project_has_active_media_import(project_id):
             raise ProjectMediaImportActive('项目仍有媒体正在导入，请等待完成后再删除')
@@ -2962,6 +2963,11 @@ def project_lifecycle_store_call(method_name: str, project_id: str, *, block_act
             raise ProjectMediaImportActive('项目仍有对话任务待完成或待恢复，不能删除')
         if block_active_import and project_has_active_agent_task(project_id):
             raise ProjectMediaImportActive('项目仍有 Agent 任务正在执行，请等待完成后再删除')
+        if capture_store:
+            # #485: Retire the store performing the move, not a later library selection.
+            with PROJECT_LIBRARY_SWITCH_LOCK:
+                store = _app_main.FIREFLY_PROJECT_STORE
+                return store, getattr(store, method_name)(project_id)
         return _app_main.project_store_call(method_name, project_id)
 
 def project_has_active_photoshop_round_trip(project_id: str) -> bool:
@@ -3190,15 +3196,16 @@ async def purge_trashed_project(project_id: str, request: Request):
 async def trash_firefly_project(project_id: str, request: Request):
     ensure_same_origin_request(request)
     try:
-        # #387：先停宿主再动盘（同上：消除移目录后宿主写回 agent-events/ 的窗口）。
+        # #387：先停宿主再移目录，避免会话在旧 live 路径重建 agent-events/。
         await agent_host_manager.cleanup_project(project_id)
-        result = await asyncio.to_thread(project_lifecycle_store_call, 'trash_project', project_id, block_active_import=True)
+        store, result = await asyncio.to_thread(project_lifecycle_store_call, 'trash_project', project_id, block_active_import=True, capture_store=True)
     except ProjectMediaImportActive as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ProjectNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ProjectStoreError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    await invalidate_project(store, project_id)
     return result
 
 @router.get('/api/project-library/{project_id}/media/unused')

@@ -1250,7 +1250,7 @@
         {
           "module": "tests/test_agent_write_routes_456.py",
           "ordinal": 1,
-          "ast_sha256": "aef746697ba8d5d0ddb54d30a9854ce00315696e54ec1463089ff150f1936faa"
+          "ast_sha256": "307aa974e26cf3a930ea978ff9a861a2ff355ef58f33979435392a2ca84f3aba"
         }
       ]
     },
@@ -4141,7 +4141,7 @@
         {
           "module": "app/routers/api_project_library.py",
           "ordinal": 1,
-          "ast_sha256": "963c9be15135cf9ebb64c044b0a79d625c35e2aebc872fd8af7e62155d47a59a"
+          "ast_sha256": "89d2eac99343a61d8d96e5e37bb0a960de6a74ee2a8e2c87e4b593ee7b8adeac"
         },
         {
           "module": "app/services/agents.py",
@@ -4842,11 +4842,6 @@
         },
         {
           "module": "tests/test_mcp_endpoint.py",
-          "ordinal": 1,
-          "ast_sha256": "3863f058cdfd9d26761ac1f69c9d9740e2d4714b28a00cbf1dd9818f4527c6ce"
-        },
-        {
-          "module": "tests/test_tool_surface_consistency.py",
           "ordinal": 1,
           "ast_sha256": "3863f058cdfd9d26761ac1f69c9d9740e2d4714b28a00cbf1dd9818f4527c6ce"
         }
@@ -5612,11 +5607,6 @@
           "module": "tests/test_mcp_endpoint.py",
           "ordinal": 1,
           "ast_sha256": "9e0e4ff87b7a73ba1754c6f64834ae9c3f66c02c6046c343ae0737e77b51910e"
-        },
-        {
-          "module": "tests/test_tool_surface_consistency.py",
-          "ordinal": 1,
-          "ast_sha256": "799f4b920bfd36ca2c0eba890074592bfa810149146f066a80ac5377511405d9"
         }
       ]
     },
@@ -6033,11 +6023,6 @@
         },
         {
           "module": "tests/test_mcp_endpoint.py",
-          "ordinal": 1,
-          "ast_sha256": "78bd1ae8d55c59216178b9e716408c88ba0d134a77d63cbb0ecd88ab797206b1"
-        },
-        {
-          "module": "tests/test_tool_surface_consistency.py",
           "ordinal": 1,
           "ast_sha256": "78bd1ae8d55c59216178b9e716408c88ba0d134a77d63cbb0ecd88ab797206b1"
         }

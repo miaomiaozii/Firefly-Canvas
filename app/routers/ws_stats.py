@@ -3,6 +3,8 @@ from __future__ import annotations
 import sys as _sys
 import os as _os
 import logging
+import asyncio
+import anyio
 
 logger = logging.getLogger(__name__)
 _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
@@ -11,6 +13,7 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPExceptio
 from app.core import (HTTPException, WebSocket, WebSocketDisconnect, _ensure_photoshop_loopback, ensure_agent_same_origin, _os, _sys, json)
 from app.core import _ensure_photoshop_loopback
 from app.project_activity import ProjectCleanupActive
+from app.services import canvas_viewport
 from app.project_sessions import register_project_session, unregister_project_session
 _from_main_names = ['manager']
 import app.services as _svc
@@ -28,11 +31,7 @@ async def websocket_endpoint(
     client_id: str = None,
     project_id: str = None,
 ):
-    # #342：WS 不过 protect_api_origin HTTP 中间件，同源判定必须在 accept 前做，
-    # 口径与 /api 中间件完全一致（无 Origin 的程序化客户端放行，认证归 #344）。
-    # 此前外部网页可匿名连入收 broadcast（任务状态/ps 回包）并注册 project session。
-    # 直接 raise：starlette 在 accept 前收到 HTTPException 会回 HTTP 403 拒绝升级
-    # （与 stream 路由级依赖同一行为，单测可断 status_code=403）。
+    # WebSocket upgrades bypass the HTTP origin middleware; guard before accept.
     ensure_agent_same_origin(websocket)
     if str(client_id or '').lower().startswith('ps_'):
         try:
@@ -41,13 +40,21 @@ async def websocket_endpoint(
             await websocket.close(code=1008, reason=str(exc.detail))
             return
     await manager.connect(websocket, client_id)
+    watcher = asyncio.create_task(canvas_viewport.watch(websocket, lambda: _app_main.FIREFLY_PROJECT_STORE))
     try:
         if str(client_id or '').lower().startswith('canvas_') and project_id:
             register_project_session(websocket, project_id)
         while True:
-            data = await websocket.receive_text()
+            frame = await websocket.receive()
+            if frame['type'] == 'websocket.disconnect':
+                break
+            data = frame.get('text')
+            if not isinstance(data, str):
+                continue
             if data == 'ping':
                 await websocket.send_text(json.dumps({'type': 'pong'}))
+            else:
+                await canvas_viewport.receive(websocket, data, lambda: _app_main.FIREFLY_PROJECT_STORE)
     except ProjectCleanupActive as exc:
         await websocket.close(code=1013, reason=str(exc))
     except WebSocketDisconnect:
@@ -55,5 +62,10 @@ async def websocket_endpoint(
     except Exception as e:
         logger.warning(f'WS Error: {e}')
     finally:
+        # Release authority before the first cancellable teardown await.
+        canvas_viewport.disconnect(websocket)
         unregister_project_session(websocket)
-        await manager.disconnect(websocket, client_id)
+        watcher.cancel()
+        with anyio.CancelScope(shield=True):
+            await asyncio.gather(watcher, return_exceptions=True)
+            await manager.disconnect(websocket, client_id)

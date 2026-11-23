@@ -6,6 +6,7 @@ import sys
 import tempfile
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +20,7 @@ import main
 from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK
 from app.routers import api_agent_tools, api_project_library
 from firefly_projects import ProjectStore
+from tests.test_canvas_viewport_485 import protocol_roundtrip
 
 # Issue #175: the quality gate builds its isolated execution workspace from
 # ``git ls-files --cached --others --exclude-standard`` (tools/quality_gate.py:
@@ -63,6 +65,8 @@ class AgentGenerateToolsTests(unittest.TestCase):
         # Run the real task lifecycle without making provider requests.
         self.enterContext(patch.object(api_project_library, "run_routed_image_candidate",
                                        side_effect=RuntimeError("Offline test provider failure")))
+        self.enterContext(patch('subprocess.Popen', side_effect=AssertionError('native startup forbidden')))
+        self.pool = self.enterContext(ThreadPoolExecutor(max_workers=2))
         self.confirm = self.enterContext(patch.object(
             api_agent_tools, "request_confirmation_core", return_value={"approved": True},
         ))
@@ -90,7 +94,6 @@ class AgentGenerateToolsTests(unittest.TestCase):
                 if CANVAS_TASKS[task_id].get("project_id") == self.project_id:
                     del CANVAS_TASKS[task_id]
         api_agent_tools.reset_generation_counts(self.project_id)
-        api_agent_tools.VIEWPORT_STATE.pop(self.project_id, None)
 
     def _post_tool(self, route, payload):
         return self.client.post(
@@ -253,11 +256,11 @@ class AgentGenerateToolsTests(unittest.TestCase):
 
     def test_viewport_focus(self):
         """viewport.focus focuses on a node."""
-        response = self._post_tool("viewport/focus", {"node_id": "image-1"})
+        response = protocol_roundtrip(self.client, self.pool, self.project_id, 'focus', {'node_id': 'prompt-1'})
         self.assertEqual(response.status_code, 200, response.text)
         data = response.json()
         self.assertTrue(data["success"])
-        self.assertEqual(data["node_id"], "image-1")
+        self.assertEqual(data["node_id"], "prompt-1")
 
     def test_viewport_focus_not_found(self):
         """viewport.focus returns 404 for missing node."""
@@ -266,7 +269,7 @@ class AgentGenerateToolsTests(unittest.TestCase):
 
     def test_viewport_zoom(self):
         """viewport.zoom sets zoom level."""
-        response = self._post_tool("viewport/zoom", {"level": 1.5})
+        response = protocol_roundtrip(self.client, self.pool, self.project_id, 'zoom', {'level': 1.5})
         self.assertEqual(response.status_code, 200, response.text)
         data = response.json()
         self.assertTrue(data["success"])
@@ -274,15 +277,17 @@ class AgentGenerateToolsTests(unittest.TestCase):
 
     def test_viewport_state(self):
         """viewport.state returns current viewport state."""
-        focus = self._post_tool("viewport/focus", {"node_id": "image-1"})
+        focus = protocol_roundtrip(self.client, self.pool, self.project_id, 'focus', {'node_id': 'prompt-1'})
         self.assertEqual(focus.status_code, 200, focus.text)
-        zoom = self._post_tool("viewport/zoom", {"level": 2.0})
+        zoom = protocol_roundtrip(self.client, self.pool, self.project_id, 'zoom', {'level': 2.0})
         self.assertEqual(zoom.status_code, 200, zoom.text)
 
-        response = self.client.get(f"/api/projects/{self.project_id}/viewport/state")
+        response = protocol_roundtrip(self.client, self.pool, self.project_id, 'state',
+                                      snapshot={'x': -10, 'y': 20, 'scale': 2.0})
         self.assertEqual(response.status_code, 200)
         data = response.json()
-        self.assertEqual(data["focus_node_id"], "image-1")
+        self.assertNotIn('focus_node_id', data)
+        self.assertEqual((data['x'], data['y']), (-10, 20))
         self.assertEqual(data["scale"], 2.0)
 
 

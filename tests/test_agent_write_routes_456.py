@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 import main
 from app.routers import api_agent_tools
 from firefly_projects import ProjectStore
+from tests.test_canvas_viewport_485 import frame, open_socket, quiet_lifetime, ready
 
 
 WRITES = (
@@ -49,6 +50,8 @@ def canvas(tmp_path: Path):
     ], base_revision=0)
     try:
         with patch.object(main, 'FIREFLY_PROJECT_STORE', store), \
+             patch.object(main.app.router, 'lifespan_context', quiet_lifetime), \
+             patch('subprocess.Popen', side_effect=AssertionError('native/provider startup forbidden')), \
              TestClient(main.app, base_url='http://127.0.0.1:3198') as client:
             yield client, store, project, f'/api/projects/{project}'
     finally:
@@ -68,13 +71,17 @@ def assert_missing_header(response):
 def test_rejects_missing_project_before_tool_handler(canvas, method, route, headers):
     client, store, project, url = canvas
     before = store.canvas(project)
-    viewport = api_agent_tools.VIEWPORT_STATE.get(project)
-    with patch.object(api_agent_tools, 'request_confirmation_core', new_callable=AsyncMock) as confirm:
-        response = client.request(method, f'{url}{route}?agent_node_id=actor', headers=headers)
-    assert_missing_header(response)
-    confirm.assert_not_awaited()
-    assert store.canvas(project) == before
-    assert api_agent_tools.VIEWPORT_STATE.get(project) == viewport
+    with open_socket(client, project) as ws:
+        ready(ws, project)
+        body = {'node_id': 'target'} if route == '/viewport/focus' else {'level': 2} if route == '/viewport/zoom' else None
+        with patch.object(api_agent_tools, 'request_confirmation_core', new_callable=AsyncMock) as confirm:
+            response = client.request(method, f'{url}{route}?agent_node_id=actor', headers=headers, json=body)
+        assert_missing_header(response)
+        confirm.assert_not_awaited()
+        assert store.canvas(project) == before
+        # A ready public peer makes accidental viewport dispatch observable, without a fake cache.
+        ws.send_text('ping')
+        assert frame(ws) == {'type': 'pong'}
 
 
 def test_preview_remains_read_only_and_apply_requires_project(canvas):
@@ -92,6 +99,12 @@ def test_preview_remains_read_only_and_apply_requires_project(canvas):
 
 def test_read_routes_dont_require_project_context(canvas):
     client, _, _, url = canvas
-    for route in ('/canvas/nodes', '/canvas/nodes/target', '/media/list', '/viewport/state', '/ops'):
+    for route in ('/canvas/nodes', '/canvas/nodes/target', '/media/list', '/ops'):
         response = client.get(url + route)
         assert response.status_code == 200, response.text
+    response = client.get(url + '/viewport/state')
+    assert response.status_code == 503, response.text
+    error = response.json()['detail']
+    assert error['code'] == 'SERVER_NOT_READY'
+    assert error['details']['reason'] == 'VIEWPORT_NOT_READY'
+    assert error['details']['dispatched'] is False

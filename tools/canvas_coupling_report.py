@@ -59,6 +59,7 @@ CORE = "smart-canvas.js"
 CATEGORY_BY_NAME = {
     # --- 行为枢纽 ---
     "render": "hub",
+    "applyViewport": "hub",
     "scheduleSave": "hub",
     "saveProjectCanvasUntilSettled": "hub",
     # 以下三个是 2026-10-19 修好 TOP_LEVEL_NAME_RE 漏 `async function` 后才浮现的：

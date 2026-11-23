@@ -10,14 +10,14 @@
    #456：写入走带 X-Agent-Project 的 hosted REST 与 hosted MCP；门控工具在两路均批准后比对。
    canvas.edit_erase 消耗外部模型，只钉门与路由。
 """
-import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 import copy
 import json
 import re
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 import uuid
 from pathlib import Path
@@ -40,24 +40,7 @@ from app.services.agent_ops_journal import AgentOpsJournal, record_sides
 from app.services.agent_errors import translate_detail
 from app.services.agent_host import AgentSession, agent_host_manager
 from tests.agent_image_task_fakes import route_stub, stub_providers
-from tests.fake_agent_host import install_stub_pi_cli, restore_stub_pi_cli
-
-
-def run_async(coro):
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
-
-
-def setUpModule():
-    global _PREVIOUS_PI_CLI
-    _PREVIOUS_PI_CLI = install_stub_pi_cli()
-
-
-def tearDownModule():
-    restore_stub_pi_cli(_PREVIOUS_PI_CLI)
+from tests.test_canvas_viewport_485 import acknowledge, assert_waiting, frame, open_socket, quiet_lifetime, ready
 
 
 GEN_TS = ROOT / "app" / "agent_extensions" / "canvas-tools.generated.ts"
@@ -73,8 +56,9 @@ class SourceSameOriginTests(unittest.TestCase):
         self.assertEqual(set(api_mcp.TOOL_IMPLS.keys()), agent_tools_manifest.TOOL_NAMES)
 
     def test_mcp_write_descriptions_document_external_turn_ids(self):
-        client = TestClient(main.app, base_url="http://127.0.0.1:8124")
-        self.addCleanup(client.close)
+        self.enterContext(patch.object(main.app.router, "lifespan_context", quiet_lifetime))
+        self.enterContext(patch("subprocess.Popen", side_effect=AssertionError("native/provider startup forbidden")))
+        client = self.enterContext(TestClient(main.app, base_url="http://127.0.0.1:8124"))
         response = client.post("/api/mcp", json={
             "jsonrpc": "2.0", "id": 1, "method": "tools/list",
         })
@@ -190,30 +174,23 @@ class DualPathEquivalenceTests(unittest.TestCase):
         {"op": "upsert_node", "node": {"id": "image-1", "type": "smart-image", "title": "Test Image",
                                        "x": 300, "y": 100, "runSettings": {"provider_id": "offline"}}},
         {"op": "upsert_edge", "edge": {"id": "edge-1", "from": "prompt-1", "to": "image-1", "kind": "flow"}},
-        # #350：MCP 不再自动物化 agent 节点——归属节点两项目同种，终态全等比较。
+        # Both transports must retain the same ownership node in the full canvas comparison.
         {"op": "upsert_node", "node": {"id": "agent-consistency", "type": "smart-agent",
                                        "title": "Agent", "x": 0, "y": 0}},
     ]
 
     def setUp(self):
-        self._dirs = []
-        self._stores = []
-        self._tabs = []
-        self._prev_store = main.FIREFLY_PROJECT_STORE
+        self.enterContext(patch("subprocess.Popen", side_effect=AssertionError("native/provider startup forbidden")))
+        self._fixtures = ExitStack()
+        self.addCleanup(self._fixtures.close)
 
-    def tearDown(self):
-        run_async(agent_host_manager.cleanup_all())
-        for tab in self._tabs:
-            unregister_project_session(tab)
-            if tab in main.manager.active_connections:
-                main.manager.active_connections.remove(tab)
-            main.manager.connection_clients.pop(tab, None)
-            main.manager.user_connections.pop(tab.client_id, None)
-        main.FIREFLY_PROJECT_STORE = self._prev_store
-        for store in self._stores:
-            store.close()
-        for d in self._dirs:
-            d.cleanup()
+    @staticmethod
+    def _close_tab(tab):
+        unregister_project_session(tab)
+        if tab in main.manager.active_connections:
+            main.manager.active_connections.remove(tab)
+        main.manager.connection_clients.pop(tab, None)
+        main.manager.user_connections.pop(tab.client_id, None)
 
     class _FakeTab:
         def __init__(self):
@@ -229,16 +206,16 @@ class DualPathEquivalenceTests(unittest.TestCase):
         main.manager.active_connections.append(tab)
         main.manager.connection_clients[tab] = tab.client_id
         main.manager.user_connections[tab.client_id] = tab
-        self._tabs.append(tab)
+        self._fixtures.callback(self._close_tab, tab)
         return tab
 
-    def _fixture(self):
-        """一个干净的 (client, store, pid_a, pid_b)：a 走 MCP，b 走 REST 孪生。"""
-        tmp = tempfile.TemporaryDirectory(prefix="e2e-tabbit-356-consistency-")
-        self._dirs.append(tmp)
-        store = ProjectStore(Path(tmp.name) / "projects", snapshot_delay=0)
-        self._stores.append(store)
-        main.FIREFLY_PROJECT_STORE = store
+    def _fixture(self, *, viewport=False):
+        # Each all-tool row drains its own loop and workers before the next store is selected.
+        self._fixtures.close()
+        tmp = self._fixtures.enter_context(tempfile.TemporaryDirectory(prefix="e2e-tabbit-356-consistency-"))
+        store = ProjectStore(Path(tmp) / "projects", snapshot_delay=0)
+        self._fixtures.callback(store.close)
+        self._fixtures.enter_context(patch.object(main, "FIREFLY_PROJECT_STORE", store))
         # All generation in this equivalence suite is offline and deterministic.
         for patcher in (
             patch("app.routers.api_project_library.run_routed_image_candidate",
@@ -246,19 +223,21 @@ class DualPathEquivalenceTests(unittest.TestCase):
             patch.object(main, "route_image_generation", return_value=route_stub("offline", "stub-model")),
             patch.object(main, "load_api_providers", return_value=stub_providers("offline", "stub-model")),
         ):
-            patcher.start()
-            self.addCleanup(patcher.stop)
-        client = TestClient(main.app, base_url="http://127.0.0.1:8124")
+            self._fixtures.enter_context(patcher)
+        self._fixtures.enter_context(patch.object(main.app.router, "lifespan_context", quiet_lifetime))
+        client = self._fixtures.enter_context(TestClient(main.app, base_url="http://127.0.0.1:8124"))
+        self._fixtures.callback(client.portal.call, agent_host_manager.cleanup_all)
+        self._fixtures.callback(client.portal.call, api_agent_tools.shutdown_agent_ops_lifetime)
         pids = []
         for tag in ("A", "B"):
             p = store.create_project(f"e2e-tabbit-consistency-{tag}")
             store.apply_mutations(p["id"], copy.deepcopy(self.SEED), base_revision=0)
             pid = p["id"]
-            self._open_tab(pid)
+            if not viewport:
+                self._open_tab(pid)
             session = AgentSession(project_id=pid, node_id=self.ACTOR, autonomy="cautious")
             session._current_turn_id = self.TURN
             agent_host_manager.sessions[f"{pid}:{self.ACTOR}"] = session
-            self.addCleanup(api_agent_tools.VIEWPORT_STATE.pop, pid, None)
             pids.append(pid)
         return client, store, pids[0], pids[1]
 
@@ -305,7 +284,23 @@ class DualPathEquivalenceTests(unittest.TestCase):
         t = re.sub(r"\d{10,}", "TS", t)
         return t
 
-    def _canon_payload(self, payload):
+    def _canon_payload(self, payload, *, tool=None):
+        if tool and tool.startswith("viewport."):
+            out = {"ok": payload["ok"], "text": ""}
+            if "text" in payload:
+                data = json.loads(payload["text"])
+                # Only receipt correlation/time may differ; geometry never passes through regexes.
+                if "command_id" in data:
+                    data["command_id"] = "COMMAND-ID"
+                if tool == "viewport.state" and "updated_at" in data:
+                    data["updated_at"] = "OBSERVED-AT"
+                out["text"] = json.dumps(data, sort_keys=True)
+            if "error" in payload:
+                detail = copy.deepcopy(payload["error"])
+                if "command_id" in detail.get("details", {}):
+                    detail["details"]["command_id"] = "COMMAND-ID"
+                out["error"] = json.dumps(detail, sort_keys=True)
+            return out
         text = payload.get("text", "")
         if payload["ok"] and text.startswith("{"):
             data = json.loads(text)
@@ -317,7 +312,6 @@ class DualPathEquivalenceTests(unittest.TestCase):
         out = {"ok": payload["ok"], "text": self._canon_text(text)}
         if "error" in payload:
             out["error"] = self._canon_text(json.dumps(payload["error"], sort_keys=True))
-        # #350 后拍板 c 作废：MCP 不再 upsert agent 节点，返回值不再剔除任何节点。
         if "image_len" in payload:
             out["image_len"] = payload["image_len"]
         return out
@@ -352,8 +346,67 @@ class DualPathEquivalenceTests(unittest.TestCase):
         )
 
     def _assert_pair(self, a, b, label):
-        ca, cb = self._canon_payload(a), self._canon_payload(b)
+        ca, cb = self._canon_payload(a, tool=label), self._canon_payload(b, tool=label)
         self.assertEqual(ca, cb, f"{label}: MCP 与 REST 孪生结果不一致\n MCP={a}\n REST={b}")
+
+    def _viewport_request(self, ws, generation, pool, call, pid, command, args, snapshot):
+        future = pool.submit(call)
+        assert_waiting(future)
+        wire = frame(ws)
+        self.assertRegex(wire["command_id"], r"^[0-9a-f]{32}$")
+        self.assertEqual(wire, {
+            "type": "canvas_viewport_command", "project_id": pid, "generation": generation,
+            "command_id": wire["command_id"], "command": command, **args,
+        })
+        acknowledge(ws, wire, snapshot)
+        result = future.result(timeout=2)
+        self.assertTrue(result["ok"], result)
+        data = json.loads(result["text"])
+        if command == "state":
+            self.assertIsInstance(data["updated_at"], (int, float))
+            self.assertGreater(data["updated_at"], 0)
+            expected = {**snapshot, "command_id": wire["command_id"], "updated_at": data["updated_at"]}
+        else:
+            expected = {"success": True, "dispatched": True, **args,
+                        "command_id": wire["command_id"], "viewport": snapshot}
+        self.assertEqual(data, expected)
+        return result
+
+    def _viewport_pair(self, name, args, method, url_path, body):
+        client, store, pid_a, pid_b = self._fixture(viewport=True)
+        before = [store.canvas(pid) for pid in (pid_a, pid_b)]
+        command = name.removeprefix("viewport.")
+        # External protocol peers provide literal observations, not browser geometry proof.
+        snapshot = {"x": -420.125, "y": 73.5, "scale": args.get("level", 1.375)}
+        with ThreadPoolExecutor(max_workers=2) as pool, open_socket(client, pid_a) as one, open_socket(client, pid_b) as two:
+            generations = [ready(ws, pid) for ws, pid in ((one, pid_a), (two, pid_b))]
+            if command != "state":
+                denied = client.request(method, f"/api/projects/{pid_b}{url_path}", json=body)
+                self.assertEqual(denied.status_code, 400, denied.text)
+                self.assertEqual(denied.json()["detail"]["code"], "INVALID_ARGUMENT")
+                self.assertIn("X-Agent-Project", denied.json()["detail"]["message"])
+                self.assertEqual([store.canvas(pid) for pid in (pid_a, pid_b)], before)
+                for ws in (one, two):
+                    ws.send_text("ping")
+                    self.assertEqual(frame(ws), {"type": "pong"})
+            a = self._viewport_request(one, generations[0], pool,
+                lambda: self._mcp_call(client, pid_a, name, args), pid_a, command, args, snapshot)
+            b = self._viewport_request(two, generations[1], pool,
+                lambda: self._rest(client, method, f"/api/projects/{pid_b}{url_path}", body,
+                                   headers={"X-Agent-Project": pid_b} if command != "state" else None),
+                pid_b, command, args, snapshot)
+            self._assert_pair(a, b, name)
+            states = []
+            for ws, generation, pid, result in ((one, generations[0], pid_a, a), (two, generations[1], pid_b, b)):
+                state = self._viewport_request(ws, generation, pool,
+                    lambda pid=pid: self._rest(client, "GET", f"/api/projects/{pid}/viewport/state"),
+                    pid, "state", {}, snapshot)
+                self.assertNotEqual(json.loads(state["text"])["command_id"], json.loads(result["text"])["command_id"])
+                states.append(state)
+            self._assert_pair(*states, "viewport.state")
+        self.assertEqual([store.canvas(pid) for pid in (pid_a, pid_b)], before)
+        self.assertEqual(self._canvas_state(store, pid_a), self._canvas_state(store, pid_b),
+                         f"{name}: 两路画布终态不一致")
 
     def _confirmed_pair(self, client, pid_a, pid_b, name, args, method, url_path, body=None):
         # Answer the real confirmation on each actor's session, not at the transport gate.
@@ -423,26 +476,54 @@ class DualPathEquivalenceTests(unittest.TestCase):
                            "details": {"group_id": "group"}}.items():
             with self.subTest(key=key):
                 self.assertNotEqual(original, self._canon_payload({"ok": False, "error": {**detail, key: value}}))
+        for tool in ("viewport.focus", "viewport.zoom", "viewport.state"):
+            with self.subTest(tool=tool):
+                snapshot = {"x": 12345678901.5, "y": -73.125, "scale": 1.375}
+                data = {"command_id": "a" * 32, **(
+                    {**snapshot, "updated_at": 1234567890123} if tool == "viewport.state" else
+                    {"success": True, "dispatched": True, "viewport": snapshot,
+                     **({"node_id": "prompt-1"} if tool == "viewport.focus" else {"level": 2})})}
+
+                def canon(value):
+                    return self._canon_payload({"ok": True, "text": json.dumps(value)}, tool=tool)
+
+                expected = canon(data)
+                independent = {**data, "command_id": "b" * 32}
+                if tool == "viewport.state":
+                    independent["updated_at"] += 1
+                self.assertEqual(expected, canon(independent))
+                for key, value in {"x": 12345678902.5, "y": -74.125, "scale": 1.5}.items():
+                    changed = copy.deepcopy(data)
+                    (changed if tool == "viewport.state" else changed["viewport"])[key] = value
+                    self.assertNotEqual(expected, canon(changed), (tool, key))
+                if tool != "viewport.state":
+                    for key in ("success", "dispatched"):
+                        self.assertNotEqual(expected, canon({**data, key: False}), (tool, key))
+                    key = "node_id" if tool == "viewport.focus" else "level"
+                    self.assertNotEqual(expected, canon({**data, key: "other" if key == "node_id" else 3}))
+                failure = {**detail, "details": {"command_id": "a" * 32, "reason": "VIEWPORT_NOT_READY"}}
+                baseline = self._canon_payload({"ok": False, "error": failure}, tool=tool)
+                independent = copy.deepcopy(failure)
+                independent["details"]["command_id"] = "b" * 32
+                self.assertEqual(baseline, self._canon_payload({"ok": False, "error": independent}, tool=tool))
+                for key, value in {"code": "NODE_NOT_FOUND", "message": "other", "hint": "next",
+                                   "retryable": True, "details": {"reason": "OTHER"}}.items():
+                    changed = self._canon_payload({"ok": False, "error": {**failure, key: value}}, tool=tool)
+                    self.assertNotEqual(baseline, changed, (tool, key))
 
     def _cases(self):
         def pair(name, args, method, url_path, body=None, *, expected_error=None):
             """通用形状：A 走 MCP tools/call，B 走 REST 孪生；比返回值 + 画布终态。"""
             def run():
+                if name.startswith("viewport."):
+                    return self._viewport_pair(name, args, method, url_path, body)
                 client, store, pid_a, pid_b = self._fixture()
                 rest_body = {**body, "agent_node_id": self.ACTOR} if name == "canvas.create_node" else body
                 journaled = name in agent_tools_manifest.WRITE_TOOLS
-                viewport_write = name in {"viewport.focus", "viewport.zoom"}
                 path = f"{url_path}?agent_node_id={self.ACTOR}" if journaled else url_path
                 url = f"/api/projects/{pid_b}{path}"
                 scoped_batch = name in {"generate.preflight", "generate.request_batch", "generate.batch_status", "generate.stop_batch"}
-                headers = {"X-Agent-Project": pid_b} if journaled or viewport_write or scoped_batch else None
-                if viewport_write:
-                    state_url = f"/api/projects/{pid_b}/viewport/state"
-                    before = client.get(state_url).json()
-                    denied = client.request(method, url, json=rest_body)
-                    self.assertEqual(denied.status_code, 400, denied.text)
-                    self.assertIn("X-Agent-Project", denied.json()["detail"]["message"])
-                    self.assertEqual(client.get(state_url).json(), before)
+                headers = {"X-Agent-Project": pid_b} if journaled or scoped_batch else None
                 a = self._mcp_call(client, pid_a, name, args)
                 b = self._rest(client, method, url, rest_body, headers)
                 if expected_error:
@@ -456,13 +537,6 @@ class DualPathEquivalenceTests(unittest.TestCase):
                             frame = nodes[nodes[self.ACTOR]["chatFrameId"]]
                             self.assertEqual(frame["items"], [payload["node_id"]])
                             self.assertEqual(frame["chatFrameFor"], self.ACTOR)
-                if viewport_write:
-                    self.assertTrue(a["ok"], a)
-                    self.assertTrue(b["ok"], b)
-                    states = [client.get(f"/api/projects/{pid}/viewport/state").json() for pid in (pid_a, pid_b)]
-                    for state in states:
-                        state.pop("updated_at")
-                    self.assertEqual(*states)
                 self._assert_pair(a, b, name)
                 self.assertEqual(self._canvas_state(store, pid_a), self._canvas_state(store, pid_b),
                                  f"{name}: 两路画布终态不一致")
@@ -659,7 +733,7 @@ class DualPathEquivalenceTests(unittest.TestCase):
             src = (ROOT / "app" / "routers" / "api_mcp.py").read_text(encoding="utf-8")
             gate_call = re.search(r'_impl_edit_erase.*?_confirm_gate', src, re.S)
             self.assertTrue(gate_call, "MCP edit_erase 必须走确认门")
-            client = TestClient(main.app, base_url="http://127.0.0.1:8124")
+            client, _, _, _ = self._fixture()
             resp = client.request("GET", "/api/projects/x/canvas/edit_erase")
             self.assertNotEqual(resp.status_code, 404, "REST 孪生路由必须存在")
 

@@ -233,17 +233,17 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     },
     {
         name: "viewport.focus",
-        description: "画布视口聚焦到节点（定向下发给打开该项目的标签页）",
+        description: "将唯一就绪画布窗口中的浮动节点对齐 shell 中心，保留缩放；等待实际应用回执，停靠 Agent 拒绝聚焦，超时结果不明勿自动重试",
         parameters: Type.Object({ node_id: Type.String() }),
     },
     {
         name: "viewport.zoom",
-        description: "设置画布缩放级别（定向下发给打开该项目的标签页）",
+        description: "将唯一就绪画布窗口设置为绝对缩放级别（0.1..8），保持 shell 中心世界点；等待实际应用回执，超时结果不明勿自动重试",
         parameters: Type.Object({ level: Type.Number({description: "缩放倍率 0.1..8.0", minimum: 0.1, maximum: 8.0}) }),
     },
     {
         name: "viewport.state",
-        description: "读取当前视口状态（最近一次 focus/zoom 命令）",
+        description: "向唯一就绪画布窗口发起新观测，读取真实 x/y/scale（含人工手势），不回命令缓存；无就绪或多窗口时拒绝",
         parameters: Type.Object({}),
     },
 ];

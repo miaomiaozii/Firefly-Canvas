@@ -67,6 +67,7 @@ export const HTML_SCRIPT_ORDER = [
     'canvas-agent-activity.js',
     'canvas-agent-completion.js',
     'canvas-agent-chat.js',
+    'canvas-agent-viewport.js',
     'canvas-agent-tui.js',
     // #324（ADR-0026）：跨项目搜索面板（static/js/canvas-search.js，IIFE 自挂载）。
     'canvas-search.js',
@@ -81,7 +82,13 @@ function makeElement(tag = 'div') {
         tagName: String(tag).toUpperCase(),
         children: [],
         parentNode: null,
-        style: {},
+        style: {
+            setProperty(name, value){ this[name] = String(value); },
+            removeProperty(name){ delete this[name]; },
+            getPropertyValue(name){ return this[name] || ''; },
+        },
+        get childNodes(){ return this.children; },
+        set childNodes(value){ this.children = value; },
         dataset: {},
         value: '',
         checked: false,
@@ -122,6 +129,8 @@ function makeElement(tag = 'div') {
             return true;
         },
         appendChild: (child) => { el.children.push(child); child.parentNode = el; return child; },
+        append: (...children) => children.forEach(child => el.appendChild(child)),
+        insertAdjacentHTML: () => {},
         removeChild: (child) => { el.children = el.children.filter((c) => c !== child); return child; },
         replaceChild: (newChild, oldChild) => {
             const i = el.children.indexOf(oldChild);

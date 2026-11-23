@@ -222,6 +222,7 @@ REVERSE_REFERENCE_CEILINGS = {
     "canvas-agent-activity.js": 0,  # #410 callback-only activity painter.
     "canvas-agent-completion.js": 0,  # #413 explicit lazy DI only.
     "canvas-agent-chat.js": 0,  # #415 project/owner identity is injected; no canvas operations.
+    "canvas-agent-viewport.js": 2,  # #485 measured property-name matches: options.world + options.applyViewport; no core globals.
     # #324 新建跨项目搜索面板（#359 补登记）：实测 2 处均来自同一行 `window.focusAndSelectNode`
     # 的 typeof 守卫 + 调用——那是 smart-canvas.js 经 window 暴露的契约，不是裸词法全局引用；
     # 本模块自带 escapeHtml，零 canvasCore 接口引用。钉 2 是防日后出现真·核心顶层名引用而漏计。
@@ -272,6 +273,7 @@ FREE_GLOBAL_REFERENCE_CEILINGS = {
     "canvas-agent-activity.js": 0,  # #410 no free canvas globals.
     "canvas-agent-completion.js": 0,  # #413 no free canvas globals.
     "canvas-agent-chat.js": 0,  # #415 GET-only reader, no free canvas globals.
+    "canvas-agent-viewport.js": 2,  # #485 same injected-property false positives as the reverse-reference count.
     # #324 新建跨项目搜索面板：同上 2 处 `window.focusAndSelectNode`（未接口化，自由侧等于反向侧）。
     "canvas-search.js": 2,
     "canvas-state.js": 0,
