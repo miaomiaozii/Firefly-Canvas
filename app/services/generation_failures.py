@@ -153,17 +153,20 @@ def sensitive_provider_values(provider):
             yield from sensitive_provider_values(item)
 
 
+def redact_failure_detail(value, *, sensitive=()):
+    raw = str(value)
+    for secret in sorted({s for s in sensitive if isinstance(s, str) and s}, key=len, reverse=True):
+        raw = raw.replace(secret, '[redacted]')
+    return _SECRET.sub('[redacted]', raw[:16000])[:500]
+
+
 def describe_failure(exc, provider, *, no_replay=False, sensitive=()):
     upstream = provider_failure(exc)
     if upstream is None:
         return {'failure': _UNKNOWN.public(), 'replay_safe': False, 'automatic_retry': False}
     result = classify_generation_failure(upstream.detail, upstream.upstream_status, provider,
                                          error_code=upstream.error_code)
-    raw = str(upstream.detail)
-    for value in sorted({s for s in (*sensitive, *upstream.sensitive) if isinstance(s, str) and s},
-                        key=len, reverse=True):
-        raw = raw.replace(value, '[redacted]')
-    raw = _SECRET.sub('[redacted]', raw[:16000])[:500]
+    raw = redact_failure_detail(upstream.detail, sensitive=(*sensitive, *upstream.sensitive))
     safe = not (no_replay or upstream.uncertain or result.code == 'UNKNOWN')
     fields = {'failure': result.public(), 'details': {'raw': raw}, 'replay_safe': safe,
               'automatic_retry': safe and result.retryable}
