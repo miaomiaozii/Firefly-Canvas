@@ -222,9 +222,9 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # 两个引用方向必须独立实测；合法调用也须同步 ADR 0020 和精确计数，不能豁免。
         rev = _cached_reverse()
         self.assertEqual(rev["reverse_names"], 264)
-        self.assertEqual(rev["reverse_core_refs"], 994)
-        self.assertEqual(rev["core_dominant_names"], 177)
-        self.assertEqual(rev["core_dominant_core_refs"], 813)
+        self.assertEqual(rev["reverse_core_refs"], 991)
+        self.assertEqual(rev["core_dominant_names"], 178)
+        self.assertEqual(rev["core_dominant_core_refs"], 818)
         rows = {(row["owner"], row["name"]): row for row in rev["reverse_rows"]}
         self.assertEqual(rows[("canvas-node-types.js", "NODE_TYPE_IMAGE")], {
             "name": "NODE_TYPE_IMAGE", "owner": "canvas-node-types.js",
@@ -239,6 +239,22 @@ class CanvasCouplingReportTests(unittest.TestCase):
         self.assertNotIn("smart-canvas.js", rev["by_owner"])
         # 「核心用得比 owner 多」必须是全集子集，否则两个口径自相矛盾。
         self.assertLessEqual(rev["core_dominant_names"], rev["reverse_names"])
+
+    def test_reviewed_batch_geometry_references_remain_measured(self):
+        # #495 的兼容参数减少了部分调用，但迁移和 owner 自引用也改变了主导集合。
+        rows = {(row["owner"], row["name"]): row for row in _cached_reverse()["reverse_rows"]}
+        expected = {
+            ("canvas-layout-utils.js", "BATCH_NODE_PAD_H"): (3, 0),
+            ("canvas-layout-utils.js", "BATCH_STATUSBAR_H"): (5, 0),
+            ("canvas-layout-utils.js", "BATCH_THUMB"): (24, 3),
+            ("canvas-layout-utils.js", "SINGLE_IMAGE_LAYOUT"): (1, 4),
+            ("canvas-layout-utils.js", "SMART_GROUP_LAYOUT"): (8, 7),
+            ("canvas-layout-utils.js", "getBatchThumbGridSize"): (8, 0),
+            ("canvas-node-ops.js", "SMART_GROUP_MAX_VISIBLE_ROWS"): (6, 1),
+        }
+        for key, counts in expected.items():
+            with self.subTest(owner=key[0], name=key[1]):
+                self.assertEqual((rows[key]["core_refs"], rows[key]["owner_refs"]), counts)
 
 
 if __name__ == "__main__":

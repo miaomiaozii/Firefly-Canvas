@@ -4,24 +4,28 @@
 
 const BATCH_THUMB = {
     ASPECT: {w:4, h:3},    // 4:3 横图
-    WIDTH: 136,             // 宽度（与生图历史一致）
-    HEIGHT: 102,            // 高度（136 × 3/4）
-    GAP: 9,                 // 网格间距（与生图历史一致）
+    // #495：仅放大画布批量网格；历史抽屉拥有独立样式，不能随此常量缩放。
+    WIDTH: 192,
+    HEIGHT: 144,
+    GAP: 12,
 };
 
 const SMART_GROUP_LAYOUT = {
-    PADDING: 16,            // 四边内边距
+    PADDING: 20,
     SUMMARY_H: 14,          // summary 行高度（图标+统计文字）
     SUMMARY_GAP: 8,         // summary 到内容的间距
 };
 
-const BATCH_NODE_PAD_H = SMART_GROUP_LAYOUT.PADDING * 2; // 32
+const BATCH_NODE_PAD_H = SMART_GROUP_LAYOUT.PADDING * 2;
 
-const BATCH_NODE_PAD_V = SMART_GROUP_LAYOUT.PADDING * 4; // 64
+const BATCH_NODE_PAD_V = SMART_GROUP_LAYOUT.PADDING * 4;
 
 const BATCH_STATUSBAR_H = 48;
 
 const SINGLE_IMAGE_LAYOUT = {
+    // #495：单图及解组卡片不继承批量网格的放大，保持已有几何合同。
+    PADDING: 16,
+    UNGROUP_WIDTH: 136,
     MAX_WIDTH: 260,         // 单图最大宽度
     MAX_HEIGHT: 380,        // 单图最大高度
     UNGROUP_GAP: 16,        // 解组后排列间距
@@ -63,12 +67,11 @@ function getBatchThumbGridSize(count){
 function getSingleImageLayoutSize(aspect, maxWidth){
     const maxW = maxWidth || SINGLE_IMAGE_LAYOUT.MAX_WIDTH;
     const maxH = SINGLE_IMAGE_LAYOUT.MAX_HEIGHT;
-    const pad = SMART_GROUP_LAYOUT.PADDING * 2;
+    const pad = SINGLE_IMAGE_LAYOUT.PADDING * 2;
     
     let imgW = maxW;
     let imgH = Math.round(imgW * aspect.h / Math.max(1, aspect.w));
     
-    // 高度超限，按高度反算
     if(imgH > maxH){
         imgH = maxH;
         imgW = Math.round(imgH * aspect.w / Math.max(1, aspect.h));
@@ -87,11 +90,10 @@ function getSingleImageLayoutSize(aspect, maxWidth){
 }
 
 function getUngroupedImageSize(aspect){
-    const refW = BATCH_THUMB.WIDTH;
+    const refW = SINGLE_IMAGE_LAYOUT.UNGROUP_WIDTH;
     let imgW = refW;
     let imgH = Math.round(imgW * aspect.h / Math.max(1, aspect.w));
     
-    // 限制范围并保持比例
     if(imgW > 260){
         imgW = 260;
         imgH = Math.round(imgW * aspect.h / Math.max(1, aspect.w));

@@ -598,3 +598,23 @@ fast 时整门 exit 1，恢复后通过，具体证据见本次 QA 记录。
 
 重基仅容许删除原图、指定历史输出及全部受影响引用均未改变的冲突；目标变化必须重新核对，
 后台无关生成写入则保留。服务端 revision CAS、删除事务、单次输出身份及项目切换守卫均不放宽。
+
+### #495：批量尺寸与旧卡片兼容迁移
+
+192×144、gap 12、padding 20 只改变批量默认格。单图与解组卡片保留原有参数；排版框内独立卡片继续用旧的 136 上限、gap 9 和 32/64 padding 拟合，不能被默认值放大。旧尺寸迁移必须同时匹配同张数旧算法的完整宽高对，且排除排版框成员；不能移动节点、改手调尺寸或扩大单图。
+
+按相同计数器逐行实测，核心→模块四项 **264 / 994 / 177 / 813 → 264 / 990 / 178 / 817**。七项完整变化如下，未列出的行不变：
+
+| owner / name | core 旧→新 | owner 旧→新 |
+| --- | --- | --- |
+| canvas-layout-utils.js / BATCH_NODE_PAD_H | 4→3 | 0→0 |
+| canvas-layout-utils.js / BATCH_STATUSBAR_H | 3→5 | 0→0 |
+| canvas-layout-utils.js / BATCH_THUMB | 30→23 | 4→3 |
+| canvas-layout-utils.js / SINGLE_IMAGE_LAYOUT | 1→1 | 2→4 |
+| canvas-layout-utils.js / SMART_GROUP_LAYOUT | 8→8 | 8→7 |
+| canvas-layout-utils.js / getBatchThumbGridSize | 7→8 | 0→0 |
+| canvas-node-ops.js / SMART_GROUP_MAX_VISIBLE_ROWS | 5→6 | 1→1 |
+
+旧框兼容路径不再引用新批量常量，而迁移新增状态栏、网格与可见行引用。单图与解组改用自己的参数，使 SMART_GROUP_LAYOUT 的 owner 自引用下降，核心引用不变，因此该名字进入核心主导集合；不能只看引用总数下降就宣称拆分收益。精确四项与七个名字的双向计数同步锁定，不改提取器、分类、排除规则或任何模块→核心棘轮上限。原始逐行前后及源哈希保留于 `C:/ff-qa/495-parent-3e0697ce925c453a9d6f21cc2f93e900/COUPLING-ATTRIBUTION.json`。
+
+保存格的高度计算与网格共同采用 12px 间距，避免第二行被内部滚动条裁切；8px 只保留为其他缩略图调用的兼容默认值。相同静态计数器对仅含 #495 的暂存树实测四项为 **264 / 991 / 178 / 818**，`BATCH_THUMB` 核心 **24** / owner **3**；相对上面的参数迁移，唯一新增引用是格高调用的显式间距，不改分类、排除或棘轮上限。逐行结果在 `C:/ff-qa/495-index-proof-b301dedabd5841ac8eb48a10444cd8ee/reverse.json`。

@@ -211,24 +211,20 @@ function updateNodeElementDuringResize(node){
     if(body){
         const loadingSingle = body.querySelector('.loading-cell.single');
         if(loadingSingle){
-            // 单图占位与批量分支同规范：铺满 node-body（width/height:100%），
-            // 节点 16px padding 即外边距；此前用 layout.width/height（=节点外框尺寸）
-            // 会让占位框贴住/越出外框、与 pending 呼吸边框错位。
+            // node-body 已包含外边距；不能再用节点外框尺寸，否则占位框越界。
             loadingSingle.style.width = '100%';
             loadingSingle.style.height = '100%';
         }
         const loadingGrid = body.querySelector('.loading-skeleton');
         if(loadingGrid){
-            // 批量占位格必须与 generationPlaceholderHtml/imageLayout 保持同一套规范：
-            // 容器铺满 node-body（节点 16px padding 提供外边距），格子固定 136×102，
-            // 列/行由 _batchTotal 经 getBatchThumbGridSize 决定（此前用 sqrt+1fr 会在
-            // 图片写回触发本函数时把占位网格拉变形，导致格子越界/图片浮出框外）。
+            // 占位格与结果格必须共享几何，不能在逐张写回时用 1fr 拉伸。
             const count = Math.max(2, Math.min(8, Number(node._batchTotal) || Number(node.pending) || 2));
             const batch = getBatchThumbGridSize(count);
             loadingGrid.style.width = '100%';
             loadingGrid.style.height = '100%';
             loadingGrid.style.gridTemplateColumns = `repeat(${batch.cols}, ${layout.batchThumbHeight ? layout.thumb : BATCH_THUMB.WIDTH}px)`;
             loadingGrid.style.gridTemplateRows = `repeat(${batch.rows}, ${layout.batchThumbHeight || BATCH_THUMB.HEIGHT}px)`;
+            loadingGrid.style.gap = `${layout.batchGap ?? BATCH_THUMB.GAP}px`;
         }
         const maxVisibleRows = isSmartGroupNode(node)
             ? (smartGroupCompactMembers(node).length ? Number(layout.rows || 1) : SMART_GROUP_MAX_VISIBLE_ROWS)
