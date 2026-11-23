@@ -1149,6 +1149,11 @@ class ProjectDeletionMixin:
                 history_owner_state = snapshot.get("history_owner_state")
                 if isinstance(history_owner_state, dict):
                     for key in ("status", "originalDeleted"):
+                        # Restoring a partial output must not reopen a task that
+                        # reached its terminal state after the deletion (#491).
+                        if (key == "status" and history_owner_state.get(key) == "running"
+                                and target_record.get(key) in {"succeeded", "failed", "timeout", "cancelled"}):
+                            continue
                         if key in history_owner_state:
                             target_record[key] = copy.deepcopy(history_owner_state[key])
                         else:

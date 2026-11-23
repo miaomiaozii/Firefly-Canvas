@@ -1828,29 +1828,34 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             )
         )
 
-    @staticmethod
+    @classmethod
     def _merge_generation_outputs(
+        cls,
         old_outputs: List[Dict[str, Any]],
         new_outputs: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        """#83: 同一任务/记录的 outputs 累加合并，按 asset_id 去重。
+        """#83/#491: cumulative callbacks replay identities, not unique originals.
 
-        partial 逐张写回与 final 全量写回（或失败/取消取回兜底）都携带各自已归档的
-        输出；整体替换会让历史记录永远只剩最后一次写入的图（用户反馈「4 张生 3 张卡 1 张，
-        历史里永远只有 1 张」）。保留先出现顺序（完成顺序），已带 output_id 的条目
-        不被覆盖（_ensure_output_occurrence_ids 会保留既有 ID）。
+        Distinct explicit occurrences may share bytes. Legacy callbacks without
+        identities still replay by asset, preserving the first canonical entry.
         """
         merged: List[Dict[str, Any]] = []
-        seen: set[str] = set()
+        seen_ids: set[str] = set()
+        seen_assets: set[str] = set()
         for item in list(old_outputs or []) + list(new_outputs or []):
             if not isinstance(item, dict):
                 merged.append(copy.deepcopy(item))
                 continue
             asset_id = str(item.get("asset_id") or "").strip()
-            if asset_id:
-                if asset_id in seen:
+            output_id = cls._valid_output_id(item.get("output_id"))
+            if output_id:
+                if output_id in seen_ids:
                     continue
-                seen.add(asset_id)
+                seen_ids.add(output_id)
+            elif asset_id and asset_id in seen_assets:
+                continue
+            if asset_id:
+                seen_assets.add(asset_id)
             merged.append(copy.deepcopy(item))
         return merged
 
@@ -2795,6 +2800,38 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
 
         with self._lock:
             opened = self.open_project(project_id)["canvas"]
+            history_id = str(clean_history.get("id") or "")
+            prior_record = next((
+                record for record in opened.get("history") or []
+                if isinstance(record, dict) and history_id and str(record.get("id") or "") == history_id
+            ), {})
+            # #491: callbacks replay a task's archived outputs, not a new user
+            # occurrence. Only this history's deletion identities suppress them;
+            # the same original in another history or an independent copy survives.
+            deleted_callback_outputs = {
+                (str(item.get("deleted_asset_id") or ""), self._valid_output_id(item.get("deleted_output_id")))
+                for item in prior_record.get("deletedOutputTombstones") or []
+                if isinstance(item, dict) and item.get("deletion_id")
+                and str(item.get("history_id") or "") == history_id
+                and self._valid_output_id(item.get("deleted_output_id"))
+            }
+
+            # Known identities match exactly; only legacy callbacks need the
+            # conservative per-history asset fallback to avoid reviving deletions.
+            def retained_output(item: Any) -> bool:
+                if not isinstance(item, dict):
+                    return True
+                return not any(
+                    str(item.get("asset_id") or "") == asset_id
+                    and (not self._valid_output_id(item.get("output_id"))
+                         or self._valid_output_id(item.get("output_id")) == output_id)
+                    for asset_id, output_id in deleted_callback_outputs
+                )
+
+            clean_media = [item for item in clean_media if retained_output(item)]
+            if isinstance(clean_history.get("outputs"), list):
+                clean_history["outputs"] = [item for item in clean_history["outputs"] if retained_output(item)]
+            # Deleted media may already be in trash; validate only retained outputs.
             generated_asset_ids = self._collect_asset_ids(clean_media)
             history_asset_ids = self._collect_asset_ids(clean_history) - generated_asset_ids
             for asset_id in generated_asset_ids:
@@ -2836,58 +2873,57 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                 if isinstance(item, dict)
             }:
                 raise InvalidMutation("生成任务已结束，无法写入结果")
-            history_id = str(clean_history.get("id") or "") if isinstance(clean_history, dict) else ""
             batch_active = bool(pending_tasks) or "_generationBatchApplied" in node
             batch_applied = bool(node.get("_generationBatchApplied"))
             merge_ledger = self._generation_written_assets.setdefault(history_id, set()) if history_id else None
-            if batch_active and batch_applied:
+
+            def remember_output(item: Dict[str, Any]) -> None:
+                if merge_ledger is None:
+                    return
+                if asset_id := str(item.get("asset_id") or "").strip():
+                    merge_ledger.add(("asset", asset_id))
+                if output_id := self._valid_output_id(item.get("output_id")):
+                    merge_ledger.add(("output", output_id))
+
+            # The durable history, not this process-local cache, owns callback
+            # deduplication across restarts. Keep ledgers isolated by history.
+            for item in prior_record.get("outputs") or []:
+                if isinstance(item, dict):
+                    remember_output(item)
+            if (batch_active and batch_applied) or partial:
                 merged_media = copy.deepcopy(node.get("images") or [])
                 for item in clean_media:
-                    asset_id = str(item.get("asset_id") or "")
-                    # 同一 history id 下 partial 逐张写回 + final 再次携带全量，按已写入
-                    # 资产去重，避免节点出现重复图；不同 history id（共享原件的独立
-                    # occurrence）各自成账，不受影响。
-                    if merge_ledger is not None and asset_id and asset_id in merge_ledger:
+                    output_id = self._valid_output_id(item.get("output_id"))
+                    key = ("output", output_id) if output_id else ("asset", str(item.get("asset_id") or "").strip())
+                    if merge_ledger is not None and key[1] and key in merge_ledger:
                         continue
                     merged_media.append(copy.deepcopy(item))
-                    if merge_ledger is not None and asset_id:
-                        merge_ledger.add(asset_id)
-                node["images"] = merged_media
-            elif partial:
-                # partial 必须累加去重，不能覆盖前一张已经写回的输出。
-                merged_media = copy.deepcopy(node.get("images") or [])
-                for item in clean_media:
-                    asset_id = str(item.get("asset_id") or "")
-                    if merge_ledger is not None and asset_id and asset_id in merge_ledger:
-                        continue
-                    merged_media.append(copy.deepcopy(item))
-                    if merge_ledger is not None and asset_id:
-                        merge_ledger.add(asset_id)
+                    remember_output(item)
                 node["images"] = merged_media
             else:
                 node["images"] = clean_media
                 if batch_active:
                     node["_generationBatchApplied"] = True
-                if merge_ledger is not None:
-                    merge_ledger.update(
-                        str(item.get("asset_id") or "") for item in clean_media
-                    )
+                for item in clean_media:
+                    remember_output(item)
             result_count = len(node.get("images") or [])
             node["title"] = (
                 "Videos" if result_count > 1 else "Video"
             ) if media_kind == "video" else ("Group" if result_count > 1 else "Image")
             node["outputKind"] = media_kind
-            # A successful regeneration supersedes the producer-only state left
-            # by deleting its previous output.  Input tombstones are separate:
-            # they continue to describe missing upstream material until that
-            # reference is explicitly restored.
-            for key in (
-                "needsRegeneration",
-                "generationState",
-                "resultDeleted",
-                "deletedOutputTombstones",
-            ):
+            # Regeneration supersedes producer-only state, but occurrence undo
+            # identities must outlive callbacks and unrelated later generations.
+            for key in ("needsRegeneration", "generationState", "resultDeleted"):
                 node.pop(key, None)
+            occurrence_tombstones = [
+                item for item in node.get("deletedOutputTombstones") or []
+                if isinstance(item, dict) and item.get("deletion_id")
+                and self._valid_output_id(item.get("deleted_output_id"))
+            ]
+            if occurrence_tombstones:
+                node["deletedOutputTombstones"] = occurrence_tombstones
+            else:
+                node.pop("deletedOutputTombstones", None)
             node["running"] = False
             node.pop("queued", None)
             if partial:
@@ -2936,6 +2972,8 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                         merged_record.get("outputs") or [],
                         clean_history.get("outputs") or [],
                     )
+                    if merged_record["outputs"]:
+                        merged_record.pop("originalDeleted", None)
                     history[existing_index] = merged_record
             else:
                 history.append(clean_history)
@@ -2951,6 +2989,10 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             self._ensure_output_occurrence_ids(canvas, history)
             # #83：响应必须带稳定输出身份；partial 合并可能改变顺序，不能按索引回填。
             if history_id and isinstance(history_record, dict):
+                # Task responses reuse this record; they must not publish the
+                # filtered outputs again after the Store accepted the deletion.
+                if deleted_callback_outputs:
+                    history_record["outputs"] = copy.deepcopy(clean_history.get("outputs") or [])
                 caller_outputs = history_record.get("outputs")
                 if isinstance(caller_outputs, list):
                     canonical_record = next(
@@ -2961,6 +3003,11 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                         ),
                         None,
                     )
+                    canonical_by_id = {
+                        self._valid_output_id(output.get("output_id")): output
+                        for output in (canonical_record.get("outputs") or []) if isinstance(output, dict)
+                        if self._valid_output_id(output.get("output_id"))
+                    } if isinstance(canonical_record, dict) else {}
                     canonical_by_asset = {
                         str(output.get("asset_id") or "").strip(): output
                         for output in (canonical_record.get("outputs") or []) if isinstance(output, dict)
@@ -2969,11 +3016,13 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                     for caller_output in caller_outputs:
                         if not isinstance(caller_output, dict):
                             continue
-                        canonical_item = canonical_by_asset.get(str(caller_output.get("asset_id") or "").strip())
+                        output_id = self._valid_output_id(caller_output.get("output_id"))
+                        canonical_item = (canonical_by_id.get(output_id) if output_id else
+                                          canonical_by_asset.get(str(caller_output.get("asset_id") or "").strip()))
                         if not isinstance(canonical_item, dict):
                             continue
-                        # 只回填缺失的 ID：partial 逐张写回已固化过的 ID
-                        # 不能覆盖。
+                        # Partial callbacks have already published these IDs;
+                        # backfilling another same-asset occurrence would rebind them.
                         if not caller_output.get("output_id") and canonical_item.get("output_id"):
                             caller_output["output_id"] = canonical_item["output_id"]
                         if caller_output.get("output_order") is None and canonical_item.get("output_order") is not None:

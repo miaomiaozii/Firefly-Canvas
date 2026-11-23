@@ -173,7 +173,8 @@ REVERSE_REFERENCE_CEILINGS = {
     # cascade +8、media-history +15、generation-tasks +10、image-editor +2、undo +1，
     # node-ops / connections / agent-tui 实测不变（它们不引用 async 核心名字）。
     # #453：trf 下沉到 canvas-core，六个模块按实测净值收紧。
-    "canvas-generation-cascade.js": 151,  # 147 -> 155 -> 153 -> 152：#236 即梦退役删
+    "canvas-generation-cascade.js": 148,  # #491: server-owned completions share one poll gate.
+    # 147 -> 155 -> 153 -> 152：#236 即梦退役删
     # cascade 里即梦相关发图路径引用，净 -1 核心引用（2026-10-29 实测，棘轮随之收紧）。
     # #465：API 复用走模型策略接口，其他引擎刷新输入面板，不从历史模块读取选择器内部状态。
     "canvas-media-history.js": 102,
@@ -242,7 +243,8 @@ REVERSE_REFERENCE_CEILINGS = {
 # 等于当时的反向引用总数（尚无接口引用）；每接口化一个模块就收紧一次。
 FREE_GLOBAL_REFERENCE_CEILINGS = {
     # 同上：2026-10-19 数值上调是修正测量，不是放宽。括号里是「旧（少算） -> 修正后」。
-    "canvas-generation-cascade.js": 52,  # #201 接口化 147->42；正则修正 42->50（+8 个之前隐形的 async 名字）
+    "canvas-generation-cascade.js": 49,  # #491: the shared poll gate needs no new host-global dependency.
+    # #201 接口化 147->42；正则修正 42->50（+8 个之前隐形的 async 名字）
     "canvas-media-history.js": 51,  # #201 接口化 83->36；正则修正 36->51；2026-10-28 实测 51->54（#260 Upscale 菜单）
     "canvas-generation-tasks.js": 34,  # #396 reuses the capped reference list (-1); #199 轨道 1 接口化：自由侧 113->35。
     # 2026-10-28 实测：#254 新增 EACH_RUN_RESULT_GAP/expandEachRuns/runEachImageGeneration 顶层名（+3）

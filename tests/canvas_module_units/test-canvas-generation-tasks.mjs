@@ -648,6 +648,176 @@ test('direct cascade poll propagates server history ownership', async () => {
     assert.equal(fromContext(evaluate(ctx, 'canvas.history')).length, 1);
 });
 
+function loadCascadeResurrectionFixture(engine='api', kind='image'){
+    const node = {id:'cascade-result', type:'smart-image', images:[], promptDraftText:'target prompt', run_id:'target-run'};
+    const sourceNode = {id:'cascade-source', type:'smart-image', images:[]};
+    const runSettings = {engine, apiKind:kind, count:1};
+    const loaded = loadGenerationTasksModule({nodes:[sourceNode, node]});
+    const {ctx} = loaded;
+    loadModules(ctx, ['canvas-placement.js', 'canvas-generation-cascade.js']);
+    const host = readFileSync('static/js/smart-canvas.js', 'utf8');
+    loadHostFunctions(ctx, host, ['liveSmartNode', 'clearSmartNodeBusyState', 'markSmartNodeComplete']);
+    const start = host.indexOf('async function pollGenerationTaskResultForNode(');
+    const end = host.indexOf('\nfunction pendingBoxSize(', start);
+    assert.ok(start >= 0 && end > start);
+    evaluate(ctx, host.slice(start, end));
+    loadHostFunctions(ctx, readFileSync('static/js/canvas-media-history.js', 'utf8'),
+        ['isHistoryGroupNode', 'historyGroupForNode', 'positionHistoryGroupForNode', 'ensureHistoryGroupForNode', 'replaceOutputsToNodeWithHistory']);
+    const legacyLogs = [];
+    Object.assign(ctx, {
+        isApiLikeEngine:e=>e === 'api', smartSettingsForNode:()=>runSettings,
+        smartRunNeedsPrompt:()=>true, smartRunSnapshot:()=>({nodeId:sourceNode.id, run_id:'cascade-run'}),
+        rememberRecentSmartSettings:()=>{}, mergeSmartPendingTaskLists:(a,b)=>[...a,...b],
+        runningHubSelectedModel:()=> 'rh-model', runningHubModelApiSettings:s=>s, modelscopeImageModels:()=>['ms-model'],
+        mediaKindForUrls:(_urls, fallback)=>fallback, nodeRect:n=>({x:n.x || 0, y:n.y || 0, width:100, height:100}),
+        layoutFrameContainingNode:()=>null, smartNewNodeOwnership:n=>n,
+        attachRunMeta:()=>{}, clearSourceBusyStateIfDownstreamDone:()=>{},
+        addSmartGenerationHistory:entry=>legacyLogs.push(entry),
+    });
+    evaluate(ctx, "runApiGeneration = async () => ({taskIds:['project_img_491'], count:1, projectRevision:8}); runApiVideoGeneration = runApiGeneration;");
+    const run = (loopContext={nodeId:'loop-491'}) => globalFunction(ctx, 'runCascadeStepIntoNode')(
+        sourceNode, node, [], loopContext, async()=>({prompt:'test', displayPrompt:'test', refs:[]}));
+    const settle = async promise => {
+        let settled = false;
+        const outcome = promise.then(value=>({value}), error=>({error})).finally(()=>{settled = true;});
+        for(let i=0; i<20 && !settled; i++){ loaded.harness.advanceTimers(); await tick(); }
+        assert.ok(settled, 'real foreground poll settles');
+        return outcome;
+    };
+    return {...loaded, node, sourceNode, runSettings, run, settle, legacyLogs};
+}
+
+for(const engine of ['api', 'modelscope', 'runninghub', 'video']) for(const mode of ['canonical B', 'canonical empty', 'node replaced']) for(const append of [false, true])
+    test(`#491 cascade ${engine}: ${mode} is authoritative over stale A+B (append=${append})`, async () => {
+    const kind = engine === 'video' ? 'video' : 'image';
+    const fixture = loadCascadeResurrectionFixture(engine === 'video' ? 'api' : engine, kind);
+    const {ctx, harness, node, run, settle, legacyLogs} = fixture;
+    const item = letter => ({url:`/${letter}.${kind === 'video' ? 'mp4' : 'png'}`, kind, output_id:letter, asset_id:`asset-${letter}`});
+    const canonical = mode === 'canonical empty' ? [] : [item('B')];
+    let current = node;
+    harness.fetchResponder = () => {
+        if(mode === 'node replaced'){
+            current = {...node, images:[], promptDraftText:'new target prompt', run_id:'replacement-run'};
+            ctx.canvasState.nodes = [fixture.sourceNode, current];
+        }
+        return fakeResponse({data:{status:'succeeded', result:{
+            history_recorded:true, history_record:{id:'server-491', status:'succeeded', task_id:'project_img_491', run_id:'server-run'},
+            result_node_id:node.id, final_node:{id:node.id, images:canonical, pending:0, pendingTasks:[], title:'canonical title', outputKind:kind},
+            [kind === 'video' ? 'video_items' : 'image_items']:[item('A'), item('B')],
+            [kind === 'video' ? 'videos' : 'images']:[item('A'), item('B')],
+        }}});
+    };
+    const loopContext = {nodeId:'loop-491', appendLoopOutputs:append, runState:{}};
+    const {value, error} = await settle(run(loopContext));
+    assert.equal(error, undefined, 'authoritative empty success is not a fabricated no-output failure');
+    assert.deepEqual(fromContext(current.images), canonical, 'deleted A must not return, including via loop append');
+    assert.equal(current.title, 'canonical title', 'the server-applied node is not rewritten');
+    assert.deepEqual(fromContext(value), canonical, 'only current canonical outputs feed the next step');
+    assert.deepEqual(fromContext(loopContext.roundOutputs.get(node.id)), canonical);
+    assert.equal(current.promptDraftText, mode === 'node replaced' ? 'new target prompt' : 'target prompt');
+    assert.equal(current.run_id, mode === 'node replaced' ? 'replacement-run' : 'target-run');
+    assert.equal(ctx.canvasState.nodes.length, 2, 'no redundant history pool is created');
+    assert.equal(legacyLogs.length, 0, 'the poller owns the server history record');
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvas.history')).map(log=>[log.id, log.task_id, log.run_id]),
+        [['server-491', 'project_img_491', 'server-run']]);
+});
+
+for(const engine of ['modelscope', 'runninghub', 'video']) for(const empty of [false, true])
+    test(`#491 loop slot ${engine}: server-applied outputs are not replayed (empty=${empty})`, async () => {
+    const kind = engine === 'video' ? 'video' : 'image';
+    const {ctx, harness, node, sourceNode, settle, legacyLogs} = loadCascadeResurrectionFixture(engine === 'video' ? 'api' : engine, kind);
+    const canonical = empty ? [] : [{url:'/B', kind, output_id:'B'}];
+    harness.fetchResponder = () => fakeResponse({data:{status:'succeeded', result:{history_recorded:true,
+        history_record:{id:'server-loop-491', status:'succeeded'}, result_node_id:node.id,
+        final_node:{id:node.id, images:canonical, pending:0, pendingTasks:[], title:'canonical loop'},
+        [kind === 'video' ? 'video_items' : 'image_items']:[{url:'/A', kind}, {url:'/B', kind}]}}});
+    const {value, error} = await settle(globalFunction(ctx, 'runLoopRoundIntoSlot')(
+        {id:'loop-491'}, sourceNode, node, 1, {nodeId:'loop-491'},
+        async()=>({prompt:'test', displayPrompt:'test', refs:[]})));
+    assert.equal(error, undefined);
+    assert.deepEqual(fromContext(node.images), canonical);
+    assert.deepEqual(fromContext(value), canonical);
+    assert.equal(node.title, 'canonical loop');
+    assert.equal(ctx.canvasState.nodes.length, 2, 'no duplicate archive of canonical output');
+    assert.equal(legacyLogs.length, 0);
+    assert.equal(fromContext(evaluate(ctx, 'canvas.history')).length, 1);
+});
+
+for(const kind of ['image', 'video']) test(`#491 cascade ${kind}: legacy settled fallback is preserved`, async () => {
+    const {harness, node, run, settle, legacyLogs} = loadCascadeResurrectionFixture('api', kind);
+    const output = {url:`/legacy.${kind === 'video' ? 'mp4' : 'png'}`, kind};
+    harness.fetchResponder = () => fakeResponse({data:{status:'succeeded', result:{history_recorded:false,
+        [kind === 'video' ? 'video_items' : 'image_items']:[output]}}});
+    const {value, error} = await settle(run());
+    assert.equal(error, undefined);
+    assert.deepEqual(fromContext(value).map(item=>item.url), [output.url]);
+    assert.deepEqual(fromContext(node.images).map(item=>item.url), [output.url]);
+    assert.equal(legacyLogs.length, 1);
+    assert.equal(legacyLogs[0].run.run_id, 'cascade-run');
+});
+
+test('#491 cascade legacy settlement does not replace a foreign node with the same id', async () => {
+    const {ctx, harness, node, sourceNode, run, settle, legacyLogs} = loadCascadeResurrectionFixture();
+    const foreign = {id:node.id, type:'smart-image', images:[{url:'/foreign.png'}], promptDraftText:'foreign prompt', run_id:'foreign-run'};
+    harness.fetchResponder = () => {
+        ctx.canvasState.nodes = [sourceNode, foreign];
+        return fakeResponse({data:{status:'succeeded', result:{images:[{url:'/legacy.png'}]}}});
+    };
+    const {value, error} = await settle(run());
+    assert.equal(error, undefined);
+    assert.deepEqual(fromContext(foreign.images), [{url:'/foreign.png'}]);
+    assert.equal(foreign.promptDraftText, 'foreign prompt');
+    assert.equal(foreign.run_id, 'foreign-run');
+    assert.deepEqual(fromContext(value), [], 'a detached run has no current outputs to forward');
+    assert.equal(legacyLogs.length, 1, 'the completed legacy task still gets its own record');
+});
+
+for(const engine of ['modelscope', 'runninghub', 'video'])
+    test(`#491 loop slot ${engine}: legacy completion cannot replace a foreign node`, async () => {
+    const kind = engine === 'video' ? 'video' : 'image';
+    const {ctx, harness, node, sourceNode, settle, legacyLogs} = loadCascadeResurrectionFixture(engine === 'video' ? 'api' : engine, kind);
+    const foreign = {id:node.id, type:'smart-image', images:[{url:'/foreign', output_id:'foreign'}], title:'foreign title'};
+    harness.fetchResponder = () => {
+        ctx.canvasState.nodes = [sourceNode, foreign];
+        return fakeResponse({data:{status:'succeeded', result:{[kind === 'video' ? 'video_items' : 'image_items']:[{url:'/legacy', kind}]}}});
+    };
+    const {value, error} = await settle(globalFunction(ctx, 'runLoopRoundIntoSlot')(
+        {id:'loop-491'}, sourceNode, node, 1, {nodeId:'loop-491'},
+        async()=>({prompt:'test', displayPrompt:'test', refs:[]})));
+    assert.equal(error, undefined);
+    assert.deepEqual(fromContext(foreign.images), [{url:'/foreign', output_id:'foreign'}]);
+    assert.equal(foreign.title, 'foreign title');
+    assert.deepEqual(fromContext(value), []);
+    assert.equal(legacyLogs.length, 1);
+});
+
+test('#491 cascade uses the current store when the poller rejects an older final_node revision', async () => {
+    const {ctx, harness, node, settle, runSettings} = loadCascadeResurrectionFixture();
+    const canonical = [{url:'/B.png', kind:'image', output_id:'B'}];
+    node.images = canonical;
+    evaluate(ctx, "smartGenerationNodeRevisions.set('cascade-result', 12)");
+    harness.fetchResponder = () => fakeResponse({data:{status:'succeeded', result:{history_recorded:true, project_revision:11,
+        history_record:{id:'older-server-491', status:'succeeded'}, result_node_id:node.id,
+        final_node:{id:node.id, images:[{url:'/A.png'}, ...canonical]}, image_items:[{url:'/A.png'}, ...canonical]}}});
+    const {value, error} = await settle(globalFunction(ctx, 'generateUrlsForCurrentSettings')(node, 'test', [], runSettings));
+    assert.equal(error, undefined);
+    assert.equal(value.serverApplied, true, 'ownership does not depend on URL count');
+    assert.deepEqual(fromContext(value.urls), canonical);
+    assert.deepEqual(fromContext(node.images), canonical);
+});
+
+for(const server of [false, true]) test(`#491 cascade retains genuine errors (server=${server})`, async () => {
+    const {harness, node, settle, run, legacyLogs} = loadCascadeResurrectionFixture();
+    harness.fetchResponder = () => fakeResponse({data:server ? {status:'failed', error:'provider rejected this request', result:{
+        history_recorded:true, history_record:{id:'failed-server-491', status:'failed'},
+        result_node_id:node.id, final_node:{id:node.id, images:[{url:'/old.png'}], pending:0, pendingTasks:[]}
+    }} : {status:'succeeded', result:{images:[]}}});
+    const {error} = await settle(run());
+    assert.equal(error?.message, server ? 'provider rejected this request' : 'smart.errNoOutImages');
+    assert.equal(legacyLogs.length, server ? 0 : 1, 'no duplicate server failure history');
+    if(server) assert.equal(error.smartGenerationLogged, true);
+});
+
 for(const statuses of [['succeeded'], ['succeeded', 'succeeded'], ['failed', 'succeeded'], ['failed', 'failed']])
     test(`legacy API loop records only owned tasks: ${statuses.join(',')}`, async () => {
     const node = {id:'loop-history-slot', images:[]};

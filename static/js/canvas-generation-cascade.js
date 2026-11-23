@@ -610,42 +610,45 @@ function buildPromptRequestForNode(node, defaultImages, ctx=canvasCore.smartLoop
     return buildPromptRequest(node, defaultImages, false, ctx, promptRoot);
 }
 
+async function pollCascadeGenerationResult(node, taskResult, kind='image'){
+    const settled = await pollGenerationTaskResultForNode(node, taskResult, kind);
+    const serverApplied = settled.some(result => result?.history_recorded || result?.project_node_applied);
+    if(serverApplied){
+        // #491: settled media can predate a deletion; even an empty current node is authoritative.
+        const currentNode = canvasState.nodes.find(item => item.id === node?.id);
+        const urls = (currentNode?.images || []).filter(item => item?.url);
+        return {urls, kind:canvasCore.mediaKindForUrls(urls, kind), serverApplied:true};
+    }
+    const appliedUrls = kind === 'video' ? resultMediaUrls(node?.images || []) : [];
+    const urls = appliedUrls.length ? appliedUrls : settled.flatMap(result => {
+        const items = kind === 'video'
+            ? (result?.video_items?.length ? result.video_items : (result?.videos?.length ? result.videos : result))
+            : (result?.image_items?.length ? result.image_items : (result?.images?.length ? result.images : result));
+        return resultMediaUrls(items);
+    }).filter(Boolean);
+    return {urls, kind:canvasCore.mediaKindForUrls(urls, kind), serverApplied:false};
+}
+
 async function generateUrlsForCurrentSettings(node, prompt, refs, runSettings=settings){
     const activeSettings = runSettings || settings;
     if(activeSettings.engine === 'runninghub' && runningHubSelectedModel(activeSettings)){
         const taskResult = await runApiGeneration(prompt, refs, runningHubModelApiSettings(activeSettings), node);
         const taskIds = Array.isArray(taskResult?.taskIds) ? taskResult.taskIds : [];
-        if(taskIds.length){
-            const settled = await pollGenerationTaskResultForNode(node, taskResult);
-            const urls = settled.flatMap(result => resultMediaUrls(result?.image_items?.length ? result.image_items : (result?.images?.length ? result.images : result))).filter(Boolean);
-            return {urls, kind:canvasCore.mediaKindForUrls(urls, 'image')};
-        }
+        if(taskIds.length) return pollCascadeGenerationResult(node, taskResult);
         const urls = resultMediaUrls(taskResult);
         return {urls, kind:canvasCore.mediaKindForUrls(urls, 'image')};
     }
     if(canvasCore.isApiLikeEngine(activeSettings.engine) && activeSettings.apiKind === 'video'){
         const taskResult = await runApiVideoGeneration(prompt, refs, activeSettings, node);
         if(Array.isArray(taskResult?.taskIds) && taskResult.taskIds.length){
-            const settled = await pollGenerationTaskResultForNode(node, taskResult, 'video');
-            const appliedUrls = resultMediaUrls(node?.images || []);
-            const urls = appliedUrls.length
-                ? appliedUrls
-                : settled.flatMap(result => {
-                    const items = result?.video_items?.length ? result.video_items : (result?.videos?.length ? result.videos : result);
-                    return resultMediaUrls(items);
-                }).filter(Boolean);
-            return {urls, kind:'video'};
+            return pollCascadeGenerationResult(node, taskResult, 'video');
         }
         return {urls:resultMediaUrls(taskResult), kind:'video'};
     }
     if(canvasCore.isApiLikeEngine(activeSettings.engine)){
         const taskResult = await runApiGeneration(prompt, refs, activeSettings, node);
         const taskIds = Array.isArray(taskResult?.taskIds) ? taskResult.taskIds : [];
-        if(taskIds.length){
-            const settled = await pollGenerationTaskResultForNode(node, taskResult);
-            const urls = settled.flatMap(result => resultMediaUrls(result?.image_items?.length ? result.image_items : (result?.images?.length ? result.images : result))).filter(Boolean);
-            return {urls, kind:canvasCore.mediaKindForUrls(urls, 'image')};
-        }
+        if(taskIds.length) return pollCascadeGenerationResult(node, taskResult);
         const urls = resultMediaUrls(taskResult);
         return {urls, kind:canvasCore.mediaKindForUrls(urls, 'image')};
     }
@@ -660,11 +663,7 @@ async function generateUrlsForCurrentSettings(node, prompt, refs, runSettings=se
         };
         const taskResult = await runApiGeneration(prompt, refs, routed, node);
         const taskIds = Array.isArray(taskResult?.taskIds) ? taskResult.taskIds : [];
-        if(taskIds.length){
-            const settled = await pollGenerationTaskResultForNode(node, taskResult);
-            const urls = settled.flatMap(result => resultMediaUrls(result?.image_items?.length ? result.image_items : (result?.images?.length ? result.images : result))).filter(Boolean);
-            return {urls, kind:canvasCore.mediaKindForUrls(urls, 'image')};
-        }
+        if(taskIds.length) return pollCascadeGenerationResult(node, taskResult);
         const urls = resultMediaUrls(taskResult);
         return {urls, kind:canvasCore.mediaKindForUrls(urls, 'image')};
     }
@@ -731,10 +730,19 @@ async function runCascadeStepIntoNode(sourceNode, targetNode, inputRefs, ctx=can
     settings = previousSettings;
     try {
         const result = await generateUrlsForCurrentSettings(outputNode, prompt, request.refs || [], runSettings);
+        if(result.serverApplied){
+            const currentNode = canvasState.nodes.find(item => item.id === outputNode.id);
+            if(currentNode) delete currentNode._serverGenerationHistoryRecorded;
+            if(outpaintSize && canvasState.nodes.includes(requestNode)) delete requestNode.outpaintSize;
+            canvasCore.render();
+            return rememberRoundOutputs(ctx, currentNode || outputNode, result.urls);
+        }
         if(!result.urls?.length) throw new Error(result.kind === 'video' ? tr('smart.errNoOutVideos') : tr('smart.errNoOutImages'));
-        if(outpaintSize) delete requestNode.outpaintSize;
         if(!outputNode._serverGenerationHistoryRecorded) addSmartGenerationHistory({run:{...runLog, kind:result.kind || logKind}, outputs:result.urls, runMs:nowMs() - runLogStart});
         delete outputNode._serverGenerationHistoryRecorded;
+        // A legacy completion owns its history, not a replacement node that reused the id.
+        if(!canvasState.nodes.includes(outputNode)) return rememberRoundOutputs(ctx, outputNode, []);
+        if(outpaintSize && canvasState.nodes.includes(requestNode)) delete requestNode.outpaintSize;
         const ext = result.kind === 'video' ? 'mp4' : result.kind === 'audio' ? 'mp3' : result.kind === 'text' ? 'txt' : 'png';
         const additions = result.urls.map((item, i) => {
             const url = typeof item === 'string' ? item : item?.url || '';
@@ -937,9 +945,15 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
         } else {
             result = await generateUrlsForCurrentSettings(outputSlot, prompt, request.refs || [], runSettings);
         }
-        if(!result.urls?.length) throw new Error(result.kind === 'video' ? tr('smart.errNoOutVideos') : tr('smart.errNoOutImages'));
+        if(!result.serverApplied && !result.urls?.length) throw new Error(result.kind === 'video' ? tr('smart.errNoOutVideos') : tr('smart.errNoOutImages'));
+        if(!result.serverApplied && !canvasState.nodes.includes(outputSlot)){
+            if(!taskHistoryOwned && !outputSlot._serverGenerationHistoryRecorded) addSmartGenerationHistory({run:{...runLog, kind:result.kind || logKind}, outputs:result.urls, runMs:nowMs() - runLogStart});
+            return rememberRoundOutputs(ctx, outputSlot, []);
+        }
         let additions;
-        if(canvasCore.isApiLikeEngine(runSettings.engine) && runSettings.apiKind !== 'video'){
+        if(result.serverApplied){
+            additions = result.urls;
+        } else if(canvasCore.isApiLikeEngine(runSettings.engine) && runSettings.apiKind !== 'video'){
             additions = (outputSlot.images || []).map(img => canvasCore.stripImageGenerationMeta({...img})).filter(img => img?.url);
             if(meta) canvasCore.attachRunMeta(outputSlot, meta);
         } else {
@@ -953,14 +967,14 @@ async function runLoopRoundIntoSlot(loopNode, rootNode, outputSlot, loopIndex, c
             replaceOutputsToNodeWithHistory(outputSlot, additions, result.kind, meta, {skipShift:Boolean(ctx?.nodeId)});
         }
         outputSlot = canvasCore.liveSmartNode(outputSlot);
-        canvasCore.markSmartNodeComplete(outputSlot, meta, true);
+        if(!result.serverApplied) canvasCore.markSmartNodeComplete(outputSlot, meta, true);
         canvasCore.clearSourceBusyStateIfDownstreamDone(rootNode);
         if(runPath?.states) {
             runPath.states[edgeKey] = 'done';
             scheduleConnectionLayerRefresh();
         }
         // #441：轮询已逐任务结算，循环再写整轮记录会重复记账并误消费其他任务的占位。
-        if(!taskHistoryOwned && !outputSlot._serverGenerationHistoryRecorded) addSmartGenerationHistory({run:{...runLog, kind:result.kind || logKind}, outputs:result.urls, runMs:nowMs() - runLogStart});
+        if(!taskHistoryOwned && !result.serverApplied && !outputSlot._serverGenerationHistoryRecorded) addSmartGenerationHistory({run:{...runLog, kind:result.kind || logKind}, outputs:result.urls, runMs:nowMs() - runLogStart});
         delete outputSlot._serverGenerationHistoryRecorded;
         return rememberRoundOutputs(ctx, outputSlot, additions);
     } catch(e) {

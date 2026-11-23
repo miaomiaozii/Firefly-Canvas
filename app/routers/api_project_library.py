@@ -497,12 +497,7 @@ def canvas_has_project_image_pending(canvas: Mapping[str, Any], task_id: str) ->
 
 
 def _history_output_entries(generated_items: Any, kind: str = '') -> List[Dict[str, Any]]:
-    """#224：生成历史输出必须携带 name。
-
-    archive_project_generated_image / _video 返回的 item 本来就带 name（归档文件名），
-    但以前写进 history_record['outputs'] 时被丢了。星标素材面板先读历史输出，
-    拿不到名字就只好把 64 位 asset_id 当文件名显示。
-    """
+    """History needs readable names (#224) and callback-stable occurrences (#491)."""
     entries: List[Dict[str, Any]] = []
     for item in generated_items or []:
         if not isinstance(item, dict):
@@ -514,6 +509,10 @@ def _history_output_entries(generated_items: Any, kind: str = '') -> List[Dict[s
         name = str(item.get('name') or '').strip()
         if name:
             entry['name'] = name[:160]
+        if item.get('output_id'):
+            entry['output_id'] = item['output_id']
+        if item.get('output_order') is not None:
+            entry['output_order'] = item['output_order']
         entries.append(entry)
     return entries
 
@@ -810,6 +809,10 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                     except BaseException as exc:
                         raise _CandidateWriteFailure(exc) from exc
                     logger.info(f'[gen-task {task_id[:8]}] provider={provider_elapsed}ms archive={_app_main.now_ms() - archive_start}ms item={len(generated_items) + 1}/{payload.n}')
+                    # Content-addressed originals may repeat within one task; assign
+                    # occurrence identity before any partial can be deleted (#491).
+                    if not item.get('output_id'):
+                        item['output_id'] = f'output-{uuid.uuid4().hex}'
                     generated_items.append(item)
                     update_project_image_task_progress(task_id, 'saving', current=len(generated_items), total=payload.n)
                     # 逐张写回：图片一归档就落到节点上（保留 pendingTasks 让前端继续显示剩余占位），
@@ -903,9 +906,30 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                 await asyncio.sleep(min(2.0, 0.4 * (complete_attempt + 1)))
         if canvas is None:
             raise last_complete_error
-        base = f"/api/project-library/{urllib.parse.quote(project_id, safe='')}/media/"
-        image_items = [{**item, 'url': base + urllib.parse.quote(item['asset_id'], safe='')} for item in generated_items]
-        result = {'prompt': payload.prompt, 'executed_prompt': executed_prompt, 'images': [item['url'] for item in image_items], 'image_items': image_items, 'provider_id': route.provider_id, 'provider_name': route.provider_name, 'model': route.model, 'route': route.to_dict(), 'history_id': history_record['id'], 'history_recorded': True, 'history_record': history_record, 'project_id': project_id, 'project_revision': canvas['revision'], 'registered_revision': registered_revision, 'result_node_id': payload.result_node_id, 'final_node': next((item for item in canvas.get('nodes') or [] if item.get('id') == payload.result_node_id), None)}
+        # Store filtering and ID canonicalization are authoritative even when a
+        # mutation adapter copies its inputs. Never republish the raw candidates.
+        history_record = copy.deepcopy(next(
+            record for record in canvas.get('history') or []
+            if record.get('id') == progress_history_id
+        ))
+        result = durable_project_image_result(project_id, canvas, {
+            'history_record': history_record, 'result_node_id': payload.result_node_id,
+        })
+        # Preserve image dimensions from the committed node, matched by occurrence
+        # rather than asset: different candidates can share the same original.
+        node_images = {
+            item['output_id']: item for item in (result['final_node'] or {}).get('images') or []
+            if isinstance(item, dict) and item.get('output_id')
+        }
+        result['image_items'] = [
+            {**copy.deepcopy(node_images.get(item.get('output_id'), {})), **item}
+            for item in result['image_items']
+        ]
+        result.update({
+            'executed_prompt': executed_prompt, 'provider_id': route.provider_id,
+            'provider_name': route.provider_name, 'model': route.model, 'route': route.to_dict(),
+            'history_id': history_record['id'], 'registered_revision': registered_revision,
+        })
         with CANVAS_TASK_LOCK:
             CANVAS_TASKS[task_id].update({'status': 'succeeded', 'result': result, 'error': '', 'updated_at': time.time()})
         update_project_image_task_progress(task_id, 'completed')
