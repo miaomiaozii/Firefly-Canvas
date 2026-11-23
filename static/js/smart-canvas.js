@@ -6025,12 +6025,11 @@ async function adoptServerCanvas(serverCanvasData, {activeTaskLogs = null, settl
     return canvas.revision;
 }
 
-// C-3（#76）：项目画布变更端点统一请求 helper。
-// 409 + detail.canvas → 先 adoptServerCanvas rebase 到服务端最新画布（canvasSynced=true，
-// 不计为成功），调用方按自身语义继续；payload 可为函数（重试时重算 base_revision）。
-async function projectCanvasRequest(url, {method = 'POST', payload, retries = 0, settleMs = 0, isCurrent = null} = {}){
+// A conflict canvas is authoritative state, never an acknowledgement of deletion.
+async function projectCanvasRequest(url, {method = 'POST', payload, retries = 0, settleMs = 0, isCurrent = null, validateConflict = null, conflictMessage = ''} = {}){
     let attempt = 0;
     for(;;){
+        if(isCurrent && !isCurrent()) throw new Error(tr('smart.canvasConflict'));
         const res = await fetch(url, {
             method,
             headers:{'Content-Type':'application/json'},
@@ -6040,8 +6039,10 @@ async function projectCanvasRequest(url, {method = 'POST', payload, retries = 0,
         if(isCurrent && !isCurrent()) throw new Error(tr('smart.canvasConflict'));
         if(res.status === 409 && data?.detail?.canvas){
             await adoptServerCanvas(data.detail.canvas, {settleMs});
+            if(isCurrent && !isCurrent()) throw new Error(tr('smart.canvasConflict'));
+            if(validateConflict) validateConflict(data.detail.canvas);
             if(attempt < retries){ attempt++; continue; }
-            return {ok:false, status:409, canvasSynced:true, message: typeof data?.detail?.message === 'string' ? data.detail.message : '', data};
+            return {ok:false, status:409, canvasSynced:true, message: conflictMessage || (typeof data?.detail?.message === 'string' ? data.detail.message : ''), data};
         }
         if(!res.ok){
             const detail = data?.detail;
@@ -6052,6 +6053,35 @@ async function projectCanvasRequest(url, {method = 'POST', payload, retries = 0,
         }
         return {ok:true, status:res.status, canvasSynced:false, message:'', data};
     }
+}
+
+async function projectOriginalDeleteRequest(projectId, identity){
+    const readSet = source => projectCanvasMutationClient().originalDeletionReadSet(source, identity);
+    // Use the pure accepted shadow, not the pending-journal overlay, as the CAS
+    // anchor. Local intent is checked separately so replay cannot hide a conflict.
+    const baseline = readSet(smartCanvasPendingState().server);
+    const localBaseline = readSet(canvasForStorage());
+    const changed = () => { throw new Error(tr('canvas.originalDeleteTargetChanged')); };
+    if(baseline === null || localBaseline === null) changed();
+    const validate = source => { if(readSet(source) !== baseline) changed(); };
+    const {assetId, historyId, outputId, outputIndex} = identity;
+    const single = Boolean(historyId);
+    return projectCanvasRequest(`/api/project-library/${encodeURIComponent(projectId)}/original/delete${single ? '' : '-project-wide'}`, {
+        retries:3,
+        settleMs:100,
+        isCurrent:() => projectId === smartProjectId(),
+        validateConflict:source => validate(mediaReferencesForStorage(source)),
+        conflictMessage:tr('canvas.originalDeleteBusy'),
+        payload:() => {
+            const server = smartCanvasPendingState().server;
+            // A broadcast can advance the shadow while a 409 is settling. The
+            // revision and read-set must always be taken from the same anchor.
+            validate(server);
+            if(readSet(canvasForStorage()) !== localBaseline) changed();
+            return JSON.stringify({asset_id:assetId, base_revision:Number(server.revision || 0),
+                ...(single ? {history_id:historyId, output_id:outputId, output_index:outputIndex} : {})});
+        },
+    });
 }
 
 // ── 片②：全局资源库多选批量删除 ───────────────────────────────
@@ -6666,8 +6696,7 @@ async function deleteLocalAssetFromPanel(itemId){
         toast(err.message || tr('smart.localAssetDeleteFail'));
     }
 }
-// #70 (D4): 项目范围删原图——删除生成原图+项目中全部引用（节点/历史）。
-// 后端端点按 ADR-0014 早已存在，此前无前端入口；此处为统一删除对话框补充显式选项。
+// D4 stays an explicit project-wide operation, separate from occurrence deletion.
 async function deleteProjectOriginalWide(assetId, btn){
     const projectId = canvas?.project_id || canvas?.project || sourceProjectId || canvasId || '';
     if(!projectId || !assetId) return;
@@ -6676,18 +6705,13 @@ async function deleteProjectOriginalWide(assetId, btn){
         // Persist local copies first so the server can remove every reference.
         if(await settleProjectCanvasBeforeOriginalMutation() !== true) throw new Error(tr('smart.projectSaveFailed'));
         if(projectId !== smartProjectId()) throw new Error(tr('smart.canvasConflict'));
-        // #76 (C-3)：统一 helper——409 自动 rebase 到最新画布后再报错
-        const result = await projectCanvasRequest(`/api/project-library/${encodeURIComponent(projectId)}/original/delete-project-wide`, {
-            method:'POST',
-            payload: () => JSON.stringify({asset_id: assetId, base_revision: Number(canvas?.revision || 0)}),
-            isCurrent: () => projectId === smartProjectId(),
-        });
+        const result = await projectOriginalDeleteRequest(projectId, {assetId});
         if(!result.ok){
             toast(result.message || tr('smart.assetDeleteFail'));
             return;
         }
         if(result.data.canvas) await adoptServerCanvas(result.data.canvas);
-        // Remove stale snapshots, then keep the server's recoverable deletion as an undo action.
+        // Stale snapshots must not resurrect references; undo uses the server's recoverable deletion.
         removeProjectMediaFromCache(assetId);
         if(stripDeletedMediaFromUndoStacks(assetId)) toast(tr('smart.toastDanglingMediaDropped'));
         pushUndo({projectOriginalDelete:{assetId, projectId, projectWide:true}});
@@ -8428,7 +8452,6 @@ async function settleProjectCanvasBeforeOriginalMutation(){
 async function deleteSmartProjectOriginal(historyId, outputIndex, options = {}){
     if(!canvas || canvas.format !== 'firefly-canvas-v1') return;
     const log = smartHistoryEntryById(historyId);
-    // Bug fix: 实时查找 output_id 在 log.outputs 中的当前位置，而不是使用缓存的 outputIndex
     const allOutputs = smartHistoryImageOutputs(log);
     const item = allOutputs.find(output => output.outputIndex === Number(outputIndex));
     const assetId = item?.asset_id || '';
@@ -8437,9 +8460,7 @@ async function deleteSmartProjectOriginal(historyId, outputIndex, options = {}){
         toast(tr('canvas.originalDeleteUnavailable'));
         return;
     }
-    // #347: 删原图可恢复（移回收区 7 天，另有 Ctrl+Z 与撤销 toast）——不再询问，直接执行；
-    // options 参数保留（:11312 调用方传 {skipConfirm:true}），两类调用行为现已一致
-    // Bug fix: 实时查找当前 outputIndex（基于 output_id），避免从生图节点再次生图后 outputIndex 失效
+    // Preserve occurrence identity through settling/rebase; never retarget by asset alone.
     const currentIndex = allOutputs.find(o => String(o.output_id || '') === outputId)?.outputIndex ?? Number(outputIndex);
     const deletionUiState = captureSmartOriginalDeletionUiState(historyId, outputId, currentIndex);
     const activeTaskLogs = smartActiveHistoryTaskLogs(canvas.history);
@@ -8456,21 +8477,7 @@ async function deleteSmartProjectOriginal(historyId, outputIndex, options = {}){
                 output:{images:Array.isArray(node.images) ? node.images.filter(image => image.output_id === outputId).map(mediaItemForStorage) : [],
                     tombstones:Array.isArray(node.deletedOutputTombstones) ? node.deletedOutputTombstones.filter(item => item.deleted_output_id === outputId) : []}})
         });
-        const deletePayload = () => JSON.stringify({
-            asset_id:assetId,
-            base_revision:Number(canvas.revision || 0),
-            history_id:historyId,
-            output_id:outputId,
-            output_index:Number(currentIndex),
-        });
-        // #76 (C-3)：统一 helper——409 时 adoptServerCanvas rebase 到最新画布并自动重试 ×3
-        // （payload 闭包每次重算 base_revision；100ms 等待 revision 稳定）
-        const result = await projectCanvasRequest(`/api/project-library/${encodeURIComponent(projectId)}/original/delete`, {
-            method:'POST',
-            payload:deletePayload,
-            retries:3,
-            settleMs:100,
-        });
+        const result = await projectOriginalDeleteRequest(projectId, {assetId, historyId, outputId, outputIndex:Number(currentIndex)});
         if(!result.ok) throw new Error(result.message || tr('canvas.originalDeleteFailed'));
         const data = result.data;
         const deletionId = String(data.deleted?.deletion_id || '');
@@ -8490,7 +8497,6 @@ async function deleteSmartProjectOriginal(historyId, outputIndex, options = {}){
         render();
         renderSmartCanvasHistory();
         refreshSmartProjectMediaTrashButton();
-        // #347: 直接执行给撤销 toast（Ctrl+Z 仍是第二通道）
         ffToast.info(tr('canvas.originalDeleted'), {
             timeoutMs: 8000,
             action: { label: tr('common.undo'), run: () => restoreSmartProjectOriginalUndo(undoSnapshot)

@@ -99,6 +99,8 @@
         "canvas.originalDeleteUnavailable": { zh: "这条记录没有可删除的项目原图", en: "This record has no deletable project original" },
         "canvas.deleteOriginalConfirm": { zh: "确认删除这张原图？项目内直接引用会清除，生成节点会保留提示词、参考图和参数并回退为可重新生成状态，下游成品不会删除。原图将在项目回收区保留 7 天。", en: "Delete this original? Direct project references will be cleared, the generator will keep its prompt, references, and settings ready to regenerate, downstream results will remain, and the original will stay in project trash for 7 days." },
         "canvas.originalDeleteFailed": { zh: "删除项目原图失败", en: "Failed to delete project original" },
+        "canvas.originalDeleteTargetChanged": { zh: "原图的目标节点、生成记录或引用已变化，删除未执行。请确认最新内容后重试。", en: "The original's target node, generation record, or references changed. This deletion was not performed. Review the latest content and try again." },
+        "canvas.originalDeleteBusy": { zh: "画布仍在持续更新，删除未执行。请稍后重试。", en: "The canvas is still being updated. This deletion was not performed. Please try again shortly." },
         "canvas.clearProjectTrash": { zh: "清空回收区", en: "Empty project trash" },
         "canvas.clearProjectTrashConfirm": { zh: "确认立即清空项目回收区？其中的已删除原图将无法撤销。", en: "Empty project trash now? Deleted originals can no longer be restored." },
         "canvas.projectTrashCleared": { zh: "项目回收区已清空", en: "Project trash emptied" },

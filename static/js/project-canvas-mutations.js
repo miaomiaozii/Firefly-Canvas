@@ -378,6 +378,36 @@
         };
     }
 
+    function originalDeletionReadSet(canvas, {assetId, historyId='', outputId='', outputIndex=null}){
+        if(!assetId || !Array.isArray(canvas?.nodes) || !Array.isArray(canvas?.history)) return null;
+        // Deliberately a superset of Store._collect_asset_ids: unknown nested
+        // reference fields and tombstones must fail closed, not escape a rebase.
+        const references = value => typeof value === 'string' ? value.trim() === assetId
+            : Boolean(value && typeof value === 'object' && Object.values(value).some(references));
+        const ownerId = record => String(record?.result_node_id || record?.resultNodeId || record?.nodeId || record?.node_id || '').trim();
+        const history = canvas.history.filter(record => references(record) || (historyId && record?.id === historyId));
+        if(historyId){
+            const targets = canvas.history.filter(record => record?.id === historyId);
+            if(targets.length !== 1 || !Array.isArray(targets[0].outputs)) return null;
+            const outputs = targets[0].outputs;
+            if(!Number.isInteger(outputIndex) || outputs[outputIndex]?.asset_id !== assetId
+                || outputs[outputIndex]?.output_id !== outputId
+                || outputs.filter(output => output?.output_id === outputId).length !== 1) return null;
+        }
+        const owners = new Set(history.map(ownerId).filter(Boolean));
+        const nodes = canvas.nodes.filter(node => references(node) || owners.has(String(node?.id || '')));
+        if([...owners].some(id => nodes.filter(node => String(node?.id || '') === id).length > 1)) return null;
+        const targetOwner = historyId ? ownerId(history.find(record => record?.id === historyId)) : '';
+        if(targetOwner && !nodes.some(node => String(node?.id || '') === targetOwner)) return null;
+        // Compare complete affected owners, not only the selected output. A new
+        // output/reference or a target edit changes the destructive intent.
+        const stable = value => Array.isArray(value) ? value.map(stable)
+            : isObject(value) ? Object.fromEntries(Object.keys(value).sort().map(key => [key, stable(value[key])])) : value;
+        const others = Object.fromEntries(Object.entries(canvas).filter(([key, value]) =>
+            !['nodes','history','revision','updated_at'].includes(key) && references(value)));
+        return JSON.stringify(stable({nodes, history, others}));
+    }
+
     async function requestAfterProjectCanvasFlush(options){
         if(typeof options?.flush !== 'function') throw new Error('canvas flush is required');
         if(typeof options?.request !== 'function') throw new Error('request callback is required');
@@ -444,6 +474,7 @@
 
     return {
         mergeCanvasValue:mergeThreeWay,
+        originalDeletionReadSet,
         flushProjectCanvasMutations,
         rebaseProjectCanvasMutations,
         rebaseProjectCanvasResponse,

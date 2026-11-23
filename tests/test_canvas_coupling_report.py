@@ -219,19 +219,20 @@ class CanvasCouplingReportTests(unittest.TestCase):
         })
 
     def test_reverse_coupling_is_measurable_and_pinned(self):
-        # ADR 0020 把轨道 3 写成「17 个名字 / 40 处」，而这个数无法从本工具任何字段
-        # 重现——`coupling()` 只测「模块引用核心声明的名字」，方向刚好相反。后果：
-        # 后来人按错的规模给轨道 3 排期。这里钉住反方向实测值，飘了就必须同步改 ADR。
+        # 两个引用方向必须独立实测；合法调用也须同步 ADR 0020 和精确计数，不能豁免。
         rev = _cached_reverse()
-        # 漂移原因统一记在 ADR 0020；这里守住精确计数，不因合法调用而豁免。
         self.assertEqual(rev["reverse_names"], 264)
-        self.assertEqual(rev["reverse_core_refs"], 993)
+        self.assertEqual(rev["reverse_core_refs"], 994)
         self.assertEqual(rev["core_dominant_names"], 177)
-        self.assertEqual(rev["core_dominant_core_refs"], 812)
+        self.assertEqual(rev["core_dominant_core_refs"], 813)
         rows = {(row["owner"], row["name"]): row for row in rev["reverse_rows"]}
         self.assertEqual(rows[("canvas-node-types.js", "NODE_TYPE_IMAGE")], {
             "name": "NODE_TYPE_IMAGE", "owner": "canvas-node-types.js",
             "core_refs": 18, "owner_refs": 1, "category": "unclassified",
+        })
+        self.assertEqual(rows[("canvas-media-history.js", "mediaReferencesForStorage")], {
+            "name": "mediaReferencesForStorage", "owner": "canvas-media-history.js",
+            "core_refs": 6, "owner_refs": 3, "category": "unclassified",
         })
         # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。
         self.assertNotIn("canvas-core.js", rev["by_owner"])
