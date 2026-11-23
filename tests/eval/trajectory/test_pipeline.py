@@ -221,12 +221,8 @@ def exercise_pipeline(application, scenario, expected_attempts, code, expected_s
         with Image.open(store.root / pid / 'media' / item['filename']) as image:
             image.load()
             assert image.size == (8, 8)
-    # ADR0022/#402：自主模式免花钱门，标准模式整批确认；计划落地仍须单独批准。
-    expected_confirmations = {
-        'autonomous': ['plan.apply'],
-        'standard': ['plan.apply', 'generate.request_batch'],
-    }[autonomy]
-    assert [event['tool'] for event in confirmations] == expected_confirmations
+    # #487：每种自治档位都须先确认批次选择；计划落地仍须单独批准。
+    assert [event['tool'] for event in confirmations] == ['plan.apply', 'generate.request_batch']
 
 
 if __name__ == '__main__':

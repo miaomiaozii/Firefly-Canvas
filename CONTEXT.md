@@ -238,10 +238,19 @@ _Avoid_: 独立音频项目、音频工作站
 
 ### 自治确认合同（#402）
 
-- 缺省 `autonomy` 为 `standard`（每批确认）；既有显式 `cautious`（每次花钱调用确认）不迁移。`autonomous` 自动执行花钱调用；`standard` 批次批准后不逐项重复确认。
+- 缺省 `autonomy` 为 `standard`（每批确认）；既有显式 `cautious`（每次花钱调用确认）不迁移。一般花钱调用中 `autonomous` 免花钱门；`standard` 批次批准后不逐项重复确认。`generate.request_batch` 的三档选择门例外见下节（#487）。
 - 媒体删除可恢复不降低确认底线：三档都确认删除媒体、删除非本 Agent 本轮创建或已被人工接管的节点、断开非本 Agent 创建的连线，以及 #398 提示词批量修改。节点/连线豁免须有服务端操作日志的创建证据，客户端来源/轮次字段不授予权限。
 - 花钱确认立即回 `CONFIRM_PENDING` / `awaiting_confirmation` 和 `confirm_id`，确认事件携带准备好的生成输入。非花钱门的 90 秒是同步回包窗口，不是拒绝或批准的有效期；等待中的操作、处理器和回放卡保留到决定、停止或会话失效。执行前仍检查宿主、generation、原轮次及当前输入/CAS；拒绝不执行写入。已准入的图片任务保留原操作/轮次归属并独立结算，后续宿主、用户轮或服务商设置变化不能阻断已花钱结果的归档；新调用仍须重新过门。
 - 批准后的系统续接属于原用户逻辑轮，Pi/Codex 共用 FIFO，不伪造用户消息或新的用户轮次。待执行处理器仅在本次服务进程生命周期内存活；停止/关闭执行循环会取消未批准工作。
+
+### 批次选择、批内编辑与人工决策（#487）
+
+- `generate.request_batch` 三档均先由人工选择，不能因 `autonomous` 自动批准子集；缺省旧整批 bool 仍选择全部。`standard/autonomous` 选择批准后执行所选项，`cautious` 的首次选择不花钱、不计额度，后续每项付费仍独立确认。所选项的 count 才占用额度，未选项不建任务；接受确认 HTTP 回执不等于额度准入、任务成功或执行完成。
+- 每项稳定 `item_id`，快照以 `preview_revision/snapshot_sha256` 绑定实际输入、参数、数量及选项。人工 GET/edit/remove 和三通道决策的精确形状、严格同源/匹配项目头、WS 门级 token 及错误见 [ADR 0022「#487」](docs/adr/0022-mcp-streamable-http-canvas-endpoint.md)。原 Agent/MCP 仍使用原 caller/SID；人工接口不冒充原调用身份。
+- 编辑只修改本批的有效任务正文或白名单 runSettings，经原 canonical resolver 重预检，不回写画布、节点、revision 或人工标记，也不预留回写层；remove 只移出审批快照。真实改动更新 revision/hash 并替换确认门，有效 no-op 不换门或延寿；最后一项移除停止空批次。旧门、旧 token、重复消费及失效输入不能批准新快照。
+- 最薄浏览器整批决定一律走带项目头的人工 HTTP，等待匹配的接受回执才撤卡；失败保留可重试，迟到回包不清除新门。多个独立批次门可并存，处理一个后继续展示未决门；这不是 #412 的完整子集/编辑 UI。
+- 审批沿既有 Agent JSONL/live/replay 严格记账；必要审计失败返回 `JOURNAL_WRITE_FAILED`，不批准、不扣额度或启动任务。旧门 resolution 与新 pending 单次 append 的 handled-write rollback 不代表 fsync、跨介质 ACID 或 exactly-once。门/token/grant 只在进程 RAM，重启不从日志复活授权或执行。
+- 停止、真实 carrier 销毁或节点 mcp_session 解绑/重绑，以及宿主/generation/原轮或输入失效会作废旧门与 token；不新增独立 SID 撤销协议。已准入的付费任务仍按原归属结算，不让失效门吞掉真实结果。
 
 ### 通用节点更新确认（#486）
 

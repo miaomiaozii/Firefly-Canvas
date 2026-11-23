@@ -8,6 +8,7 @@ from functools import wraps
 import inspect
 import json
 import logging
+import secrets
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -234,7 +235,7 @@ def target_node_ids(params, *, prepared=None, tool=None):
 
 async def request(project, actor, tool, params, message, timeout, *, allow_automatic=True,
                   transient_session=None, cancel_event=None, confirm_id=None, prepared_target_node_ids=None,
-                  waiting_guard=None):
+                  waiting_guard=None, decision_handler=None):
     from app.services.agent_host import agent_host_manager as host, SAFETY_FLOOR_TOOLS
     store = _api()._app_main.FIREFLY_PROJECT_STORE
     canvas = store.canvas(project)
@@ -249,7 +250,8 @@ async def request(project, actor, tool, params, message, timeout, *, allow_autom
     autonomy = node.get('autonomy') or session.autonomy or 'standard'
     session.autonomy = autonomy
     state = _current.get()
-    origin = state.origin if state and state.origin else Origin.capture(session)
+    origin = (getattr(decision_handler, 'origin', None)
+              or (state.origin if state and state.origin else Origin.capture(session)))
     if not _transport_hosted.get():
         origin.hosted = False
     if state:
@@ -267,15 +269,31 @@ async def request(project, actor, tool, params, message, timeout, *, allow_autom
     metadata = {'host': origin.host, 'generation': origin.generation, 'turn_id': origin.turn,
                 'target_node_ids': target_node_ids(params, prepared=prepared_target_node_ids, tool=tool)}
 
-    async def publish(event):
-        # Resolving a registered old approval must remove its replay card after a host switch too.
-        host._persist_event(session, event, host=origin.host, generation=origin.generation,
-                            recovery=event['type'] == 'confirm_resolved')
+    strict = getattr(decision_handler, 'strict_journal', False)
+    if strict:
+        metadata.update(getattr(decision_handler, 'audit_metadata', {}))
+    audited_resolution = None
+
+    def persist(event, following=None):
+        # Resolving an old approval must remove its replay card after a host switch too.
+        options = {'following': following} if following else {}
+        persisted = host._persist_event(session, event, host=origin.host, generation=origin.generation,
+                                        recovery=event['type'] == 'confirm_resolved', **options)
+        if strict and not persisted:
+            raise agent_error(500, 'JOURNAL_WRITE_FAILED', 'Batch audit could not be saved',
+                              'Read the current batch before deciding again; do not replay uncertain effects.',
+                              retryable=False)
+
+    async def publish(event, *, saved=False):
+        if not saved:
+            persist(event)
         for handler in list(session.event_handlers):
             try:
                 await handler(session, event)
             except Exception:
                 pass
+
+    waiting_guard = waiting_guard or getattr(decision_handler, 'waiting_guard', None)
 
     def invalidated():
         if cancel_event and cancel_event.is_set():
@@ -289,24 +307,100 @@ async def request(project, actor, tool, params, message, timeout, *, allow_autom
         return False
 
     async def response(cid, approved):
-        if cid == confirm_id and type(approved) is bool and not decision.done():
+        if cid != confirm_id:
+            if decision_handler is not None:
+                raise agent_error(409, 'CONFIRM_STALE', 'Decision belongs to another batch confirmation')
+            return
+        if decision_handler is not None:
+            if decision.done() or not origin.valid() or invalidated():
+                raise agent_error(409, 'CONFIRM_STALE', 'Batch confirmation is no longer pending')
+            result = decision_handler(approved)
+            if inspect.isawaitable(result):
+                result = await result
+            if decision.done() or not origin.valid() or invalidated():
+                raise agent_error(409, 'CONFIRM_STALE', 'Batch gate changed during decision validation')
+            decision.set_result(result)
+        elif type(approved) is bool and not decision.done():
             valid = origin.valid() and not invalidated()
             decision.set_result({'approved': approved and valid,
                                  'reason': ('rejected' if not approved else None) if valid else 'session_ended'})
 
+    if strict:
+        def audit(result):
+            nonlocal audited_resolution
+            event = {'type': 'confirm_resolved', 'confirm_id': confirm_id, 'tool': tool, **result, **metadata}
+            persist(event)
+            audited_resolution = event
+
+        decision_handler.audit = audit
+
+        def stop():
+            result = {'approved': False, 'reason': 'stopped'}
+            try:
+                audit(result)
+            finally:
+                if not decision.done():
+                    decision.set_result(result)
+
+        response.batch_stop = stop
+
+    if decision_handler is not None:
+        response.batch_confirm_id = confirm_id
+        response.batch_decision_token = secrets.token_urlsafe(32)
+        response.batch_pending = lambda: not decision.done() and origin.valid() and not invalidated()
+
+        def prepare_replace(new_id, new_params, new_message, revision):
+            old_event = {'type': 'confirm_resolved', 'confirm_id': confirm_id, 'tool': tool,
+                         'approved': False, 'reason': 'replaced' if new_id else 'empty_batch', **metadata, **revision}
+            new_event = ({'type': 'confirm', 'confirm_id': new_id, 'tool': tool,
+                          'params': deepcopy(new_params), 'message': new_message, **metadata, **revision,
+                          'target_node_ids': target_node_ids(new_params, tool=tool)}
+                         if new_id else None)
+            persist(old_event, [new_event] if new_event is not None else None)
+            return old_event, new_event
+
+        def replace(saved=None):
+            nonlocal audited_resolution
+            if not decision.done():
+                audited_resolution = saved
+                decision.set_result({'approved': False, 'reason': 'replaced'})
+
+        response.batch_prepare_replace = prepare_replace
+        response.batch_replace = replace
+    initial = getattr(decision_handler, 'initial_event', None)
+    saved_initial = initial is not None
+    if initial is None:
+        initial = {'type': 'confirm', 'confirm_id': confirm_id, 'tool': tool,
+                   'params': deepcopy(params), 'message': message, **metadata}
+    if strict and not saved_initial:
+        persist(initial)
+    # A published gate must already accept decisions, but never before its audit exists.
     host.on_confirm(session, response)
+    if strict:
+        try:
+            await publish(initial, saved=True)
+        except BaseException:
+            if response in session.confirm_handlers:
+                session.confirm_handlers.remove(response)
+            raise
 
     async def wait():
         try:
-            await publish({'type': 'confirm', 'confirm_id': confirm_id, 'tool': tool,
-                           'params': deepcopy(params), 'message': message, **metadata})
+            if not strict:
+                await publish(initial)
+            ready = getattr(decision_handler, 'gate_ready', None)
+            if ready is not None:
+                ready.set()
             while not decision.done():
                 if not origin.valid() or invalidated():
                     decision.set_result({'approved': False, 'reason': 'stopped' if cancel_event and cancel_event.is_set() else 'session_ended'})
                     break
                 await asyncio.wait((decision,), timeout=.1)
             result = decision.result()
-            await publish({'type': 'confirm_resolved', 'confirm_id': confirm_id, 'tool': tool, **result, **metadata})
+            if strict and audited_resolution is not None:
+                await publish(audited_resolution, saved=True)
+            else:
+                await publish({'type': 'confirm_resolved', 'confirm_id': confirm_id, 'tool': tool, **result, **metadata})
             return result
         except asyncio.CancelledError:
             await publish({'type': 'confirm_resolved', 'confirm_id': confirm_id, 'tool': tool,

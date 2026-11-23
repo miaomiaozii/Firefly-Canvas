@@ -30,7 +30,7 @@ function createAgentHostView() {
         historyLoaded: false, historyCursor: null, historyHasMore: false, historyLoadingOlder: false,
         historyBlocked: false, historyRetry: '', olderPageSerial: 0, _batchHistory: false,
         _historyPrefetch: null, _replayAgain: false, _historyGapSince: null,
-        confirm: null, confirmModalShown: null, stopPending: false, queuedInputs: new Set(),
+        confirm: null, pendingConfirms: new Map(), confirmModalShown: null, confirmModalOwner: null, stopPending: false, queuedInputs: new Set(),
         effortState: null, eventsError: '', stopStatusError: '', lastError: '', sessionModel: undefined,
         planPreviews: new Map(),
     };
@@ -1407,11 +1407,15 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
             finalizeAgentStreamingTurn(state);
             break;
         case 'confirm': {
+            state.pendingConfirms.set(event.confirm_id, event);
             state.confirm = event;
             state.status = 'waiting_confirm';
             // 模态结果须仍匹配待确认ID；关闭后仍可内联确认，两路共用单次发送防双发（#357）。
             if (!agentIsReadonly(state) && !state._applyingReplay && window.ffDialog && state.confirmModalShown !== event.confirm_id) {
                 state.confirmModalShown = event.confirm_id;
+                // Restoring a pending ID must not revive a preempted dialog's callback (#487).
+                const modalOwner = {};
+                state.confirmModalOwner = modalOwner;
                 window.ffDialog.ask({
                     title: '确认 Agent 操作',
                     message: event.message || '请确认操作',
@@ -1420,7 +1424,7 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
                     cancelText: '取消',
                     danger: true,
                 }).then(ok => {
-                    if (state.confirm && state.confirm.confirm_id === event.confirm_id) {
+                    if (state.confirmModalOwner === modalOwner && state.confirm && state.confirm.confirm_id === event.confirm_id) {
                         sendAgentConfirm(nodeId, state.projectId, !!ok);
                     }
                 });
@@ -1428,10 +1432,8 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
             break;
         }
         case 'confirm_resolved': {
-            // 已决卡不能重放；close 不 settle promise，confirm 守卫阻止旧模态误发决议（#389）。
-            if (state.confirm && state.confirm.confirm_id === event.confirm_id) {
-                state.confirm = null;
-                if (state.status === 'waiting_confirm') state.status = 'busy';
+            // 服务端终结时静默关闭模态，不能把撤卡误当人工拒绝（#389）。
+            if (agentResolveConfirmation(state, event.confirm_id)) {
                 if (!state._applyingReplay && window.ffDialog && window.ffDialog.close) window.ffDialog.close();
                 const outcome = event.approved ? '已批准'
                     : (event.reason === 'timeout' ? '已超时' : '已拒绝');
@@ -2183,12 +2185,57 @@ async function showAgentCliTakeover(nodeId, projectId) {
     dlg.showModal();
 }
 
+// Independent batch gates coexist; accepting one must not discard another pending card (#487).
+function agentResolveConfirmation(state, confirmId) {
+    state.pendingConfirms.delete(confirmId);
+    if (state.confirm?.confirm_id !== confirmId) return false;
+    state.confirmModalOwner = null;
+    state.confirm = Array.from(state.pendingConfirms.values()).at(-1) || null;
+    if (state.confirm) state.status = 'waiting_confirm';
+    else if (state.status === 'waiting_confirm') state.status = 'busy';
+    return true;
+}
+
 function sendAgentConfirm(nodeId, projectId, approved) {
     const state = getAgentTuiState(nodeId);
     if (agentIsReadonly(state) || !state.confirm) return;
-    const confirmId = state.confirm.confirm_id;
-    state.confirm = null;
-    state.status = 'busy';
+    const confirmation = state.confirm;
+    const confirmId = confirmation.confirm_id;
+    // Browser WebSockets cannot carry the project header required by batch decisions (#487).
+    if (typeof confirmId === 'string' && confirmId.startsWith('batch-confirm-')) {
+        if (confirmation.sending) return;
+        confirmation.sending = true;
+        const epoch = state.viewEpoch, host = state.viewHost, project = state.projectId;
+        const owned = () => agentTuiState.get(nodeId) === state && !state.closing
+            && state.viewEpoch === epoch && state.viewHost === host && state.projectId === project
+            && !agentIsReadonly(state);
+        const current = () => owned() && state.confirm === confirmation;
+        return fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/confirm`, {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json', 'X-Agent-Project': projectId },
+            body: JSON.stringify({ confirm_id: confirmId, approved: approved }),
+        }).then(async res => {
+            let data;
+            try { data = await res.json(); } catch (_) { data = null; }
+            if (!res.ok) throw new Error(agentNodeRefsError(data, `HTTP ${res.status}`));
+            if (data?.ok !== true || data.confirm_id !== confirmId || data.approved !== approved) throw new Error('确认响应无效');
+            // A resolved/replaced gate, including the next cautious paid gate, owns its own UI.
+            if (!current()) {
+                if (owned()) state.pendingConfirms.delete(confirmId);
+                return;
+            }
+            agentResolveConfirmation(state, confirmId);
+            agentAppendMessage(state, { role: 'system', text: approved ? '✅ 已批准' : '❌ 已取消' });
+            renderAgentNode(nodeId);
+        }).catch(e => {
+            console.error('Failed to send agent batch confirm:', e);
+            if (!current()) return;
+            agentAppendMessage(state, { role: 'system', text: `⚠️ 确认未获接受回执：${e.message || e}` });
+            renderAgentNode(nodeId);
+        }).finally(() => { delete confirmation.sending; });
+    }
+    agentResolveConfirmation(state, confirmId);
+    if (!state.confirm) state.status = 'busy';
 
     if (state.socket && state.socket.readyState === WebSocket.OPEN) {
         state.socket.send(JSON.stringify({
@@ -2197,10 +2244,6 @@ function sendAgentConfirm(nodeId, projectId, approved) {
             approved: approved,
         }));
     } else {
-        // WS not connected, send via HTTP (fire-and-forget)
-        // #241：fallback 目标是真实存在的 agent-nodes/{nodeId}/confirm 端点
-        //（app/routers/api_agent_nodes.py，与 WS 确认同一状态机）；
-        // HTTP 错误状态不再静默吞——至少 console.warn 让 WS 断线时的失败可见。
         fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/confirm`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

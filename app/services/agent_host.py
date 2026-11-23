@@ -2340,8 +2340,9 @@ class AgentHostManager:
 
     def _persist_event(self, session: AgentSession, event: dict, *,
                        host: Optional[str] = None, generation: Optional[int] = None,
-                       recovery: bool = False, accepted_input: bool = False, input_binding: bool = False) -> bool:
-        """Append a current-generation event; stamp live metadata even without disk."""
+                       recovery: bool = False, accepted_input: bool = False, input_binding: bool = False,
+                       following: Optional[List[dict]] = None) -> bool:
+        """Append events in one rollback-protected write; legacy callers still receive a bool."""
         host = session.agent_cli if host is None else host
         generation = session.generation if generation is None else generation
         if not recovery and not self._runtime_matches(session, host, generation):
@@ -2356,29 +2357,28 @@ class AgentHostManager:
             path = os.path.join(
                 project_dir, "agent-events", f"{session.node_id}.jsonl")
             self._init_event_seq(session, path)
-            session._event_seq += 1
-            session._events_log_count += 1
-            event["seq"] = session._event_seq
-            record = {
-                "seq": session._event_seq,
-                "ts": time.time(),
-                "host": host,
-                "generation": generation,
-                "project_id": session.project_id,
-                "node_id": session.node_id,
-                "event": event,
-            }
-            # A native host event may look like user_prompt; only the server input
-            # path can stamp acceptance on the outer journal record (#399).
-            if accepted_input and event.get("attachments"):
-                record["accepted_input"] = True
-            if input_binding or record.get("accepted_input"):
-                record["input_branch"] = session.input_branch
-                record["input_epoch"] = session.input_epoch
-                if input_binding:
-                    record["input_binding"] = True
+            records = []
+            # A revision's old resolution and new pending card must either both append or neither (#487).
+            for member in [event, *(following or ())]:
+                session._event_seq += 1
+                session._events_log_count += 1
+                member.update(host=host, generation=generation, seq=session._event_seq)
+                record = {
+                    "seq": session._event_seq, "ts": time.time(), "host": host, "generation": generation,
+                    "project_id": session.project_id, "node_id": session.node_id, "event": member,
+                }
+                # Native frames cannot stamp server input acceptance (#399).
+                if member is event:
+                    if accepted_input and event.get("attachments"):
+                        record["accepted_input"] = True
+                    if input_binding or record.get("accepted_input"):
+                        record["input_branch"] = session.input_branch
+                        record["input_epoch"] = session.input_epoch
+                        if input_binding:
+                            record["input_binding"] = True
+                records.append(record)
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            data = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
+            data = ''.join(json.dumps(record, ensure_ascii=False) + '\n' for record in records).encode('utf-8')
             with open(path, "a+b") as f:
                 f.seek(0, os.SEEK_END)
                 original_size = f.tell()

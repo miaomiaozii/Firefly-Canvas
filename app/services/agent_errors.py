@@ -63,6 +63,7 @@ AGENT_ERROR_CODES = (
     "PREFLIGHT_STALE",
     "BATCH_NOT_FOUND",
     "BATCH_STOPPED",
+    "JOURNAL_WRITE_FAILED",
     "NO_PROMPT",
     "NO_ROUTE",
     # A11 generation replay

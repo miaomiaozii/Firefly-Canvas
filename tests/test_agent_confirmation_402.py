@@ -55,7 +55,7 @@ def test_standard_fifteen_images_one_prepared_confirmation_and_original_turn(fx)
     assert len([e for e in replay(fx) if e['type'] == 'confirm']) == 1
     ops = list_operations(OpsDb(fx.store.root), fx.pid, limit=100)
     assert ops and {op['turn_id'] for op in ops} == {'initiating-turn'}
-    confirm(fx, event)
+    confirm(fx, event, expected=409)
     assert fx.calls.qsize() == 15
 
 
@@ -63,7 +63,15 @@ def test_cautious_batch_confirms_each_paid_item(fx):
     fx.session.autonomy = 'cautious'
     pre = rest(fx, 'preflight', {'node_ids': ['a', 'b']})[1]
     receipt = rest(fx, 'request_batch', {'preflight_id': pre['preflight_id']})[1]
-    first = fx.events.get(timeout=2)
+    selection = fx.events.get(timeout=2)
+    assert selection['params']['total_images'] == 2 and selection['target_node_ids'] == ['a', 'b']
+    assert fx.calls.empty()
+    confirm(fx, selection)
+    first = None
+    while first is None:
+        event = fx.events.get(timeout=3)
+        if event['type'] == 'confirm':
+            first = event
     assert first['params']['total_images'] == 1
     assert first['target_node_ids'] == ['a']
     confirm(fx, first)
@@ -81,15 +89,21 @@ def test_cautious_batch_confirms_each_paid_item(fx):
     assert final['approved_count'] == final['spent'] == fx.calls.qsize() == 2
 
 
-def test_autonomous_paid_calls_and_batch_do_not_gate(fx):
+def test_autonomous_paid_calls_remain_automatic_but_batch_requires_selection(fx):
     fx.session.autonomy = 'autonomous'
     response, result = rest(fx, 'trigger', {'node_id': 'b'})
     assert response == 200 and result.get('task_id'), result
     wait_for(lambda: fx.calls.qsize() == 1)
     pre = rest(fx, 'preflight', {'node_ids': ['a']})[1]
     receipt = rest(fx, 'request_batch', {'preflight_id': pre['preflight_id']})[1]
+    assert receipt['status'] == 'awaiting_confirmation'
+    event = fx.events.get(timeout=2)
+    assert event['type'] == 'confirm' and fx.calls.qsize() == 1
+    confirm(fx, event)
     final = status_until(fx, receipt['batch_id'], lambda s: s['status'] == 'done')
     assert final['spent'] == 1 and fx.calls.qsize() == 2
+    resolved = fx.events.get(timeout=2)
+    assert resolved['type'] == 'confirm_resolved' and resolved['confirm_id'] == event['confirm_id']
     assert fx.events.empty()
 
 
@@ -187,7 +201,7 @@ def test_over_ninety_seconds_batch_remains_live_replayable_and_late_approval_run
     confirm(fx, event)
     final = status_until(fx, receipt['batch_id'], lambda s: s['status'] == 'done')
     assert final['spent'] == fx.calls.qsize() == 1
-    confirm(fx, event)
+    confirm(fx, event, expected=409)
     assert fx.calls.qsize() == 1
 
 

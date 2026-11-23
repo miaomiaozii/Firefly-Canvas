@@ -7,10 +7,12 @@
 - 门结束（批准/拒绝/超时）写 confirm_resolved 记录并 live 广播——回放时前端据此
   关闭已决确认卡（「结束后不再重放」）。
 - autonomy=autonomous 自动放行不发卡也不写回放（没有待决卡可重建）。
-- 前端：applyAgentEventBody 消费 confirm_resolved（清 state.confirm + 静默关模态），
-  ffDialog.close() 不 settle promise——调用方 state.confirm 守卫保证不误发决议。
+- 前端：confirm_resolved 只移除匹配的门；最后一张撤卡并静默关模态，
+  独立未决门仍可操作。服务端终态不是用户拒绝，不得触发新的决议（#389、#487）。
 """
 import json
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -163,15 +165,18 @@ class ConfirmEventReplay389Tests(unittest.TestCase):
         self.assertTrue(r.json().get("approved"))
         self.assertEqual(self._replay(), [], "自动放行不得留下待决卡记录")
 
-    # ── ④ 前端契约钉（源码级）：confirm_resolved 消费 + 静默关模态 ──────
     def test_frontend_consumes_resolution(self):
-        tui = (ROOT / "static" / "js" / "canvas-agent-tui.js").read_text(encoding="utf-8")
-        self.assertIn("case 'confirm_resolved'", tui,
-                      "#389：回放/直播都必须消费终态记录以关闭已决确认卡")
-        self.assertIn("state.confirm = null", tui)
-        self.assertIn("ffDialog.close", tui, "已决确认卡必须能从模态上关掉（不触发决议）")
-        dialog = (ROOT / "static" / "js" / "ui-dialog.js").read_text(encoding="utf-8")
-        self.assertIn("close:", dialog, "#389：ffDialog 需提供不 settle 的 close()")
+        # A blanket-null source assertion loses independent gates; require the public event behavior.
+        node = shutil.which("node")
+        self.assertIsNotNone(node, "Node is required for the production TUI regression")
+        result = subprocess.run(
+            [node, "--test", "--test-reporter=tap",
+             "tests/canvas_module_units/test-agent-batch-confirm-487.mjs"],
+            cwd=ROOT, capture_output=True, text=True, encoding="utf-8", timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("server resolution retires the last confirmation without sending a decision",
+                      result.stdout)
 
 
 if __name__ == "__main__":

@@ -772,7 +772,7 @@
         {
           "module": "app/services/agent_batch.py",
           "ordinal": 1,
-          "ast_sha256": "c43e64c1ba4e0a7165719226331ed00d1133050b8ef723687ce7806ff5ac3515"
+          "ast_sha256": "4c784802bea0f4ceec37656098febb7d540865e743f23327ec10bb799dfd73a1"
         },
         {
           "module": "tests/test_ocr_api.py",
@@ -1224,7 +1224,7 @@
         {
           "module": "app/services/agent_batch.py",
           "ordinal": 1,
-          "ast_sha256": "b7ce37fdd0a4ba5c0fa76579d7eebb9485e073f4f5236052bfcbe27aa852ac74"
+          "ast_sha256": "f3199b25e554543a11af2503784cac4fa9c54a94274fa972606230b89456c620"
         },
         {
           "module": "tests/test_agent_ops_transform_393.py",
@@ -2243,7 +2243,7 @@
         {
           "module": "app/services/agent_batch.py",
           "ordinal": 1,
-          "ast_sha256": "a5f54315022bf7b4a34fdfb07d8f5199dca21f081273334cdd556f92fa01f145"
+          "ast_sha256": "bc48721fce15406790d1e0bb2f0d859c9921d4f4afccf53f2bce3dc3d67a8c78"
         },
         {
           "module": "tests/test_agent_confirmation_legacy_402.py",
@@ -4609,7 +4609,7 @@
         {
           "module": "app/services/agent_confirmation.py",
           "ordinal": 1,
-          "ast_sha256": "72d2ce3795915d7ef2b8f93480e878a41e9cb77626ff63c1401805a80d762b7e"
+          "ast_sha256": "bae103ffc471a27d66451a043fbc486c7483ffb7e572cee2938f6840ddc316ab"
         },
         {
           "module": "tests/tabbit_e2e_evidence.py",

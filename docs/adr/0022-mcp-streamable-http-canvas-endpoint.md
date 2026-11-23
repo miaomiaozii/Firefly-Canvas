@@ -265,3 +265,48 @@ ready 表示当前代次尚未提交且无待决应用；awaiting_confirmation �
 消费只按既有 journal/persisted proof 与操作回执结算，批准、内存变化、start 广播或单独拿到 op_id 均不是提交证据。已证明落盘前失败不标 applied；已证明落盘后，即使 end 广播/HTTP 报错或 sidecar append_failed，仍消费代次并保留真实 receipt，同时如实保留错误与日志限制。公开的 `application.error` 保留真实错误 code/message，并将已证明提交的错误标为不可重试、提示勿重复提交；同项目后续 flush 不能抹去该错误。append_failed 的响应为错误而非无警告的成功，details 中说明日志状态与撤销不可用；与流错误同时发生时两个线索都保留。无法判定有无提交则为 unknown，不解锁自动重做。撤销仍走真实 `ops.undo`；append_failed 可能意味着撤销不可用，不能声称所有报错都可逆。
 
 这些是后端接缝，不等于真实模型、原生 SDK 或 #411 浏览器视觉验收；本地同源信任也不扩成 OS 沙盒。
+
+## 修订（#487）：生成批次子集批准与 batch-only 审批快照
+
+本节仅修订 `generate.preflight/request_batch/batch_status/stop_batch` 的新生成批次，不迁移普通非批次确认或 `canvas.batch_edit`。**显式取代上文 #402 中批次的 `autonomous` 免花钱门例外**：三档批次均先返回真实 `awaiting_confirmation`，不可自动批准。`standard/autonomous` 一次批准当前所选批次；`cautious` 先选择子集（不扣额度、不建任务），再为所选项逐项等待原有真实花钱门。未选择项为 `skipped`；逐项门只批准该项，不能借选择门执行尚未批准的付费调用。
+
+### 项身份、快照与一次决策
+
+- 每项发布服务端生成的不透明 `item_id` 和真实 `node_id`，不是列表下标或客户端声明的映射。编辑/移除后的幸存项保持 ID；移除的 ID 不复用。预检、确认事件的 `params.preflight` 和人工读口共用 prepared 项（含有效正文 `user_prompt`、`final_prompt`、refs、model/provider、aspect_ratio、size、count）。
+- 快照发布正整数 `preview_revision`、小写 64 位 `snapshot_sha256`；与宿主 generation 无关。摘要绑定原 caller/project/actor、节点绑定、源选择/输入/服务商证明、顺序与项身份、真实 prepared 输入及路由、获准的 fallback_models/max_retries。request_batch 会把执行选项封入摘要，应以当前真实门的快照为准，不能沿用初次 preflight 的旧摘要。
+- 批准集按当前门的项顺序规范化，另封 `approval_sha256 = SHA256(snapshot_sha256 + JSON(canonical approved_item_ids))`；此 JSON 为无额外空白的 UTF-8 数组。原门只可消费一次；执行只遍历封定选择，不重新放宽为完整可变 preview。
+- 批次 HTTP 决策对象精确为 `{confirm_id:string, approved:boolean, approved_item_ids?:string[], snapshot_sha256?:string}`。`approved` 是严格 JSON boolean；未知字段、缺失/错误类型、非小写 64 位十六进制摘要、子集缺摘要、拒绝夹带子集均为 `400 INVALID_ARGUMENT`，不作真假值转换或吞字段后整批批准。内部已注册回调保留严格 bool 兼容，并支持同一结构化对象；不是可以伪造 Caller 的新入口。
+- 合法旧 `{confirm_id,approved:true}` 仅批准这个仍待决 ID 所指的当前门全部项（cautious 逐项门即该一项）。合法格式但不匹配的摘要、空/重复/未知/他批/已移除项、旧门/重复消费为 `409 CONFIRM_STALE`；项数组本身不是字符串数组为 `400 INVALID_ARGUMENT`。拒绝可带当前摘要作陈旧检查，但不可带批准集。来源/服务商输入变化仍可能先返回 `409 PREFLIGHT_STALE`，不统一改名为 CONFIRM_STALE。
+- `batch_status` 额外返回 `preview_revision/snapshot_sha256/approved_item_ids/approval_sha256`，各任务行带 item_id。额度按真正选择项的 count 求和；未选项不建任务、不扣额度、不调服务商。全量超过会话上限仅给 `BUDGET_EXCEEDED` warning 并保留清单，真正准入仍检查所选张数上限；其它 blocker 不放宽。cautious 只在每项付费批准后计该项一次，不在选择阶段重复扣总数。确认 HTTP 的接收成功不是额度准入、任务成功或执行完成，最终仍读 batch_status/task；后续额度失败可能表现为批次终态 reason，而非第二个确认 HTTP 错误。#401 的 replay_safe 与重试上限继续适用，无单价配置时不制造金额。
+
+### 人工 GET、edit_item / remove_item 的精确 HTTP 合同
+
+`edit_item/remove_item` 在本节表示单项操作，**实际路由后缀为 `/preview/edit`、`/preview/remove`，不是同名的新 URL**。共同前缀为 `/api/projects/{project_id}/agent-nodes/{actor}/batches/{batch_id}`：
+
+| 操作 | 请求 | 成功（HTTP 200） |
+|---|---|---|
+| `GET /preview` | 无 query 参数 | `{batch_id,status,preflight,confirm_id,actionable,decision_token}`；无待决 handler 时后三项为 `null,false,null`。 |
+| `POST /preview/edit` | 严格 `{preview_revision:positive integer,snapshot_sha256:string,item_id:string,patch:{prompt?:string,runSettings?:object}}` | 同上，返回安装后的真实门；有效 no-op 返回原快照/门。 |
+| `POST /preview/remove` | 严格 `{preview_revision:positive integer,snapshot_sha256:string,item_id:string}` | 同上，移除后的快照或空批次终态。 |
+
+- 两种 POST 顶层键必须齐全且无额外字段；revision 不接受 bool/浮点值，item_id 必须非空白字符串，摘要必须小写 64 位十六进制。edit 的 patch 非空且只允许 prompt/runSettings；prompt 非空白、最多 100000 字符，替换本批该项的**有效任务正文**，不是整个含参考说明的 final_prompt。runSettings 只接受既有 `model/provider_id/aspect_ratio/count/routingMode`：字符串最多 200 字，count 严格整数 1..8，routingMode 为 auto/manual，aspect_ratio 为可解析的正宽高比；实际模型/服务商可用性仍由真实预检判断。不得开放 size、refs、任意 payload 或权限/来源字段。空 runSettings 对象本身合法；有效输入未变仍是 no-op。
+- 三个人工读写口及批次 `/agent-nodes/{actor}/confirm` 均要求严格同源 Origin 或 Referer，且恰一个与路径匹配的 `X-Agent-Project`；缺失/错误/重复项目头为 `403 PROJECT_MISMATCH`。任意 query 字段（含身份覆盖、重复键）为 `400 INVALID_ARGUMENT`；Origin/Host 仍走现有守卫。HTTP 不接收 decision_token 或 caller/source/SID/host/generation/turn 等身份字段，人工通道由专用 handler 固定，不把 body 当原 Agent Caller；审计保留服务端原批次的 rest/mcp 来源。不是密码认证，也不防同源恶意脚本或能伪造头的本机进程。
+- 人工接口定位实际 Store/project/原 actor 下的 RAM 对象、现存 Agent 和原 Origin，不要求浏览器冒充 MCP SID，也不创建/恢复/重绑宿主。原 Agent/MCP 工具仍检查完整 caller key 和原 SID，不提供工具参数 human 模式。
+- 只可在初始 `awaiting_confirmation`、尚未决定选择且真实门可操作时 edit/remove。旧 revision/hash、未知/移除项、选择已决定、运行态及对象/来源失效为 `409 CONFIRM_STALE`；请求格式/字段非法为 `400 INVALID_ARGUMENT`；真实重预检 blocker 为 `409 PREFLIGHT_BLOCKED`，原输入/服务商变化为 `409 PREFLIGHT_STALE`。失败不安装部分候选，不把所有错误冒称画布 CAS 冲突。
+- 编辑深拷贝 batch-only overrides，经**同一 canonical resolver 的正文组合边界**重算提示词、参考编号/角色、模型路由、比例/count 和汇总，保留共享参考前缀，不让上游 prompt 吞掉正文覆盖。耗时 IO 不持安装锁，最终按 Store/批次锁序复核原对象身份、输入证明与快照 CAS。
+- **不回写画布节点、连线、revision、runSettings 或人工编辑标记，也不预留回写层**；remove 只移出审批快照，不删除画布节点。有效 no-op 保留 revision/hash/confirm_id 和原期限，不造日志或延寿；真实 edit/remove 递增一次 revision、更新摘要、作废旧门并发布新真实门。原 waiter 以 replaced 结束后继续等新门，不把替换当整批拒绝、不重放旧执行或重复续接。最后一项移除产生空快照、`status:"stopped", reason:"empty_batch"`，confirm_id/token 为 null，不创建可批准的空门。运行后的任务取消仍用既有入口，不能编辑运行队列。
+
+### 三通道、门级 token 与最薄浏览器迁移
+
+- HTTP、WS 与当前注册的真实确认回调进入同一结构化决策/原子消费校验；不捕 TypeError 后降级批准，也不从客户端参数重造更宽 Caller。批次 HTTP 成功回 `{ok:true,confirm_id,approved}`；WS 成功回 `{type:"confirm_result",ok:true,confirm_id,approved}`，错误沿现有 error 帧携带 status/code/message。内部回调传播同一结构化错误，不虚构 HTTP 响应。
+- 浏览器 WS 不能自设项目头。严格人工 HTTP `GET /preview` 返回当前门随机 `decision_token`，绑定原 Store/project/actor/batch/confirm/snapshot/Origin；GET 只读取，不轮换、延寿或恢复能力。批次 WS 帧为 `{type:"confirm",confirm_id,approved,approved_item_ids?,snapshot_sha256?,decision_token}`，包括旧整批 bool 决策也必须带当前 token，握手还需真实同源 Origin/Referer。缺失/错误/他门/替换或消费后 token 为 `409 CONFIRM_STALE`；JSON 中伪造 X-Agent-Project 不能代替 HTTP 头。此 token 仅桥接当前人工门，不是 MCP 登录、独立 SID 撤销或 v1 token 鉴权。
+- 实际浏览器对 **`batch-confirm-*`** 的整批批准/拒绝，无论 WS 是否 OPEN，都只 POST 同源 `/api/projects/{project}/agent-nodes/{node}/confirm`，带匹配的 `X-Agent-Project` 和旧 `{confirm_id,approved:boolean}`，不发送 WS 批次决定。收到匹配的服务器接受回执前保留当前卡、不声称已批准；真实失败可见且当前门可重试，不自动重放不确定副作用。迟到响应不得清掉已替换的门、下一 cautious 花钱门或另一宿主/视图的卡；服务器 confirm_resolved 仍可按真实决定撤旧卡。多个独立批次的未决门按 ID 保留，处理当前门后继续展示其余未决门；替换/接受过的旧门不能再次出现。
+- 非批次 WS/HTTP fallback 合同保留。本次不实现 #412 的勾选子集、编辑或移除 UI；后端能力和门级 token 不等于完整 #412 交互验收。
+
+### 生命周期、journal 与不保证的持久性
+
+- 停止、实际 carrier/session 销毁、节点 mcp_session 解绑/重绑、宿主/generation/原用户轮或输入失效使旧门/token 无效；批准和每项准入仍检查原输入与服务商。正常 turn_end 不等于 carrier 销毁。**没有独立 SID 撤销协议或新入口**；已准入付费任务继续沿原归属结算，不因门失效删除真实结果；external MCP 不唤起另一宿主。
+- 审批沿真实 Agent 事件 JSONL：待决、旧新 revision/hash、单项 edit/remove、replaced、批准集/approval_sha256、拒绝、停止/失效均进入既有 live、`/events`、`/events/page` 管线，actor/来源/原轮由服务端绑定。实际生成仍用 agent_ops/task admission；审批快照编辑没有画布差异，不伪造 no-op canvas operation，也不把 undo 说成退费。
+- 本票批次审计为严格门：待决、修订、批准/拒绝等必要事件 `_persist_event` 失败以 `500 JOURNAL_WRITE_FAILED` 拒绝（仍在等待的 HTTP 调用返回该错误；后台错误不伪造第二次 HTTP 回包），不以 UI 广播或内存变化冒充写成，不放行未经审计的授权、扣款或任务。停止遇审计失败仍撤能力，但错误可见；不为补日志恢复旧许可。该严格规则不全局改写普通工具的旧 bool 日志合同。
+- 同一修订的旧门 resolution 与新门 pending 合为一次 JSONL append；在捕获到写入/flush 的 OSError 或短写时尝试 truncate 回原文件长度，再报告失败。**这是 handled-write rollback，不是 fsync、掉电安全、跨进程事务或 ACID**；rollback 本身也可能失败，seq 可有空洞。JSONL、RAM grant、额度和外部任务不构成跨介质 exactly-once；先审计后消费的进程崩溃可能留下未执行审计，不能据此自动重试未知副作用。
+- 批次/快照/门/token/grant 仅在本进程 RAM；读取/编辑不延寿，不新增 90 秒业务过期。重启、淘汰或真实 scope 失效后不从 JSONL 回放复活批准或执行，不承诺 RAM grant 重启续跑；真正持久任务仍按既有证据查询/结算。上述合同不代表真实模型、原生 SDK、付费服务商或完整 #412 UI 已验证。

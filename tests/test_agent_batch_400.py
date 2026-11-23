@@ -99,10 +99,12 @@ def mcp(fx, name, args, *, sid='external-400', actor='actor', hosted=False, pid=
             (True, json.loads(result['content'][0]['text'])))
 
 
-def confirm(fx, event, approved=True, *, actor='actor'):
+def confirm(fx, event, approved=True, *, actor='actor', expected=200):
     response = fx.client.post(f'/api/projects/{fx.pid}/agent-nodes/{actor}/confirm',
+                              headers={'X-Agent-Project': fx.pid},
                               json={'confirm_id': event['confirm_id'], 'approved': approved})
-    assert response.is_success, response.text
+    assert response.status_code == expected, response.text
+    return response.json()
 
 
 def tree(fx):
@@ -143,9 +145,13 @@ def test_read_only_preview_matches_executed_provider_and_journals_after_turn(fx)
     assert status == 200 and receipt['status'] == 'awaiting_confirmation' and replies == [replies[0]] * 6
     batch = receipt['batch_id']
     event = fx.events.get(timeout=2)
+    gate = fx.client.get(f'/api/projects/{fx.pid}/agent-nodes/actor/batches/{batch}/preview',
+                         headers={'X-Agent-Project': fx.pid}).json()
+    assert gate['preflight']['snapshot_sha256'] != preview['snapshot_sha256']
+    assert gate['preflight']['items'] == preview['items']
     assert event['type'] == 'confirm' and event['params'] == {
         'batch_id': batch, 'fallback_models': ['alternate', 'last'], 'max_retries': 3, 'total_images': 2,
-        'preflight': {k: v for k, v in preview.items() if k != 'preflight_id'}}
+        'preflight': gate['preflight']}
     assert 'alternate' in event['message'] and event['message'].endswith('2')
     assert tree(fx) == before and set(main.CANVAS_TASKS) == tasks and fx.calls.empty()
     assert not agent._GENERATION_COUNTS.get((fx.pid, 'actor'))
@@ -185,7 +191,7 @@ def test_pending_terminal_no_charge_or_submission(fx, monkeypatch, ending):
     event = fx.events.get(timeout=2)
     if ending == 'stop':
         assert mcp(fx, 'stop_batch', {'batch_id': batch})[1]['status'] == 'stopped'
-        confirm(fx, event)  # Late approval is a no-op.
+        assert confirm(fx, event, expected=409)['detail']['code'] == 'CONFIRM_STALE'
     elif ending == 'reject':
         confirm(fx, event, False)
     elif ending in ('source', 'ref', 'provider'):
@@ -199,14 +205,16 @@ def test_pending_terminal_no_charge_or_submission(fx, monkeypatch, ending):
         else:
             fx.providers[0]['base_url'] = 'https://changed.invalid'
         before = tree(fx)
-        confirm(fx, event)
+        assert confirm(fx, event, expected=409)['detail']['code'] == 'PREFLIGHT_STALE'
+        assert mcp(fx, 'batch_status', {'batch_id': batch})[1]['status'] == 'awaiting_confirmation'
+        confirm(fx, event, False)
     deadline = time.monotonic() + 4
     while time.monotonic() < deadline:
         ok, final = mcp(fx, 'batch_status', {'batch_id': batch, 'wait_seconds': .1})
         assert ok
         if final['status'] in ('rejected', 'stopped'):
             break
-    assert final['reason'] == {'stop': 'stopped', 'reject': 'rejected'}.get(ending, 'PREFLIGHT_STALE')
+    assert final['reason'] == ('stopped' if ending == 'stop' else 'rejected')
     assert final['approved_count'] == final['spent'] == 0 and fx.calls.empty()
     assert not agent._GENERATION_COUNTS.get((fx.pid, 'actor'))
     assert fx.events.get(timeout=2)['type'] == 'confirm_resolved'
@@ -253,7 +261,7 @@ def test_stale_before_request_and_session_shutdown_do_not_submit(fx):
     event = fx.events.get(timeout=2)
     fx.client.portal.call(agent.shutdown_agent_ops_lifetime)
     assert not fx.session.confirm_handlers
-    confirm(fx, event)
+    confirm(fx, event, expected=409)
     assert rest(fx, 'batch_status', batch)[1]['detail']['code'] == 'BATCH_NOT_FOUND'
     assert fx.calls.empty() and not agent._GENERATION_COUNTS.get((fx.pid, 'actor'))
 
@@ -273,10 +281,10 @@ def test_session_and_project_isolation_and_guard(fx):
     batch = {'batch_id': receipt['batch_id']}
     assert mcp(fx, 'stop_batch', batch, sid='other')[1]['code'] == 'BATCH_NOT_FOUND'
     event = fx.events.get(timeout=2)
-    confirm(fx, event, actor='second-actor')
+    confirm(fx, event, actor='second-actor', expected=409)
     assert mcp(fx, 'batch_status', batch)[1]['status'] == 'awaiting_confirmation'
     agent.reset_generation_counts(fx.pid, 'actor')
-    confirm(fx, event)
+    confirm(fx, event, expected=409)
     assert mcp(fx, 'batch_status', batch)[1]['code'] == 'BATCH_NOT_FOUND'
     assert fx.calls.empty()
 
@@ -288,10 +296,13 @@ def test_stop_preserves_in_flight_and_shared_approved_budget(fx, monkeypatch):
     p2 = rest(fx, 'preflight', {'node_ids': ['b']})[1]['preflight_id']
     one = rest(fx, 'request_batch', {'preflight_id': p1})[1]['batch_id']
     two = rest(fx, 'request_batch', {'preflight_id': p2})[1]['batch_id']
-    confirm(fx, fx.events.get(timeout=2))
+    gates = [fx.events.get(timeout=2) for _ in range(2)]
+    assert {event['params']['batch_id'] for event in gates} == {one, two}
+    confirm(fx, next(event for event in gates if event['params']['batch_id'] == one))
     fx.calls.get(timeout=4)
-    assert fx.events.get(timeout=2)['type'] == 'confirm_resolved'
-    confirm(fx, fx.events.get(timeout=2))
+    resolved = fx.events.get(timeout=2)
+    assert resolved['type'] == 'confirm_resolved'
+    confirm(fx, next(event for event in gates if event['params']['batch_id'] == two))
     denied = status_until(fx, two, lambda d: d['status'] == 'rejected')
     assert denied['reason'] == 'BUDGET_EXCEEDED' and denied['approved_count'] == 0
     assert fx.calls.empty()

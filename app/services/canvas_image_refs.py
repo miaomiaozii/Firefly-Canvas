@@ -348,7 +348,7 @@ class ReferenceGraph:
         return [{'text': text or _str(node.get('prompt')) or _str(node.get('text'))}]
 
     def resolve(self, target, *, html=None, prompt_override=None, ctx=None, override_source=None,
-                cascade_fallback=None, track_saved_mentions=False):
+                cascade_fallback=None, track_saved_mentions=False, batch_body_override=None):
         node = self.nodes[target]
         ctx = ctx or {}
         managed, linked = self._managed(node)
@@ -429,7 +429,10 @@ class ReferenceGraph:
                 saved_mentions.add(number - 1)
             body.append(f'图{number}')
         body_text, display_text = _trim(''.join(body)), _trim(''.join(display))
-        if prompt_override is None:
+        if batch_body_override is not None:
+            # Batch edits replace only the task body; saved mentions still select/number the original references.
+            body_text = display_text = batch_body_override
+        elif prompt_override is None:
             body_text, display_text = self._compose_prompt(node, body_text, display_text, ctx)
             body_text = body_text or _str(ctx.get('emptyPrompt'))
         numbered = []

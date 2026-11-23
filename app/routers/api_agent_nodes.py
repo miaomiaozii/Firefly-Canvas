@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
-from app.core import ensure_agent_same_origin, ensure_same_origin_request
+from app.core import ensure_agent_same_origin, ensure_same_origin_request, origin_from_url
 from app.constants import NODE_TYPE_AGENT
 from app.services.agent_host import (
     agent_host_manager, InvalidEventsCursor, StaleEventsCursor, CorruptEventsLog,
@@ -264,12 +264,11 @@ async def stop_agent_node(
 ):
     """Stop an agent node session."""
     from app.services.agent_batch import invalidate
-    invalidate(project_id, node_id)
+    invalidate(project_id, node_id, strict=True)
     session = await agent_host_manager.get_or_create_session(project_id, node_id)
     if session.is_running:
         await agent_host_manager.stop_session(session)
-    # #351 review 裁定：DELETE agent 节点必须清该节点的会话生成额度计数，
-    # 同 node_id 重建后额度从 0 开始（否则与 429 文案「请新开会话」矛盾）。
+    # Recreated nodes must not inherit an old session's generation quota.
     reset_generation_counts(project_id, node_id)
     return {"success": True, "node_id": node_id, "status": "stopped"}
 
@@ -620,6 +619,33 @@ async def send_agent_abort(
     return {"success": True, "node_id": node_id}
 
 
+@router.get("/{node_id}/batches/{batch_id}/preview")
+async def get_agent_batch_preview(project_id: str, node_id: str, batch_id: str, request: Request):
+    ensure_same_origin_request(request)
+    if request.headers.getlist('X-Agent-Project') != [project_id]:
+        raise agent_error(403, 'PROJECT_MISMATCH', 'X-Agent-Project must match the requested project')
+    if request.query_params:
+        raise agent_error(400, 'INVALID_ARGUMENT', 'Human batch preview does not accept query fields')
+    from app.services.agent_batch import human_preview
+    return human_preview(project_id, node_id, batch_id)
+
+
+@router.post("/{node_id}/batches/{batch_id}/preview/edit")
+@router.post("/{node_id}/batches/{batch_id}/preview/remove")
+async def mutate_agent_batch_preview(project_id: str, node_id: str, batch_id: str, request: Request):
+    ensure_same_origin_request(request)
+    if request.headers.getlist('X-Agent-Project') != [project_id]:
+        raise agent_error(403, 'PROJECT_MISMATCH', 'X-Agent-Project must match the requested project')
+    if request.query_params:
+        raise agent_error(400, 'INVALID_ARGUMENT', 'Human batch preview does not accept query fields')
+    try:
+        body = await request.json()
+    except Exception:
+        raise agent_error(400, 'INVALID_ARGUMENT', 'Expected a JSON object') from None
+    from app.services.agent_batch import human_mutate
+    return await human_mutate(project_id, node_id, batch_id, body, request.url.path.rsplit('/', 1)[-1])
+
+
 @router.post("/{node_id}/confirm")
 async def post_agent_node_confirm(
     project_id: str,
@@ -627,14 +653,7 @@ async def post_agent_node_confirm(
     request: Request,
     x_agent_project: str = Header(default=""),
 ):
-    """HTTP fallback for the TUI confirm gate (#241).
-
-    Mirrors the WS "confirm" command handled in ``agent_event_stream`` below:
-    when the TUI's WebSocket stream is not connected, the confirm buttons
-    fall back to this route. The pre-refactor route at this URL was dropped,
-    leaving the TUI fallback to 404 silently — both paths now share the same
-    ``confirm_handlers`` state machine.
-    """
+    """Batch decisions retain their full payload and cannot recover a host."""
     try:
         body = await request.json()
     except Exception:
@@ -644,11 +663,17 @@ async def post_agent_node_confirm(
     if type(approved) is not bool:
         raise agent_error(400, 'INVALID_ARGUMENT', 'approved must be a boolean')
 
-    # A transient batch decision must not trigger history recovery.
+    if confirm_id.startswith('batch-confirm-') or 'approved_item_ids' in body or 'snapshot_sha256' in body:
+        ensure_same_origin_request(request)
+        if request.headers.getlist('X-Agent-Project') != [project_id]:
+            raise agent_error(403, 'PROJECT_MISMATCH', 'X-Agent-Project must match the requested project')
+        if request.query_params:
+            raise agent_error(400, 'INVALID_ARGUMENT', 'Human batch confirmation does not accept query fields')
+        from app.services.agent_batch import human_confirm
+        return await human_confirm(project_id, node_id, body)
+
     session = (agent_host_manager.conversation_session(project_id, node_id) or
                await agent_host_manager.get_or_create_session(project_id, node_id))
-    # Same state machine as the WS path: dispatch to every confirm handler
-    # (each handler checks its own confirm_id and no-ops on mismatch).
     for handler in session.confirm_handlers:
         try:
             await handler(confirm_id, approved)
@@ -775,7 +800,7 @@ async def agent_event_stream(
     node_id: str,
     host: Optional[str] = None,
 ):
-    """WebSocket endpoint for streaming agent events to the frontend."""
+    """Batch decisions need the HTTP-issued capability, not a JSON project header."""
     if host is not None and host not in AGENT_CLI_WHITELIST:
         await websocket.close(code=1008, reason="host must be pi or codex")
         return
@@ -785,10 +810,7 @@ async def agent_event_stream(
         session = await agent_host_manager.get_or_create_session(project_id, node_id)
         _apply_node_host(project_id, node_id, session)
 
-    # #317：浏览画布不再自动拉起 pi 进程——stream 只监听；进程在用户首次发送（REST /prompt，
-    # 或 WS prompt 指令兜底路径）时按需 spawn。此前每次渲染→连 WS→spawn，纯浏览也会烧资源/费用。
-
-    # Register event handler for this WebSocket connection
+    # Browsing only subscribes; spawning here would spend without a user input (#317).
     async def ws_event_handler(sess, event):
         visible_host = session.agent_cli if host is None else host
         if event.get("host", "pi") != visible_host:
@@ -796,17 +818,11 @@ async def agent_event_stream(
         try:
             await websocket.send_json(event)
         except Exception:
-            # WebSocket closed
             pass
 
     agent_host_manager.on_event(session, ws_event_handler)
 
-    # Send a session-confirmation event so the client can leave the transient
-    # 'connecting' state. The pi subprocess only emits agent lifecycle events
-    # (agent_start / turn_start / message_update ...) and never a 'session'
-    # event, so without this the node's status badge is stuck on "连接中" until
-    # the user happens to send a prompt. Emit it after the handler is
-    # registered (so it can't be missed) and before the receive loop.
+    # Subscribe before the initial frame so live events cannot fall through a connection gap.
     await websocket.send_json({
         "type": "session",
         "session_id": session.session_id,
@@ -822,7 +838,6 @@ async def agent_event_stream(
 
     try:
         while True:
-            # Receive commands from frontend
             data = await websocket.receive_text()
             try:
                 command = json.loads(data)
@@ -858,11 +873,24 @@ async def agent_event_stream(
                 await agent_host_manager.send_abort(session)
 
             elif cmd_type == "confirm":
-                # Handle confirmation responses
                 confirm_id = command.get("confirm_id", "")
+                if (isinstance(confirm_id, str) and confirm_id.startswith('batch-confirm-')
+                        or any(key in command for key in ('approved_item_ids', 'snapshot_sha256', 'decision_token'))):
+                    from app.services.agent_batch import websocket_confirm
+                    try:
+                        # Only batch decisions require the browser bridge; legacy WS commands keep their contract.
+                        if not (origin_from_url(websocket.headers.get('origin', ''))
+                                or origin_from_url(websocket.headers.get('referer', ''))):
+                            raise HTTPException(403, 'Batch decisions require a same-origin handshake')
+                        result = await websocket_confirm(project_id, node_id, command)
+                    except HTTPException as exc:
+                        await websocket.send_json({'type': 'error', 'status': exc.status_code,
+                                                   **translate_detail(exc.status_code, exc.detail)})
+                    else:
+                        await websocket.send_json({'type': 'confirm_result', **result})
+                    continue
                 approved = command.get("approved", False)
-                # Dispatch to confirm handlers
-                for handler in session.confirm_handlers:
+                for handler in list(session.confirm_handlers):
                     try:
                         await handler(confirm_id, approved)
                     except Exception:
@@ -871,6 +899,5 @@ async def agent_event_stream(
     except WebSocketDisconnect:
         pass
     finally:
-        # Clean up handler
         if ws_event_handler in session.event_handlers:
             session.event_handlers.remove(ws_event_handler)
