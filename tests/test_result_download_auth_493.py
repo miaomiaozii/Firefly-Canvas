@@ -45,7 +45,11 @@ def auth(runtime, monkeypatch, tmp_path):
     ns = runtime
     bind_result_auth_ast('app/core.py', {'strip_auth_scheme', 'bearer_auth_value'}, ns)
     bind_result_auth_ast('app/services/providers.py', {'api_headers'}, ns)
-    bind_result_auth_ast('app/services/generation.py', {'image_task_url_for_provider', 'fetch_image_task_payload'}, ns)
+    bind_result_auth_ast('app/services/generation.py', {'image_task_url_for_provider', 'fetch_image_task_payload',
+        'open_reference_preparation', 'record_reference_preparation', 'snapshot_reference_preparation', 'clear_reference_preparation'}, ns)
+    ns['_REFERENCE_PREPARATION'] = ContextVar('auth493_refprep', default=None)  # 上述助手编译进 ns，其模块级 ContextVar 必须由 ns 提供
+    ns['_open_reference_preparation'] = ns['open_reference_preparation']
+    ns['_snapshot_reference_preparation'] = ns['snapshot_reference_preparation']  # api_project_library 以导入别名引用
     bind_result_auth_ast('app/services/misc.py', {'run_routed_image_candidate'}, ns)
     ns.update(_api_headers=ns['api_headers'], _image_upload_retry_scope=contextlib.nullcontext,
               UpstreamImageFailure=type('UpstreamImageFailure', (Exception,), {}), provider_failure=lambda e: None,
@@ -61,12 +65,18 @@ def auth(runtime, monkeypatch, tmp_path):
     # Local module bindings let imports inside the actual bodies run without configuration/bootstrap.
     modules = {}
     for name in ('app', 'app.services', 'app.core', 'firefly_generation', 'app.services.generation',
-                 'app.services.providers', 'app.services.image_transport', 'app.services.result_downloads'):
+                 'app.services.providers', 'app.services.image_transport', 'app.services.result_downloads',
+                 'app.services.agent_ops_async'):
         module = types.ModuleType(name)
         module.__path__ = []
         modules[name] = module
         monkeypatch.setitem(sys.modules, name, module)
+    # #493：_mutate 函数内 import 需要显式提供（不能依赖其他测试先导入真模块的顺序污染）；
+    # 语义保持：阻塞写入在专属线程跑到完成，取消不得抢先。
     modules['app.core'].__dict__.update(ns)
+    async def _run_blocking_to_completion(func, /, *args, **kwargs):
+        return await asyncio.to_thread(func, *args, **kwargs)
+    modules['app.services.agent_ops_async'].run_blocking_to_completion = _run_blocking_to_completion
     modules['app.core'].extract_task_id = lambda raw: raw.get('task_id')
     modules['firefly_generation'].is_soon_provider = ns['is_soon_provider']
     modules['app.services.generation'].image_task_url_for_provider = ns['image_task_url_for_provider']

@@ -99,7 +99,10 @@ class _FakeAsyncClient(httpx.AsyncClient):
     handler = None
 
     def __init__(self, *args, **kwargs):
+        # #493：直连策略会给目标 origin 注入真 mounts transport；本夹具的不变量是零真实外连，
+        # 必须同时接掉 mounts（mounts 优先级高于 transport，否则请求会真的出网）。
         kwargs.pop('transport', None)
+        kwargs.pop('mounts', None)
         kwargs['transport'] = httpx.MockTransport(type(self).handler)
         super().__init__(*args, **kwargs)
 

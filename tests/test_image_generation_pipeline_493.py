@@ -121,6 +121,7 @@ def pipeline(monkeypatch, tmp_path):
     bodies('app/core.py', {'gemini_image_config', 'validate_generated_image'}, ns)
     bodies('app/services/providers.py', {'_soon_url_verified_target', '_soon_url_auto_provider'}, ns)
     bodies('app/services/generation.py', {'generate_gemini_provider_image', 'run_provider_generation_with_backoff',
+           '_gemini_generation_reference_part',
            '_extract_generation_image', '_generate_ai_image_impl', '_generate_soon_url_candidate', 'save_ai_image_to_output', '_download_generation_asset', '_parallel_range_download'}, ns)
     ns.update(_GENERATION_DOWNLOAD_MAX_BYTES=1024**3, _GENERATION_DOWNLOAD_MIN_PARALLEL=2*1024**2,
               _GENERATION_DOWNLOAD_CHUNK_BYTES=1024**2, _GENERATION_DOWNLOAD_MAX_WORKERS=6,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import httpx
 import json
 from pathlib import Path
 from typing import Any
@@ -114,9 +115,14 @@ class _CapturingAsyncClient:
         self._capture(method, url, **kwargs)
         return self.capture.next_response()
 
-    def build_request(self, method: str, url: str, **kwargs) -> dict[str, Any]:
-        return {"method": method, "url": url, "kwargs": kwargs}
+    def build_request(self, method: str, url: str, **kwargs) -> httpx.Request:
+        # #493：预算发送循环按真实 httpx 契约操作（request.content 取序列化体积），
+        # 夹具必须交真实 httpx.Request；原始 kwargs 附挂在对象上供 send() 回填 goldens 捕获格式。
+        request = httpx.Request(method.upper(), url, **kwargs)
+        request._contract_capture_kwargs = kwargs
+        return request
 
-    async def send(self, request: dict[str, Any]) -> ContractResponse:
-        self._capture(request["method"], request["url"], **request["kwargs"])
+    async def send(self, request: httpx.Request) -> ContractResponse:
+        kwargs = request._contract_capture_kwargs
+        self._capture(request.method, str(request.url), **kwargs)
         return self.capture.next_response()

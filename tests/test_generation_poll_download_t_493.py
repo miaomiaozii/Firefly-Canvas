@@ -36,6 +36,8 @@ def bind_poll_download_ast(path, names, ns):
 def ns():
     scope = dict(httpx=httpx, asyncio=asyncio, Path=Path, Dict=typing.Dict, Any=typing.Any,
                  Tuple=typing.Tuple, re=re, urllib=urllib, ipaddress=ipaddress,
+                 load_upstream_direct=lambda: True,
+                 _create_upstream_async_client=lambda target, *, direct, **kw: httpx.AsyncClient(**kw),
                  ProjectStoreError=RuntimeError, HTTPException=HTTPException, time=time, json=json,
                  _create_image_transport_client=SDK.create_image_transport_client,
                  _image_response_json=SDK.image_response_json,
@@ -55,7 +57,21 @@ def ns():
     scope['_resolve_generation_host'] = resolve
     bind_poll_download_ast('app/services/generation.py', {'_download_generation_asset', '_parallel_range_download', 'image_task_url_for_provider',
           'fetch_image_task_payload', 'wait_for_image_task', '_generate_soon_url_candidate', '_generate_ai_image_impl',
-          '_extract_generation_image'}, scope)
+          '_extract_generation_image',
+          # #493：发送副本阶梯接缝在 _generate_ai_image_impl 内被调用；助手与预算模块必须同步进 scope。
+          'open_reference_preparation', 'record_reference_preparation', 'snapshot_reference_preparation', 'clear_reference_preparation',
+          '_budgeted_prepared_references', '_reference_report', '_budgeted_json_send'}, scope)
+    import importlib.util as _ilu
+    _bspec = _ilu.spec_from_file_location('image_request_budget_poll493', 'app/services/image_request_budget.py')
+    _budget_mod = _ilu.module_from_spec(_bspec)
+    sys.modules['image_request_budget_poll493'] = _budget_mod  # dataclass 后处理需要模块先在 sys.modules
+    _bspec.loader.exec_module(_budget_mod)
+    scope.update(_BudgetPreparedReference=_budget_mod.PreparedReference,
+                 _lookup_known_body_limit=_budget_mod.lookup_known_body_limit,
+                 _prepare_budgeted_request=_budget_mod.prepare_budgeted_request,
+                 _reference_projection=_budget_mod.reference_projection,
+                 _temporary_413_target=_budget_mod.temporary_413_target,
+                 _REFERENCE_PREPARATION=ContextVar('poll493_refprep', default=None))
     bind_poll_download_ast('app/services/providers.py', {'api_headers', '_soon_url_verified_target', '_soon_url_auto_provider'}, scope)
     scope.update(is_codex_provider=lambda p: False, is_gemini_cli_provider=lambda p: False,
                  is_apimart_provider=lambda p: (p or {}).get('protocol') == 'apimart',
@@ -265,7 +281,12 @@ def test_recovery_uses_queue_model_preserves_stored_identity(ns, monkeypatch, gl
               EXPIRED='expired', extract_images=lambda raw:raw['images'],
               result_metadata=lambda candidate,raw,now: candidate)
     modules={'firefly_generation':{'is_soon_provider':ns['is_soon_provider']},
+             'app':{'__path__':[]},'app.services':{'__path__':[]},  # 假父包：防止叶子导入触发真 __init__ 的 _base 星导入（standalone 跑时必炸）
              'app.services.generation':{'image_task_url_for_provider':ns['image_task_url_for_provider']},
+             'app.services.providers':{'load_upstream_direct':lambda: False,
+                                       '_soon_url_auto_provider':ns['_soon_url_auto_provider'],
+                                       '_soon_url_verified_target':ns['_soon_url_verified_target']},
+             'app.services.upstream_http':{'create_upstream_async_client':lambda target, *, direct, **kw: SDK.create_image_transport_client(transport=httpx.MockTransport(serve), **kw)},
              'app.core':{'ensure_public_generation_target':ns['ensure_public_generation_target']},
              'app.services.result_downloads':{'_PRIVATE_DOWNLOAD':ContextVar('private-t493',default=False)}}
     for name,contents in modules.items():
