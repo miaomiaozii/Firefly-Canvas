@@ -60,7 +60,7 @@ def _budgeted_prepared_references(references):
         if raw_source.lower().startswith(('http://', 'https://')):
             prepared.append(_BudgetPreparedReference(index, passthrough_value=raw_source))
             continue
-        value = _generation_reference_to_data_url(ref)  # 强制 4096 基准，只在这里编码一次
+        value = _generation_reference_to_data_url(ref, max_edge=10 ** 9)  # #500：基线=原图字节，不再强制 4096 预缩放；超限由序列化级阶梯处理
         if value.startswith(('http://', 'https://')):
             prepared.append(_BudgetPreparedReference(index, passthrough_value=value))
             continue

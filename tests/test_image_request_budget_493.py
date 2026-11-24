@@ -60,8 +60,10 @@ def test_baseline_passthrough_and_stage_order_opaque():
     ref = prepared(png_bytes(1600, 1200, seed=5))
     assert ref.stage == -1 and ref.current_bytes == len(ref.raw) and ref.current_mime.startswith('image/png')
     stages = ref.stages()
-    assert stages[0] == ('WEBP', 'lossless') and stages[1] == ('JPEG', 95)
-    assert ('JPEG', 92) in stages and ('JPEG', 90) in stages and ('JPEG', 85) in stages and ('JPEG', 80) in stages
+    # #500：不透明照片无无损 WebP；先原尺寸质量档 95→…→80，再尺寸档 q80。
+    assert stages[0] == ('JPEG', 95)
+    assert stages[:5] == [('JPEG', 95), ('JPEG', 92), ('JPEG', 90), ('JPEG', 85), ('JPEG', 80)]
+    assert ('WEBP', 'lossless') not in stages
     assert stages[-1] == ('JPEG', 1536, 80)  # 底线 1536@q80
 
 def test_alpha_stages_keep_alpha_path_and_no_jpeg():
@@ -69,7 +71,7 @@ def test_alpha_stages_keep_alpha_path_and_no_jpeg():
     assert ref.has_alpha is True
     for stage in ref.stages():
         assert stage[0] == 'WEBP', stage  # alpha 全程 WebP，不 JPEG
-    assert ref.stages()[0] == ('WEBP', 'lossless')
+    assert ref.stages()[0] == ('WEBP', 95)  # #500：透明图走与 JPEG 相同的质量阶梯，无无损档
     assert ref.stages()[-1] == ('WEBP', 1536, 80)
 
 def test_no_upscale_small_images_skip_resize_stages():
@@ -84,20 +86,20 @@ def test_no_upscale_small_images_skip_resize_stages():
 
 def test_every_stage_rebuilt_from_baseline_pixels():
     ref = prepared(png_bytes(900, 700, seed=3, noise=True))
-    ref.advance()  # lossless webp
     ref.advance()  # jpeg 95
     ref.advance()  # jpeg 92
-    direct = budget.encode_stage(ref.baseline_image(), ('JPEG', 92))
-    assert ref.current_bytes == len(direct)  # q92 直接从基准像素生成，不叠已有损
+    ref.advance()  # jpeg 90（#500 阶梯：质量档优先）
+    direct = budget.encode_stage(ref.baseline_image(), ('JPEG', 90))
+    assert ref.current_bytes == len(direct)  # 每档直接从基准像素生成，不叠已有损
 
 def test_lossless_webp_is_lossless_for_alpha():
+    # #500 废除无损 WebP 档：首档即 lossy WEBP q95 并保住 alpha（名字保留以稳定测试 ID）。
     raw = png_bytes(120, 90, alpha=True, seed=4)
     ref = prepared(raw)
     ref.advance()
     img = Image.open(io.BytesIO(ref.current_raw()))
     assert img.format == 'WEBP' and 'A' in img.getbands()
-    base = ref.baseline_image().convert('RGBA')
-    assert list(img.convert('RGBA').getdata()) == list(base.getdata())
+    assert ref.quality == 95 and ref.lossless is False
 
 # ---------- 控制器：每步实际序列化、最大当前者、first-fit ----------
 
@@ -125,23 +127,23 @@ def test_boundary_equal_local_limit_accepted():
     assert out.changed is False  # <= 判定
 
 def test_largest_current_selected_with_index_tiebreak():
+    # #500 水位取代 first-fit 最大者：同体积同份额的并列图在同一轮内全部推进。
     a = prepared(png_bytes(150, 150, seed=11, noise=True), index=0)
-    b = prepared(png_bytes(150, 150, seed=11, noise=True), index=1)  # 同图同体积，并列按 index
+    b = prepared(png_bytes(150, 150, seed=11, noise=True), index=1)
     assert len(a.raw) == len(b.raw)
     build = builder_overhead(overhead=b'x' * 5000)
-    out = budget.prepare_budgeted_request([b, a], build_request=build, local_bytes=55000)
-    # 阶梯推进：每一轮只动当前最大者；并列时先动 index 小的一张（列表顺序不影响，按 index）。
+    out = budget.prepare_budgeted_request([b, a], build_request=build, local_bytes=90000)
     stages_seen = out.steps
-    assert len(stages_seen) >= 1
-    # 第一轮必须选了并列中 index=0 的 a
-    assert stages_seen[0]['index'] == 0
+    assert len(stages_seen) >= 2
+    first_round_indices = {row['index'] for row in stages_seen if row['share_bytes'] == stages_seen[0]['share_bytes']}
+    assert first_round_indices == {0, 1}, '超份额的都推进，不再只动最大者'
+    assert out.body_bytes <= 90000
 
 def test_first_fit_advances_largest_and_stops():
+    # #500 水位：小图份额内原样，大图按自己份额逐档；首个达标轮立即停。
     big_raw = png_bytes(700, 500, seed=2, noise=True)
     small_raw = png_bytes(160, 120, seed=6, noise=True)
     build = builder_overhead()
-    # 用副本探到第一个使整体体积明显变小的档 k，把本地目标定在那个体积上：
-    # 控制器必须恰好在第 k+1 次推进时 first-fit 停下，且不碰小图。
     probe = budget.PreparedReference(0, big_raw)
     small_probe = budget.PreparedReference(1, small_raw)
     base_body = len(build([probe, small_probe]).content)
@@ -155,9 +157,9 @@ def test_first_fit_advances_largest_and_stops():
     assert k is not None, 'noise fixture must shrink'
     refs = [budget.PreparedReference(0, big_raw), budget.PreparedReference(1, small_raw)]
     out = budget.prepare_budgeted_request(refs, build_request=build, local_bytes=fit_body)
-    assert out.changed is True and out.body_bytes == fit_body
-    assert refs[0].stage == k and refs[1].stage == -1  # 只压了当前最大的一张
-    assert len(out.steps) == k + 1  # first-fit：首个达标立即停止
+    assert out.changed is True and out.body_bytes <= fit_body
+    assert refs[0].stage >= k and refs[1].stage == -1  # 只压大图；水位目标比旧 first-fit 更保守，至少到 k
+    assert len(out.steps) == refs[0].stage + 1
 
 def test_floor_exhausted_error_lists_every_image():
     refs = [prepared(png_bytes(300, 200, seed=7, noise=True), index=0),
@@ -174,7 +176,7 @@ def test_floor_exhausted_error_lists_every_image():
     for row in rows:
         for key in ('index', 'source_format', 'final_format', 'quality', 'lossless', 'from_width', 'from_height', 'width', 'height', 'byte_count', 'stage', 'changed'):
             assert key in row, (row, key)
-    assert '减少参考图' in detail['message']
+    assert '参考图太多' in detail['message'] and '减少到' in detail['message']  # #500 票面文案
 
 def test_zero_image_overhead_fails_honestly():
     build = builder_overhead(overhead=b'x' * 100)

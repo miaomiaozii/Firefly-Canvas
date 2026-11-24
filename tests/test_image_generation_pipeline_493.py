@@ -173,12 +173,11 @@ def test_real_native_reference_policy(pipeline, monkeypatch, tmp_path, fmt, mode
     part = body['contents'][0]['parts'][1]['inlineData']
     raw = base64.b64decode(part['data'])
     with Image.open(io.BytesIO(raw)) as result:
-        assert result.size == (min(edge,4096),10)
+        assert result.size == (edge, 10)  # #500：无 4096 预缩放，预算内原样发送
         assert part['mimeType'] == Image.MIME[fmt]
         if mode == 'RGBA':
             assert result.getchannel('A').getextrema() == (73,73)
-    if edge <= 4096:
-        assert raw == original
+    assert raw == original  # 平价小图逐字节原样（#500 取代旧的 edge<=4096 条件）
     assert path.read_bytes() == original
     assert body['generationConfig']['imageConfig'] == {'aspectRatio':'16:9','imageSize':'4K'}
 

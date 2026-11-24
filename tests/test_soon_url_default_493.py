@@ -378,12 +378,12 @@ def test_budget_after_mandatory_4096_and_no_extra_encoding(runtime, monkeypatch,
     with patch.object(Image.Image, 'save', record_save):
         run_soon_default_generation(runtime, [{'url': '/output/alpha.png'}])
     sent = base64.b64decode(network.requests()[0][1]['extra_body']['image'][0].split(',', 1)[1])
+    # #500 废除了 #493 的强制 4096 预缩放：预算内逐字节发原图（两参都成立）；函数名保留以免打乱基线测试 ID 清单。
     with Image.open(io.BytesIO(sent)) as image:
-        assert image.size == (4096, 9 if size[0] == 4096 else 7)
+        assert image.size == size
         assert image.mode == 'RGBA' and image.getchannel('A').getextrema() == (73, 73)
-    assert saves == ([] if size[0] == 4096 else [((4096, 7), 'PNG')])
-    if size[0] == 4096:
-        assert sent == raw
+    assert saves == []
+    assert sent == raw
     assert path.read_bytes() == raw
 
 
@@ -410,7 +410,7 @@ def test_actual_valid_png_multi_reference_budget_not_source_or_json_size(runtime
 
 @pytest.mark.parametrize('height,expected', [(500, 'baseline'), (1000, 'ladder')])
 def test_real_oversized_source_is_measured_only_after_mandatory_resize(runtime, monkeypatch, tmp_path, height, expected):
-    # 基准仍是强制 4096；超限后按实际序列化走发送副本阶梯，不再预先拒提交。
+    # #500：基线 = 原图字节，序列化级判定；超限才压发送副本。参数名/测试 ID 保留以免打乱基线清单。
     import random
     image = Image.frombytes('RGBA', (5000, height), random.Random(493).randbytes(5000 * height * 4))
     path = tmp_path / 'large.png'
@@ -428,16 +428,17 @@ def test_real_oversized_source_is_measured_only_after_mandatory_resize(runtime, 
     bodies = network.raw_bodies()
     assert len(bodies) == 1
     assert len(bodies[0]) <= 16_500_000
-    baseline = runtime['_generation_reference_bytes']({'url': '/output/large.png'}, max_edge=4096)[0]
+    baseline = original  # #500 基线不再 4096 预缩放
     sent = base64.b64decode(json.loads(bodies[0])['extra_body']['image'][0].split(',', 1)[1])
     if expected == 'baseline':
         assert sent == baseline
+        assert saves == []
     else:
-        assert len(baseline) * 4 // 3 > 16_500_000  # 4096 后仍超本地目标：阶梯必须介入
+        assert len(baseline) * 4 // 3 > 16_500_000  # 原图序列化仍超本地目标：阶梯必须介入
         assert sent != baseline
         with Image.open(io.BytesIO(sent)) as result:
-            assert max(result.size) <= 4096
-    assert any(size[0] == 4096 for size in saves)  # 强制 4096 基准保留
+            # RGBA 噪声源：#500 透明图走 WebP 质量档，先于尺寸档——尺寸保持原图。
+            assert result.format == 'WEBP' and result.size == (5000, height)
     assert path.read_bytes() == original
 
 
