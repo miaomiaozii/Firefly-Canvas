@@ -133,6 +133,9 @@ def test_real_adapter_explicit_429_retries_with_retry_after(monkeypatch,protocol
     out=io.BytesIO();Image.new('RGB',(7,5),(1,2,3)).save(out,format='PNG')
     payload={'data':[{'b64_json':base64.b64encode(out.getvalue()).decode()}]}
     backend=install_retry_memory_backend(monkeypatch,[rejection(),Stream(reads=[response_bytes(json.dumps(payload).encode())])])
+    # #493 同 pipeline 夹具约定：本测试断言 429/Retry-After 重提语义，直连策略固定 OFF；
+    # mount 注入语义由 tests/test_upstream_direct_493.py 与 test_image_transport_493 专门覆盖。
+    monkeypatch.setattr(g,'load_upstream_direct',lambda:False)
     from tests.test_provider_contract_families import provider
     fixture=provider(protocol,request_mode='openai-json',model='fixture-model')
     fixture.update(base_url='http://fixture.invalid')
