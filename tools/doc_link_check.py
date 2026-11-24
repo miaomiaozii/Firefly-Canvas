@@ -64,17 +64,31 @@ def _count_lines(path: Path) -> int:
     return data.count(b"\n") + (0 if data.endswith(b"\n") else 1)
 
 
+_CANDIDATE_CACHE: dict[tuple[str, str], list[Path]] = {}
+
+
 def _candidates(root: Path, ref: str) -> list[Path]:
+    # #496 实测：本函数对 262–266 个引用重复裸名 rglob（仅 ~47 个不同裸名），占 doc-link-check 总耗时 ≥80%，
+    # 是 fast 30s 预算余量薄的主贡献。memoize 按 (root, ref) 缓存；门进程短命，无需失效策略。
+    # 不得用调高预算替代（378/417 裁定：先修真实耗时来源）。
+    key = (str(root), ref)
+    cached = _CANDIDATE_CACHE.get(key)
+    if cached is not None:
+        return cached
     direct = root / ref
     if direct.is_file():
-        return [direct]
+        _CANDIDATE_CACHE[key] = [direct]
+        return _CANDIDATE_CACHE[key]
     if "/" in ref:
-        return []
+        _CANDIDATE_CACHE[key] = []
+        return _CANDIDATE_CACHE[key]
     hits: list[Path] = []
     for path in root.rglob(ref):
         if path.is_file() and not (set(path.relative_to(root).parts) & EXCLUDE_PARTS):
             hits.append(path)
-    return sorted(hits)
+    hits.sort()
+    _CANDIDATE_CACHE[key] = hits
+    return hits
 
 
 def _check_code_ref(root: Path, doc_rel: str, line_no: int, path_ref: str, line_ref: str) -> Finding | None:

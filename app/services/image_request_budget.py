@@ -129,6 +129,12 @@ class PreparedReference:
         self._raw_current = raw
         self._data_url: Optional[str] = None
 
+    @property
+    def passthrough_value(self) -> str:
+        # 公开只读接缝：远程 URL 透传值（仅 passthrough 引用合法）。
+        assert self.passthrough
+        return self._data_url
+
     def _build_stages(self) -> List[Tuple]:
         if self.passthrough:
             return []

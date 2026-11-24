@@ -1750,6 +1750,13 @@ async def save_remote_video_to_output(url, prefix='video_', category='output'):
             pass
         return url
 
+def _gemini_generation_reference_part(r) -> dict:
+    # #493：gemini native 参考图 part 构造接缝（契约测试 patch 此符号）：
+    # 远程 URL 维持 main 的 fileData.fileUri 一等公民透传；本地用预算后的发送副本。
+    if r.passthrough:
+        return {'fileData': {'fileUri': r.passthrough_value}}
+    return {'inlineData': {'mimeType': r.current_mime, 'data': base64.b64encode(r.current_raw()).decode('ascii')}}
+
 async def generate_gemini_provider_image(prompt, size, model, reference_images=None, provider=None, image_parameters=None):
     model_name = gemini_model_name(soon_gemini_native_model(provider, model))
     endpoint = _svc.gemini_endpoint_url(provider, model_name)
@@ -1759,10 +1766,7 @@ async def generate_gemini_provider_image(prompt, size, model, reference_images=N
     def build_gemini_request(refs_list):
         parts = [{'text': prompt.strip()}]
         for r in refs_list:
-            if r.passthrough:
-                # 远程参考在 native 路径维持既有「可信项目 MIME」400 边界，不猜格式。
-                raise HTTPException(status_code=400, detail={'code': 'image_generation_reference_mime_unverified', 'message': '远程参考图缺少可信项目 MIME，请先导入项目媒体后再生图'})
-            parts.append({'inlineData': {'mimeType': r.current_mime, 'data': base64.b64encode(r.current_raw()).decode('ascii')}})
+            parts.append(_gemini_generation_reference_part(r))
         body = {'contents': [{'role': 'user', 'parts': parts}], 'generationConfig': generation_config}
         return client.build_request('POST', endpoint, headers=_svc._main('api_headers')(provider=provider), json=body)
 
