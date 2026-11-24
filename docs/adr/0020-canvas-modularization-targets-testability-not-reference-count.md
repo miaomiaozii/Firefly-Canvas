@@ -625,3 +625,18 @@ fast 时整门 exit 1，恢复后通过，具体证据见本次 QA 记录。
 相对已包含 #495 最终格高计算的基线，使用同一个 `reverse_coupling()` 对完整逐行结果实测，核心→模块四项 **264 / 991 / 178 / 818 → 265 / 997 / 179 / 823**。新增 `canvasResultRetrieval`（owner `canvas-result-retrieval.js`）为核心 **5** / owner **0**：配置与同步、节点内容、渲染同步、世界事件绑定均属于 UI 编排，分类为 `hub`。`scheduleSmartHistoryWindowRender` 的核心引用 **2→3**、owner 仍 **7**，来自注入后的历史视图刷新；其余行不变。
 
 新适配器的项目、节点、画布接收及定位能力由宿主注入；状态与 HTTP/逐项进度逻辑留在模块，可用真实模块独立测。模块→核心总引用及自由引用均为 **0 / 0**，登记两个零上限，既有模块棘轮一项也不提高。精确四项与两行归属断言同步，不改计数器、不过滤引用，不以复制共享服务或删除接线降数字。渲染仍先派发原有 selection-sync，再同步取回视图，保留导航模块的事件边界。
+
+#### #493 R1：取回布局与计时接线的精确对账
+
+相对提交 `76281e6`，同一计数器逐行实测四项 **265 / 997 / 179 / 823 → 265 / 1000 / 179 / 826**。
+唯一变化为 `canvas-result-retrieval.js` 的 `canvasResultRetrieval`：核心 **5→8**、owner **0→0**、分类仍为 `hub`；其余 reverse 行（含 owner 自引用）全部不变。三个新增词频位置均是真实公开适配器调用：
+
+| 核心函数 / 分支 | 新增引用 | 职责 |
+| --- | --- | --- |
+| `imageLayout` 的无图片或 pending 批量分支 | `canvasResultRetrieval.batchHeight(node, grid)` | 取回状态区使用模块提供的高度，排版框成员仍走原路径 |
+| `imageLayout` 的已有图片批量分支 | `canvasResultRetrieval.batchHeight(node, genGrid)` | 同一取回高度策略覆盖完成或部分结果；与上一分支互斥，不是重复执行 |
+| `runTimePillHtml` | `canvasResultRetrieval.nodeGroup(node)` | 耗时不足一秒时查询取回归属，决定是否隐藏计时徽标 |
+
+这沿用本 ADR 的既有裁定：核心是 UI 编排层，调用模块公开行为本身合法；反向四项是必须如实同步的精确测量，不是模块→核心的只降棘轮。高度策略和取回身份仍由模块持有，不能为少算三处而复制策略、删除接线或改成接口别名。本次只同步精确总数及该行断言，不修改产品 JS，也不新增架构例外或认可尚待产品 review 的具体界面行为。
+
+模块→核心实测仍为 **598 = 263 自由 + 335 接口**，取回模块为 **0 / 0**，未分类引用为 **0**；计数器、分类、排除规则和所有棘轮上限不变。完整原始红灯、全部实际行、基线行、唯一变化行与源哈希见 `C:/ff-qa/493-r1-coupling-8d2bcbb320e34fb991325a706f2607c9/` 的 `original-red.log`、`actual-report.json`、`baseline-76281e6-reverse.json`、`attribution.json`。

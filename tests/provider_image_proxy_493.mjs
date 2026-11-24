@@ -8,7 +8,7 @@ const translations = readFileSync(new URL('../static/js/i18n/studio.js', import.
 const html = readFileSync(new URL('../static/global-settings.html', import.meta.url), 'utf8');
 const bypass = '[data-field="image_bypass_system_proxy"]';
 
-// This DOM seam exercises the complete settings script and its event wiring, not browser layout or native input events.
+// VM/DOM 接缝守住设置序列化边界，不冒充浏览器布局或原生输入验收。
 class Element {
     constructor(tag = 'div') {
         this.tagName = tag;
@@ -114,56 +114,54 @@ async function boot(language = 'zh') {
 }
 
 for (const language of ['zh', 'en']) {
-    test(`${language}: exact label, restore/default/string-false, CLI exclusion`, async () => {
+    test(`${language}: deferred switch has no control or translation, even for stale true/false values`, async () => {
         const {card} = await boot(language);
-        assert.equal(card('direct').querySelector(bypass).checked, true);
-        for (const id of ['old', 'off', 'bad-string']) assert.equal(card(id).querySelector(bypass).checked, false);
-        const label = card('direct').querySelector(bypass).parentNode.textContent.trim();
-        assert.equal(label, language === 'zh' ? '生图请求不走系统代理' : 'Bypass system proxy for image requests');
-        assert.ok(card('direct').querySelector('.provider-image-network').textContent.includes(language === 'zh' ? '不验证此项' : 'does not verify this setting'));
-        for (const id of ['cli', 'cli-gemini']) {
-            assert.equal(card(id).querySelector('.provider-image-network').hidden, true);
-            assert.equal(card(id).querySelector(bypass).disabled, true);
+        assert.ok(!translations.includes('globalSettings.imageBypassSystemProxy'));
+        for (const id of ['direct', 'old', 'off', 'bad-string', 'cli', 'cli-gemini']) {
+            assert.equal(card(id).querySelector(bypass), null);
+            assert.equal(card(id).querySelector('.provider-image-network'), null);
         }
     });
 }
 
-test('independent card changes survive save/reload and reach test/fetch DTOs', async () => {
+test('stale experimental booleans cannot reach save/test/fetch serialization or reappear after reload', async () => {
     const envBefore = {...process.env};
     const {card, elements, calls} = await boot();
-    card('direct').querySelector(bypass).checked = false;
-    card('old').querySelector(bypass).checked = true;
+    card('old').querySelector('[data-field="name"]').value = 'Renamed';
     await card('old').querySelector('[data-provider-action="test"]').fire('click');
     await card('direct').querySelector('[data-provider-action="fetch"]').fire('click');
     await new Promise(resolve => setImmediate(resolve));
     const probe = calls.find(call => call.url === '/api/providers/test-connection');
-    assert.equal(probe.body.image_bypass_system_proxy, true);
+    assert.ok(!Object.hasOwn(probe.body, 'image_bypass_system_proxy'));
     const fetch = calls.find(call => call.url === '/api/providers/fetch-models');
-    assert.equal(fetch.body.image_bypass_system_proxy, false);
+    assert.ok(!Object.hasOwn(fetch.body, 'image_bypass_system_proxy'));
+    card('old').querySelector('[data-models="image_models"]').value = 'manual-image';
     await elements.saveProviders.fire('click');
     const saved = calls.find(call => call.method === 'PUT').body;
-    assert.deepEqual(saved.map(item => [item.id, item.image_bypass_system_proxy]),
-        [['direct', false], ['old', true], ['off', false], ['bad-string', false], ['cli', false], ['cli-gemini', false]]);
+    assert.ok(saved.every(item => !Object.hasOwn(item, 'image_bypass_system_proxy')));
+    assert.equal(saved.find(item => item.id === 'old').name, 'Renamed');
+    assert.deepEqual(saved.find(item => item.id === 'old').image_models, ['manual-image']);
     assert.ok(saved.every(item => !('api_key' in item) && !('key_preview' in item) && !('has_key' in item)));
     await elements.refreshAll.fire('click');
-    assert.equal(card('old').querySelector(bypass).checked, true);
-    assert.equal(card('direct').querySelector(bypass).checked, false);
+    assert.equal(card('old').querySelector('[data-field="name"]').value, 'Renamed');
+    assert.equal(card('direct').querySelector(bypass), null);
     assert.deepEqual({...process.env}, envBefore);
 });
 
-test('protocol switch hides and disables bypass; new provider starts unchecked', async () => {
+test('protocol changes and new providers never acquire the deferred switch', async () => {
     const {card, elements, calls} = await boot();
     const protocol = card('direct').querySelector('[data-field="protocol"]');
     protocol.value = 'codex';
     await protocol.fire('change');
-    assert.equal(card('direct').querySelector('.provider-image-network').hidden, true);
+    assert.equal(card('direct').querySelector(bypass), null);
     await elements.saveProviders.fire('click');
-    assert.equal(calls.find(call => call.method === 'PUT').body[0].image_bypass_system_proxy, false);
+    assert.ok(!Object.hasOwn(calls.find(call => call.method === 'PUT').body[0], 'image_bypass_system_proxy'));
     const restored = card('direct').querySelector('[data-field="protocol"]');
     restored.value = 'openai';
     await restored.fire('change');
-    assert.equal(card('direct').querySelector('.provider-image-network').hidden, false);
-    assert.equal(card('direct').querySelector(bypass).disabled, false);
+    assert.equal(card('direct').querySelector(bypass), null);
     await elements.addProvider.fire('click');
-    assert.equal(elements.providerList.children.at(-1).querySelector(bypass).checked, false);
+    assert.equal(elements.providerList.children.at(-1).querySelector(bypass), null);
+    await elements.saveProviders.fire('click');
+    assert.ok(calls.filter(call => call.method === 'PUT').every(call => call.body.every(item => !Object.hasOwn(item, 'image_bypass_system_proxy'))));
 });

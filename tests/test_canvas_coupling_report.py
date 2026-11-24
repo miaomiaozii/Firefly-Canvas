@@ -222,9 +222,9 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # 两个引用方向必须独立实测；合法调用也须同步 ADR 0020 和精确计数，不能豁免。
         rev = _cached_reverse()
         self.assertEqual(rev["reverse_names"], 265)
-        self.assertEqual(rev["reverse_core_refs"], 997)
+        self.assertEqual(rev["reverse_core_refs"], 1000)
         self.assertEqual(rev["core_dominant_names"], 179)
-        self.assertEqual(rev["core_dominant_core_refs"], 823)
+        self.assertEqual(rev["core_dominant_core_refs"], 826)
         rows = {(row["owner"], row["name"]): row for row in rev["reverse_rows"]}
         self.assertEqual(rows[("canvas-node-types.js", "NODE_TYPE_IMAGE")], {
             "name": "NODE_TYPE_IMAGE", "owner": "canvas-node-types.js",
@@ -236,7 +236,7 @@ class CanvasCouplingReportTests(unittest.TestCase):
         })
         self.assertEqual(rows[("canvas-result-retrieval.js", "canvasResultRetrieval")], {
             "name": "canvasResultRetrieval", "owner": "canvas-result-retrieval.js",
-            "core_refs": 5, "owner_refs": 0, "category": "hub",
+            "core_refs": 8, "owner_refs": 0, "category": "hub",
         })
         self.assertEqual(rows[("canvas-media-history.js", "scheduleSmartHistoryWindowRender")]["core_refs"], 3)
         # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。

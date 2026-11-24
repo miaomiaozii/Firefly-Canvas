@@ -145,10 +145,10 @@ test('successful unchanged and TTL polls retain item keyboard focus, expanded de
     item(h,'item:1').focus(); item(h,'item:1','details').open=true; panel.scrollTop=87;
     await poll(10000);
     assert.equal(document.activeElement,item(h,'item:1')); assert.equal(item(h,'item:1','details').open,true);
-    state.groups[0].items[1].remaining_seconds=65; await api.refresh();
+    state.groups[0].items[1].remaining_seconds=60; await api.refresh();
     assert.equal(document.activeElement,item(h,'item:1')); assert.equal(item(h,'item:1','details').open,true);
-    assert.match(item(h,'item:1').closest('[data-retrieval-slot]').querySelector('small').textContent,/1m 5s/);
-    assert.equal(panel.scrollTop,87); assert.equal(panel.hidden,false); assert.equal(badge.getAttribute('aria-expanded'),'true'); assert.ok(state.repaints>=3);
+    assert.match(item(h,'item:1').closest('[data-retrieval-slot]').querySelector('small').textContent,/1 minute remaining/);
+    assert.equal(panel.scrollTop,87); assert.equal(panel.hidden,false); assert.equal(badge.getAttribute('aria-expanded'),'true'); assert.equal(state.repaints,2, 'unchanged polls do not repaint; the visible minute change does');
     document.activeElement.dispatch('keydown',{key:'Escape'}); assert.equal(panel.hidden,true); assert.equal(document.activeElement,badge);
 });
 

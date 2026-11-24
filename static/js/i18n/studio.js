@@ -145,8 +145,6 @@
         "globalSettings.secretKey": { zh: "Secret Access Key", en: "Secret access key" },
         "globalSettings.enabled": { zh: "启用", en: "Enabled" },
         "globalSettings.primary": { zh: "首选服务商", en: "Preferred provider" },
-        "globalSettings.imageBypassSystemProxy": { zh: "生图请求不走系统代理", en: "Bypass system proxy for image requests" },
-        "globalSettings.imageBypassSystemProxyHint": { zh: "仅影响该服务商的图片 HTTP 请求，不影响对话、视频或 CLI。验证地址和拉取模型不验证此项。", en: "Only affects this provider's image HTTP requests, not chat, video, or CLI. Testing the endpoint or fetching models does not verify this setting." },
         "globalSettings.notConfigured": { zh: "未配置", en: "Not configured" },
         "globalSettings.installed": { zh: "已安装", en: "Installed" },
         "globalSettings.notInstalled": { zh: "未安装", en: "Not installed" },

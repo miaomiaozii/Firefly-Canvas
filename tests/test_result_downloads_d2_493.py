@@ -5,10 +5,7 @@ import json
 import time
 import httpx
 import pytest
-from tests.test_result_downloads_493 import fixture, png, network, Body, PROVIDER, URL, _REAL_CLIENT
-from app.routers import api_project_library as api
-from app.services import result_downloads as rd
-from app import core
+from tests.test_result_downloads_493 import isolated_app, fixture, retrieval_result_png, network, Body, PROVIDER, URL, _REAL_CLIENT
 from firefly_projects import ProjectStore
 
 
@@ -34,7 +31,8 @@ def client():
 @pytest.mark.parametrize('saved', [0,2])
 def test_four_selected_items_preserve_saved_and_restart(fixture, saved):
     f=fixture
-    network(f, lambda req:httpx.Response(200, stream=Body(png())))
+    from app.services import result_downloads as rd
+    network(f, lambda req:httpx.Response(200, stream=Body(retrieval_result_png())))
     async def run():
         q=await four(f,saved)
         original=copy.deepcopy(f.store.canvas(f.project)['history'][0].get('outputs',[]))
@@ -60,7 +58,7 @@ def test_four_selected_items_preserve_saved_and_restart(fixture, saved):
         service=rd.ResultDownloads(restarted.root,f.queue.app)
         persisted=service.load(f.history['id'],f.project)
         assert persisted['items'][3]['status']=='succeeded'
-        assert persisted['items'][3]['downloaded_bytes']==len(png())
+        assert persisted['items'][3]['downloaded_bytes']==len(retrieval_result_png())
         result=await service.resume(f.project,f.history['id'])
         assert result['status']=='succeeded'
         record=restarted.canvas(f.project)['history'][0]
@@ -75,7 +73,7 @@ def test_four_selected_items_preserve_saved_and_restart(fixture, saved):
 
 def test_three_success_one_unavailable_does_not_abort_loop(fixture):
     f=fixture
-    network(f,lambda req:httpx.Response(404) if req.url.params.get('slot')=='1' else httpx.Response(200,stream=Body(png())))
+    network(f,lambda req:httpx.Response(404) if req.url.params.get('slot')=='1' else httpx.Response(200,stream=Body(retrieval_result_png())))
     async def run():
         await four(f)
         result=await f.queue.resume(f.project,f.history['id'])
@@ -90,7 +88,8 @@ def test_three_success_one_unavailable_does_not_abort_loop(fixture):
 
 def test_temporary_recovery_failure_keeps_expired_item_retrievable(fixture):
     f=fixture
-    network(f,lambda req:httpx.Response(503) if 'images/tasks/' in req.url.path else httpx.Response(200,stream=Body(png())))
+    from app.routers import api_project_library as api
+    network(f,lambda req:httpx.Response(503) if 'images/tasks/' in req.url.path else httpx.Response(200,stream=Body(retrieval_result_png())))
     async def run():
         q=await four(f)
         q['items'][0].update(expires_at=time.time()-1,expiry_estimated=False)
@@ -105,7 +104,7 @@ def test_temporary_recovery_failure_keeps_expired_item_retrievable(fixture):
 
 def test_overlapping_selections_are_not_dropped_or_downloaded_twice(fixture):
     f=fixture
-    network(f,lambda req:httpx.Response(200,stream=Body(png())))
+    network(f,lambda req:httpx.Response(200,stream=Body(retrieval_result_png())))
     async def run():
         q=await four(f)
         ids=[i['id'] for i in q['items']]
@@ -133,13 +132,13 @@ def test_strict_body_and_forged_items_never_get(fixture,body):
 
 def test_mixed_inline_outputs_keep_original_identity_and_provenance(fixture):
     f=fixture
-    network(f,lambda req:httpx.Response(200,stream=Body(png())))
+    network(f,lambda req:httpx.Response(200,stream=Body(retrieval_result_png())))
     async def run():
         candidates=[{'type':'b64','value':'not-persisted'}]*2+[{'type':'url','value':URL+'&slot=2'},{'type':'url','value':URL+'&slot=3'}]
         await f.queue.checkpoint(f.project,f.history,candidates,{'task_id':'mixed-original'},PROVIDER)
         outputs=[]
         for i in range(2):
-            media=f.store.import_media(f.project,png(),f'inline-{i}.png','image/png')
+            media=f.store.import_media(f.project,retrieval_result_png(),f'inline-{i}.png','image/png')
             outputs.append({'asset_id':media['asset_id'],'kind':'image','output_id':'output-'+str(i+1)*32,'output_order':i})
         f.store.complete_image_generation(f.project,'result',outputs,{**f.history,'outputs':outputs,'status':'running','source_node_id':'source','op_id':'retained-op'},task_id='task-local',require_pending=True,partial=True)
         before=copy.deepcopy(f.store.canvas(f.project)['history'][0]['outputs'])

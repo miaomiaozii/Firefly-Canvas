@@ -56,13 +56,11 @@ def volcengine_provider_api_key(explicit_key: str='') -> str:
     return _svc._main('provider_env_key_value')('volcengine')
 
 def public_provider(provider):
-    # #493: Reuse the settings schema allowlist without re-normalizing model capabilities on a public read.
+    # #493：复用设置 schema 白名单，公开读取不能重新规范化模型能力或泄漏已撤回字段。
     private_fields = {'api_key', 'wallet_api_key', 'volcengine_access_key_id', 'volcengine_secret_access_key',
                       'clear_key', 'clear_wallet_key', 'clear_volcengine_access_key_id', 'clear_volcengine_secret_access_key'}
     provider = {key: value for key, value in (provider or {}).items()
                 if key in ApiProviderPayload.model_fields and key not in private_fields}
-    provider['image_bypass_system_proxy'] = (provider.get('image_bypass_system_proxy') is True
-                                             and provider.get('protocol') not in {'codex', 'gemini-cli'})
     key = _svc._main('provider_env_key_value')(provider['id'])
     item = {**provider, 'has_key': bool(key), 'key_preview': mask_secret(key), 'key_env': provider_key_env(provider['id'])}
     if provider.get('id') == 'runninghub':
@@ -483,20 +481,19 @@ def provider_endpoint_url(provider, key, default_path):
 def load_api_providers(*, read_only=False):
     path = _svc._main('API_PROVIDERS_FILE')
     if read_only and os.path.exists(path):
-        # Preflight cannot quarantine configuration; ordinary reads retain the global write guard (#345/#400).
+        # #345/#400：预检不能隔离配置；普通读取仍受全局写入守卫保护。
         with open(path, encoding='utf-8') as handle:
             raw = json.load(handle)
         if not isinstance(raw, list):
             raise ValueError('Provider configuration must be an array')
     else:
         raw = None if read_only else firefly_json_io.read_global_json(path, list)
-    defaults = [{**item, 'image_bypass_system_proxy': False} for item in default_api_providers()]
+    defaults = default_api_providers()
     if raw is None:
         return merge_default_api_providers(defaults)
     providers = [_decrypt_provider_secrets(normalize_provider(item)) for item in raw if isinstance(item, dict)]
     providers = [item for item in providers if item.get('id') not in REMOVED_PROVIDER_IDS]
-    merged = merge_default_api_providers(providers or defaults, inject_missing=not bool(providers))
-    return [{**item, 'image_bypass_system_proxy': item.get('image_bypass_system_proxy') is True} for item in merged]
+    return merge_default_api_providers(providers or defaults, inject_missing=not bool(providers))
 
 def _decrypt_provider_secrets(provider):
     provider = dict(provider or {})
@@ -510,7 +507,11 @@ def save_api_providers(providers):
     write_guard.ensure_writable_config(providers_file)
     with GLOBAL_CONFIG_LOCK:
         firefly_json_io.read_global_json(providers_file, list)
-        firefly_json_io.write_json_atomic(providers_file, [_encrypt_provider_secrets(item) for item in providers])
+        # #493：代理开关延期，私有调用方传入的旧实验字段也不能重新落盘。
+        firefly_json_io.write_json_atomic(providers_file, [
+            _encrypt_provider_secrets({key: value for key, value in item.items()
+                                      if key != 'image_bypass_system_proxy'}) for item in providers
+        ])
 
 def _encrypt_provider_secrets(provider):
     provider = dict(provider or {})

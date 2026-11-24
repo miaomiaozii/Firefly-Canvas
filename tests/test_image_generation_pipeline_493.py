@@ -226,6 +226,8 @@ class Network(httpcore.AsyncNetworkBackend):
 
 
 def installed_client(monkeypatch, wire):
+    # Only the default pool has a memory backend; ambient proxy mounts would escape it.
+    monkeypatch.setattr(httpx._client, 'get_environment_proxies', lambda: {})
     network = Network(wire)
     original = transport.ImageTransportClient.__init__
     def init(self, **kwargs):
@@ -233,6 +235,25 @@ def installed_client(monkeypatch, wire):
         self._transport._pool._network_backend = network
     monkeypatch.setattr(transport.ImageTransportClient, '__init__', init)
     return network
+
+
+def test_installed_client_isolates_synthetic_environment_proxy(monkeypatch):
+    monkeypatch.setattr(httpx._client, 'get_environment_proxies',
+                        lambda: {'all://': 'http://proxy.invalid:8080'})
+    wire = Wire(b'{"offline":true}')
+    network = installed_client(monkeypatch, wire)
+    async def run():
+        async with transport.ImageTransportClient() as client:
+            assert client._trust_env is True
+            # A misrouted proxy must fail in memory, never reach DNS or a socket.
+            for mounted in client._mounts.values():
+                if mounted is not None:
+                    mounted._pool._network_backend = Network(AssertionError('offline fixture selected proxy'))
+            result = await client.post('http://fixture.invalid/generate', content=b'exact body')
+            assert result.json() == {'offline': True}
+    asyncio.run(run())
+    assert network.calls == 1
+    assert b''.join(wire.writes).endswith(b'\r\n\r\nexact body')
 
 
 @pytest.mark.parametrize('generic', [False, True])
@@ -244,7 +265,7 @@ def test_actual_callers_capture_sdk_segments_and_original_params(pipeline, monke
     encoded = base64.b64encode(original).decode('ascii')
     wire = Wire(json.dumps({'image':{'type':'b64','value':encoded,'mime_type':'image/png'}}).encode())
     network = installed_client(monkeypatch, wire)
-    provider = {'id':'fixture','base_url':'http://fixture.invalid','image_bypass_system_proxy':True}
+    provider = {'id':'fixture','base_url':'http://fixture.invalid'}
     receipts = []
     if generic:
         pipeline.update(require_project_media_values_scope=lambda values: None,
@@ -312,7 +333,7 @@ def test_actual_installed_native_outer_does_not_restart_transport_budget(pipelin
     async def run():
         with pytest.raises(httpx.HTTPError):
             await pipeline['run_provider_generation_with_backoff']('fixture', pipeline['generate_gemini_provider_image'],
-                'p','2048x2048','gemini-test', provider={'image_bypass_system_proxy':True},
+                'p','2048x2048','gemini-test', provider={'id':'fixture'},
                 image_parameters={'aspect_ratio':'16:9','resolution':'4k'})
     asyncio.run(run())
     assert network.calls == (3 if failure == 'incomplete' else 1)
@@ -362,7 +383,7 @@ def test_transport_budget_exhaustion_or_cancel_cannot_restart_outer(pipeline, mo
     async def run():
         with pytest.raises(asyncio.CancelledError if cancel else httpx.ConnectError):
             await pipeline['run_provider_generation_with_backoff']('fixture', pipeline['generate_gemini_provider_image'],
-                'p','2048x2048','gemini-test', provider={'image_bypass_system_proxy':True},
+                'p','2048x2048','gemini-test', provider={'id':'fixture'},
                 image_parameters={'aspect_ratio':'16:9','resolution':'4k'})
     asyncio.run(run())
     assert network.calls == (1 if cancel else 3)

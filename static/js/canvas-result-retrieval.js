@@ -3,7 +3,7 @@ var canvasResultRetrieval = (function () {
     'use strict';
     let services = {}, project = '', epoch = 0, version = 0, timer = null, loading = null;
     let groups = new Map(), pending = new Set(), chains = new Map(), notices = new Map();
-    let listError = '', panelOpen = false;
+    let listError = '', panelOpen = false, paintedKey = '';
     const working = new Set(['downloading', 'retrying', 'recovering']);
     const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const en = () => window.StudioI18n?.lang() === 'en';
@@ -47,14 +47,21 @@ var canvasResultRetrieval = (function () {
     function ttl(item) {
         if (!Number.isFinite(item.remaining_seconds)) return text('有效期未知', 'Expiry unknown');
         const seconds = Math.max(0, Math.floor(item.remaining_seconds));
-        return `${item.expiry_estimated ? text('预计', 'Estimated ') : ''}${text('剩余 ', 'Remaining ')}${seconds >= 60 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${seconds}s`}`;
+        if (seconds < 60) return text('即将过期', 'Expiring soon');
+        const minutes = Math.ceil(seconds / 60);
+        return seconds >= 3600
+            ? text(`剩余约 ${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分`, `About ${Math.floor(minutes / 60)} hours ${minutes % 60} minutes remaining`)
+            : text(`剩余 ${minutes} 分钟`, `${minutes} minute${minutes === 1 ? '' : 's'} remaining`);
     }
     function phase(group, item) {
         if (pending.has(key(group.history_id, item.id)) && item.status !== 'succeeded' && !terminal(item) && !working.has(item.status)) return text('取回中', 'Retrieving');
         return ({pending:text('待取回','Pending retrieval'),failed:text('取回失败，可重试','Retrieval failed'),downloading:text('下载中','Downloading'),retrying:text('重试下载中','Retrying download'),recovering:text('查询原结果中','Recovering original'),expired:item.can_retrieve ? text('链接已过期，仍可查询原结果','Link expired; original recoverable') : text('链接已过期','Link expired'),unavailable:text('已确认无法取回','Confirmed unavailable'),succeeded:text('已保存','Saved')})[item.status] || text('等待状态更新','Awaiting status');
     }
+    function actionHtml(button) {
+        return `<span class="retrieval-action">${button}<span class="retrieval-no-charge">${text('不扣费','No charge')}</span></span>`;
+    }
     function button(group, item) {
-        return `<button type="button" data-retrieval-history="${esc(group.history_id)}" data-retrieval-item="${esc(item.id)}" ${actionable(group).includes(item) ? '' : 'disabled'} title="${text('只取回原结果，不会重新生成、不扣费','Retrieve original only; no generation or charge')}"><svg class="ico" aria-hidden="true"><use href="#i-download"/></svg>${text('重新取回','Retrieve again')}</button>`;
+        return actionHtml(`<button type="button" data-retrieval-history="${esc(group.history_id)}" data-retrieval-item="${esc(item.id)}" ${actionable(group).includes(item) ? '' : 'disabled'} title="${text('只取回原结果，不会重新生成、不扣费','Retrieve original only; no generation or charge')}"><svg class="ico" aria-hidden="true"><use href="#i-download"/></svg>${text('重新取回','Retrieve again')}</button>`);
     }
     function slotHtml(group, item, style = '') {
         const bytes = Number.isFinite(item.downloaded_bytes) ? `${item.downloaded_bytes}${Number.isFinite(item.total_bytes) ? ` / ${item.total_bytes}` : ''} B` : '';
@@ -62,7 +69,7 @@ var canvasResultRetrieval = (function () {
     }
     function batchHtml(group) {
         const n = remaining(group).length;
-        return n >= 2 ? `<button type="button" data-retrieval-history="${esc(group.history_id)}" data-retrieval-all="1" ${actionable(group).length ? '' : 'disabled'}>${text('全部取回','Retrieve all')}（${n}）</button>` : '';
+        return n >= 2 ? actionHtml(`<button type="button" data-retrieval-history="${esc(group.history_id)}" data-retrieval-all="1" ${actionable(group).length ? '' : 'disabled'} title="${text('只取回原结果，不会重新生成、不扣费','Retrieve original only; no generation or charge')}">${text('全部取回','Retrieve all')}（${n}）</button>`) : '';
     }
     function generatedText(group) {
         return remaining(group).length ? text('原图已生成，待取回','Original generated; awaiting retrieval') : text('原图已生成','Original generated');
@@ -91,14 +98,24 @@ var canvasResultRetrieval = (function () {
         const width = layout.thumb;
         const height = layout.batchThumbHeight || Math.round(width * 3 / 4);
         const style = layout.single ? 'width:100%;height:100%' : `--thumb-w:${width}px;--thumb-h:${height}px;width:${width}px;height:${height}px`;
-        return `<div class="retrieval-node pending-batch-stack${layout.single ? ' retrieval-single' : ''}">${summaryHtml(group).replace('class="retrieval-summary"','class="retrieval-summary batch-statusbar"')}<div class="thumb-grid" data-thumb-scroll="1" style="--thumb-cols:${layout.cols};--thumb-size:${width}px;--thumb-max-height:${layout.gridHeight || height}px;gap:${layout.batchGap ?? 12}px">${rows.map(row => row.output ? renderSaved(row.output,row.outputIndex,style) : slotHtml(group,row.item,style)).join('')}</div></div>`;
+        return `<div class="retrieval-node pending-batch-stack${layout.single ? ' retrieval-single' : ''}${layout.batchThumbHeight ? ' retrieval-frame' : ''}">${summaryHtml(group).replace('class="retrieval-summary"','class="retrieval-summary batch-statusbar"')}<div class="thumb-grid" data-thumb-scroll="1" style="--thumb-cols:${layout.cols};--thumb-size:${width}px;--thumb-max-height:${layout.gridHeight || height}px;gap:${layout.batchGap ?? 12}px">${rows.map(row => row.output ? renderSaved(row.output,row.outputIndex,style) : slotHtml(group,row.item,style)).join('')}</div></div>`;
+    }
+    function batchHeight(node, grid) {
+        const group = nodeGroup(node);
+        // Retrieval replaces generation's status area; cached generation height must not reserve it twice.
+        return group && missing(group).length && group.items.length > 1
+            ? grid.gridH + SMART_GROUP_LAYOUT.PADDING * 2 + BATCH_STATUSBAR_H : 0;
+    }
+    function viewKey(list) {
+        return JSON.stringify([...list.values()].map(group => ({...group, remaining_seconds:undefined,
+            items:group.items.map(item => ({...item, remaining_seconds:ttl(item)}))})));
     }
     function groupHeading(group, index) {
         const log = (services.getHistory?.() || []).find(entry => entry.id === group.history_id);
         const label = String(log?.displayPrompt || log?.prompt || log?.title || '').trim();
         return label && label !== group.history_id ? label : `${text('生成记录', 'Generation record ')}${index + 1}`;
     }
-    function paint() { paintToolbar(); services.repaint?.(); }
+    function paint() { paintedKey = viewKey(groups); paintToolbar(); services.repaint?.(); }
     function panelIdentity(control) {
         const history = control.closest('[data-retrieval-group]')?.dataset.retrievalGroup ?? '';
         const item = control.closest('[data-retrieval-slot]')?.dataset.retrievalSlot ?? '';
@@ -169,8 +186,10 @@ var canvasResultRetrieval = (function () {
                 });
                 if(archiveChanged && !await services.adoptCanonical?.(p)) throw new Error(text('原件状态已更新，画布同步未确认','Original state updated; canvas synchronization not confirmed'));
                 if(!current(p,e) || version !== v) return;
+                const changed = listError || paintedKey !== viewKey(incoming);
                 groups = incoming; listError='';
-                paint();
+                if (changed) paint();
+                else if (!document.getElementById('smartRetrievalToggle')?.onclick) paintToolbar();
             } catch(error) {
                 if(current(p,e)) {listError=String(error.message || error); paintToolbar();}
             } finally { if(current(p,e)) {loading=null; schedule();} }
@@ -184,7 +203,7 @@ var canvasResultRetrieval = (function () {
     function syncProject() {
         const p=services.getProjectId?.() || '';
         if(p === project) return;
-        project=p; epoch++; version++; groups=new Map(); pending=new Set(); chains=new Map(); notices=new Map(); loading=null; listError=''; panelOpen=false; clearTimeout(timer); timer=null; paintToolbar();
+        project=p; epoch++; version++; groups=new Map(); pending=new Set(); chains=new Map(); notices=new Map(); loading=null; listError=''; panelOpen=false; paintedKey=''; clearTimeout(timer); timer=null; paintToolbar();
     }
     function sync() { syncProject(); if(project && !loading && !timer) void refresh(); }
     async function retrieve(historyId, ids, projectList = false) {
@@ -229,5 +248,5 @@ var canvasResultRetrieval = (function () {
             };
         });
     }
-    return {configure(next) {services={...services,...next};}, sync, refresh, retrieve, bind, historyGroup, nodeGroup, nodeHtml, slotHtml, slots, summaryHtml, generatedText};
+    return {configure(next) {services={...services,...next};}, sync, refresh, retrieve, bind, historyGroup, nodeGroup, nodeHtml, batchHeight, slotHtml, slots, summaryHtml, generatedText};
 })();

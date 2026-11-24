@@ -516,7 +516,9 @@ finally:
     result = subprocess.run([sys.executable, '-B', '-c', script], input=json.dumps({
         'root': str(fx.store.root), 'pid': fx.pid, 'batch': receipt['batch_id'], 'cid': event['confirm_id'],
         'token': old['decision_token'], 'canvas': expected}), text=True, encoding='utf-8',
-        env={**os.environ, 'FIREFLY_PROJECTS_ROOT': str(fx.store.root)}, capture_output=True, timeout=45)
+        # The parent decodes this pipe as UTF-8 even on non-UTF-8 Windows locales.
+        env={**os.environ, 'FIREFLY_PROJECTS_ROOT': str(fx.store.root), 'PYTHONIOENCODING': 'utf-8'},
+        capture_output=True, timeout=45)
     assert result.returncode == 0, result.stdout + result.stderr
     assert 'RECONSTRUCTION_REJECTED_OLD_GATE_AND_TOKEN' in result.stdout
     assert fx.store.canvas(fx.pid) == expected

@@ -480,7 +480,7 @@ def test_legacy_factory_and_monkeypatch_contract(monkeypatch):
     assert calls == [kwargs, kwargs]
 
 
-def test_proxy_false_is_legacy_true_bypasses_env_preserving_mounts(monkeypatch):
+def test_deferred_proxy_flag_preserves_default_system_proxy_and_explicit_mounts(monkeypatch):
     calls = []
 
     def proxies():
@@ -495,17 +495,17 @@ def test_proxy_false_is_legacy_true_bypasses_env_preserving_mounts(monkeypatch):
             assert client._transport_for_url(httpx.URL("http://fixture.invalid")) is not client._transport
         explicit = httpx.MockTransport(lambda _: httpx.Response(200))
         async with transport.create_image_transport_client({"image_bypass_system_proxy": True}, mounts={"https://pinned.invalid": explicit}) as client:
-            assert len(calls) == 1
-            assert client._trust_env is False
-            assert client._transport_for_url(httpx.URL("http://fixture.invalid")) is client._transport
+            assert len(calls) == 2
+            assert client._trust_env is True
+            assert client._transport_for_url(httpx.URL("http://fixture.invalid")) is not client._transport
             assert client._transport_for_url(httpx.URL("https://pinned.invalid")) is explicit
         async with transport.create_image_transport_client({"image_bypass_system_proxy": True}, transport=explicit) as client:
             assert client._transport is explicit
     asyncio.run(exercise())
 
 
-@pytest.mark.parametrize("value", [1, "true", None])
-def test_only_strict_true_enables_proxy_bypass(value, monkeypatch):
+@pytest.mark.parametrize("value", [True, False, 1, 0, "true", "false", None, [], {}])
+def test_no_provider_value_can_enable_deferred_proxy_bypass(value, monkeypatch):
     calls = []
     def proxies():
         calls.append(1)
@@ -517,6 +517,30 @@ def test_only_strict_true_enables_proxy_bypass(value, monkeypatch):
             assert client._transport_for_url(httpx.URL("http://fixture.invalid")) is not client._transport
     asyncio.run(exercise())
     assert calls == [1]
+
+
+def test_private_explicit_network_policy_is_not_overwritten_by_stale_provider_flag(monkeypatch):
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    explicit = httpx.MockTransport(lambda _: httpx.Response(200))
+    monkeypatch.setattr("httpx._client.get_environment_proxies", lambda: pytest.fail("No proxy discovery for pinned downloads"))
+
+    async def exercise():
+        async with transport.create_image_transport_client(
+            {"image_bypass_system_proxy": True}, trust_env=False, verify=context,
+            transport=explicit, mounts={"https://pinned.invalid": explicit}, follow_redirects=False,
+        ) as client:
+            assert client._trust_env is False
+            assert client.follow_redirects is False
+            assert client._transport is explicit
+            assert client._transport_for_url(httpx.URL("https://pinned.invalid")) is explicit
+        async with transport.create_image_transport_client(
+            {"image_bypass_system_proxy": True}, trust_env=False, verify=context,
+            proxy="http://private-explicit.invalid:8080",
+        ) as client:
+            assert client._transport_for_url(httpx.URL("https://fixture.invalid")) is not client._transport
+            assert client._transport._pool._ssl_context is context
+            assert context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname
+    asyncio.run(exercise())
 
 
 def test_explicit_trust_env_false_still_ignores_certificate_environment(monkeypatch):
@@ -539,7 +563,7 @@ def test_explicit_trust_env_false_still_ignores_certificate_environment(monkeypa
 
 
 @pytest.mark.parametrize("env_name", ["SSL_CERT_FILE", "SSL_CERT_DIR"])
-def test_bypass_preserves_installed_tls_env_context(env_name, monkeypatch):
+def test_default_client_preserves_installed_tls_env_context_despite_stale_flag(env_name, monkeypatch):
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     calls = []
 
@@ -550,6 +574,7 @@ def test_bypass_preserves_installed_tls_env_context(env_name, monkeypatch):
     monkeypatch.delenv("SSL_CERT_FILE", raising=False)
     monkeypatch.delenv("SSL_CERT_DIR", raising=False)
     monkeypatch.setenv(env_name, "synthetic-ca-location")
+    monkeypatch.setattr("httpx._client.get_environment_proxies", lambda: {})
     monkeypatch.setattr(ssl, "create_default_context", make_context)
 
     async def exercise():

@@ -31,7 +31,7 @@ PROVIDER = {'id': 'synthetic-auth-493', 'base_url': 'https://api.soonstudio.ai/v
 AMBIGUOUS = '无法核验原生成请求身份，不能安全取回；不会重新生成'
 
 
-def bind(path, names, ns):
+def bind_result_auth_ast(path, names, ns):
     tree = ast.parse((BASE / path).read_text(encoding='utf-8-sig'))
     chosen = [node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
               and node.name in names]
@@ -43,10 +43,10 @@ def bind(path, names, ns):
 @pytest.fixture
 def auth(runtime, monkeypatch, tmp_path):
     ns = runtime
-    bind('app/core.py', {'strip_auth_scheme', 'bearer_auth_value'}, ns)
-    bind('app/services/providers.py', {'api_headers'}, ns)
-    bind('app/services/generation.py', {'image_task_url_for_provider', 'fetch_image_task_payload'}, ns)
-    bind('app/services/misc.py', {'run_routed_image_candidate'}, ns)
+    bind_result_auth_ast('app/core.py', {'strip_auth_scheme', 'bearer_auth_value'}, ns)
+    bind_result_auth_ast('app/services/providers.py', {'api_headers'}, ns)
+    bind_result_auth_ast('app/services/generation.py', {'image_task_url_for_provider', 'fetch_image_task_payload'}, ns)
+    bind_result_auth_ast('app/services/misc.py', {'run_routed_image_candidate'}, ns)
     ns.update(_api_headers=ns['api_headers'], _image_upload_retry_scope=contextlib.nullcontext,
               UpstreamImageFailure=type('UpstreamImageFailure', (Exception,), {}), provider_failure=lambda e: None,
               functools=functools, threading=threading, copy=copy, hashlib=hashlib, datetime=datetime,
@@ -102,7 +102,7 @@ def auth(runtime, monkeypatch, tmp_path):
         'get_api_provider_exact': lambda pid: current[0], 'get_api_provider_required': lambda pid: current[0],
         'api_headers': ns['api_headers'], 'run_provider_generation_with_backoff': ns['run_provider_generation_with_backoff'],
         'generate_ai_image': ns['generate_ai_image'], 'AI_BASE_URL': ''}[name]
-    bind('app/services/result_downloads.py', {'provider_identity', 'result_metadata', '_AsyncClaim', 'ResultDownloads'}, ns)
+    bind_result_auth_ast('app/services/result_downloads.py', {'provider_identity', 'result_metadata', '_AsyncClaim', 'ResultDownloads'}, ns)
     queue = ns['ResultDownloads'](tmp_path / 'runtime', app)
     def load(hid):
         if hid not in memory:
@@ -125,7 +125,7 @@ def auth(runtime, monkeypatch, tmp_path):
         raise_if_project_image_task_cancelled=lambda *a: None, image_generation_task_timeout_seconds=lambda: 10,
         PROJECT_IMAGE_PROGRESS_PHASES={}, recover_project_image_task=lambda *a, **k: ({}, {'status': 'download_failed'}),
         extract_images=lambda raw: [raw['image']], _CandidateWriteFailure=type('_CandidateWriteFailure', (Exception,), {}))
-    bind('app/routers/api_project_library.py', {'run_project_image_task', '_recover_project_image_result_link'}, ns)
+    bind_result_auth_ast('app/routers/api_project_library.py', {'run_project_image_task', '_recover_project_image_result_link'}, ns)
     async def submit(provider=None):
         saved = copy.deepcopy(PROVIDER if provider is None else provider)
         current[0] = copy.deepcopy(saved)

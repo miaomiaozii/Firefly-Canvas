@@ -3,7 +3,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
-from tests.test_result_downloads_493 import fixture, checkpoint
+from tests.test_result_downloads_493 import isolated_app, fixture, checkpoint
 from tests.test_result_downloads_d2_493 import client
 from tests.test_result_downloads_g_493 import admit_agent, remove_result
 from firefly_projects import ProjectStore

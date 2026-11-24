@@ -25,7 +25,7 @@ SDK = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(SDK)
 
 
-def bind(path, names, ns):
+def bind_poll_download_ast(path, names, ns):
     tree = ast.parse((BASE / path).read_text(encoding='utf-8'))
     selected = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in names]
     assert {n.name for n in selected} == set(names)
@@ -44,7 +44,7 @@ def ns():
                  mark_accepted=lambda: None, logger=__import__('logging').getLogger('t493'),
                  _GENERATION_DOWNLOAD_MAX_BYTES=1024**3, _GENERATION_DOWNLOAD_MIN_PARALLEL=2*1024**2,
                  _GENERATION_DOWNLOAD_CHUNK_BYTES=1024**2, _GENERATION_DOWNLOAD_MAX_WORKERS=6)
-    bind('app/core.py', {'ensure_public_generation_target', 'effective_protocol', 'effective_image_request_mode',
+    bind_poll_download_ast('app/core.py', {'ensure_public_generation_target', 'effective_protocol', 'effective_image_request_mode',
                         'normalize_image_request_mode', 'httpx_request_with_transient_retries', 'image_task_data', 'image_task_status'}, scope)
     scope.update(provider_protocol=lambda p: (p or {}).get('protocol', 'openai'), FIXED_PROTOCOL_PROVIDER_IDS=set(),
                  PER_MODEL_PROTOCOL_OPTIONS={'openai','gemini'}, PER_MODEL_REQUEST_MODE_OPTIONS={'openai-json','openai-video-proxy'},
@@ -53,10 +53,10 @@ def ns():
     async def resolve(host, port):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('127.0.0.1' if host == 'private.invalid' else '93.184.216.34', port))]
     scope['_resolve_generation_host'] = resolve
-    bind('app/services/generation.py', {'_download_generation_asset', '_parallel_range_download', 'image_task_url_for_provider',
+    bind_poll_download_ast('app/services/generation.py', {'_download_generation_asset', '_parallel_range_download', 'image_task_url_for_provider',
           'fetch_image_task_payload', 'wait_for_image_task', '_generate_soon_url_candidate', '_generate_ai_image_impl',
           '_extract_generation_image'}, scope)
-    bind('app/services/providers.py', {'api_headers', '_soon_url_verified_target', '_soon_url_auto_provider'}, scope)
+    bind_poll_download_ast('app/services/providers.py', {'api_headers', '_soon_url_verified_target', '_soon_url_auto_provider'}, scope)
     scope.update(is_codex_provider=lambda p: False, is_gemini_cli_provider=lambda p: False,
                  is_apimart_provider=lambda p: (p or {}).get('protocol') == 'apimart',
                  bearer_auth_value=lambda key: 'Bearer '+key)
@@ -253,9 +253,9 @@ def test_legacy_video_and_optional_poll_signatures(ns):
 @pytest.mark.parametrize('global_protocol,global_mode', [('gemini','openai-json'),('openai','openai-video-proxy')])
 def test_recovery_uses_queue_model_preserves_stored_identity(ns, monkeypatch, global_protocol, global_mode):
     ns.update(Mapping=typing.Mapping, hashlib=hashlib)
-    bind('firefly_generation.py', {'is_soon_provider'}, ns)
-    bind('app/services/result_downloads.py', {'provider_identity'}, ns)
-    bind('app/routers/api_project_library.py', {'_recover_project_image_result_link'}, ns)
+    bind_poll_download_ast('firefly_generation.py', {'is_soon_provider'}, ns)
+    bind_poll_download_ast('app/services/result_downloads.py', {'provider_identity'}, ns)
+    bind_poll_download_ast('app/routers/api_project_library.py', {'_recover_project_image_result_link'}, ns)
     provider={'id':'selected','base_url':'https://soonstudio.ai','protocol':global_protocol,'image_request_mode':global_mode,
               'model_protocols':{'chosen':'openai'},'model_request_modes':{'chosen':'openai-json'}}
     app=types.SimpleNamespace(api_headers=ns['api_headers'],get_api_provider_required=lambda *a,**k:provider,

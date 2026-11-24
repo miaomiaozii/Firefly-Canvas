@@ -1,11 +1,13 @@
-"""Provider-scoped image proxy settings, without upstream or native host calls."""
+"""#493 proxy switch is deferred: no public schema, persistence or routing opt-in."""
 import json
 import os
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
-from pydantic import ValidationError
+
+
+FLAG = 'image_bypass_system_proxy'
 
 
 @pytest.fixture
@@ -24,19 +26,26 @@ def isolated_provider_app(tmp_path, monkeypatch):
         monkeypatch.setenv(key, str(directory))
     for key in list(os.environ):
         upper = key.upper()
-        if (upper.endswith('_PROXY') or any(word in upper for word in ('API_KEY', 'TOKEN', 'SECRET', 'PASSWORD', 'CREDENTIAL'))):
+        if upper.endswith('_PROXY') or any(word in upper for word in ('API_KEY', 'TOKEN', 'SECRET', 'PASSWORD', 'CREDENTIAL')):
             monkeypatch.delenv(key, raising=False)
     import main
     from app.services import providers
 
     provider_file = tmp_path / 'providers.json'
-    env_file = tmp_path / 'API' / '.env'
     monkeypatch.setattr(main, 'API_PROVIDERS_FILE', str(provider_file))
-    monkeypatch.setattr(main, 'API_ENV_FILE', str(env_file))
+    monkeypatch.setattr(main, 'API_ENV_FILE', str(tmp_path / 'API' / '.env'))
     monkeypatch.setattr(main, 'provider_env_key_value', lambda provider_id: '')
-    with patch.object(main, 'startup_event', side_effect=AssertionError('No native startup')), \
-         patch.object(main, 'codex_status_core', side_effect=AssertionError('No CLI probes')), \
-         patch.object(main, 'gemini_cli_status_core', side_effect=AssertionError('No CLI probes')):
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError('No secrets, upstream or native calls in deferral tests')
+
+    monkeypatch.setattr(providers.secret_store, 'decrypt_secret', forbidden)
+    monkeypatch.setattr(providers.secret_store, 'encrypt_secret', forbidden)
+    monkeypatch.setattr(providers.secret_store, 'decrypt_env_value', forbidden)
+    monkeypatch.setattr(main, 'update_env_values', forbidden)
+    with patch.object(main, 'startup_event', side_effect=forbidden), \
+         patch.object(main, 'codex_status_core', side_effect=forbidden), \
+         patch.object(main, 'gemini_cli_status_core', side_effect=forbidden):
         client = TestClient(main.app, base_url='http://127.0.0.1:3193',
                             headers={'origin': 'http://127.0.0.1:3193'})
         try:
@@ -45,103 +54,93 @@ def isolated_provider_app(tmp_path, monkeypatch):
             client.close()
 
 
-def provider(provider_id='proxy-test', **overrides):
+def deferred_proxy_provider(provider_id='proxy-test', **overrides):
     return {'id': provider_id, 'name': provider_id, 'base_url': 'https://private-fake.invalid/v1',
             'protocol': 'openai', 'enabled': True, 'image_models': ['image-one'],
             'chat_models': ['chat-one'], 'video_models': ['video-one'],
             'video_model_capabilities': {'video-one': {'resolutions': ['1k', '2k', '4k']}}, **overrides}
 
 
-def test_missing_setting_defaults_false_in_dtos_normalization_and_new_install(isolated_provider_app):
+def test_deferred_setting_absent_in_dtos_normalization_and_new_install(isolated_provider_app):
     main, providers, client, path = isolated_provider_app
-    assert main.ApiProviderPayload(id='proxy-test').image_bypass_system_proxy is False
-    assert main.TestConnectionPayload().image_bypass_system_proxy is False
     for model in (main.ApiProviderPayload, main.TestConnectionPayload):
-        assert model.model_json_schema()['properties']['image_bypass_system_proxy'] == {
-            'default': False, 'title': 'Image Bypass System Proxy', 'type': 'boolean'}
-    assert main.normalize_provider(provider())['image_bypass_system_proxy'] is False
+        assert FLAG not in model.model_fields
+        assert FLAG not in model.model_json_schema()['properties']
+        assert FLAG not in model().model_dump()
+    assert FLAG not in main.normalize_provider(deferred_proxy_provider())
     defaults = providers.load_api_providers()
     assert defaults and not path.exists()
-    assert all(item['image_bypass_system_proxy'] is False for item in defaults)
+    assert all(FLAG not in item for item in defaults)
     assert providers.load_api_providers(read_only=True) == defaults
-    response = client.put('/api/providers', json=[provider()])
+    response = client.put('/api/providers', json=[deferred_proxy_provider()])
     assert response.status_code == 200
-    assert response.json()['providers'][0]['image_bypass_system_proxy'] is False
-    assert json.loads(path.read_text(encoding='utf-8'))[0]['image_bypass_system_proxy'] is False
+    assert FLAG not in response.json()['providers'][0]
+    assert FLAG not in json.loads(path.read_text(encoding='utf-8'))[0]
 
 
-@pytest.mark.parametrize('flag', [True, False])
-def test_exact_route_disk_load_public_roundtrip(isolated_provider_app, flag):
+@pytest.mark.parametrize('value', [True, False, 'false', 'true', '0', '1', '', 0, 1, None, [], {}])
+def test_removed_boolean_and_non_boolean_values_cannot_roundtrip_or_persist(isolated_provider_app, value):
     main, providers, client, path = isolated_provider_app
+    raw = deferred_proxy_provider(**{FLAG: value})
     original_env = dict(os.environ)
-    response = client.put('/api/providers', json=[provider(image_bypass_system_proxy=flag)])
+    for model in (main.ApiProviderPayload, main.TestConnectionPayload):
+        assert FLAG not in model(**{FLAG: value}).model_dump()
+        assert FLAG not in json.loads(model(**{FLAG: value}).model_dump_json())
+    assert FLAG not in main.normalize_provider(raw)
+    path.write_text(json.dumps([raw]), encoding='utf-8')
+    before = path.read_bytes()
+    for read_only in (False, True):
+        assert FLAG not in providers.load_api_providers(read_only=read_only)[0]
+        assert path.read_bytes() == before
+    response = client.put('/api/providers', json=[raw])
     assert response.status_code == 200, response.text
-    public = response.json()['providers'][0]
     stored = json.loads(path.read_text(encoding='utf-8'))[0]
     loaded = providers.load_api_providers(read_only=True)[0]
-    fetched = client.get('/api/providers').json()['providers'][0]
+    public = response.json()['providers'][0]
     assert stored == loaded
-    assert public == fetched == {**stored, 'has_key': False, 'key_preview': '',
-                                 'key_env': main.provider_key_env('proxy-test')}
-    assert public['image_bypass_system_proxy'] is flag
-    assert public['image_models'] == ['image-one']
-    assert public['chat_models'] == ['chat-one']
-    assert public['video_models'] == ['video-one']
+    assert public == client.get('/api/providers').json()['providers'][0]
+    assert FLAG not in stored and FLAG not in public
+    for key in ('image_models', 'chat_models', 'video_models'):
+        assert public[key] == raw[key]
     assert dict(os.environ) == original_env
 
 
-def test_mixed_providers_remain_independent_and_cli_does_not_opt_in(isolated_provider_app):
-    main, providers, client, path = isolated_provider_app
-    items = [provider('direct', image_bypass_system_proxy=True), provider('inherited'),
-             provider('explicit-off', image_bypass_system_proxy=False),
-             provider('native-cli', protocol='codex', image_bypass_system_proxy=True),
-             provider('native-gemini', protocol='gemini-cli', image_bypass_system_proxy=True)]
+@pytest.mark.parametrize('value', [True, False, 'false', 1, None])
+def test_direct_private_save_also_drops_experimental_flag(isolated_provider_app, value):
+    _, providers, _, path = isolated_provider_app
+    raw = deferred_proxy_provider(**{FLAG: value})
+    providers.save_api_providers([raw])
+    assert json.loads(path.read_text(encoding='utf-8')) == [{key: val for key, val in raw.items() if key != FLAG}]
+    assert FLAG in raw
+
+
+def test_mixed_providers_and_legacy_merge_never_reintroduce_setting(isolated_provider_app):
+    _, providers, client, path = isolated_provider_app
+    items = [deferred_proxy_provider('direct', **{FLAG: True}), deferred_proxy_provider('inherited'),
+             deferred_proxy_provider('explicit-off', **{FLAG: False}),
+             deferred_proxy_provider('native-cli', protocol='codex', **{FLAG: True}),
+             deferred_proxy_provider('native-gemini', protocol='gemini-cli', **{FLAG: True})]
     response = client.put('/api/providers', json=items)
     assert response.status_code == 200, response.text
-    expected = {'direct': True, 'inherited': False, 'explicit-off': False,
-                'native-cli': False, 'native-gemini': False}
     for entries in (response.json()['providers'], providers.load_api_providers(),
                     json.loads(path.read_text(encoding='utf-8'))):
-        assert {item['id']: item['image_bypass_system_proxy'] for item in entries} == expected
-
-
-@pytest.mark.parametrize('value', ['false', 'true', '0', '1', '', 0, 1, None, [], {}])
-def test_non_boolean_disk_values_never_enable_bypass_and_dtos_reject_them(isolated_provider_app, value):
-    main, providers, client, path = isolated_provider_app
-    raw = provider(image_bypass_system_proxy=value)
-    assert main.normalize_provider(raw)['image_bypass_system_proxy'] is False
-    for model in (main.ApiProviderPayload, main.TestConnectionPayload):
-        with pytest.raises(ValidationError):
-            model(image_bypass_system_proxy=value)
-    path.write_text(json.dumps([raw]), encoding='utf-8')
-    assert providers.load_api_providers()[0]['image_bypass_system_proxy'] is False
-    before = path.read_bytes()
-    response = client.put('/api/providers', json=[raw])
-    assert response.status_code == 422
-    assert path.read_bytes() == before
-    assert client.post('/api/providers/test-connection', json={'image_bypass_system_proxy': value}).status_code == 422
-
-
-def test_legacy_protocol_merge_injects_explicit_false_for_new_provider(isolated_provider_app):
-    main, providers, client, path = isolated_provider_app
-    path.write_text(json.dumps([provider('legacy-ark', protocol='volcengine',
-                                         image_bypass_system_proxy=True)]), encoding='utf-8')
+        assert all(FLAG not in item for item in entries)
+    path.write_text(json.dumps([deferred_proxy_provider('legacy-ark', protocol='volcengine', **{FLAG: True})]), encoding='utf-8')
     loaded = {item['id']: item for item in providers.load_api_providers()}
-    assert loaded['legacy-ark']['image_bypass_system_proxy'] is True
-    assert loaded['volcengine']['image_bypass_system_proxy'] is False
+    assert {'legacy-ark', 'volcengine'} <= loaded.keys()
+    assert all(FLAG not in item for item in loaded.values())
 
 
-def test_public_provider_allowlist_retains_setting_and_redacts_inline_secrets(isolated_provider_app, monkeypatch):
-    main, providers, client, path = isolated_provider_app
+def test_public_allowlist_drops_setting_and_redacts_inline_secrets(isolated_provider_app, monkeypatch):
+    main, providers, _, _ = isolated_provider_app
     secret = 'fixture-only-493-key-123456789'
     monkeypatch.setattr(main, 'provider_env_key_value', lambda provider_id: secret)
-    raw = provider(image_bypass_system_proxy=True, api_key=secret, wallet_api_key=secret,
+    raw = deferred_proxy_provider(**{FLAG: True}, api_key=secret, wallet_api_key=secret,
                    volcengine_access_key_id=secret, volcengine_secret_access_key=secret,
                    clear_key=True, unexpected_secret=secret)
     public = providers.public_provider(raw)
-    assert public['image_bypass_system_proxy'] is True
-    assert public['has_key'] is True
-    assert public['key_preview'].endswith('6789')
+    assert FLAG not in public
+    assert public['has_key'] is True and public['key_preview'].endswith('6789')
     assert secret not in json.dumps(public)
     assert not {'api_key', 'wallet_api_key', 'volcengine_access_key_id',
                 'volcengine_secret_access_key', 'clear_key', 'unexpected_secret'} & public.keys()
@@ -149,12 +148,9 @@ def test_public_provider_allowlist_retains_setting_and_redacts_inline_secrets(is
     assert raw['api_key'] == secret
 
 
-def test_connection_dto_retains_boolean_without_claiming_image_transport_test(isolated_provider_app):
-    main, providers, client, path = isolated_provider_app
-    payload = main.TestConnectionPayload(base_url='https://private-fake.invalid',
-                                         image_bypass_system_proxy=True)
-    assert payload.model_dump()['image_bypass_system_proxy'] is True
-    # An invalid address cannot trigger a real probe, even when the image setting is on.
-    response = client.post('/api/providers/test-connection', json={'image_bypass_system_proxy': True})
+def test_connection_dto_drops_flag_without_triggering_probe(isolated_provider_app):
+    main, _, client, path = isolated_provider_app
+    assert FLAG not in main.TestConnectionPayload(**{FLAG: True}).model_dump()
+    response = client.post('/api/providers/test-connection', json={FLAG: True})
     assert response.status_code == 400
     assert not path.exists()

@@ -8,6 +8,8 @@
 .retrieval-slot { box-sizing:border-box; flex:none; display:flex; flex-direction:column; justify-content:center; align-items:center; gap:5px; border:1px dashed var(--designer-accent,var(--line)); border-radius:10px; background:var(--soft); color:var(--text); text-align:center; overflow:auto; font:inherit; }
 .retrieval-slot > span, .retrieval-slot small { max-width:100%; overflow-wrap:anywhere; }
 .retrieval-slot small { color:var(--muted); }
+.retrieval-action { display:inline-flex; flex:none; align-items:center; justify-content:center; gap:4px; max-width:100%; }
+.retrieval-no-charge { white-space:nowrap; color:var(--muted); }
 .retrieval-slot details { max-width:100%; font:inherit; }
 .retrieval-slot details span { display:block; overflow-wrap:anywhere; }
 .retrieval-slot button, .retrieval-summary button, .retrieval-panel button { box-sizing:border-box; min-height:32px; flex-shrink:0; display:inline-flex; gap:4px; align-items:center; justify-content:center; padding:4px 8px; border:1px solid var(--designer-accent,var(--line)); border-radius:8px; background:var(--card); color:var(--text); font:inherit; white-space:nowrap; cursor:pointer; }
@@ -16,7 +18,12 @@
 .retrieval-summary { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; color:var(--text); }
 .retrieval-summary small, .retrieval-summary [role="alert"] { flex-basis:100%; color:var(--muted); overflow-wrap:anywhere; }
 .retrieval-node { min-height:0; overflow:hidden; }
-.retrieval-node > .thumb-grid { flex:1 1 auto; min-height:0; overflow:auto; }
+.retrieval-node > .thumb-grid { flex:1 1 auto; min-height:0; overflow:auto; padding-right:0; }
+/* Generated originals are not empty upload nodes; only retrieval owns their footer and padding. */
+.image-node:has(> .node-body > .retrieval-node:not(.retrieval-single):not(.retrieval-frame)) { box-sizing:border-box; padding:20px; border-width:0; }
+.image-node:has(> .node-body > .retrieval-node:not(.retrieval-single):not(.retrieval-frame)) > .node-body { height:100%; min-height:0; padding:0; flex:none; }
+.image-node:has(> .node-body > .retrieval-node:not(.retrieval-single):not(.retrieval-frame)) > .node-head,
+.image-node:has(> .node-body > .retrieval-node:not(.retrieval-single):not(.retrieval-frame)) > .node-hint { display:none; }
 /* The flex remainder excludes the footer; fixed outer-node dimensions would add scrollbars and hide TTL/progress (#493). */
 .retrieval-single > .thumb-grid { grid-template-columns:minmax(0,1fr); grid-template-rows:minmax(0,1fr); width:100%; padding:0; max-height:none; }
 .retrieval-single .retrieval-slot { position:relative; min-width:0; min-height:0; gap:4px; border-radius:12px; }

@@ -32,9 +32,9 @@ async with create_image_transport_client(
 
 ### 代理与证书
 
-provider 字典 `image_bypass_system_proxy is True` 时工厂设置 `proxy=None, trust_env=False`。未开启时完全保留原 kwargs/HTTPX 默认行为，尤其不为埋点添加 `transport=`，以免关闭自动代理 mounts。
+review（2026-11-24，MESSAGES.md:3893–3898）裁定：实际代理路线/收益仍为 **UNKNOWN**，**本批不做代理开关**，后续项留在 #493。`image_bypass_system_proxy` 不属于 provider/连接 DTO、规范化、保存或公开响应，也无全局设置控件/翻译。旧实验字段读取时丢弃，保存时移除；不隐式改写磁盘旧配置，也不只隐藏 UI 却保留可持久化功能。
 
-当原客户端会自己构造 transport 时，先用**已安装 HTTPX 的 `create_ssl_context`** 和原 `verify/cert/trust_env` 求值，再把同一 context 传给禁用代理后的客户端，避免 `trust_env=False` 连带丢掉 `SSL_CERT_FILE/DIR`；也保留进程既有 truststore 注入、显式 SSLContext 和校验证书策略。不改环境变量，不新增 `verify=False`。原来显式 `trust_env=False` 的调用仍不读取证书环境。显式已有 transport/mounts 原样保留，不重建其 SSL/SSRF/pinning 策略；显式 mounts 也不会被 provider 设置清除。
+工厂不解读 provider 网络字段，原构造 kwargs 原样保留，普通产品 HTTP 延续系统代理和默认证书信任；不为埋点添加 `transport=` 或重建 TLS context。显式 `verify/cert`、SSLContext/truststore、证书环境及 mounts 均沿用 HTTPX 合同，不新增 `verify=False`。私有实验调用方仍可显式传库级 `trust_env`，不是用户配置功能。pinned 资源下载器原有 `trust_env=False`、禁重定向、DNS/IP/Host/SNI 和 SSRF 守卫不变；显式参数不会被旧 provider 字段覆盖。
 
 ## 指标与事件
 

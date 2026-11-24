@@ -15,14 +15,14 @@ import pytest
 from fastapi import HTTPException
 
 BASE = Path(__file__).parents[1]
-def load(name, path):
+def load_submission_policy_module(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
-previous = load('_policy_pipeline493', BASE / 'tests/test_image_generation_pipeline_493.py')
-sdk = load('_policy_sdk493', BASE / 'tests/test_image_transport_493.py')
+previous = load_submission_policy_module('_policy_pipeline493', BASE / 'tests/test_image_generation_pipeline_493.py')
+sdk = load_submission_policy_module('_policy_sdk493', BASE / 'tests/test_image_transport_493.py')
 transport = previous.transport
 pipeline = previous.pipeline
 no_outbound = previous.no_outbound
@@ -119,7 +119,7 @@ def test_native_real_factory_incomplete_budget_never_restarts(pipeline, monkeypa
     async def run():
         with pytest.raises(asyncio.CancelledError if cancel else httpx.ConnectError):
             await pipeline['run_provider_generation_with_backoff']('fixture',pipeline['generate_gemini_provider_image'],
-                'p','1024x1024','gemini-test',provider={'image_bypass_system_proxy':True},
+                'p','1024x1024','gemini-test',provider={'id':'fixture'},
                 image_parameters={'aspect_ratio':'1:1','resolution':'1k'})
     asyncio.run(run())
     assert network.calls == (1 if cancel else 3)
@@ -204,7 +204,7 @@ def test_dedicated_image_adapters_single_submission(pipeline, monkeypatch, adapt
     exc={'read':httpcore.ReadError(),'unknown':RuntimeError(),'cancel':asyncio.CancelledError()}.get(failure)
     wire=sdk.Stream(reads=[exc] if exc else [response({'task_id':'accepted','data':{'taskId':'accepted'}},failure)])
     network=previous.installed_client(monkeypatch,wire)
-    provider={'id':'fixture','base_url':'http://fixture.invalid','image_bypass_system_proxy':True}
+    provider={'id':'fixture','base_url':'http://fixture.invalid'}
     async def run():
         function=pipeline['generate_'+('runninghub_entry' if adapter=='runninghub_entry' else adapter+'_provider')+'_image']
         with pytest.raises((httpx.HTTPError,HTTPException,RuntimeError,asyncio.CancelledError)):
@@ -237,7 +237,7 @@ def test_generic_real_dispatcher_uses_one_shared_transport_budget(pipeline,monke
     delays=[]
     async def sleep(delay):delays.append(delay)
     monkeypatch.setattr(asyncio,'sleep',sleep)
-    provider={'id':'fixture','base_url':'http://fixture.invalid','image_bypass_system_proxy':True}
+    provider={'id':'fixture','base_url':'http://fixture.invalid'}
     async def run():
         with pytest.raises((httpx.HTTPError,HTTPException)):
             await pipeline['run_provider_generation_with_backoff']('fixture',pipeline['_generate_ai_image_impl'],

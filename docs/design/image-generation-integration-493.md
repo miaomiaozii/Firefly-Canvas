@@ -2,6 +2,10 @@
 
 ## Current reconciliation (#493 / #495)
 
+2026-11-24 review supersedes the earlier proxy plan: the finite 16 paid observations are accepted; actual proxy route/benefit remains UNKNOWN, so the user switch is **deferred from this batch**, with follow-up on #493. No provider DTO/normalization/persisted/public flag or settings control remains. Ordinary image HTTP keeps system/default trust; pinned no-proxy asset download security is unchanged. The 8,000,000B local budget is conservative, not a known hard cap; ~56s covers the URL path, not the ~3.793s ACK. No direct-is-faster claim or paid rerun. See `soon-url-default-493.md`.
+
+The gate counts/unknown-cause wording below are retained historical observations, not a current baseline conclusion: review identified the APPDATA/LOCALAPPDATA-replacing launcher as the source of the 371 failures / Node DLL-init errors. Fresh whole-delivery validation must inherit ordinary Windows roots and override only FIREFLY_* and TEMP; this worker has run targeted offline checks only.
+
 Authority: actual `D:/Firefly-Canvas/.local/agent-work/channel/review-batch-ui/MESSAGES.md:3813–3816,3847,3852–3860,3865–3866,3871`; review `01a1ef85` was explicitly confirmed by user `m05149`. Retrieval UI implementation is authorized; the earlier design wait is historical. #495 has its separate commit `db29dc2`; #493 remains uncommitted. Neither ticket nor the whole delivery is declared complete.
 
 The exact Soon endpoint/model default is now enabled in an invocation-only provider view, with manual per-model mappings taking precedence; saved/global configuration is unchanged. See `soon-url-default-493.md` for the prepared-byte budget and measured paid evidence. Durable recovery separately binds `invocation_identity` while retaining original provider/config/model guards; ambiguous legacy automatic-profile records fail closed, never regenerate. See `image-result-history-only-493.md`.
@@ -24,7 +28,7 @@ References: CONTEXT.md; ADR 0004, 0006, 0017, 0023; integration audit `C:/ff-qa/
 
 ## Private live-harness APIs (historical candidate seam, no public DTO change)
 
-Use `from app.services.image_transport import _capture_image_transport`, then `with _capture_image_transport(receipts.append):` around the awaited generation **and** archive/save operation in the same task. The synchronous sink should only collect in-memory scalar snapshots. The context restores both sink and response on exit; no identifiers, URLs, credentials, prompt or payload enter receipts. Events are cumulative updates, not additional paid attempts. Existing HTTPX 0.28.1 semantics, proxy strict-True setting and TLS environment preservation remain in the SDK.
+Use `from app.services.image_transport import _capture_image_transport`, then `with _capture_image_transport(receipts.append):` around the awaited generation **and** archive/save operation in the same task. The synchronous sink should only collect in-memory scalar snapshots. The context restores both sink and response on exit; no identifiers, URLs, credentials, prompt or payload enter receipts. Events are cumulative updates, not additional paid attempts. Existing HTTPX 0.28.1 semantics and TLS environment preservation remain in the SDK; provider flags cannot alter routing. Private callers may still supply explicit library-level `trust_env` kwargs.
 
 `from app.services.generation import _generate_soon_url_candidate` provides:
 

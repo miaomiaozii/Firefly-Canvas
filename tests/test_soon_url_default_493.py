@@ -36,7 +36,7 @@ pipeline, no_outbound = previous.pipeline, previous.no_outbound
 transport = previous.transport
 
 
-def load(path, names, ns):
+def load_soon_runtime_ast(path, names, ns):
     tree = ast.parse(Path(path).read_text(encoding='utf-8-sig'))
     chosen = []
     for node in tree.body:
@@ -51,11 +51,10 @@ def load(path, names, ns):
     return ns
 
 
-def provider(**overrides):
+def soon_default_provider(**overrides):
     return {'id': 'synthetic-soon-alpha', 'name': 'Soon', 'enabled': True,
             'base_url': 'https://api.soonstudio.ai', 'protocol': 'openai',
             'image_request_mode': 'openai', 'model_protocols': {}, 'model_request_modes': {},
-            'image_bypass_system_proxy': False,
             'image_models': [MODEL, MODEL + '-4k'], **overrides}
 
 
@@ -63,9 +62,9 @@ def provider(**overrides):
 def runtime(pipeline, tmp_path):
     ns = pipeline
     ns.update(re=re, math=math, urllib=urllib, sys=sys, IMAGE_MODEL='not-the-selected-model')
-    load(BASE / 'firefly_generation.py', {'is_soon_provider', 'SOON_GEMINI_NATIVE_ALIASES',
+    load_soon_runtime_ast(BASE / 'firefly_generation.py', {'is_soon_provider', 'SOON_GEMINI_NATIVE_ALIASES',
          'soon_gemini_native_model', 'is_soon_gemini_native_image_model'}, ns)
-    load(BASE / 'app/core.py', {'SUPPORTED_IMAGE_REQUEST_MODES', 'PER_MODEL_REQUEST_MODE_OPTIONS',
+    load_soon_runtime_ast(BASE / 'app/core.py', {'SUPPORTED_IMAGE_REQUEST_MODES', 'PER_MODEL_REQUEST_MODE_OPTIONS',
          'PER_MODEL_PROTOCOL_OPTIONS', 'FIXED_PROTOCOL_PROVIDER_IDS', 'GEMINI_IMAGE_ASPECT_RATIOS',
          'provider_protocol', 'normalize_image_request_mode', 'effective_image_request_mode',
          'effective_protocol', 'detect_image_request_mode', 'parse_size_pair', 'selected_model',
@@ -74,9 +73,9 @@ def runtime(pipeline, tmp_path):
          'route_openai_image_request', 'gemini_model_name', 'is_gpt_image_2_model',
          'is_codex_provider', 'is_gemini_cli_provider', 'is_runninghub_provider',
          'is_volcengine_provider', 'is_minimax_provider', 'is_apimart_provider', 'is_fhl_provider'}, ns)
-    load(BASE / 'app/services/providers.py', {'_soon_url_verified_target', '_soon_url_auto_provider',
+    load_soon_runtime_ast(BASE / 'app/services/providers.py', {'_soon_url_verified_target', '_soon_url_auto_provider',
          'provider_endpoint_url', 'gemini_endpoint_url'}, ns)
-    load(BASE / 'app/services/generation.py', {'generate_ai_image', '_soon_url_reference_data_urls',
+    load_soon_runtime_ast(BASE / 'app/services/generation.py', {'generate_ai_image', '_soon_url_reference_data_urls',
          '_SOON_URL_REFERENCE_BUDGET_BYTES', 'is_comfyui_provider'}, ns)
     ns['_generation_reference_bytes'] = sys.modules['_pipeline493.media'].generation_reference_bytes
     ns.update(model_spec_for=lambda m: {},
@@ -88,7 +87,7 @@ def runtime(pipeline, tmp_path):
               AI_REQUEST_TIMEOUT=1800)
     ns['_svc'].provider_endpoint_url = ns['provider_endpoint_url']
     ns['_svc'].gemini_endpoint_url = ns['gemini_endpoint_url']
-    ns['_provider'] = provider()
+    ns['_provider'] = soon_default_provider()
     ns['_scope_calls'] = []
     ns['require_project_media_values_scope'] = lambda values: ns['_scope_calls'].append(values)
     def main(name):
@@ -137,7 +136,7 @@ class MemoryNetwork(httpcore.AsyncNetworkBackend):
         return result
 
 
-def install(monkeypatch, replies=None):
+def install_soon_memory_network(monkeypatch, replies=None):
     network = MemoryNetwork(replies or [(200, {'image': {'type': 'url', 'value': 'https://result.invalid/image.png'}})])
     original = transport.ImageTransportClient.__init__
     def init(self, **kw):
@@ -152,12 +151,12 @@ def install(monkeypatch, replies=None):
     return network
 
 
-def run(runtime, refs=None, model=MODEL, **kwargs):
+def run_soon_default_generation(runtime, refs=None, model=MODEL, **kwargs):
     return asyncio.run(runtime['generate_ai_image'](PROMPT, '4096x3072', 'high', model,
         refs or [], runtime['_provider']['id'], **kwargs))
 
 
-def png(size=(1024, 768), mode='RGBA'):
+def soon_reference_png(size=(1024, 768), mode='RGBA'):
     output = io.BytesIO()
     Image.new(mode, size, (10, 20, 30, 73) if mode == 'RGBA' else (10, 20, 30)).save(output, format='PNG')
     return output.getvalue()
@@ -169,10 +168,10 @@ def ref(raw):
 
 def test_ordinary_default_entry_is_candidate_semantically_without_mutating_provider(runtime, monkeypatch):
     original = copy.deepcopy(runtime['_provider'])
-    raw = png()
-    network = install(monkeypatch, [(200, {'image': {}})] * 2)
+    raw = soon_reference_png()
+    network = install_soon_memory_network(monkeypatch, [(200, {'image': {}})] * 2)
     params = {'aspect_ratio': '4:3', 'resolution': '4k'}
-    run(runtime, [ref(raw)], image_parameters=params)
+    run_soon_default_generation(runtime, [ref(raw)], image_parameters=params)
     explicit = copy.deepcopy(original)
     explicit['model_protocols'][MODEL] = 'openai'
     explicit['model_request_modes'][MODEL] = 'openai-json'
@@ -209,10 +208,10 @@ def test_ordinary_body_equals_frozen_paid_candidate_and_receipt(runtime, monkeyp
     with Image.open(io.BytesIO(original)) as image:
         assert image.size == (receipt['prepared_width'], receipt['prepared_height']) == (1024, 768)
         assert image.mode == 'RGBA'
-    network = install(monkeypatch, [(200, {'image': {}})] * 2)
+    network = install_soon_memory_network(monkeypatch, [(200, {'image': {}})] * 2)
     with patch.object(Image.Image, 'save', side_effect=AssertionError('frozen reference must not be re-encoded')):
-        run(runtime, [ref(original)], image_parameters={'aspect_ratio': '4:3', 'resolution': '4k'})
-        explicit = provider(model_protocols={MODEL: 'openai'}, model_request_modes={MODEL: 'openai-json'})
+        run_soon_default_generation(runtime, [ref(original)], image_parameters={'aspect_ratio': '4:3', 'resolution': '4k'})
+        explicit = soon_default_provider(model_protocols={MODEL: 'openai'}, model_request_modes={MODEL: 'openai-json'})
         asyncio.run(runtime['_generate_soon_url_candidate'](PROMPT, '4096x3072', '', MODEL,
             [ref(original)], provider=explicit, image_parameters={'aspect_ratio': '4:3', 'resolution': '4k'}))
     first, candidate = network.requests()
@@ -230,8 +229,8 @@ def test_explicit_candidate_wire_body_matches_portable_frozen_record(runtime, mo
     frozen_body = gzip.decompress(base64.b64decode((FIXTURES / provenance['body']['path']).read_bytes()))
     recorded = json.loads(frozen_body)
     original = base64.b64decode(recorded['extra_body']['image'][0].split(',', 1)[1], validate=True)
-    network = install(monkeypatch)
-    explicit = provider(model_protocols={MODEL: 'openai'}, model_request_modes={MODEL: 'openai-json'})
+    network = install_soon_memory_network(monkeypatch)
+    explicit = soon_default_provider(model_protocols={MODEL: 'openai'}, model_request_modes={MODEL: 'openai-json'})
     with patch.object(Image.Image, 'save', side_effect=AssertionError('frozen reference must not be re-encoded')):
         asyncio.run(runtime['_generate_soon_url_candidate'](PROMPT, '4096x3072', '', MODEL,
             [ref(original)], provider=explicit, image_parameters={'aspect_ratio': '4:3', 'resolution': '4k'}))
@@ -247,7 +246,7 @@ def test_explicit_candidate_wire_body_matches_portable_frozen_record(runtime, mo
 @pytest.mark.parametrize('base_url', ['https://api.soonstudio.ai', 'https://api.soonstudio.ai/',
     'https://api.soonstudio.ai/v1', 'https://api.soonstudio.ai/v1/'])
 def test_endpoint_model_profile_is_independent_of_local_id(runtime, monkeypatch, provider_id, base_url):
-    saved = provider(id=provider_id, base_url=base_url)
+    saved = soon_default_provider(id=provider_id, base_url=base_url)
     original = copy.deepcopy(saved)
     profile = runtime['_soon_url_auto_provider'](saved, MODEL)
     assert runtime['_soon_url_verified_target'](saved, MODEL) is True
@@ -255,8 +254,8 @@ def test_endpoint_model_profile_is_independent_of_local_id(runtime, monkeypatch,
     assert profile == {**saved, 'model_protocols': {MODEL: 'openai'}, 'model_request_modes': {MODEL: 'openai-json'}}
     assert saved == original
     runtime['_provider'] = saved
-    network = install(monkeypatch)
-    run(runtime, image_parameters={'aspect_ratio': '4:3', 'resolution': '4k'})
+    network = install_soon_memory_network(monkeypatch)
+    run_soon_default_generation(runtime, image_parameters={'aspect_ratio': '4:3', 'resolution': '4k'})
     assert network.requests() == [('POST /v1/images/generations HTTP/1.1', {
         'model': MODEL, 'prompt': PROMPT, 'extra_body': {'response_format': 'url'},
         'aspect_ratio': '4:3', 'image_size': '4K', 'resolution': '4k'})]
@@ -269,7 +268,7 @@ def test_endpoint_model_profile_is_independent_of_local_id(runtime, monkeypatch,
     'https://api.soonstudio.ai/v1/images/generations', 'https://api.soonstudio.ai?mode=url',
     'https://api.soonstudio.ai/#fragment', 'https://[invalid'])
 def test_endpoint_profile_does_not_broaden_url_boundary(runtime, base_url):
-    saved = provider(base_url=base_url)
+    saved = soon_default_provider(base_url=base_url)
     assert runtime['_soon_url_verified_target'](saved, MODEL) is False
     assert runtime['_soon_url_auto_provider'](saved, MODEL) is saved
 
@@ -281,7 +280,7 @@ def test_missing_provider_does_not_match_endpoint_profile(runtime):
 @pytest.mark.parametrize('field,value', [('model_protocols', 'gemini'), ('model_protocols', 'openai'),
     ('model_request_modes', 'openai'), ('model_request_modes', 'openai-json'), ('model_request_modes', 'fal')])
 def test_explicit_mapping_is_never_overwritten(runtime, field, value):
-    saved = provider(**{field: {MODEL: value}})
+    saved = soon_default_provider(**{field: {MODEL: value}})
     assert runtime['_soon_url_auto_provider'](saved, MODEL) is saved
 
 
@@ -293,9 +292,9 @@ def test_explicit_mapping_is_never_overwritten(runtime, field, value):
     ({'protocol': 'gemini'}, MODEL), ({'model_protocols': {MODEL: 'gemini'}}, MODEL),
     ({'model_request_modes': {MODEL: 'openai-json'}}, MODEL)])
 def test_unverified_or_explicit_native_uses_actual_native_entry(runtime, monkeypatch, changes, model):
-    runtime['_provider'] = provider(**changes)
-    network = install(monkeypatch)
-    run(runtime, model=model, image_parameters={'aspect_ratio': '4:3', 'resolution': '4k'})
+    runtime['_provider'] = soon_default_provider(**changes)
+    network = install_soon_memory_network(monkeypatch)
+    run_soon_default_generation(runtime, model=model, image_parameters={'aspect_ratio': '4:3', 'resolution': '4k'})
     request, body = network.requests()[0]
     assert request.startswith('POST ')
     assert 'extra_body' not in body
@@ -305,9 +304,9 @@ def test_unverified_or_explicit_native_uses_actual_native_entry(runtime, monkeyp
 
 
 def test_manual_json_stays_json_and_budgeted(runtime, monkeypatch):
-    runtime['_provider'] = provider(model_protocols={MODEL: 'openai'}, model_request_modes={MODEL: 'openai-json'})
-    network = install(monkeypatch)
-    run(runtime, [ref(png())], preserve_model=True, lock_model=True,
+    runtime['_provider'] = soon_default_provider(model_protocols={MODEL: 'openai'}, model_request_modes={MODEL: 'openai-json'})
+    network = install_soon_memory_network(monkeypatch)
+    run_soon_default_generation(runtime, [ref(soon_reference_png())], preserve_model=True, lock_model=True,
         image_parameters={'aspect_ratio': '4:3', 'resolution': '4k'})
     assert network.requests()[0][1]['extra_body']['response_format'] == 'url'
 
@@ -322,15 +321,15 @@ def test_prepared_sum_threshold_before_any_post(runtime, monkeypatch, sizes, acc
         prepared.append(item['bytes'])
         return b'x' * item['bytes'], 'image/png', 'reference.png'
     runtime['_generation_reference_bytes'] = prepare
-    network = install(monkeypatch)
+    network = install_soon_memory_network(monkeypatch)
     references = [{'url': '/output/ref.png', 'bytes': size} for size in sizes]
     if accepted:
-        run(runtime, references)
+        run_soon_default_generation(runtime, references)
         images = network.requests()[0][1]['extra_body'].get('image', [])
         assert [len(base64.b64decode(value.split(',', 1)[1])) for value in images] == sizes
     else:
         with pytest.raises(HTTPException) as caught:
-            run(runtime, references)
+            run_soon_default_generation(runtime, references)
         assert caught.value.status_code == 413
         assert caught.value.detail['code'] == 'soon_url_reference_budget_exceeded'
         assert network.wires == []
@@ -341,10 +340,10 @@ def test_prepared_sum_threshold_before_any_post(runtime, monkeypatch, sizes, acc
 @pytest.mark.parametrize('manual', [False, True])
 def test_unmeasurable_remote_import_first_and_zero_posts(runtime, monkeypatch, manual, scheme):
     if manual:
-        runtime['_provider'] = provider(model_protocols={MODEL: 'openai'}, model_request_modes={MODEL: 'openai-json'})
-    network = install(monkeypatch)
+        runtime['_provider'] = soon_default_provider(model_protocols={MODEL: 'openai'}, model_request_modes={MODEL: 'openai-json'})
+    network = install_soon_memory_network(monkeypatch)
     with pytest.raises(HTTPException) as caught:
-        run(runtime, [{'url': scheme + 'remote.invalid/ref.png', 'bytes': 1, 'mime_type': 'image/png'}],
+        run_soon_default_generation(runtime, [{'url': scheme + 'remote.invalid/ref.png', 'bytes': 1, 'mime_type': 'image/png'}],
             preserve_model=manual, lock_model=manual)
     assert caught.value.status_code == 413
     assert caught.value.detail['code'] == 'soon_url_reference_budget_unmeasurable'
@@ -354,17 +353,17 @@ def test_unmeasurable_remote_import_first_and_zero_posts(runtime, monkeypatch, m
 
 @pytest.mark.parametrize('size', [(4096, 9), (5000, 9)])
 def test_budget_after_mandatory_4096_and_no_extra_encoding(runtime, monkeypatch, tmp_path, size):
-    raw = png(size)
+    raw = soon_reference_png(size)
     path = tmp_path / 'alpha.png'
     path.write_bytes(raw)
-    network = install(monkeypatch)
+    network = install_soon_memory_network(monkeypatch)
     saves = []
     save = Image.Image.save
     def record_save(image, *a, **kw):
         saves.append((image.size, kw.get('format')))
         return save(image, *a, **kw)
     with patch.object(Image.Image, 'save', record_save):
-        run(runtime, [{'url': '/output/alpha.png'}])
+        run_soon_default_generation(runtime, [{'url': '/output/alpha.png'}])
     sent = base64.b64decode(network.requests()[0][1]['extra_body']['image'][0].split(',', 1)[1])
     with Image.open(io.BytesIO(sent)) as image:
         assert image.size == (4096, 9 if size[0] == 4096 else 7)
@@ -384,16 +383,16 @@ def test_actual_valid_png_multi_reference_budget_not_source_or_json_size(runtime
     Image.frombytes('RGBA', (1500, 1000), pixels).save(buffer, format='PNG')
     raw = buffer.getvalue()
     assert 5_900_000 < len(raw) < 8_000_000
-    network = install(monkeypatch)
+    network = install_soon_memory_network(monkeypatch)
     with patch.object(Image.Image, 'save', side_effect=AssertionError('budget must not re-encode')):
         if count == 1:
-            run(runtime, [ref(raw)])
+            run_soon_default_generation(runtime, [ref(raw)])
             body = network.requests()[0][1]
             assert len(json.dumps(body)) > 8_000_000
             assert base64.b64decode(body['extra_body']['image'][0].split(',', 1)[1]) == raw
         else:
             with pytest.raises(HTTPException) as caught:
-                run(runtime, [ref(raw)] * count)
+                run_soon_default_generation(runtime, [ref(raw)] * count)
             assert caught.value.status_code == 413
             assert network.wires == []
 
@@ -406,7 +405,7 @@ def test_real_oversized_source_is_measured_only_after_mandatory_resize(runtime, 
     image.save(path, format='PNG', compress_level=0)
     original = path.read_bytes()
     assert len(original) > 8_000_000
-    network = install(monkeypatch)
+    network = install_soon_memory_network(monkeypatch)
     saves = []
     save = Image.Image.save
     def record_save(image, *a, **kw):
@@ -414,12 +413,12 @@ def test_real_oversized_source_is_measured_only_after_mandatory_resize(runtime, 
         return save(image, *a, **kw)
     with patch.object(Image.Image, 'save', record_save):
         if accepted:
-            run(runtime, [{'url': '/output/large.png'}])
+            run_soon_default_generation(runtime, [{'url': '/output/large.png'}])
             sent = base64.b64decode(network.requests()[0][1]['extra_body']['image'][0].split(',', 1)[1])
             assert len(sent) <= 8_000_000
         else:
             with pytest.raises(HTTPException) as caught:
-                run(runtime, [{'url': '/output/large.png'}])
+                run_soon_default_generation(runtime, [{'url': '/output/large.png'}])
             assert caught.value.status_code == 413
             assert network.wires == []
     assert len(saves) == 1 and saves[0][0] == 4096
@@ -432,22 +431,22 @@ def test_real_oversized_source_is_measured_only_after_mandatory_resize(runtime, 
     {'image_request_mode': 'openai-json', 'model_protocols': {MODEL: 'openai'}},
 ])
 def test_manual_and_other_provider_modes_keep_existing_body(runtime, monkeypatch, changes):
-    saved = provider(**changes)
+    saved = soon_default_provider(**changes)
     runtime['_provider'] = saved
     assert runtime['_soon_url_auto_provider'](saved, MODEL) is saved
-    network = install(monkeypatch)
-    run(runtime, preserve_model=True, lock_model=True,
+    network = install_soon_memory_network(monkeypatch)
+    run_soon_default_generation(runtime, preserve_model=True, lock_model=True,
         image_parameters={'aspect_ratio': '4:3', 'resolution': '4k'})
     body = network.requests()[0][1]
     if changes.get('image_request_mode') == 'openai-json':
         assert body['extra_body'] == {'response_format': 'url'}
     else:
         assert 'extra_body' not in body and body['n'] == 1
-    assert saved == provider(**changes)
+    assert saved == soon_default_provider(**changes)
 
 
 def test_upstream_413_is_one_post_no_native_endpoint_or_model_retry(runtime, monkeypatch):
-    network = install(monkeypatch, [(413, {'error': 'request too large'})])
+    network = install_soon_memory_network(monkeypatch, [(413, {'error': 'request too large'})])
     with pytest.raises(HTTPException) as caught:
         asyncio.run(runtime['run_provider_generation_with_backoff'](runtime['_provider']['id'],
             runtime['generate_ai_image'], PROMPT, '4096x3072', '', MODEL, [], runtime['_provider']['id']))
@@ -459,10 +458,10 @@ def test_upstream_413_is_one_post_no_native_endpoint_or_model_retry(runtime, mon
 
 
 def test_ordinary_accepted_task_keeps_runtime_profile_for_get_only_poll(runtime, monkeypatch):
-    load(BASE / 'app/services/providers.py', {'api_headers'}, runtime)
-    load(BASE / 'app/services/generation.py', {'image_task_url_for_provider', 'fetch_image_task_payload',
+    load_soon_runtime_ast(BASE / 'app/services/providers.py', {'api_headers'}, runtime)
+    load_soon_runtime_ast(BASE / 'app/services/generation.py', {'image_task_url_for_provider', 'fetch_image_task_payload',
          'wait_for_image_task'}, runtime)
-    load(BASE / 'app/core.py', {'image_task_data', 'image_task_status', 'httpx_request_with_transient_retries',
+    load_soon_runtime_ast(BASE / 'app/core.py', {'image_task_data', 'image_task_status', 'httpx_request_with_transient_retries',
          'IMAGE_TASK_SUCCESS_STATUSES', 'IMAGE_TASK_FAILED_STATUSES', 'IMAGE_TASK_UNKNOWN_STATUSES',
          'IMAGE_TASK_UNKNOWN_TERMINAL_AFTER'}, runtime)
     runtime.update(_api_headers=runtime['api_headers'],
@@ -473,9 +472,9 @@ def test_ordinary_accepted_task_keeps_runtime_profile_for_get_only_poll(runtime,
             return raw['image']
         raise HTTPException(status_code=502, detail='no image yet')
     runtime['extract_image'] = extract
-    network = install(monkeypatch, [(200, {'task_id': 'paid-original-task', 'status': 'pending'}),
+    network = install_soon_memory_network(monkeypatch, [(200, {'task_id': 'paid-original-task', 'status': 'pending'}),
         (200, {'status': 'completed', 'image': {'type': 'url', 'value': 'https://result.invalid/image.png'}})])
-    result, raw = run(runtime)
+    result, raw = run_soon_default_generation(runtime)
     requests = network.requests()
     assert [request.split(' ', 2)[:2] for request, _body in requests] == [
         ['POST', '/v1/images/generations'], ['GET', '/v1/images/tasks/paid-original-task']]
@@ -495,7 +494,7 @@ def test_observed_accepted_8007313_does_not_raise_conservative_policy(runtime, m
     assert observed['original_reference_sha256'] == observed['prepared_reference_sha256'] == '00b2a306ef5194540a69defd2b7f1a570089b139542a65a1f6dee935cb568da0'
     assert observed['actual_json_body_bytes'] == 10_676_846
     assert observed['state'] == 'archived-not-visual-acceptance' and observed['observed_post_requests'] == 1
-    original = png((observed['prepared_width'], observed['prepared_height']))
+    original = soon_reference_png((observed['prepared_width'], observed['prepared_height']))
     # Unknown private ancillary padding has a valid CRC; it is not the paid sample or an encoder-size assumption.
     kind = b'ffQa'
     padding = bytes(8_007_313 - len(original) - 12)
@@ -510,13 +509,13 @@ def test_observed_accepted_8007313_does_not_raise_conservative_policy(runtime, m
         assert image.size == (2048, 977) and image.mode == 'RGBA'
         assert image.getchannel('A').getextrema() == (73, 73)
     if manual:
-        runtime['_provider'] = provider(model_protocols={MODEL: 'openai'}, model_request_modes={MODEL: 'openai-json'})
-    network = install(monkeypatch)
+        runtime['_provider'] = soon_default_provider(model_protocols={MODEL: 'openai'}, model_request_modes={MODEL: 'openai-json'})
+    network = install_soon_memory_network(monkeypatch)
     with patch.object(Image.Image, 'save', side_effect=AssertionError('budget must not re-encode')):
         prepared, mime, _filename = runtime['_generation_reference_bytes'](ref(original), max_edge=4096)
         assert prepared == original and mime == 'image/png'
         with pytest.raises(HTTPException) as caught:
-            run(runtime, [ref(original)], preserve_model=manual, lock_model=manual)
+            run_soon_default_generation(runtime, [ref(original)], preserve_model=manual, lock_model=manual)
     assert caught.value.status_code == 413
     assert caught.value.detail['code'] == 'soon_url_reference_budget_exceeded'
     assert caught.value.detail['budget_bytes'] == 8_000_000
@@ -525,11 +524,11 @@ def test_observed_accepted_8007313_does_not_raise_conservative_policy(runtime, m
 
 
 def test_generation_scope_rejection_precedes_preparation_and_post(runtime, monkeypatch):
-    network = install(monkeypatch)
+    network = install_soon_memory_network(monkeypatch)
     def deny(values):
         raise HTTPException(status_code=403, detail='project scope denied')
     runtime['require_project_media_values_scope'] = deny
     with pytest.raises(HTTPException) as caught:
-        run(runtime, [ref(png())])
+        run_soon_default_generation(runtime, [ref(soon_reference_png())])
     assert caught.value.status_code == 403
     assert network.wires == []

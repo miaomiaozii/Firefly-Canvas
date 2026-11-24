@@ -12,14 +12,8 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-import main
-from app import core
-from app.routers import api_agent_tools as agents
-from app.routers import api_project_library as api
-from app.services import providers, result_downloads as rd
-from app.services.agent_ops_context import agent_ops_scope
 from firefly_projects import InvalidMutation, ProjectNotFound, ProjectStoreError
-from tests.test_result_downloads_493 import fixture, network, png, Body, PROVIDER, URL
+from tests.test_result_downloads_493 import isolated_app, fixture, network, retrieval_result_png, Body, PROVIDER, URL
 from tests.test_result_downloads_d2_493 import client
 
 
@@ -35,7 +29,12 @@ def inline(content):
 @pytest.mark.parametrize('layout', ['url', 'url-inline', 'inline-url'])
 def test_agent_n2_journal_yield_preserves_every_paid_candidate(fixture, layout):
     f = fixture
-    contents = [png(), png(True)]
+    main = f.main
+    from app import core
+    from app.routers import api_agent_tools as agents
+    from app.routers import api_project_library as api
+    from app.services.agent_ops_context import agent_ops_scope
+    contents = [retrieval_result_png(), retrieval_result_png(True)]
     network(f, lambda req: httpx.Response(200, stream=Body(contents[int(req.url.params['candidate'])])))
     f.monkeypatch.setattr(main, 'route_image_generation', lambda *a, **k: route())
     f.monkeypatch.setattr(main, 'load_api_providers', lambda **k: [{**PROVIDER, 'image_models': ['fixture-model']}])
@@ -156,13 +155,14 @@ def test_deleted_history_does_not_hide_valid_retrieval_groups(fixture):
 
 def test_resuming_task_does_not_duplicate_successful_sibling_occurrence(fixture):
     f = fixture
-    network(f, lambda req: httpx.Response(200, stream=Body(png(True))))
+    from app.routers import api_project_library as api
+    network(f, lambda req: httpx.Response(200, stream=Body(retrieval_result_png(True))))
     async def run():
         f.store.begin_image_generation(f.project, 'result', {'taskId': 'sibling-A', 'count': 1},
                                       base_revision=f.store.canvas(f.project)['revision'])
         await f.queue.checkpoint(f.project, f.history, [{'type': 'url', 'value': URL}],
                                  {'task_id': 'paid-B'}, PROVIDER)
-        saved = await api.archive_project_generated_image(f.project, inline(png()), 0)
+        saved = await api.archive_project_generated_image(f.project, inline(retrieval_result_png()), 0)
         saved['output_id'] = 'output-' + uuid.uuid4().hex
         sibling = {**f.history, 'id': 'generation-' + uuid.uuid4().hex, 'task_id': 'sibling-A',
                    'status': 'succeeded', 'outputs': [saved]}
@@ -190,6 +190,8 @@ def test_resuming_task_does_not_duplicate_successful_sibling_occurrence(fixture)
 @pytest.mark.parametrize('legacy', [False, True])
 def test_refresh_reuses_selected_model_endpoint_and_auth_after_restart(fixture, protocol, legacy):
     f = fixture
+    main = f.main
+    from app.services import providers, result_downloads as rd
     model = 'Exact-Selected-Model-493'
     provider = {**PROVIDER, 'image_request_mode': 'openai-video-proxy',
                 'model_request_modes': {model: 'openai-json'}, 'model_protocols': {model: protocol}}
@@ -207,7 +209,7 @@ def test_refresh_reuses_selected_model_endpoint_and_auth_after_restart(fixture, 
         if '/videos/' in req.url.path:
             return httpx.Response(404)
         assert 'authorization' not in req.headers and 'x-goog-api-key' not in req.headers
-        return httpx.Response(200, stream=Body(png()))
+        return httpx.Response(200, stream=Body(retrieval_result_png()))
     network(f, respond)
     async def run():
         candidate = {'type': 'url', 'value': URL, 'expires_at': time.time()-1}
@@ -288,6 +290,9 @@ def test_listing_skips_only_group_ownership_failures(fixture, stage, error_type)
 @pytest.mark.parametrize('changed', ['mode', 'protocol'])
 def test_refresh_rejects_changed_selected_model_route_before_any_get(fixture, changed):
     f = fixture
+    main = f.main
+    from app.routers import api_project_library as api
+    from app.services import providers
     model = 'Exact-Selected-Model-493'
     provider = {**PROVIDER, 'image_request_mode': 'openai-video-proxy',
                 'model_request_modes': {model: 'openai-json'}, 'model_protocols': {model: 'openai'}}
@@ -310,6 +315,7 @@ def test_refresh_rejects_changed_selected_model_route_before_any_get(fixture, ch
 @pytest.mark.parametrize('phase', ['checkpoint', 'refresh'])
 def test_unknown_original_model_never_falls_back_to_platform_route(fixture, phase):
     f = fixture
+    from app.routers import api_project_library as api
     network(f, lambda req: pytest.fail('Unknown original model must never query a guessed task API'))
     async def run():
         candidate = {'type': 'url', 'value': URL, 'expires_at': time.time()-1}

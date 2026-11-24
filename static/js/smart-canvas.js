@@ -1781,7 +1781,7 @@ function imageLayout(images, scale=1, node=null){
                 rows:grid.rows,
                 visibleRows:Math.min(SMART_GROUP_MAX_VISIBLE_ROWS, grid.rows),
                 width:savedSmartNodeSize(node)?.width || grid.gridW + BATCH_NODE_PAD_H,
-                height:savedSmartNodeSize(node)?.height || grid.gridH + BATCH_NODE_PAD_V + BATCH_STATUSBAR_H,
+                height:(!frameMemberSize && window.canvasResultRetrieval?.batchHeight(node, grid)) || savedSmartNodeSize(node)?.height || grid.gridH + BATCH_NODE_PAD_V + BATCH_STATUSBAR_H,
                 thumb:BATCH_THUMB.WIDTH,
                 gridHeight:grid.gridH,
                 ...layoutFrameBatchGrid(grid, frameMemberSize),
@@ -1832,8 +1832,8 @@ function imageLayout(images, scale=1, node=null){
         const gridCount = Math.max(2, batchTotal > 1 ? batchTotal : count);
         const genGrid = getBatchThumbGridSize(gridCount);
         const genBoxW = genGrid.gridW + BATCH_NODE_PAD_H;
-        const genBoxH = genGrid.gridH + BATCH_NODE_PAD_V;
-        return {cols:genGrid.cols, rows:genGrid.rows, visibleRows:Math.min(SMART_GROUP_MAX_VISIBLE_ROWS, genGrid.rows), width:savedSmartNodeSize(node)?.width || genBoxW, height:savedSmartNodeSize(node)?.height || genBoxH, thumb:BATCH_THUMB.WIDTH, gridHeight:genGrid.gridH, ...layoutFrameBatchGrid(genGrid, frameMemberSize)};
+        const genBoxH = (!frameMemberSize && window.canvasResultRetrieval?.batchHeight(node, genGrid)) || savedSmartNodeSize(node)?.height || genGrid.gridH + BATCH_NODE_PAD_V;
+        return {cols:genGrid.cols, rows:genGrid.rows, visibleRows:Math.min(SMART_GROUP_MAX_VISIBLE_ROWS, genGrid.rows), width:savedSmartNodeSize(node)?.width || genBoxW, height:genBoxH, thumb:BATCH_THUMB.WIDTH, gridHeight:genGrid.gridH, ...layoutFrameBatchGrid(genGrid, frameMemberSize)};
     }
     const cols = Math.min(4, Math.max(2, Math.ceil(Math.sqrt(count))));
     const rows = Math.ceil(count / cols);
@@ -9829,7 +9829,8 @@ function runTimePillHtml(node){
     const running = Boolean(node.pending || node.running);
     if(!running && !node.runFinishedAt) return '';
     const elapsed = nodeRunElapsedMs(node);
-    // Bug fix: 已完成但耗时为 0 的节点（如重试/重新生成时 runStartedAt 与 runFinishedAt 相同）不显示计时器
+    // Retrieval placeholders have no generation clock; real nonzero run durations remain visible.
+    if(elapsed < 1000 && window.canvasResultRetrieval?.nodeGroup(node)) return '';
     if(!running && elapsed <= 0) return '';
     const cls = running ? '' : ' done';
     return `<span class="run-time-pill${cls}" data-run-timer="${escapeHtml(node.id)}">${formatRunDuration(elapsed)}</span>`;

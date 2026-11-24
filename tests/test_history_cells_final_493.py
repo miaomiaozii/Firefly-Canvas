@@ -8,17 +8,18 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from firefly_projects import ProjectStore
-from app.services.result_downloads import ResultDownloads
 
 
 def test_history_cells_with_restarted_canonical_dto(tmp_path, monkeypatch):
+    native_appdata = {key: os.environ.get(key) for key in ('APPDATA', 'LOCALAPPDATA')}
     required = 'HOME USERPROFILE APPDATA LOCALAPPDATA TMP TEMP TMPDIR PI_CODING_AGENT_DIR PI_CODING_AGENT_SESSION_DIR CODEX_HOME XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME XDG_STATE_HOME FIREFLY_RUNTIME_ROOT FIREFLY_PROJECTS_ROOT'.split()
-    # The fixture owns its homes even when a test launcher supplies fewer roots.
+    # 隐私隔离属于测试本身，不依赖启动器。
     for key in required:
         private_root = tmp_path / key.lower()
         private_root.mkdir()
         monkeypatch.setenv(key, str(private_root))
     assert all(os.environ.get(key) for key in required)
+    from app.services.result_downloads import ResultDownloads
     store = ProjectStore(tmp_path / 'projects', snapshot_delay=0)
     host = SimpleNamespace(FIREFLY_PROJECT_STORE=store, api_headers=lambda **kw: {},
                            project_store_call=lambda method, *a, **kw: getattr(store, method)(*a, **kw))
@@ -59,6 +60,12 @@ def test_history_cells_with_restarted_canonical_dto(tmp_path, monkeypatch):
     target = Path(os.environ.get('FIREFLY_HISTORY_EVIDENCE', str(tmp_path))) / 'history-canonical.json'
     target.write_text(json.dumps(cases), encoding='utf-8')
     env = {**os.environ, 'FIREFLY_HISTORY_CANONICAL': str(target)}
+    # Node 在 Windows 上依赖原生 AppData 初始化；仅子进程保留原值，Python 继续私有隔离。
+    for key, original in native_appdata.items():
+        if original is None:
+            env.pop(key, None)
+        else:
+            env[key] = original
     result = subprocess.run(['node', '--test', 'tests/canvas_module_units/test-history-cells-final-493.mjs'],
                             cwd=Path(__file__).resolve().parents[1], env=env, capture_output=True, text=True, encoding='utf-8')
     target.with_suffix('.node.txt').write_text(result.stdout + result.stderr, encoding='utf-8')

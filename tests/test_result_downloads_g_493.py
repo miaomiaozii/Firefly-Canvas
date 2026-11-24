@@ -4,12 +4,9 @@ import copy
 from types import SimpleNamespace
 import httpx
 import pytest
-import main
-from app.routers import api_agent_tools as agent
-from app.services import agent_ops_store
 from firefly_opsdb import OpsDb
 from firefly_projects import ProjectStore
-from tests.test_result_downloads_493 import fixture, network, png, Body, PROVIDER, URL
+from tests.test_result_downloads_493 import isolated_app, fixture, network, retrieval_result_png, Body, PROVIDER, URL
 from tests.test_result_downloads_d2_493 import four, client
 
 
@@ -20,7 +17,7 @@ def remove_result(f):
 
 def test_deleted_node_history_only_reload_preserves_saved_assets(fixture):
     f=fixture
-    network(f,lambda req:httpx.Response(200,stream=Body(png())))
+    network(f,lambda req:httpx.Response(200,stream=Body(retrieval_result_png())))
     async def run():
         q=await four(f,2)
         saved=copy.deepcopy(f.store.canvas(f.project)['history'][0]['outputs'])
@@ -75,6 +72,7 @@ def test_invalid_owner_before_get_or_media_writes(fixture,forged):
 
 
 def admit_agent(f):
+    from app.routers import api_agent_tools as agent
     canvas=f.store.canvas(f.project)
     result=copy.deepcopy(canvas['nodes'][0]);result.pop('pendingTasks',None);result['pending']=0
     f.store.apply_mutations(f.project,[{'op':'upsert_node','node':result},
@@ -116,12 +114,14 @@ def test_agent_provenance_fail_closed_before_network(fixture,forged):
 
 def test_original_agent_writer_typed_result_and_real_undo(fixture):
     f=fixture
-    network(f,lambda req:httpx.Response(200,stream=Body(png())))
+    from app.routers import api_agent_tools as agent
+    from app.services import agent_ops_store
+    network(f,lambda req:httpx.Response(200,stream=Body(retrieval_result_png())))
     async def run():
         task,context=admit_agent(f)
         await four(f)
         await f.queue.failed(f.history['id'],RuntimeError('synthetic writeback failure'))
-        other=f.store.import_media(f.project,png(True),'unrelated.png','image/png')
+        other=f.store.import_media(f.project,retrieval_result_png(True),'unrelated.png','image/png')
         canvas=f.store.canvas(f.project)
         f.store.apply_mutations(f.project,[{'op':'upsert_node','node':{'id':'source','type':'smart-image',
             'images':[{'asset_id':other['asset_id'],'output_id':'output-'+'a'*32}]}},
@@ -161,7 +161,7 @@ def test_original_agent_writer_typed_result_and_real_undo(fixture):
 
 def test_original_agent_deleted_result_recovers_history_and_undo_fails_safely(fixture):
     f=fixture
-    network(f,lambda req:httpx.Response(200,stream=Body(png())))
+    network(f,lambda req:httpx.Response(200,stream=Body(retrieval_result_png())))
     async def run():
         task,context=admit_agent(f)
         await four(f)
@@ -183,7 +183,7 @@ def test_original_agent_deleted_result_recovers_history_and_undo_fails_safely(fi
 
 def test_history_only_concurrent_single_and_batch_selection(fixture):
     f=fixture
-    network(f,lambda req:httpx.Response(200,stream=Body(png())))
+    network(f,lambda req:httpx.Response(200,stream=Body(retrieval_result_png())))
     async def run():
         q=await four(f);remove_result(f)
         ids=[i['id'] for i in q['items']]

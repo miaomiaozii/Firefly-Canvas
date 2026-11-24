@@ -1,12 +1,15 @@
-"""Offline #493 retrieval contracts; run via an all-roots-isolated QA launcher."""
+"""Offline #493 retrieval contracts with fixture-owned private roots."""
 import asyncio
 import gzip
+import importlib
 import io
 import json
 import logging
 import os
 import random
 import socket
+import subprocess
+import sys
 import time
 import threading
 import uuid
@@ -21,13 +24,7 @@ import pytest
 from PIL import Image
 
 _REQUIRED_ROOTS = 'HOME USERPROFILE APPDATA LOCALAPPDATA TMP TEMP TMPDIR PI_CODING_AGENT_DIR PI_CODING_AGENT_SESSION_DIR CODEX_HOME XDG_CONFIG_HOME XDG_CACHE_HOME XDG_DATA_HOME XDG_STATE_HOME FIREFLY_RUNTIME_ROOT FIREFLY_PROJECTS_ROOT'.split()
-if any(not os.environ.get(key) for key in _REQUIRED_ROOTS):
-    raise RuntimeError('All roots must be isolated before importing main in retrieval tests')
 
-import main
-from app import core
-from app.routers import api_project_library as api
-from app.services import result_downloads as rd
 from firefly_projects import ProjectStore, InvalidMutation, ProjectStoreError
 
 _REAL_CLIENT = httpx.AsyncClient
@@ -45,7 +42,7 @@ class Body(httpx.AsyncByteStream):
             raise httpx.ReadError('fixture disconnect, PRIVATE-URL')
 
 
-def png(large=False):
+def retrieval_result_png(large=False):
     image = Image.frombytes('RGB', (320, 320), random.Random(493).randbytes(320 * 320 * 3)) if large else Image.new('RGB', (5, 4), 'green')
     buffer = io.BytesIO()
     image.save(buffer, 'PNG')
@@ -53,7 +50,21 @@ def png(large=False):
 
 
 @pytest.fixture
-def fixture(tmp_path, monkeypatch):
+def isolated_app(tmp_path, monkeypatch):
+    # #493：隐私根必须先于真实应用导入生效，且每项测试结束后恢复调用方环境。
+    for key in _REQUIRED_ROOTS:
+        root = tmp_path / key.lower()
+        root.mkdir()
+        monkeypatch.setenv(key, str(root))
+    return importlib.import_module('main')
+
+
+@pytest.fixture
+def fixture(tmp_path, monkeypatch, isolated_app):
+    main = isolated_app
+    from app import core
+    from app.routers import api_project_library as api
+    from app.services import result_downloads as rd
     store = ProjectStore(tmp_path / 'projects', snapshot_delay=0)
     monkeypatch.setattr(main, 'FIREFLY_PROJECT_STORE', store)
     monkeypatch.setattr(main, 'DATA_DIR', str(tmp_path / 'runtime'))
@@ -76,12 +87,13 @@ def fixture(tmp_path, monkeypatch):
     async def sleep(delay):
         delays.append(delay)
     monkeypatch.setattr(rd.asyncio, 'sleep', sleep)
-    yield SimpleNamespace(store=store, project=project, history=history, queue=queue, requests=requests,
+    yield SimpleNamespace(main=main, store=store, project=project, history=history, queue=queue, requests=requests,
                           monkeypatch=monkeypatch, delays=delays, tmp=tmp_path)
     store.close()
 
 
 def network(f, handler):
+    from app.services import result_downloads as rd
     def recorded(request):
         f.requests.append(request)
         assert request.method == 'GET', 'Retrieval must never submit generation'
@@ -95,10 +107,45 @@ async def checkpoint(f, data=None, **metadata):
     return next(iter(ids.values()))
 
 
+def test_standard_collection_without_preinjected_private_roots(tmp_path):
+    files = [
+        'test_agent_batch_download_terminal_493.py',
+        'test_result_download_final_review_493.py',
+        'test_result_download_lifecycle_493.py',
+        'test_result_download_metrics_d2_493.py',
+        'test_result_downloads_493.py',
+        'test_result_downloads_d2_493.py',
+        'test_result_downloads_g_493.py',
+        'test_result_retrieval_projection_ui2_493.py',
+    ]
+    env = os.environ.copy()
+    # 缺失任一私有根也必须允许标准收集；不能由测试启动器替收集期补齐。
+    env.pop('PI_CODING_AGENT_SESSION_DIR', None)
+    for key in ('FIREFLY_RUNTIME_ROOT', 'FIREFLY_PROJECTS_ROOT', 'TEMP'):
+        root = tmp_path / key.lower()
+        root.mkdir()
+        env[key] = str(root)
+    command = [sys.executable, '-m', 'pytest', '-q', '--collect-only',
+               *['tests/' + name for name in files]]
+    result = subprocess.run(command, cwd=Path(__file__).resolve().parents[1], env=env,
+                            capture_output=True, text=True, encoding='utf-8', timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert all('tests/' + name + '::' in result.stdout.replace('\\', '/') for name in files)
+    assert 'errors during collection' not in result.stdout
+
+
+def test_fixture_owns_all_sixteen_roots_before_real_main(fixture):
+    for key in _REQUIRED_ROOTS:
+        assert Path(os.environ[key]) == fixture.tmp / key.lower()
+    assert fixture.main is importlib.import_module('main')
+    assert fixture.queue.app is fixture.main
+    assert fixture.main.FIREFLY_PROJECT_STORE is fixture.store
+
+
 def test_checkpoint_before_get_private_url_and_exact_ownership(fixture, caplog):
     f = fixture
     caplog.set_level(logging.INFO, logger='httpx')
-    content = png()
+    content = retrieval_result_png()
     def respond(request):
         canvas = f.store.canvas(f.project)
         record = canvas['history'][0]
@@ -128,7 +175,7 @@ def test_checkpoint_before_get_private_url_and_exact_ownership(fixture, caplog):
 @pytest.mark.parametrize('range_supported', [True, False])
 def test_midstream_disconnect_resume_or_restart(fixture, range_supported):
     f = fixture
-    content = png(True)
+    content = retrieval_result_png(True)
     def respond(request):
         if len(f.requests) == 1:
             return httpx.Response(200, headers={'Content-Length': str(len(content)), 'ETag': '"v1"'}, stream=Body(content[:131072], True))
@@ -164,7 +211,7 @@ def test_corrupt_image_never_committed_and_exact_retry_budget(fixture):
 
 def test_gzip_raw_length_separate_from_decoded_expected(fixture):
     f = fixture
-    content = png(True)
+    content = retrieval_result_png(True)
     compressed = gzip.compress(content)
     network(f, lambda req: httpx.Response(200, headers={'Content-Length': str(len(compressed)), 'Content-Encoding': 'gzip'}, stream=Body(compressed)))
     async def run():
@@ -176,7 +223,7 @@ def test_gzip_raw_length_separate_from_decoded_expected(fixture):
 @pytest.mark.parametrize('bad_range', ['wrong-etag', 'wrong-range', 'short-body'])
 def test_range_validation_does_not_append_corrupt_representation(fixture, bad_range):
     f = fixture
-    content = png(True)
+    content = retrieval_result_png(True)
     def respond(req):
         if len(f.requests) == 1:
             return httpx.Response(200, headers={'ETag': '"v1"', 'Content-Length': str(len(content))}, stream=Body(content[:131072], True))
@@ -196,7 +243,9 @@ def test_range_validation_does_not_append_corrupt_representation(fixture, bad_ra
 
 def test_restart_retains_partial_and_resumes_without_generation(fixture):
     f = fixture
-    content = png(True)
+    main = f.main
+    from app.services import result_downloads as rd
+    content = retrieval_result_png(True)
     network(f, lambda req: httpx.Response(200, headers={'ETag': '"v1"', 'Content-Length': str(len(content))}, stream=Body(content[:131072], True)))
     async def fail():
         await checkpoint(f)
@@ -219,7 +268,8 @@ def test_restart_retains_partial_and_resumes_without_generation(fixture):
 
 def test_expired_recovers_original_id_only_and_provider_config_change_blocks(fixture):
     f = fixture
-    content = png()
+    from app.routers import api_project_library as api
+    content = retrieval_result_png()
     def respond(req):
         if 'images/tasks/' in req.url.path:
             assert req.url.path.endswith('/upstream-original')
@@ -236,6 +286,9 @@ def test_expired_recovers_original_id_only_and_provider_config_change_blocks(fix
 @pytest.mark.parametrize('reason', ['no-task', 'changed-provider', 'changed-credentials', 'not-supported'])
 def test_expired_no_recovery_never_generates(fixture, reason):
     f = fixture
+    main = f.main
+    from app.routers import api_project_library as api
+    from app.services import result_downloads as rd
     network(f, lambda req: pytest.fail('Must not contact another endpoint'))
     async def run():
         await checkpoint(f, expires_at=time.time()-1)
@@ -258,7 +311,8 @@ def test_expired_no_recovery_never_generates(fixture, reason):
 
 def test_deleted_node_saves_only_history_and_client_cannot_inject_url(fixture):
     f = fixture
-    content = png()
+    main = f.main
+    content = retrieval_result_png()
     network(f, lambda req: httpx.Response(200, headers={'Content-Length': str(len(content))}, stream=Body(content)))
     async def run():
         await checkpoint(f)
@@ -278,7 +332,8 @@ def test_deleted_node_saves_only_history_and_client_cannot_inject_url(fixture):
 
 def test_concurrent_click_exact_idempotency(fixture):
     f = fixture
-    content = png()
+    main = f.main
+    content = retrieval_result_png()
     network(f, lambda req: httpx.Response(200, headers={'Content-Length': str(len(content))}, stream=Body(content)))
     async def run():
         await checkpoint(f)
@@ -295,7 +350,8 @@ def test_concurrent_click_exact_idempotency(fixture):
 @pytest.mark.parametrize('status', [403, 404])
 def test_forbidden_or_missing_url_refreshes_original_task(fixture, status):
     f = fixture
-    content = png()
+    from app.routers import api_project_library as api
+    content = retrieval_result_png()
     def respond(req):
         if 'images/tasks/' in req.url.path:
             return httpx.Response(200, json={'data': [{'url': URL + '-new', 'expires_in': 60}]})
@@ -314,7 +370,7 @@ def test_forbidden_or_missing_url_refreshes_original_task(fixture, status):
 @pytest.mark.parametrize('metadata', [{'expected_bytes': 1}, {'sha256': '0' * 64}])
 def test_expected_length_or_hash_failure_never_imports(fixture, metadata):
     f = fixture
-    content = png()
+    content = retrieval_result_png()
     network(f, lambda req: httpx.Response(200, headers={'Content-Length': str(len(content))}, stream=Body(content)))
     async def run():
         await checkpoint(f, **metadata)
@@ -363,7 +419,9 @@ def test_deleted_history_never_resurrects(fixture):
 
 def test_restart_repairs_history_before_canvas_checkpoint_window(fixture):
     f = fixture
-    content = png()
+    main = f.main
+    from app.services import result_downloads as rd
+    content = retrieval_result_png()
     network(f, lambda req: httpx.Response(200, headers={'Content-Length': str(len(content))}, stream=Body(content)))
     async def run():
         await checkpoint(f)
@@ -383,6 +441,7 @@ def test_restart_repairs_history_before_canvas_checkpoint_window(fixture):
 
 def test_changed_project_library_cannot_adopt_original_queue(fixture):
     f = fixture
+    main = f.main
     network(f, lambda req: pytest.fail('Another project library must not download'))
     async def run():
         await checkpoint(f)
@@ -398,7 +457,9 @@ def test_changed_project_library_cannot_adopt_original_queue(fixture):
 
 def test_restart_after_archive_before_canvas_commit_completes_without_network(fixture):
     f = fixture
-    content = png()
+    main = f.main
+    from app.services import result_downloads as rd
+    content = retrieval_result_png()
     network(f, lambda req: httpx.Response(200, headers={'Content-Length': str(len(content))}, stream=Body(content)))
     async def initial():
         item_id = await checkpoint(f)
@@ -412,7 +473,8 @@ def test_restart_after_archive_before_canvas_commit_completes_without_network(fi
 
 def test_multiple_provider_tasks_recover_each_original_id_and_output_index(fixture):
     f = fixture
-    content = png()
+    from app.routers import api_project_library as api
+    content = retrieval_result_png()
     def respond(req):
         if 'images/tasks/' in req.url.path:
             task_id = req.url.path.rsplit('/', 1)[1]
@@ -435,7 +497,10 @@ def test_multiple_provider_tasks_recover_each_original_id_and_output_index(fixtu
 
 def test_generation_download_failure_and_redownload_endpoint_never_resubmits(fixture):
     f = fixture
-    content = png()
+    main = f.main
+    from app import core
+    from app.routers import api_project_library as api
+    content = retrieval_result_png()
     broken = [True]
     def respond(req):
         return httpx.Response(200, headers={'Content-Length': str(len(content))},
@@ -474,9 +539,12 @@ def test_generation_download_failure_and_redownload_endpoint_never_resubmits(fix
 
 def test_agent_original_journal_writer_recovers_without_host_or_generation(fixture):
     f = fixture
+    main = f.main
+    from app import core
+    from app.routers import api_project_library as api
     from app.routers import api_agent_tools as agents
     from app.services.agent_ops_context import agent_ops_scope
-    content = png()
+    content = retrieval_result_png()
     broken = [True]
     network(f, lambda req: httpx.Response(200, headers={'Content-Length': str(len(content))},
         stream=Body(content[:10], True) if broken[0] else Body(content)))
@@ -511,7 +579,7 @@ def test_agent_original_journal_writer_recovers_without_host_or_generation(fixtu
 
 def test_deleted_partial_output_is_not_resurrected_from_private_queue(fixture):
     f = fixture
-    content = png()
+    content = retrieval_result_png()
     network(f, lambda req: httpx.Response(200, stream=Body(content)))
     async def run():
         item_id = await checkpoint(f)
@@ -533,7 +601,7 @@ def test_deleted_partial_output_is_not_resurrected_from_private_queue(fixture):
 
 def test_successful_slot_not_redownloaded_when_sibling_retries(fixture):
     f = fixture
-    content = png()
+    content = retrieval_result_png()
     broken = [True]
     def respond(req):
         if req.url.params.get('slot') == 'second' and broken[0]:
@@ -558,7 +626,7 @@ def test_successful_slot_not_redownloaded_when_sibling_retries(fixture):
 
 def test_disk_full_never_commits_partial_and_remains_recoverable(fixture):
     f = fixture
-    content = png()
+    content = retrieval_result_png()
     network(f, lambda req: httpx.Response(200, stream=Body(content)))
     original_open = Path.open
     def disk_full(path, mode='r', *args, **kwargs):
@@ -592,7 +660,7 @@ def test_project_contained_lazy_private_queue_excluded_from_fly(fixture):
 
 def test_estimated_expiry_is_not_a_provider_guarantee_or_terminal_cutoff(fixture):
     f = fixture
-    content = png()
+    content = retrieval_result_png()
     network(f, lambda req: httpx.Response(200, stream=Body(content)))
     async def run():
         await checkpoint(f)
@@ -607,7 +675,8 @@ def test_estimated_expiry_is_not_a_provider_guarantee_or_terminal_cutoff(fixture
 
 def test_restart_expired_result_queries_pinned_original_task(fixture, caplog):
     f = fixture
-    content = png()
+    from app.routers import api_project_library as api
+    content = retrieval_result_png()
     caplog.set_level(logging.DEBUG)
     def respond(req):
         if 'images/tasks/' in req.url.path:
@@ -629,6 +698,9 @@ def test_restart_expired_result_queries_pinned_original_task(fixture, caplog):
 
 def test_recovery_query_rejects_private_dns_without_http(fixture):
     f = fixture
+    from app import core
+    from app.routers import api_project_library as api
+    from app.services import result_downloads as rd
     network(f, lambda req: pytest.fail('Private recovery query must not reach HTTP'))
     async def private_dns(*args, **kwargs):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('127.0.0.1', 443))]
@@ -641,8 +713,9 @@ def test_recovery_query_rejects_private_dns_without_http(fixture):
     assert not f.requests
 
 
-def test_controlled_http_disconnect_then_verified_range(tmp_path):
-    content = png(True)
+def test_controlled_http_disconnect_then_verified_range(tmp_path, isolated_app):
+    from app.services import result_downloads as rd
+    content = retrieval_result_png(True)
     seen = []
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -685,6 +758,7 @@ def test_controlled_http_disconnect_then_verified_range(tmp_path):
 
 def test_ssrf_validation_still_rejects_private_dns(fixture):
     f = fixture
+    from app import core
     async def private_dns(*args, **kwargs):
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, '', ('127.0.0.1', 443))]
     f.monkeypatch.setattr(core, '_resolve_generation_host', private_dns)

@@ -6,16 +6,23 @@ import socket
 import httpx
 import pytest
 
-import main
-from app import core
-from app.routers import api_agent_tools as agent
-from app.services import agent_batch, result_downloads as rd
-from tests.test_agent_batch_400 import fx, rest, confirm
-from tests.test_result_downloads_493 import URL, _REAL_CLIENT
+from tests.test_result_downloads_493 import isolated_app, URL, _REAL_CLIENT
+
+
+@pytest.fixture(name='fx')
+def approved_batch_download_fixture(tmp_path, monkeypatch, isolated_app):
+    from tests import test_agent_batch_400 as shared
+    # 保持既有共享夹具的真实启动和清理，但不能让它在私有根生效前导入 main。
+    yield from shared.fx.__wrapped__(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize('max_retries', [0, 2])
-def test_approved_batch_settles_download_failure_and_runs_next(fx, monkeypatch, max_retries):
+def test_approved_batch_settles_download_failure_and_runs_next(fx, monkeypatch, max_retries, isolated_app):
+    main = isolated_app
+    from app import core
+    from app.routers import api_agent_tools as agent
+    from app.services import agent_batch, result_downloads as rd
+    from tests.test_agent_batch_400 import rest, confirm
     generated, requests = [], []
     original_provider = main.generate_ai_image
     async def provider(*args, **kwargs):
@@ -54,7 +61,7 @@ def test_approved_batch_settles_download_failure_and_runs_next(fx, monkeypatch, 
     status = asyncio.run_coroutine_threadsafe(agent.get_task_status(fx.pid, first['task_id']), batch.loop).result(timeout=2)
     assert first['failure'] == status['failure'] == {'code': 'RESULT_DOWNLOAD_FAILED', 'message': '图片已生成，待取回（不会重新生成、不扣费）'}
     actual, expected = copy.deepcopy(first['retrieval']), copy.deepcopy(status['retrieval'])
-    # The public countdown advances while the next approved item runs; identity must not.
+    # 下一个获批项运行时倒计时会变化，但原结果归属必须保持。
     for retrieval in (actual, expected):
         retrieval.pop('remaining_seconds')
         for item in retrieval['items']:

@@ -44,9 +44,12 @@ test('actual singleton renderer fits the inner flex viewport; all initial inform
         assert.equal(slot.getAttribute('style'),'width:100%;height:100%');
         assert.doesNotMatch(root.innerHTML,/width:292px|height:227px/);
         assert.doesNotMatch(slot.children.map(child=>child.textContent || '').join(' '),/\d+%/);
-        assert.deepEqual(slot.children.map(c => c.tagName),['SPAN','BUTTON','SMALL','SMALL','DETAILS']);
+        assert.deepEqual(slot.children.map(c => c.tagName),['SPAN','SPAN','SMALL','SMALL','DETAILS']);
+        const action = slot.querySelector('.retrieval-action');
+        assert.deepEqual(action.children.map(c => c.tagName),['BUTTON','SPAN']);
+        assert.equal(action.querySelector('.retrieval-no-charge').textContent,lang === 'zh' ? '不扣费' : 'No charge');
         assert.equal(slot.querySelector('button').disabled,false);
-        assert.match(slot.querySelectorAll('small')[0].textContent,/1m 30s/);
+        assert.equal(slot.querySelectorAll('small')[0].textContent,lang === 'zh' ? '剩余 2 分钟' : '2 minutes remaining');
         assert.equal(slot.querySelectorAll('small')[1].textContent,'0 / 1024 B');
         assert.equal(slot.querySelector('details').hasAttribute('open'),false);
         assert.match(slot.querySelector('details').querySelector('span').textContent,/Long <failure>/);

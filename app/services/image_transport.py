@@ -13,7 +13,6 @@ import time
 
 import httpx
 from httpx._client import AsyncClient as _OriginalAsyncClient
-from httpx._config import create_ssl_context
 from httpx._content import ByteStream
 from httpx._multipart import DataField, FileField, MultipartStream
 from httpx._transports.default import AsyncHTTPTransport as _OriginalHTTPTransport
@@ -456,24 +455,14 @@ class ImageTransportClient(_OriginalAsyncClient):
 def create_image_transport_client(provider=None, *, client_factory=None, telemetry_sink=None,
                                   phase_tag="generate", max_upload_retries=0, **normal_client_kwargs):
     factory = httpx.AsyncClient if client_factory is None else client_factory
-    # Legacy contract stubs own their constructor contract, including every keyword.
+    # 旧测试工厂拥有自己的构造合同，不能额外注入埋点参数。
     if factory is not _OriginalAsyncClient:
         return factory(**normal_client_kwargs)
-    kwargs = dict(normal_client_kwargs)
-    if isinstance(provider, dict) and provider.get("image_bypass_system_proxy") is True:
-        if kwargs.get("transport") is None:
-            # trust_env=False also drops certificate env. Resolve with the SAME installed
-            # context factory (including truststore injection), then disable proxy discovery.
-            kwargs["verify"] = create_ssl_context(
-                verify=kwargs.get("verify", True), cert=kwargs.get("cert"),
-                trust_env=kwargs.get("trust_env", True),
-            )
-            kwargs.pop("cert", None)
-        kwargs.update(proxy=None, trust_env=False)
+    # #493：代理开关延期；provider 不改变路由、证书环境或调用方显式的下载安全参数。
     if telemetry_sink is None:
         telemetry_sink = _IMAGE_OBSERVATION_SINK.get()
     return ImageTransportClient(telemetry_sink=telemetry_sink, phase_tag=phase_tag,
-                                max_upload_retries=max_upload_retries, **kwargs)
+                                max_upload_retries=max_upload_retries, **normal_client_kwargs)
 
 
 def image_response_json(response):

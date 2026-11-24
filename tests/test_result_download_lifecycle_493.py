@@ -9,11 +9,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-import main
-from app.routers import api_project_library as api
-from app.services import result_downloads as rd
 from firefly_projects import ProjectStore
-from tests.test_result_downloads_493 import fixture, checkpoint, network, png, Body
+from tests.test_result_downloads_493 import isolated_app, fixture, checkpoint, network, retrieval_result_png, Body
 from tests.test_result_downloads_g_493 import admit_agent, remove_result
 from tests.test_result_downloads_d2_493 import client
 
@@ -21,11 +18,13 @@ from tests.test_result_downloads_d2_493 import client
 @pytest.mark.parametrize('owner', ['ordinary', 'agent', 'deleted-node'])
 def test_normal_shutdown_reopens_and_range_resumes_original_result(fixture, owner):
     f = fixture
+    main = f.main
+    from app.services import result_downloads as rd
     if owner == 'agent':
         task_id, context = admit_agent(f)
     else:
         task_id = f.history['task_id']
-    content = png(True)
+    content = retrieval_result_png(True)
     async def run():
         blocked, release = asyncio.Event(), asyncio.Event()
         class SlowBody(httpx.AsyncByteStream):
@@ -53,7 +52,7 @@ def test_normal_shutdown_reopens_and_range_resumes_original_result(fixture, owne
         await asyncio.wait_for(blocked.wait(), 2)
         f.monkeypatch.setitem(main.CANVAS_TASKS, task_id, {'type': 'project-online-image', 'status': 'running',
             'project_id': f.project, 'result_node_id': 'result', 'created_at': time.time(), 'request_payload': {}})
-        # Ordinary generation futures are drained by main; Agent/manual retrieval workers must also drain.
+        # Agent/手动取回也必须在关闭 Store 前排空，不能只等待普通生图 future。
         if owner == 'ordinary':
             f.monkeypatch.setitem(main.PROJECT_IMAGE_GENERATION_FUTURES, task_id, worker)
         await asyncio.wait_for(main.shutdown_event(), 3)
@@ -90,6 +89,8 @@ def test_normal_shutdown_reopens_and_range_resumes_original_result(fixture, owne
 @pytest.mark.parametrize('mode', ['no-checkpoint', 'invalid-owner', 'explicit-user-cancel'])
 def test_shutdown_does_not_preserve_unaccepted_or_cancelled_generation(fixture, mode):
     f = fixture
+    main = f.main
+    from app.routers import api_project_library as api
     network(f, lambda req: pytest.fail('Cancellation must not retrieve'))
     async def run():
         if mode != 'no-checkpoint':
@@ -120,7 +121,8 @@ def test_shutdown_does_not_preserve_unaccepted_or_cancelled_generation(fixture, 
 @pytest.mark.parametrize('threaded', [False, True])
 def test_shutdown_drains_retrieval_store_write_before_close(fixture, threaded):
     f = fixture
-    network(f, lambda req: httpx.Response(200, stream=Body(png())))
+    main = f.main
+    network(f, lambda req: httpx.Response(200, stream=Body(retrieval_result_png())))
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
     original_call, original_close = main.project_store_call, f.store.close
     def call(method, *args, **kwargs):

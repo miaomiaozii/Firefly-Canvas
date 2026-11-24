@@ -1036,9 +1036,7 @@ def normalize_provider(item):
         model_selection_version = max(0, int(item.get('model_selection_version') or 0))
     except (TypeError, ValueError):
         model_selection_version = 0
-    # #493: Legacy truthy strings must not opt into a different image network route; CLI hosts own their networking.
-    image_bypass_system_proxy = item.get('image_bypass_system_proxy') is True and protocol not in {'codex', 'gemini-cli'}
-    return {'id': provider_id, 'name': name, 'base_url': base_url, 'protocol': protocol, 'image_request_mode': image_request_mode, 'image_bypass_system_proxy': image_bypass_system_proxy, 'image_generation_endpoint': image_generation_endpoint, 'image_edit_endpoint': image_edit_endpoint, 'video_generation_endpoint': video_generation_endpoint, 'enabled': bool(item.get('enabled', True)), 'primary': bool(item.get('primary', False)), 'image_models': image_models, 'image_model_capabilities': normalize_image_model_capabilities(item.get('image_model_capabilities'), image_models, {'base_url': base_url}), 'chat_models': model_list_from_values(item.get('chat_models') or []), 'chat_audio_input': bool(item.get('chat_audio_input', False)), 'video_models': video_models, 'video_model_capabilities': normalize_video_model_capabilities(item.get('video_model_capabilities'), video_models), 'recommended_models': normalize_recommended_models(item.get('recommended_models')), 'available_models': normalize_available_models(item.get('available_models')), 'model_selection_version': model_selection_version, 'model_names': normalize_model_name_map(item.get('model_names')), 'model_protocols': normalize_model_protocols(item.get('model_protocols')), 'model_request_modes': normalize_model_request_modes(item.get('model_request_modes')), 'ms_loras': normalize_ms_loras(item.get('ms_loras') or []), 'ms_defaults_version': int(item.get('ms_defaults_version') or 0), 'rh_apps': normalize_runninghub_entries(item.get('rh_apps') or [], 'app'), 'volcengine_project_name': volc_project, 'volcengine_region': volc_region}
+    return {'id': provider_id, 'name': name, 'base_url': base_url, 'protocol': protocol, 'image_request_mode': image_request_mode, 'image_generation_endpoint': image_generation_endpoint, 'image_edit_endpoint': image_edit_endpoint, 'video_generation_endpoint': video_generation_endpoint, 'enabled': bool(item.get('enabled', True)), 'primary': bool(item.get('primary', False)), 'image_models': image_models, 'image_model_capabilities': normalize_image_model_capabilities(item.get('image_model_capabilities'), image_models, {'base_url': base_url}), 'chat_models': model_list_from_values(item.get('chat_models') or []), 'chat_audio_input': bool(item.get('chat_audio_input', False)), 'video_models': video_models, 'video_model_capabilities': normalize_video_model_capabilities(item.get('video_model_capabilities'), video_models), 'recommended_models': normalize_recommended_models(item.get('recommended_models')), 'available_models': normalize_available_models(item.get('available_models')), 'model_selection_version': model_selection_version, 'model_names': normalize_model_name_map(item.get('model_names')), 'model_protocols': normalize_model_protocols(item.get('model_protocols')), 'model_request_modes': normalize_model_request_modes(item.get('model_request_modes')), 'ms_loras': normalize_ms_loras(item.get('ms_loras') or []), 'ms_defaults_version': int(item.get('ms_defaults_version') or 0), 'rh_apps': normalize_runninghub_entries(item.get('rh_apps') or [], 'app'), 'volcengine_project_name': volc_project, 'volcengine_region': volc_region}
 
 def modelscope_image_api_root():
     return MODELSCOPE_CHAT_BASE_URL.rstrip('/')
@@ -1258,7 +1256,6 @@ class ApiProviderPayload(BaseModel):
     base_url: str = ''
     protocol: str = 'openai'
     image_request_mode: str = 'openai'
-    image_bypass_system_proxy: StrictBool = False
     image_generation_endpoint: str = ''
     image_edit_endpoint: str = ''
     video_generation_endpoint: str = ''
@@ -5164,7 +5161,6 @@ class TestConnectionPayload(BaseModel):
     provider_id: str = ''
     protocol: str = 'openai'
     image_request_mode: str = 'openai'
-    image_bypass_system_proxy: StrictBool = False
 
 def protocol_from_payload(payload):
     provider_id = str(getattr(payload, 'provider_id', '') or '').strip().lower()

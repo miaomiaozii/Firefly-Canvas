@@ -32,7 +32,9 @@ def test_rejection_is_not_transport_ambiguity(status,body,safe):
 def test_unknown_full_body_failures_never_replay(error):
     assert not f.describe_failure(error,'fixture')['replay_safe']
 
-def install(monkeypatch,outcomes):
+def install_retry_memory_backend(monkeypatch,outcomes):
+    # Only the default pool has a memory backend; ambient proxy mounts would escape it.
+    monkeypatch.setattr(httpx._client,'get_environment_proxies',lambda:{})
     backend=Backend(outcomes)
     original=t.ImageTransportClient.__init__
     def init(self,**kw):
@@ -42,11 +44,29 @@ def install(monkeypatch,outcomes):
     monkeypatch.setattr(t.ImageTransportClient,'__init__',init)
     return backend
 
+def test_installed_backend_isolates_synthetic_environment_proxy(monkeypatch):
+    monkeypatch.setattr(httpx._client,'get_environment_proxies',
+                        lambda:{'all://':'http://proxy.invalid:8080'})
+    wire=Stream(reads=[response_bytes(b'{"offline":true}')])
+    backend=install_retry_memory_backend(monkeypatch,[wire])
+    async def run():
+        async with t.ImageTransportClient() as client:
+            assert client._trust_env is True
+            # A misrouted proxy must fail in memory, never reach DNS or a socket.
+            for mounted in client._mounts.values():
+                if mounted is not None:
+                    mounted._pool._network_backend=Backend([AssertionError('offline fixture selected proxy')])
+            result=await client.post('http://fixture.invalid/generate',content=b'exact body')
+            assert result.json()=={'offline':True}
+    asyncio.run(run())
+    assert backend.calls==1
+    assert b''.join(wire.writes).endswith(b'\r\n\r\nexact body')
+
 def partial():
     return Stream(reads=[httpcore.ReadError()],fail_write=(2,httpcore.WriteError()))
 def rejection():
     return Stream(reads=[response_bytes(b'{"error":{"code":"rate_limit_exceeded"}}',429,b'Retry-After: 0\r\n')])
-async def post():
+async def post_retry_fixture_image():
     async with t.ImageTransportClient(trust_env=False,max_upload_retries=2) as client:
         response=await client.post('http://fixture.invalid/generate',files={'image':('a.png',b'original-bytes','image/png')})
         if response.status_code>=400:
@@ -55,12 +75,12 @@ async def post():
 
 @pytest.mark.parametrize('mode',['legacy','agent-children'])
 def test_mixed_rejections_and_partial_uploads_share_two_retries(monkeypatch,mode):
-    backend=install(monkeypatch,[partial(),rejection(),partial(),rejection(),partial()])
+    backend=install_retry_memory_backend(monkeypatch,[partial(),rejection(),partial(),rejection(),partial()])
     delays=[];calls=[]
     async def sleep(delay):delays.append(delay)
     monkeypatch.setattr(asyncio,'sleep',sleep)
     monkeypatch.setattr(g,'_provider_generation_no_retry',lambda p:False)
-    async def generate(**kw):calls.append(1);return await post()
+    async def generate(**kw):calls.append(1);return await post_retry_fixture_image()
     async def run():
         if mode=='legacy':
             with pytest.raises(httpx.ReadError):
@@ -80,12 +100,12 @@ def test_mixed_rejections_and_partial_uploads_share_two_retries(monkeypatch,mode
 
 @pytest.mark.parametrize('kind',['connect','unknown-transport'])
 def test_finalized_connect_failure_cannot_restart_agent_budget(monkeypatch,kind):
-    backend=install(monkeypatch,[httpcore.ConnectError()]*3)
+    backend=install_retry_memory_backend(monkeypatch,[httpcore.ConnectError()]*3)
     async def sleep(delay):pass
     monkeypatch.setattr(asyncio,'sleep',sleep)
     async def run():
         if kind=='connect':
-            with pytest.raises(httpx.ConnectError) as caught:await post()
+            with pytest.raises(httpx.ConnectError) as caught:await post_retry_fixture_image()
         else:
             async def fail(request):raise httpx.ConnectTimeout('connect')
             async with t.ImageTransportClient(transport=httpx.MockTransport(fail),trust_env=False,max_upload_retries=2) as c:
@@ -95,7 +115,7 @@ def test_finalized_connect_failure_cannot_restart_agent_budget(monkeypatch,kind)
     assert backend.calls==(3 if kind=='connect' else 0)
 
 def test_replay_mutation_keeps_connect_error_final(monkeypatch):
-    backend=install(monkeypatch,[httpcore.ConnectError()]*3)
+    backend=install_retry_memory_backend(monkeypatch,[httpcore.ConnectError()]*3)
     async def run():
         async with t.ImageTransportClient(trust_env=False,max_upload_retries=2) as c:
             request=c.build_request('POST','http://fixture.invalid',content=b'original')
@@ -112,10 +132,10 @@ def test_replay_mutation_keeps_connect_error_final(monkeypatch):
 def test_real_adapter_explicit_429_retries_with_retry_after(monkeypatch,protocol):
     out=io.BytesIO();Image.new('RGB',(7,5),(1,2,3)).save(out,format='PNG')
     payload={'data':[{'b64_json':base64.b64encode(out.getvalue()).decode()}]}
-    backend=install(monkeypatch,[rejection(),Stream(reads=[response_bytes(json.dumps(payload).encode())])])
+    backend=install_retry_memory_backend(monkeypatch,[rejection(),Stream(reads=[response_bytes(json.dumps(payload).encode())])])
     from tests.test_provider_contract_families import provider
     fixture=provider(protocol,request_mode='openai-json',model='fixture-model')
-    fixture.update(base_url='http://fixture.invalid',image_bypass_system_proxy=True)
+    fixture.update(base_url='http://fixture.invalid')
     monkeypatch.setattr(main,'get_api_provider_exact',lambda p:fixture)
     monkeypatch.setattr(main,'load_api_providers',lambda **kw:[fixture])
     monkeypatch.setattr(main,'api_headers',lambda **kw:{})
@@ -129,14 +149,14 @@ def test_real_adapter_explicit_429_retries_with_retry_after(monkeypatch,protocol
     assert backend.calls==2 and delays==[0.05]
 
 def test_actual_batch_inherits_one_upload_budget_across_business_attempts(fx,monkeypatch):
-    backend=install(monkeypatch,[partial(),rejection(),partial(),rejection(),partial()])
+    backend=install_retry_memory_backend(monkeypatch,[partial(),rejection(),partial(),rejection(),partial()])
     actual_sleep=asyncio.sleep
     delays=[]
     async def sleep(delay):
         if delay in (1,3):delays.append(delay);return
         await actual_sleep(delay)
     monkeypatch.setattr(asyncio,'sleep',sleep)
-    async def generate(*args,**kw):return await post()
+    async def generate(*args,**kw):return await post_retry_fixture_image()
     monkeypatch.setattr(main,'generate_ai_image',generate)
     batch=start_batch(fx,max_retries=2)
     row,=status_until(fx,batch,lambda d:d['status']=='done')['items']
