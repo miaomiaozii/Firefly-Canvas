@@ -32,9 +32,14 @@ class CreativeHistoryExperienceTests(unittest.TestCase):
         self.assertIn("aspect-ratio:auto", final_thumbnail_rules)
         self.assertIn("object-fit:cover", final_thumbnail_rules)
         self.assertIn('class="log-output-gallery"', SCRIPT)
-        self.assertIn("const outputCards = outputs.map(item =>", SCRIPT)
-        # Selection is now an IIFE that keys on both historyId and outputId so a
-        # specific output within a multi-output log can be addressed.
+        self.assertIn("const outputCardRows = outputs.map(item =>", SCRIPT)
+        self.assertIn("return logs.flatMap(log => {", SCRIPT)
+        self.assertIn("return retrieval.slots(group, outputs).map((row, index) => ({...log, _retrievalRow:row, _retrievalFirst:index === 0}));", SCRIPT)
+        self.assertIn("const retrievalRow = log._retrievalRow;", SCRIPT)
+        self.assertIn("retrievalRow.output && item.outputIndex === retrievalRow.output.outputIndex", SCRIPT)
+        self.assertIn("const outputCards = outputCardRows.join('');", SCRIPT)
+        self.assertIn("retrieval.slotHtml(retrievalGroup,item)", SCRIPT)
+        # Both identities are required to address one output within a multi-output log.
         self.assertIn("const selectedIndex = (() => {", SCRIPT)
         self.assertIn("canvasState.smartHistorySelectedImage?.historyId === historyId && canvasState.smartHistorySelectedImage?.outputId", SCRIPT)
         runner = (ROOT / "tests" / "ui_integrity_native_browser.py").read_text(encoding="utf-8")

@@ -190,6 +190,7 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
         "canvas-annotations.css",
         # #324 的跨项目搜索面板样式：当时只登记了 canvas-search.js，CSS 漏了（#371）。
         "canvas-search.css",
+        "canvas-result-retrieval.css",
     )
 
     def page_html(self, name: str) -> str:

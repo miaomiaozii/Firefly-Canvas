@@ -2459,6 +2459,188 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             media_kind="image",
         )
 
+    def _image_result_download_owner(self, project_id, node_id, task_id, history_id, generation):
+        opened = self.open_project(project_id)["canvas"]
+        node = next((n for n in opened.get("nodes", []) if n.get("id") == node_id), None)
+        pending = next((p for p in (node or {}).get("pendingTasks", [])
+                        if p.get("taskId") == task_id), None)
+        history = next((h for h in opened.get("history", [])
+                        if h.get("id") == history_id and h.get("task_id") == task_id
+                        and h.get("result_node_id") == node_id), None)
+        if (not history or history.get("status") not in {"running", "generated_pending_download", "download_failed", "original_deleted"}
+                or (node is not None and (pending is None
+                    or pending.get("download_generation", history.get("download_generation")) != generation))
+                or (node is None and history.get("download_generation") != generation)
+                or history.get("download_generation", generation) != generation):
+            raise InvalidMutation("原节点或生成记录已失效")
+        return opened, history
+
+    def checkpoint_image_result_download(self, project_id, node_id, task_id, history, generation, download):
+        project_id = _clean_project_id(project_id)
+        with self._lock:
+            opened = self.open_project(project_id)["canvas"]
+            node = next((n for n in opened.get("nodes", []) if n.get("id") == node_id), None)
+            pending = next((p for p in (node or {}).get("pendingTasks", []) if p.get("taskId") == task_id), None)
+            if node is None:
+                self._image_result_download_owner(project_id, node_id, task_id, history["id"], generation)
+            elif pending is None or pending.get("download_generation", generation) != generation:
+                raise InvalidMutation("原生成任务已失效")
+            canvas = copy.deepcopy(opened)
+            canvas.pop("history", None)
+            for n in canvas["nodes"]:
+                if n.get("id") == node_id:
+                    for p in n.get("pendingTasks", []):
+                        if p.get("taskId") == task_id:
+                            p["download_generation"] = generation
+                            p["download"] = copy.deepcopy(download)
+            records = copy.deepcopy(self._histories.get(project_id, []))
+            prior = next((h for h in records if h.get("id") == history["id"]), None)
+            if prior is None:
+                prior = copy.deepcopy(history)
+                records.append(prior)
+            prior.update(status="generated_pending_download", download=copy.deepcopy(download),
+                         download_generation=generation)
+            slots = prior.setdefault("result_download_slots", [])
+            known_slots = {item["id"] for item in slots}
+            slots.extend({key: item.get(key) for key in ("id", "index", "output_id")}
+                         for item in download.get("items", []) if item["id"] not in known_slots)
+            self._histories[project_id] = records[-5000:]
+            self._persist_history(project_id)
+            return self._commit_generation_canvas(project_id, canvas)
+
+    def update_image_result_download(self, project_id, node_id, task_id, history_id, generation, download):
+        with self._lock:
+            opened, history = self._image_result_download_owner(project_id, node_id, task_id, history_id, generation)
+            return self.checkpoint_image_result_download(project_id, node_id, task_id,
+                {**history, "status": download["status"]}, generation, download) if download["status"] != "download_failed" else self._fail_image_result_download(
+                    project_id, opened, history, task_id, download)
+
+    def _fail_image_result_download(self, project_id, opened, history, task_id, download):
+        canvas = copy.deepcopy(opened)
+        canvas.pop("history", None)
+        for node in canvas["nodes"]:
+            for pending in node.get("pendingTasks", []):
+                if pending.get("taskId") == task_id:
+                    pending["download"] = copy.deepcopy(download)
+        records = copy.deepcopy(self._histories[project_id])
+        for record in records:
+            if record.get("id") == history["id"]:
+                record.update(status="download_failed", download=copy.deepcopy(download), error=download.get("error", ""))
+        self._histories[project_id] = records
+        self._persist_history(project_id)
+        return self._commit_generation_canvas(project_id, canvas)
+
+    def prepare_image_result_download(self, project_id, node_id, task_id, history_id, generation, download):
+        with self._lock:
+            opened = self.open_project(project_id)["canvas"]
+            node = next((n for n in opened.get("nodes", []) if n.get("id") == node_id), None)
+            pending = next((p for p in (node or {}).get("pendingTasks", []) if p.get("taskId") == task_id), None)
+            history = next((h for h in opened.get("history", []) if h.get("id") == history_id
+                            and h.get("task_id") == task_id and h.get("result_node_id") == node_id), None)
+            # History is written before the canvas snapshot; repair only that provable crash window.
+            # Missing history or missing server-owned pending task may instead be a human deletion.
+            if (pending is not None and not pending.get("download_generation") and history is not None
+                    and history.get("status") in {"generated_pending_download", "download_failed"}
+                    and (history.get("download") or {}).get("history_id") == history_id):
+                self.checkpoint_image_result_download(project_id, node_id, task_id, history, generation, download)
+            return self._image_result_download_owner(project_id, node_id, task_id, history_id, generation)[0]
+
+    def image_result_download_queue_path(self, project_id, history_id):
+        if not re.fullmatch(r"generation-[a-f0-9]{32}", history_id):
+            raise InvalidMutation("生成记录标识无效")
+        return str(self._safe_project_path(self._project_directory(project_id),
+                   f"private-result-downloads/{history_id}.json"))
+
+    def image_result_download_path(self, project_id, node_id, task_id, history_id, generation, item_id):
+        with self._lock:
+            self._image_result_download_owner(project_id, node_id, task_id, history_id, generation)
+            history = next(h for h in self._histories[project_id] if h.get("id") == history_id)
+            if (not re.fullmatch(r"[a-f0-9]{32}", item_id)
+                    or item_id not in {i.get("id") for i in history.get("result_download_slots", (history.get("download") or {}).get("items", []))}):
+                raise InvalidMutation("结果标识无效")
+            return str(self._safe_project_path(self._project_directory(project_id), f"media/.result-{item_id}.part"))
+
+    def import_image_result_download(self, project_id, node_id, task_id, history_id, generation, item_id, filename, mime, digest):
+        with self._lock:
+            path = Path(self.image_result_download_path(project_id, node_id, task_id, history_id, generation, item_id))
+            actual = hashlib.sha256()
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    actual.update(chunk)
+            if actual.hexdigest() != digest:
+                raise InvalidMutation("结果 SHA256 校验失败")
+            return self.import_media_file(project_id, path, filename, mime,
+                {"type": "online_generation", "lifecycle": "transient", "sha256": digest})
+
+    def publish_image_result_download(self, project_id, node_id, task_id, history_id, generation, outputs, download):
+        with self._lock:
+            opened, prior = self._image_result_download_owner(project_id, node_id, task_id, history_id, generation)
+            if not any(n.get("id") == node_id for n in opened["nodes"]):
+                return self._commit_history_only_result_download(project_id, opened, prior, outputs,
+                    {"download": download, "status": download["status"]})
+            if outputs:
+                self.complete_image_generation(project_id, node_id, outputs,
+                    {**prior, "outputs": outputs, "download": download},
+                    task_id=task_id, require_pending=True, partial=True)
+            canvas = self.update_image_result_download(project_id, node_id, task_id, history_id, generation, download)
+            return self._order_image_result_download(project_id, node_id, history_id, canvas)
+
+    def _order_image_result_download(self, project_id, node_id, history_id, opened):
+        records = self._histories[project_id]
+        record = next(h for h in records if h.get("id") == history_id)
+        record["outputs"] = sorted(record.get("outputs") or [], key=lambda o: o.get("output_order", 0))
+        ids = {o.get("output_id") for o in record["outputs"]}
+        canvas = copy.deepcopy(opened)
+        canvas.pop("history", None)
+        node = next((n for n in canvas["nodes"] if n.get("id") == node_id), None)
+        if node is None:
+            self._persist_history(project_id)
+            return self._commit_generation_canvas(project_id, canvas)
+        # Reorder only this history's occurrences; unrelated images and their positions stay intact.
+        images = node.get("images") or []
+        ordered = iter(sorted((o for o in images if o.get("output_id") in ids), key=lambda o: o.get("output_order", 0)))
+        node["images"] = [next(ordered) if o.get("output_id") in ids else o for o in images]
+        self._persist_history(project_id)
+        return self._commit_generation_canvas(project_id, canvas)
+
+    def _commit_history_only_result_download(self, project_id, opened, prior, outputs, metadata):
+        # A deleted node is a user decision, not an invitation to create a replacement.
+        tombstones = {(t.get("deleted_asset_id"), t.get("deleted_output_id"))
+                      for t in prior.get("deletedOutputTombstones", [])
+                      if t.get("deletion_id") and t.get("history_id") == prior["id"]}
+        outputs = [o for o in outputs if (o.get("asset_id"), o.get("output_id")) not in tombstones]
+        for output in outputs:
+            self.media_record(project_id, output["asset_id"])
+        records = copy.deepcopy(self._histories[project_id])
+        record = next(h for h in records if h.get("id") == prior["id"])
+        record.update(copy.deepcopy(metadata))
+        record["outputs"] = self._merge_generation_outputs(record.get("outputs") or [], outputs)
+        record["outputs"].sort(key=lambda o: o.get("output_order", 0))
+        self._histories[project_id] = records
+        self._persist_history(project_id)
+        canvas = copy.deepcopy(opened)
+        canvas.pop("history", None)
+        return self._commit_generation_canvas(project_id, canvas)
+
+    def complete_image_result_download(self, project_id, node_id, task_id, history_id, generation, outputs, history):
+        with self._lock:
+            opened, prior = self._image_result_download_owner(project_id, node_id, task_id, history_id, generation)
+            merged = self._merge_generation_outputs(prior.get("outputs") or [], outputs)
+            merged.sort(key=lambda item: item.get("output_order", 0))
+            node = next((n for n in opened["nodes"] if n.get("id") == node_id), None)
+            if node is None:
+                return self._commit_history_only_result_download(project_id, opened, prior, outputs,
+                    {"status": "succeeded", "completed_at": history["completed_at"],
+                     "download": history.get("download"), "error": ""})
+            # Completion media belongs only to this history; the Store preserves already-published sibling occurrences.
+            media = merged
+            # Queue metadata is not a replacement history: keep provenance, deletions and undo identities.
+            record = {**prior, "status": "succeeded", "outputs": merged,
+                      "completed_at": history["completed_at"], "download": history.get("download"), "error": ""}
+            canvas = self.complete_image_generation(project_id, node_id, media, record,
+                                                    task_id=task_id, require_pending=True)
+            return self._order_image_result_download(project_id, node_id, history_id, canvas)
+
     def attach_media_generation_provider_task(
         self,
         project_id: str,
@@ -2532,7 +2714,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                     prior_status = str(prior.get("status") or "")
                     new_status = str(clean_history.get("status") or "")
                     merged_terminal = None
-                    if prior_status == "running" and new_status in {"failed", "timeout", "cancelled"}:
+                    if prior_status in {"running", "generated_pending_download", "download_failed"} and new_status in {"failed", "timeout", "cancelled"}:
                         # #83/#79：终态替换进度记录，但必须保留已归档的 partial 输出以便取回。
                         merged_terminal = copy.deepcopy(prior)
                         for key, value in clean_history.items():

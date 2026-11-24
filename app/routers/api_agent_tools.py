@@ -35,7 +35,7 @@ from app.services.agent_errors import agent_error
 from app.services.agent_tools_manifest import LAYOUT_TOOLS, UPDATABLE_NODE_FIELDS as _UPDATABLE_NODE_FIELDS
 from app.core import ONLINE_IMAGE_REFERENCE_MAX, PROJECT_IMAGE_GENERATION_FUTURES, ProjectImageGenerationRequest
 from firefly_generation import ImageGenerationRequest, ModelRoutingError
-from firefly_projects import ProjectNotFound, ProjectStoreError
+from firefly_projects import ProjectNotFound, ProjectStoreError, InvalidMutation
 
 # #240：agent-tools 系列端点接入同源/Host 守卫（与现有 API 一致；
 # 无 Origin 的本机回环 sidecar 调用按票面模型放行）。
@@ -1528,14 +1528,27 @@ def _generation_child(store, project_id, parent, task_id, guarded, action, *, ef
                                     parent_id=parent.op_id, effects=effects)
 
 
+def _generation_download_is_paused(store, project_id, task_id, canvas):
+    pending = [item for node in canvas.get('nodes', []) for item in node.get('pendingTasks', [])
+               if isinstance(item, dict) and item.get('taskId') == task_id]
+    histories = {record.get('id') for record in store._histories.get(project_id, [])
+                 if record.get('task_id') == task_id and record.get('status') == 'download_failed'}
+    return bool(pending) and all(item.get('download_generation')
+        and (item.get('download') or {}).get('status') == 'download_failed'
+        and (item.get('download') or {}).get('history_id') in histories for item in pending)
+
+
 def _generation_release(store, project_id, task_id, guarded, *, release=True):
     with store._lock:
         batch = _BATCH_GENERATION.get()
         if any((project_id, op_id) in store._agent_generation_unregistered for op_id in guarded):
             return False
         canvas = store._canvases.get(project_id, {})
-        if any(item.get('taskId') == task_id for node in canvas.get('nodes', [])
-               for item in node.get('pendingTasks', []) if isinstance(item, dict)):
+        pending = [item for node in canvas.get('nodes', []) for item in node.get('pendingTasks', [])
+                   if isinstance(item, dict) and item.get('taskId') == task_id]
+        # Only a durably paused, server-owned download can release the paid-generation guard.
+        # Undo may then remove its node; retrieval must prove the surviving history claim independently.
+        if pending and not _generation_download_is_paused(store, project_id, task_id, canvas):
             return False
         for journal in store._agent_ops_journals:
             with journal._lock:
@@ -1772,7 +1785,7 @@ async def wait_for_task_core(project_id: str, task_id: str, timeout: int = 120) 
             raise
 
         last_status = status
-        if status["status"] in ("succeeded", "failed", "timeout", "cancelled"):
+        if status["status"] in ("succeeded", "failed", "timeout", "cancelled", "download_failed"):
             return status
 
         # Poll with backoff
@@ -1814,8 +1827,9 @@ class _AgentImageLifecycle:
     def persisted(self, pid, canvas):
         if pid == self.project_id and (self.event['persisted'] or any(n.get('id') == self.result_id for n in canvas.get('nodes', []))):
             from app.routers.api_project_library import canvas_has_project_image_pending
-            self.event.update(persisted=True, pending=canvas_has_project_image_pending(canvas, self.task_id),
-                              updated_at=canvas.get('updated_at'))
+            pending = canvas_has_project_image_pending(canvas, self.task_id)
+            paused = _generation_download_is_paused(self.store, pid, self.task_id, canvas)
+            self.event.update(persisted=True, pending=pending and not paused, updated_at=canvas.get('updated_at'))
 
     async def register(self, task_record):
         from app.services.agent_ops_async import run_blocking_to_completion
@@ -1907,7 +1921,7 @@ class _AgentImageLifecycle:
             return opened
         record = durable.get('history_record') or {}
         success = durable['status'] == 'succeeded'
-        failed = durable['status'] in {'failed', 'timeout'}
+        failed = durable['status'] in {'failed', 'timeout', 'download_failed'}
         if not (failed or success):
             return opened
         store, project = self.store, self.project_id
@@ -1925,7 +1939,8 @@ class _AgentImageLifecycle:
                 if success:
                     update.pop('lastFailure', None)
                 else:
-                    update['lastFailure'] = record.get('failure') or describe_failure(None, '')['failure']
+                    update['lastFailure'] = ({'code': 'RESULT_DOWNLOAD_FAILED', 'message': '图片已生成，待取回（不会重新生成、不扣费）'}
+                        if durable['status'] == 'download_failed' else record.get('failure') or describe_failure(None, '')['failure'])
                 if update != source:
                     mutations.append({'op': 'upsert_node', 'node': update})
             if failed and not record.get('outputs'):
@@ -2148,8 +2163,8 @@ def recovered_generation_writer(project_id, durable):
 
     store = _app_main.FIREFLY_PROJECT_STORE
     op_id = durable.get('op_id')
-    if not op_id:
-        return _app_main.project_store_call if 'source_node_id' in durable and 'op_id' in durable else None
+    if not op_id or not durable.get('source_node_id'):
+        return None
     task_id, result_id = durable['id'], durable['result_node_id']
     with store._lock:
         try:
@@ -2160,7 +2175,10 @@ def recovered_generation_writer(project_id, durable):
         if root is None or root['tool'] not in {'generate.trigger', 'generate.retry', 'canvas.batch_edit', 'generate.request_batch'}:
             return None
         if not any(change['id'] == result_id and change['path'] == ['pendingTasks']
-                   and any(item.get('taskId') == task_id for item in change['after'].get('value', []))
+                   and any(item.get('taskId') == task_id
+                           and item.get('source_node_id') == durable['source_node_id']
+                           and item.get('op_id') == op_id
+                           for item in change['after'].get('value', []))
                    for record in family if not record['undone'] for change in record['after']):
             return None
         context = SimpleNamespace(**root)
@@ -2168,11 +2186,21 @@ def recovered_generation_writer(project_id, durable):
     def write(method, *args, **kwargs):
         guarded = {op_id}
         with store._lock:
+            # Undo can win after the writer was resolved; recheck under its mutation lock.
+            current = recovered_generation_writer(project_id, durable)
+            if current is None:
+                raise InvalidMutation('无法确认原 Agent 操作归属')
+            guarded.update(record['op_id'] for record in
+                list_operation_tree(OpsDb(store.root), project_id, op_id) if not record['undone'])
             set_agent_generation_running(store, project_id, op_id, task_id, True)
-            canvas = _generation_child(store, project_id, context, task_id, guarded,
-                                       partial(getattr(store, method), *args, **kwargs))
-            _generation_release(store, project_id, task_id, guarded)
+            try:
+                canvas = _generation_child(store, project_id, context, task_id, guarded,
+                                           partial(getattr(store, method), *args, **kwargs))
+            finally:
+                _generation_release(store, project_id, task_id, guarded)
         return canvas
+    write.original_op_id = op_id
+    write.original_turn_id = root['turn_id']
     return write
 
 
@@ -2209,7 +2237,6 @@ async def get_task_status(project_id: str, task_id: str, x_agent_project: str = 
     """Query the status of a generation task."""
     _validate_project(project_id)
 
-    # Check in-memory task store first
     with CANVAS_TASK_LOCK:
         task = dict(CANVAS_TASKS.get(task_id) or {})
 
@@ -2226,7 +2253,7 @@ async def get_task_status(project_id: str, task_id: str, x_agent_project: str = 
         status = task.get('status', 'unknown')
         result = task.get('result')
         if shared and task.get('type') == 'project-online-image':
-            if task.get('agent_settled') is False and status in {'succeeded', 'failed', 'timeout', 'cancelled'}:
+            if task.get('agent_settled') is False and status in {'succeeded', 'failed', 'timeout', 'cancelled', 'download_failed'}:
                 status = 'cleanup_pending'
                 result = None
             if status == 'succeeded' and result:
@@ -2240,12 +2267,32 @@ async def get_task_status(project_id: str, task_id: str, x_agent_project: str = 
                           'project_asset_ids': [item['asset_id'] for item in result['image_items']]}
         record = (result or {}).get('history_record') or {}
         failure = record.get('failure')
+        retrieval = None
+        if shared and status == 'download_failed':
+            from app.services.result_downloads import downloads
+            from app.routers.api_project_library import durable_project_image_task
+            try:
+                service = downloads(_app_main)
+                queue = service.find_task(project_id, task_id)
+                if queue is not None:
+                    service.validate(queue, project_id)
+                    canvas = _app_main.project_store_call('open_project', project_id)['canvas']
+                    writer = recovered_generation_writer(project_id, durable_project_image_task(canvas, task_id) or {})
+                    if writer is not None:
+                        retrieval = {**service.public(queue), 'type': 'image_result_retrieval',
+                            'op_id': writer.original_op_id, 'turn_id': writer.original_turn_id,
+                            'generates': False, 'additional_cost': False}
+                        failure = {'code': 'RESULT_DOWNLOAD_FAILED',
+                            'message': '图片已生成，待取回（不会重新生成、不扣费）'}
+            except (ProjectStoreError, OSError, ValueError):
+                pass
         if shared and 'details' in record:
             result = {**result, 'history_record': {k: v for k, v in record.items() if k != 'details'}}
         return {
             "task_id": task_id,
             "status": status,
             **({'failure': failure} if failure else {}),
+            **({'retrieval': retrieval} if retrieval else {}),
             "type": 'agent-image' if shared else task.get("type", ""),
             "error": task.get("error", ""),
             "result": result,

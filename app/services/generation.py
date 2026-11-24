@@ -11,11 +11,15 @@ from app.core import _local_upload_kind_ext, banana_model_family, clamp_size_to_
 from .comfyui_workflows import COMFYUI_MAX_REFERENCES, COMFYUI_REFERENCE_JPEG_QUALITY, comfyui_edit_target_size, comfyui_h3_resolution, comfyui_h3_workflow, comfyui_pe_enabled, comfyui_ratio_is_auto, comfyui_resolution_tier  # noqa: E402
 from firefly_diagnostics import emit as _diag_emit
 from firefly_generation import is_soon_openrouter_video_model, soon_gemini_native_model
-from .generation_failures import AGENT_IMAGE_ATTEMPT, UpstreamImageFailure, mark_accepted, response_failure
+from .generation_failures import AGENT_IMAGE_ATTEMPT, UpstreamImageFailure, mark_accepted, response_failure, provider_failure
+from .conversation import gemini_generation_reference_part as _gemini_generation_reference_part
+from .media import generation_reference_to_data_url as _generation_reference_to_data_url, generation_reference_bytes as _generation_reference_bytes
+from .providers import _soon_url_auto_provider, _soon_url_verified_target
+from .image_transport import create_image_transport_client as _create_image_transport_client, image_response_json as _image_response_json, record_image_decode as _record_image_decode, _record_current_image_decode, _image_upload_retry_scope
 import logging
 logger = logging.getLogger(__name__)
 
-async def wait_for_image_task(client, task_id, provider=None):
+async def wait_for_image_task(client, task_id, provider=None, model=''):
     is_apimart = is_apimart_provider(provider)
     timeout = APIMART_IMAGE_TASK_TIMEOUT if is_apimart else IMAGE_TASK_TIMEOUT
     interval = APIMART_IMAGE_POLL_INTERVAL if is_apimart else IMAGE_POLL_INTERVAL
@@ -29,7 +33,7 @@ async def wait_for_image_task(client, task_id, provider=None):
             initial_delay = 0
             if time.monotonic() >= deadline:
                 break
-        last_payload = await _svc._main('fetch_image_task_payload')(client, task_id, provider)
+        last_payload = await _svc._main('fetch_image_task_payload')(client, task_id, provider, **({'model': model} if model else {}))
         status = image_task_status(last_payload)
         if not status:
             try:
@@ -44,8 +48,7 @@ async def wait_for_image_task(client, task_id, provider=None):
                 raise UpstreamImageFailure(image_task_fail_reason(last_payload), uncertain=True)
             raise HTTPException(status_code=502, detail=f'生图任务失败：{image_task_fail_reason(last_payload)}')
         if status in IMAGE_TASK_UNKNOWN_STATUSES:
-            # #235：连续 N 次 provider 明确返回未知/不存在 → 终态 fail（文案显式带 task ID），
-            # 不再空转到超时 504；单次抖动容忍——出现可识别状态即重置计数。
+            # #235: tolerate one unknown response, but never regenerate an accepted task.
             unknown_streak += 1
             if unknown_streak >= IMAGE_TASK_UNKNOWN_TERMINAL_AFTER:
                 raise HTTPException(status_code=502, detail=f'生图任务不存在或状态未知（task_id={task_id}，连续 {unknown_streak} 次查询返回 {status}），请确认任务 ID 后显式重试')
@@ -159,7 +162,7 @@ async def generate_modelscope_provider_image(prompt, size, model, reference_imag
     if refs:
         payload['image_url'] = refs
     api_root = modelscope_image_api_root()
-    async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
+    async with _create_image_transport_client(provider, client_factory=httpx.AsyncClient, phase_tag='generate', max_upload_retries=2, timeout=AI_REQUEST_TIMEOUT) as client:
         submit_res = await client.post(f'{api_root}/images/generations', headers=headers, json=payload)
         submit_res.raise_for_status()
         raw = submit_res.json()
@@ -892,7 +895,7 @@ async def generate_runninghub_entry_image(prompt, size, model, reference_images,
         if height and 'height' in names:
             return height
         return None
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with _create_image_transport_client(provider, client_factory=httpx.AsyncClient, phase_tag='generate', max_upload_retries=2, timeout=timeout) as client:
         uploaded = []
         for ref in (reference_images or [])[:ONLINE_IMAGE_REFERENCE_MAX]:
             ref_url = ref.get('url') if isinstance(ref, dict) else ref
@@ -995,7 +998,7 @@ async def generate_runninghub_provider_image(prompt, size, model, reference_imag
     quality_field = runninghub_schema_field(params, 'quality')
     if quality_field:
         body['quality'] = runninghub_schema_value(quality_field, 'medium')
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=180.0, pool=20.0)) as client:
+    async with _create_image_transport_client(provider, client_factory=httpx.AsyncClient, phase_tag='generate', max_upload_retries=2, timeout=httpx.Timeout(connect=20.0, read=1800.0, write=180.0, pool=20.0)) as client:
         image_urls = []
         for ref in (reference_images or [])[:ONLINE_IMAGE_REFERENCE_MAX]:
             url = await _svc.runninghub_upload_reference(client, provider, ref)
@@ -1333,20 +1336,20 @@ async def generate_gemini_cli_provider_image(prompt, size, model, reference_imag
             except Exception:
                 pass
 
-def image_task_url_for_provider(provider, task_id):
+def image_task_url_for_provider(provider, task_id, model=''):
     base_url = (provider.get('base_url') if provider else _svc._main('AI_BASE_URL')).rstrip('/')
-    if normalize_image_request_mode((provider or {}).get('image_request_mode')) == 'openai-video-proxy':
+    mode = effective_image_request_mode(provider, model) if model else normalize_image_request_mode((provider or {}).get('image_request_mode'))
+    if mode == 'openai-video-proxy':
         return f'{base_url}/videos/{task_id}' if base_url.endswith('/v1') else f'{base_url}/v1/videos/{task_id}'
     if is_apimart_provider(provider):
         return f'{base_url}/tasks/{task_id}' if base_url.endswith('/v1') else f'{base_url}/v1/tasks/{task_id}'
     return f'{base_url}/images/tasks/{task_id}' if base_url.endswith('/v1') else f'{base_url}/v1/images/tasks/{task_id}'
 
-async def fetch_image_task_payload(client, task_id, provider=None):
-    task_url = image_task_url_for_provider(provider, task_id)
-    response = await httpx_request_with_transient_retries(client, 'GET', task_url, attempts=3, headers=_svc._main('api_headers')(provider=provider))
+async def fetch_image_task_payload(client, task_id, provider=None, model=''):
+    task_url = image_task_url_for_provider(provider, task_id, **({'model': model} if model else {}))
+    response = await httpx_request_with_transient_retries(client, 'GET', task_url, attempts=3, headers=_svc._main('api_headers')(provider=provider, **({'model': model} if model else {})))
     if response.status_code == 404:
-        # #235：上游 404 → 结构化 not-found 载荷（status=NOT_FOUND），不再裸抛 httpx.HTTPStatusError；
-        # 由状态机（wait_for_image_task / query_upstream_image_task）按未知态终态化。
+        # #235: keep not-found in the polling state machine, not a submission retry.
         return {'status': 'NOT_FOUND', 'task_id': task_id, 'message': f'生图任务不存在（task_id={task_id}）'}
     response.raise_for_status()
     return response.json()
@@ -1546,31 +1549,36 @@ async def save_ai_image_to_output(image_data, prefix='online_', category='output
         elif 'webp' in mime_type:
             filename = filename[:-4] + '.webp'
             path = _svc.output_path_for(filename, category)
+        started = time.perf_counter()
+        content = base64.b64decode(image_data['value'])
+        _record_current_image_decode('base64', (time.perf_counter() - started) * 1000, len(content))
+        started = time.perf_counter()
+        validate_generated_image(BytesIO(content))
+        _record_current_image_decode('image', (time.perf_counter() - started) * 1000, len(content))
         with open(path, 'wb') as f:
-            f.write(base64.b64decode(image_data['value']))
+            f.write(content)
         return _svc.output_url_for(filename, category)
     value = image_data['value']
     if value.startswith('/output/') or value.startswith('/assets/'):
         return value
     value = rewrite_runninghub_file_url(value)
+    timeout = httpx.Timeout(connect=20.0, read=300.0, write=60.0, pool=20.0)
+    descriptor, temporary_name = tempfile.mkstemp(prefix='firefly-image-', suffix='.tmp', dir=os.path.dirname(path))
+    os.close(descriptor)
+    temporary_path = Path(temporary_name)
     try:
-        timeout = httpx.Timeout(connect=20.0, read=300.0, write=60.0, pool=20.0)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            response = await client.get(value)
-            response.raise_for_status()
-            content_type = response.headers.get('Content-Type', '')
-            if 'jpeg' in content_type or 'jpg' in content_type:
-                filename = filename[:-4] + '.jpg'
-                path = _svc.output_path_for(filename, category)
-            elif 'webp' in content_type:
-                filename = filename[:-4] + '.webp'
-                path = _svc.output_path_for(filename, category)
-            with open(path, 'wb') as f:
-                f.write(response.content)
-            return _svc.output_url_for(filename, category)
-    except Exception as e:
-        logger.warning(f'保存上游图片失败: {e}; url={value}')
-        return value
+        # Reuse public-DNS/IP pinning at every redirect; a URL is not an archived result.
+        await _download_generation_asset(value, temporary_path, timeout)
+        started = time.perf_counter()
+        _width, _height, mime_type = validate_generated_image(temporary_path)
+        _record_current_image_decode('image', (time.perf_counter() - started) * 1000, temporary_path.stat().st_size)
+        suffix = '.jpg' if mime_type == 'image/jpeg' else '.webp' if mime_type == 'image/webp' else '.gif' if mime_type == 'image/gif' else '.png'
+        filename = filename[:-4] + suffix
+        path = _svc.output_path_for(filename, category)
+        os.replace(temporary_path, path)
+        return _svc.output_url_for(filename, category)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 async def save_remote_video_to_output(url, prefix='video_', category='output'):
     if not url:
@@ -1629,15 +1637,34 @@ async def generate_gemini_provider_image(prompt, size, model, reference_images=N
     endpoint = _svc.gemini_endpoint_url(provider, model_name)
     parts = [{'text': prompt.strip()}]
     for ref in (reference_images or [])[:ONLINE_IMAGE_REFERENCE_MAX]:
-        part = _svc.gemini_reference_part(ref)
+        part = _gemini_generation_reference_part(ref)
         if part:
             parts.append(part)
     body = {'contents': [{'role': 'user', 'parts': parts}], 'generationConfig': {'responseModalities': ['TEXT', 'IMAGE'], 'imageConfig': gemini_image_config(size, image_parameters)}}
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)) as client:
-        response = await client.post(endpoint, headers=_svc._main('api_headers')(provider=provider), json=body)
-        response.raise_for_status()
-        raw = response.json()
-        return (extract_image(raw), raw)
+    async with _create_image_transport_client(provider, client_factory=httpx.AsyncClient, phase_tag='generate', max_upload_retries=2, timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)) as client:
+        try:
+            response = await client.post(endpoint, headers=_svc._main('api_headers')(provider=provider), json=body)
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if AGENT_IMAGE_ATTEMPT.get():
+                raise response_failure(response) from exc
+            raise
+        except httpx.HTTPError as exc:
+            if AGENT_IMAGE_ATTEMPT.get():
+                raise UpstreamImageFailure('图片提交结果无法确认，请先核对服务商任务与用量', uncertain=True) from exc
+            raise
+        raw = _image_response_json(response)
+        return (_extract_generation_image(raw, response), raw)
+
+
+def _extract_generation_image(raw, response):
+    started = time.perf_counter()
+    image = extract_image(raw)
+    value = image.get('value') if isinstance(image, dict) else None
+    if isinstance(value, str):
+        _record_image_decode(response, 'extract', (time.perf_counter() - started) * 1000, len(value.encode('utf-8')))
+    return image
+
 
 async def generate_volcengine_provider_image(prompt, size, model, reference_images=None, provider=None, preserve_size=False):
     endpoint = _svc.volcengine_endpoint_url(provider)
@@ -1648,7 +1675,7 @@ async def generate_volcengine_provider_image(prompt, size, model, reference_imag
     images = [value for value in images if value]
     if images:
         body['image'] = images
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)) as client:
+    async with _create_image_transport_client(provider, client_factory=httpx.AsyncClient, phase_tag='generate', max_upload_retries=2, timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)) as client:
         response = await client.post(endpoint, headers=_svc._main('api_headers')(provider=provider), json=body)
         response.raise_for_status()
         raw = response.json()
@@ -2103,47 +2130,37 @@ def _provider_generation_no_retry(provider_id: str) -> bool:
     return bool(provider) and is_minimax_provider(provider)
 
 async def run_provider_generation_with_backoff(provider_id: str, generate_callable, *args, **kwargs):
-    """受控并发 + 429 有限退避地执行一次 provider 生图调用。
-
-    count=8 类连发任务的所有 provider 出站都应经由本 helper（而不是裸调
-    generate_ai_image）：
-    - 每 provider 一个信号量限制同时在飞请求数（默认 3，env
-      FIREFLY_PROVIDER_GENERATION_MAX_CONCURRENCY 可调）；
-    - 429 在退避后有限重试（默认 5 次，env FIREFLY_PROVIDER_429_RETRY_ATTEMPTS 可调；
-      provider 携带 Retry-After 时优先按其等待，否则线性递增 ×±20% 抖动避免锁步互撞，
-      env FIREFLY_PROVIDER_429_BACKOFF_SECONDS 可调基础退避）。
-    其余异常原样上抛。
-
-    #330 例外：非幂等协议（MiniMax H3，超时/断连后上游仍会计费）显式排除在本 helper 的
-    429 退避重试之外——只执行一次，429 直接上抛由错误文案提示。
-    """
+    """Retry explicit 429 rejection, never ambiguous submission or an exhausted upload (#493)."""
     semaphore = _provider_generation_semaphore(str(provider_id or 'default'))
-    # A10 approves image slots, not additional submissions; keep legacy 429 backoff unchanged.
-    if AGENT_IMAGE_ATTEMPT.get() or kwargs.get('approved_provider') is not None or _provider_generation_no_retry(str(provider_id or '')):
-        async with semaphore:
-            return await generate_callable(*args, **kwargs)
+    # Agent approval owns its business budget; MiniMax never authorizes automatic replay.
+    single = (AGENT_IMAGE_ATTEMPT.get() or kwargs.get('approved_provider') is not None
+              or _provider_generation_no_retry(str(provider_id or '')))
     try:
         attempts = max(1, int(os.environ.get('FIREFLY_PROVIDER_429_RETRY_ATTEMPTS', '5') or '5'))
     except (TypeError, ValueError):
         attempts = 5
     try:
-        backoff_seconds = float(os.environ.get('FIREFLY_PROVIDER_429_BACKOFF_SECONDS', '0.5') or '0.5')
+        backoff = float(os.environ.get('FIREFLY_PROVIDER_429_BACKOFF_SECONDS', '0.5') or '0.5')
     except (TypeError, ValueError):
-        backoff_seconds = 0.5
-    for attempt in range(attempts):
-        try:
-            async with semaphore:
-                return await generate_callable(*args, **kwargs)
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code != 429 or attempt + 1 >= attempts:
-                raise
-            retry_after = _retry_after_seconds(exc.response)
-            if retry_after is not None:
-                sleep_seconds = max(0.05, retry_after)
-            else:
-                sleep_seconds = max(0.01, backoff_seconds * (attempt + 1) * random.uniform(0.8, 1.2))
-            log_net_error(f"生图 429 限流，退避重试 attempt={attempt + 1} provider={provider_id}", exc)
-            await asyncio.sleep(sleep_seconds)
+        backoff = 0.5
+    with _image_upload_retry_scope():
+        for attempt in range(1 if single else attempts):
+            try:
+                async with semaphore:
+                    return await generate_callable(*args, **kwargs)
+            except (httpx.HTTPStatusError, UpstreamImageFailure) as exc:
+                failure = provider_failure(exc)
+                if (single or failure.upstream_status != 429 or failure.uncertain
+                        or getattr(exc, 'upstream_task_id', '') or attempt + 1 >= attempts):
+                    raise
+                delay = _retry_after_seconds(exc.response) if isinstance(exc, httpx.HTTPStatusError) else None
+                if delay is None and failure.retry_after is not None:
+                    from .generation_failures import retry_after_seconds
+                    delay = retry_after_seconds(failure.retry_after)
+                delay = (max(0.05, delay) if delay is not None else
+                         max(0.01, backoff * (attempt + 1) * random.uniform(0.8, 1.2)))
+                log_net_error(f'生图 429 限流，退避重试 attempt={attempt + 1} provider={provider_id}', exc)
+                await asyncio.sleep(delay)
 
 
 def fal_queue_paths(base_url, endpoint, request_id='', prefix='fal'):
@@ -2379,6 +2396,43 @@ class _FalQueueResponse:
         return self._payload
 
 
+# #493: conservative prepared-image SUM policy, not a discovered vendor/JSON hard limit.
+_SOON_URL_REFERENCE_BUDGET_BYTES = 8_000_000
+
+
+def _soon_url_reference_data_urls(references):
+    total = 0
+    values = []
+    for ref in references:
+        value = str(ref.get('url') or '').strip()
+        if value.lower().startswith(('http://', 'https://')):
+            raise HTTPException(status_code=413, detail={
+                'code': 'soon_url_reference_budget_unmeasurable',
+                'message': 'Soon URL 通道无法核算远程参考图字节；请先将图片导入项目后再生成。未提交生成请求。',
+                'budget_bytes': _SOON_URL_REFERENCE_BUDGET_BYTES,
+            })
+        raw, mime, _filename = _generation_reference_bytes(ref, max_edge=4096)
+        total += len(raw)
+        if total > _SOON_URL_REFERENCE_BUDGET_BYTES:
+            raise HTTPException(status_code=413, detail={
+                'code': 'soon_url_reference_budget_exceeded',
+                'message': 'Soon URL 通道参考图经最长边 4096 策略准备后合计超过 8,000,000 字节保守预算（非服务商硬限）。未提交生成请求；不会为预算压缩、转格式或再次缩小图片。',
+                'budget_bytes': _SOON_URL_REFERENCE_BUDGET_BYTES,
+                'prepared_bytes': total,
+            })
+        values.append(f'data:{mime};base64,{base64.b64encode(raw).decode("ascii")}')
+    return values
+
+
+async def _generate_soon_url_candidate(prompt, size, quality, model, reference_images=None, *, provider, image_parameters=None, progress_callback=None):
+    """Retain the explicitly configured paid-candidate entry for body comparisons."""
+    if effective_protocol(provider, model) != 'openai' or effective_image_request_mode(provider, model) != 'openai-json':
+        raise HTTPException(status_code=400, detail='候选调用需要显式配置既有 OpenAI 协议和 openai-json 图片模式')
+    return await _generate_ai_image_impl(prompt, size, quality, model, reference_images,
+        provider_id=provider['id'], preserve_model=True, image_parameters=image_parameters,
+        progress_callback=progress_callback, lock_model=True, approved_provider=provider)
+
+
 async def _generate_ai_image_impl(prompt, size, quality, model, reference_images=None, provider_id='', *, preserve_model=False, image_parameters=None, progress_callback=None, lock_model=False, approved_provider=None):
     def report_progress(phase, **details):
         if not callable(progress_callback):
@@ -2389,10 +2443,14 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
             pass
 
     require_project_media_values_scope([str((ref.get('url') if isinstance(ref, dict) else getattr(ref, 'url', '')) or '').strip() for ref in reference_images or [] if str((ref.get('url') if isinstance(ref, dict) else getattr(ref, 'url', '')) or '').strip()])
-    # #381（接 #349）：不保模型这条路以前走 get_api_provider——存着已删的平台时会静默换成主服务商，
-    # 用户看到的图其实是另一家出的。preserve_model 那条一直是 exact（空值也拒），保持不动。
+    # #381: An unavailable selected provider must not silently route to another account.
     provider = approved_provider if approved_provider is not None else (
         _svc._main('get_api_provider_exact')(provider_id) if preserve_model else _svc._main('get_api_provider_required')(provider_id))
+    runtime_provider = _soon_url_auto_provider(provider, model)
+    if runtime_provider is not provider:
+        provider = runtime_provider
+        # Match the verified candidate: do not reroute to a variant or discard explicit ratio/resolution.
+        preserve_model = lock_model = True
     if provider['id'] == 'modelscope':
         return await generate_modelscope_provider_image(prompt, size, model, reference_images, provider)
     if is_codex_provider(provider):
@@ -2467,11 +2525,13 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
     mask_refs = [ref for ref in refs if str(ref.get('role') or '').strip().lower() == 'mask' or str(ref.get('name') or '').lower().endswith('_mask.png')]
     image_refs = [ref for ref in refs if ref not in mask_refs]
     image_request_mode = effective_image_request_mode(provider, model)
-    # 长耗时模式（gpt-image-2 / APIMART / openai-json 系）：read 超时收敛到 AI_REQUEST_TIMEOUT
-    # （#249 审计：此处原硬编码 1800.0，不跟随 REQUEST_TIMEOUT env，现统一单一事实来源，默认值不变）；
-    # connect/write/pool 为固定工程值（非 provider 约束）。
+    soon_url_images = None
+    if image_request_mode == 'openai-json' and _soon_url_verified_target(provider, model):
+        # Prepare once before opening the submission client; budget never authorizes image degradation.
+        soon_url_images = _soon_url_reference_data_urls(image_refs[:ONLINE_IMAGE_REFERENCE_MAX])
+    # #249: Long-running image modes share the configured read timeout; other phases are engineering limits.
     request_timeout = httpx.Timeout(connect=20.0, read=AI_REQUEST_TIMEOUT, write=120.0, pool=20.0) if is_gpt2 or is_apimart or image_request_mode in {'openai-json', 'openai-video-proxy', 'openai-responses', 'fal'} else AI_REQUEST_TIMEOUT
-    async with httpx.AsyncClient(timeout=request_timeout) as client:
+    async with _create_image_transport_client(provider, client_factory=httpx.AsyncClient, phase_tag='generate', max_upload_retries=2, timeout=request_timeout) as client:
         response = None
 
         async def post_openai_edits(edit_files=None):
@@ -2546,7 +2606,7 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
             else:
                 if refs_for_proxy:
                     body['images'] = [await _svc.openai_video_proxy_public_reference_url(ref) for ref in refs_for_proxy]
-                response = await httpx_request_with_transient_retries(client, 'POST', video_url, attempts=1 if AGENT_IMAGE_ATTEMPT.get() else 2, headers=_svc._main('api_headers')(provider=provider, model=model), json=body)
+                response = await httpx_request_with_transient_retries(client, 'POST', video_url, attempts=1, headers=_svc._main('api_headers')(provider=provider, model=model), json=body)
         elif image_request_mode == 'openai-responses':
             tool = {'type': 'image_generation'}
             tool['action'] = 'edit' if image_refs else 'generate'
@@ -2568,7 +2628,8 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
         elif image_request_mode == 'openai-json':
             extra_body = {'response_format': 'url'}
             if image_refs:
-                extra_body['image'] = [_svc._main('reference_to_data_url')(ref, max_size=1536) for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]]
+                extra_body['image'] = (soon_url_images if soon_url_images is not None else
+                                       [_generation_reference_to_data_url(ref) for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]])
             body = {'model': model, 'prompt': prompt}
             if not routed_image_params.get('aspect_ratio'):
                 body['size'] = size
@@ -2580,7 +2641,7 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
             apimart_size, resolution = (size, str((image_parameters or {}).get('resolution') or '')) if preserve_model else apimart_size_resolution(size)
             body = {'model': model, 'prompt': prompt, 'n': 1, 'size': apimart_size, 'resolution': resolution, 'official_fallback': False}
             if image_refs:
-                body['image_urls'] = [_svc._main('reference_to_data_url')(ref, max_size=1536) for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]]
+                body['image_urls'] = [_generation_reference_to_data_url(ref) for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]]
             if preserve_model and routed_image_params.get('aspect_ratio'):
                 body['aspect_ratio'] = routed_image_params['aspect_ratio']
             response = await client.post(gen_url, headers=_svc._main('api_headers')(provider=provider, model=model), json=body)
@@ -2593,8 +2654,6 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
             if quality:
                 body['quality'] = quality
             response = await client.post(gen_url, headers=_svc._main('api_headers')(provider=provider, model=model), json=body)
-            if response.status_code >= 400 and images_api_unsupported(response):
-                response = await post_openai_edits()
         elif image_refs:
             files = []
             opened = []
@@ -2652,7 +2711,7 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
                 try:
                     response = await post_openai_edits(tracked_files)
                     if response.status_code >= 400:
-                        if AGENT_IMAGE_ATTEMPT.get():
+                        if AGENT_IMAGE_ATTEMPT.get() or response.status_code == 429:
                             raise response_failure(response)
                         edit_failed_status = response.status_code
                         edit_failed_text = response.text[:500]
@@ -2667,20 +2726,8 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
                 for fh in opened:
                     fh.close()
             if response is None:
-                if is_gpt2:
-                    raise HTTPException(status_code=502, detail=f'GPT-Image-2 编辑接口 /images/edits 调用失败：{edit_failed_text[:300] or edit_failed_status}。已停止自动重试，避免上游可能已扣费后再次请求。')
-                logger.warning(f'/images/edits failed ({edit_failed_status}): {edit_failed_text[:200]} → 回退到 /images/generations + image:[] JSON')
-                image_payload = [_svc._main('reference_to_data_url')(ref, max_size=1536) for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]]
-                body = {'model': model, 'prompt': prompt, 'response_format': 'url', 'n': 1, 'image': image_payload}
-                if not routed_image_params.get('aspect_ratio'):
-                    body['size'] = size
-                if routed_image_params:
-                    body.update(routed_image_params)
-                if quality and not is_comfly_provider and 'quality' not in routed_omit:
-                    body['quality'] = quality
-                response = await client.post(gen_url, headers=_svc._main('api_headers')(provider=provider, model=model), json=body)
-                if response.status_code >= 400 and images_api_unsupported(response):
-                    raise HTTPException(status_code=502, detail=f'编辑接口 /images/edits 调用失败，且该平台不支持 /images/generations：{edit_failed_text[:300] or edit_failed_status}')
+                # A failed edit may already be charged; changing endpoint is still a resubmission.
+                raise HTTPException(status_code=502, detail=f'图片编辑接口调用失败：{edit_failed_text[:300] or edit_failed_status}。已停止自动重发，请先核对服务商任务与用量。')
         else:
             body = {'model': model, 'prompt': prompt}
             if not routed_image_params.get('aspect_ratio'):
@@ -2692,18 +2739,17 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
             if quality and not is_comfly_provider and 'quality' not in routed_omit:
                 body['quality'] = quality
             response = await client.post(gen_url, headers=_svc._main('api_headers')(provider=provider, model=model), json=body)
-            if response.status_code >= 400 and not AGENT_IMAGE_ATTEMPT.get() and images_api_unsupported(response):
-                response = await post_openai_edits()
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            if AGENT_IMAGE_ATTEMPT.get():
-                raise response_failure(response) from exc
-            resp_text = (exc.response.text or '')[:800]
-            provider_name = provider.get('name') or provider['id']
-            raise HTTPException(status_code=exc.response.status_code, detail=f'{provider_name} 图片接口错误（HTTP {exc.response.status_code}）：{resp_text or exc.response.reason_phrase}') from exc
+            error = response_failure(response)
+            if not AGENT_IMAGE_ATTEMPT.get():
+                resp_text = (exc.response.text or '')[:800]
+                provider_name = provider.get('name') or provider['id']
+                error.detail = f'{provider_name} 图片接口错误（HTTP {exc.response.status_code}）：{resp_text or exc.response.reason_phrase}'
+            raise error from exc
         try:
-            raw = response.json()
+            raw = _image_response_json(response)
         except Exception as exc:
             resp_text = (response.text or '')[:800]
             provider_name = provider.get('name') or provider['id']
@@ -2711,7 +2757,7 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
                 raise HTTPException(status_code=502, detail=f'{provider_name} 图片接口返回了未完成的 keepalive 响应，未返回图片数据。请重试或降低尺寸；响应片段：{resp_text[:200]}') from exc
             raise HTTPException(status_code=502, detail=f'{provider_name} 图片接口返回非 JSON 响应（状态 {response.status_code}）：{resp_text}') from exc
         try:
-            return (extract_image(raw), raw)
+            return (_extract_generation_image(raw, response), raw)
         except HTTPException as exc:
             if image_request_mode == 'openai-responses':
                 fallback_image = responses_output_text_image(raw)
@@ -2729,7 +2775,10 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
                 raise
         mark_accepted()
         try:
-            task_result = await wait_for_image_task(client, task_id, provider)
+            task_result = await wait_for_image_task(client, task_id, provider, model=model)
+            # The poll response may omit the submission id; retrieval must retain its original identity (#493).
+            if isinstance(task_result, dict) and not extract_task_id(task_result):
+                task_result = {**task_result, 'task_id': task_id}
             return (extract_image(task_result), task_result)
         except Exception as exc:
             if isinstance(exc, HTTPException) or AGENT_IMAGE_ATTEMPT.get():
@@ -2743,71 +2792,132 @@ _GENERATION_DOWNLOAD_MAX_WORKERS = 6
 
 
 async def _download_generation_asset(value: str, temporary_path: Path, timeout: httpx.Timeout) -> None:
-    """Download an online generation asset with Range-based parallel chunking.
-
-    CDNs commonly throttle a single connection (e.g. 172 KB/s observed on
-    webstatic.aiproxy.vip); splitting the payload across parallel Range
-    requests multiplies the effective throughput. Falls back to a plain
-    sequential download when the server does not advertise Range support or
-    the payload is small. Verifies that every chunk was fully received and
-    that the final size matches the declared Content-Length.
-    """
-    async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False) as client:
-        current_url = value
-        for redirect_count in range(6):
-            request_url, request_headers, request_extensions = await ensure_public_generation_target(current_url)
-            async with client.stream('GET', request_url, headers=request_headers, extensions=request_extensions) as response:
-                if response.status_code in {301, 302, 303, 307, 308}:
-                    location = response.headers.get('location')
-                    if not location or redirect_count >= 5:
-                        raise ProjectStoreError('在线模型返回的图片地址重定向过多')
-                    current_url = urllib.parse.urljoin(current_url, location)
-                    continue
-                response.raise_for_status()
-                content_length = response.headers.get('content-length')
-                total = int(content_length) if content_length and content_length.isdigit() else 0
-                if total <= 0 or total < _GENERATION_DOWNLOAD_MIN_PARALLEL or total > _GENERATION_DOWNLOAD_MAX_BYTES:
+    """Keep the first full response unless safe, representation-bound ranges are proven."""
+    try:
+        async with _create_image_transport_client(client_factory=httpx.AsyncClient, phase_tag='download', max_upload_retries=0, timeout=timeout, follow_redirects=False, trust_env=False) as client:
+            current_url = value
+            for redirect_count in range(6):
+                request_url, request_headers, request_extensions = await ensure_public_generation_target(current_url)
+                async with client.stream('GET', request_url, headers=request_headers, extensions=request_extensions) as response:
+                    if response.status_code in {301, 302, 303, 307, 308}:
+                        location = response.headers.get('location')
+                        if not location or redirect_count >= 5:
+                            raise ProjectStoreError('在线模型返回的图片地址重定向过多')
+                        current_url = urllib.parse.urljoin(current_url, location)
+                        continue
+                    response.raise_for_status()
+                    if response.status_code != 200:
+                        raise ProjectStoreError('在线模型返回了非完整图片响应')
+                    content_length = response.headers.get('content-length', '')
+                    total = int(content_length) if content_length.isdigit() else 0
+                    if total > _GENERATION_DOWNLOAD_MAX_BYTES:
+                        raise ProjectStoreError('在线模型返回的图片超过 1GB 限制')
+                    validator = response.headers.get('etag', '')
+                    # Weak/date validators cannot prove independently fetched bytes are one representation (#493).
+                    strong = bool(re.fullmatch(r'"[\x21\x23-\x7e\x80-\xff]*"', validator))
+                    identity = response.headers.get('content-encoding', 'identity').lower() == 'identity'
+                    if (total >= _GENERATION_DOWNLOAD_MIN_PARALLEL and identity and strong
+                            and response.headers.get('accept-ranges', '').strip().lower() == 'bytes'):
+                        break
+                    received = 0
                     with temporary_path.open('wb') as handle:
                         async for chunk in response.aiter_bytes(1024 * 1024):
-                            total += len(chunk)
-                            if total > _GENERATION_DOWNLOAD_MAX_BYTES:
+                            received += len(chunk)
+                            if received > _GENERATION_DOWNLOAD_MAX_BYTES:
                                 raise ProjectStoreError('在线模型返回的图片超过 1GB 限制')
                             handle.write(chunk)
+                    if identity and content_length.isdigit() and received != total:
+                        raise ProjectStoreError('在线模型返回的图片下载不完整')
                     return
-                break
-        else:
-            raise ProjectStoreError('在线模型返回的图片地址重定向过多')
-        await _parallel_range_download(client, request_url, request_headers, request_extensions, temporary_path, total)
+            else:
+                raise ProjectStoreError('在线模型返回的图片地址重定向过多')
+            await _parallel_range_download(client, request_url, request_headers, request_extensions, temporary_path, total, validator=validator)
+    except BaseException:
+        try:
+            temporary_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
-async def _parallel_range_download(client: httpx.AsyncClient, request_url: str, request_headers: Dict[str, str], request_extensions: Dict[str, Any], temporary_path: Path, total: int) -> None:
-    """Download ``total`` bytes in parallel Range chunks into temporary_path."""
-    if total > _GENERATION_DOWNLOAD_MAX_BYTES:
-        raise ProjectStoreError('在线模型返回的图片超过 1GB 限制')
-    chunk_size = _GENERATION_DOWNLOAD_CHUNK_BYTES
-    ranges = [(start, min(start + chunk_size - 1, total - 1)) for start in range(0, total, chunk_size)]
+async def _parallel_range_download(client: httpx.AsyncClient, request_url: str, request_headers: Dict[str, str], request_extensions: Dict[str, Any], temporary_path: Path, total: int, validator: str = '') -> None:
+    """Bound memory to one worker window and reject mixed/ambiguous representations."""
+    if total <= 0 or total > _GENERATION_DOWNLOAD_MAX_BYTES:
+        raise ProjectStoreError('在线模型返回的图片大小无效或超过 1GB 限制')
+    if not re.fullmatch(r'"[\x21\x23-\x7e\x80-\xff]*"', validator):
+        raise ProjectStoreError('在线模型返回的图片缺少可靠的分段版本标识')
 
-    async def fetch_chunk(start: int, end: int) -> bytes:
-        async with client.stream('GET', request_url, headers={**request_headers, 'Range': f'bytes={start}-{end}'}, extensions=request_extensions) as response:
+    def verify_identity(response):
+        if (response.headers.get('etag') != validator
+                or response.headers.get('content-encoding', 'identity').lower() != 'identity'):
+            raise ProjectStoreError('在线模型返回的图片版本已变化或无法验证')
+
+    async def fetch_chunk(start, end):
+        headers = {**request_headers, 'Accept-Encoding': 'identity', 'Range': f'bytes={start}-{end}', 'If-Range': validator}
+        async with client.stream('GET', request_url, headers=headers, extensions=request_extensions) as response:
             response.raise_for_status()
+            verify_identity(response)
             if response.status_code == 200:
-                raise ProjectStoreError('在线模型返回的图片不支持分段下载')
-            parts = [part async for part in response.aiter_bytes(1024 * 1024)]
-            received = b''.join(parts)
-            if len(received) != (end - start + 1):
+                if response.headers.get('content-length') != str(total):
+                    raise ProjectStoreError('在线模型返回的图片大小已变化')
+                return None
+            match = re.fullmatch(r'bytes (\d+)-(\d+)/(\d+)', response.headers.get('content-range', ''))
+            if response.status_code != 206 or not match or tuple(map(int, match.groups())) != (start, end, total):
+                raise ProjectStoreError('在线模型返回了无效的图片分段范围')
+            expected = end - start + 1
+            length = response.headers.get('content-length')
+            if length is not None and length != str(expected):
+                raise ProjectStoreError('在线模型返回的图片分块大小无效')
+            content = bytearray()
+            async for part in response.aiter_bytes(_GENERATION_DOWNLOAD_CHUNK_BYTES):
+                if len(content) + len(part) > expected:
+                    raise ProjectStoreError('在线模型返回的图片分块大小无效')
+                content.extend(part)
+            if len(content) != expected:
                 raise ProjectStoreError('在线模型返回的图片分块下载不完整')
-            return received
+            return content
 
-    semaphore = asyncio.Semaphore(_GENERATION_DOWNLOAD_MAX_WORKERS)
-
-    async def bounded_fetch(start: int, end: int) -> Tuple[int, bytes]:
-        async with semaphore:
-            return start, await fetch_chunk(start, end)
-
-    chunks = await asyncio.gather(*(bounded_fetch(start, end) for start, end in ranges))
+    fallback = False
     with temporary_path.open('wb') as handle:
-        for start, content in chunks:
-            handle.write(content)
+        offsets = [0, *range(_GENERATION_DOWNLOAD_CHUNK_BYTES, total, _GENERATION_DOWNLOAD_CHUNK_BYTES * _GENERATION_DOWNLOAD_MAX_WORKERS)]
+        for offset in offsets:
+            # Probe one chunk before launching parallel work against a possibly non-range CDN.
+            window = _GENERATION_DOWNLOAD_CHUNK_BYTES * (1 if offset == 0 else _GENERATION_DOWNLOAD_MAX_WORKERS)
+            ranges = [(start, min(start + _GENERATION_DOWNLOAD_CHUNK_BYTES - 1, total - 1))
+                      for start in range(offset, min(total, offset + window), _GENERATION_DOWNLOAD_CHUNK_BYTES)]
+            tasks = [asyncio.create_task(fetch_chunk(start, end)) for start, end in ranges]
+            try:
+                chunks = await asyncio.gather(*tasks)
+            finally:
+                # gather does not cancel siblings on failure; no writes/reads may outlive temp cleanup.
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+            if any(chunk is None for chunk in chunks):
+                fallback = True
+                break
+            for chunk in chunks:
+                handle.write(chunk)
+            del chunks
+    if not fallback:
+        return
+    # Ignored Range is legitimate only for the same proven representation. Never mix its body with chunks.
+    headers = {**request_headers, 'Accept-Encoding': 'identity', 'If-Match': validator}
+    async with client.stream('GET', request_url, headers=headers, extensions=request_extensions) as response:
+        response.raise_for_status()
+        verify_identity(response)
+        if response.status_code != 200 or response.headers.get('content-length') != str(total):
+            raise ProjectStoreError('在线模型返回的完整图片响应无法验证')
+        received = 0
+        with temporary_path.open('wb') as handle:
+            async for chunk in response.aiter_bytes(_GENERATION_DOWNLOAD_CHUNK_BYTES):
+                received += len(chunk)
+                if received > total:
+                    raise ProjectStoreError('在线模型返回的图片大小已变化')
+                handle.write(chunk)
+        if received != total:
+            raise ProjectStoreError('在线模型返回的图片下载不完整')
 
 
 async def archive_project_generated_image(project_id: str, image_data: Dict[str, Any], index: int) -> Dict[str, Any]:
@@ -2819,10 +2929,14 @@ async def archive_project_generated_image(project_id: str, image_data: Dict[str,
     if kind == 'b64':
         try:
             encoded = str(image_data.get('value') or '').strip()
+            started = time.perf_counter()
             content = base64.b64decode(encoded + '=' * (-len(encoded) % 4), validate=True)
+            _record_current_image_decode('base64', (time.perf_counter() - started) * 1000, len(content))
         except (ValueError, TypeError) as exc:
             raise ProjectStoreError('在线模型返回了无效的图片数据') from exc
+        started = time.perf_counter()
         width, height, mime_type = validate_generated_image(BytesIO(content))
+        _record_current_image_decode('image', (time.perf_counter() - started) * 1000, len(content))
         filename = generated_image_filename(index, mime_type)
         record = await asyncio.to_thread(_svc._main('project_store_call'), 'import_media', project_id, content, filename, mime_type, source_info)
     else:

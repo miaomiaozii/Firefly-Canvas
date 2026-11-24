@@ -1982,11 +1982,32 @@ function smartHistoryIdForDeletedOutput(assetId, deletionId=''){
     return String(log?.id || '');
 }
 
-function smartHistoryLogCardHtml(log, historyIndex){
+function smartHistoryDisplayLogs(logs){
+    const retrieval = window.canvasResultRetrieval;
+    return logs.flatMap(log => {
+        const group = retrieval?.historyGroup(log);
+        if(!group || !retrieval.summaryHtml(group) || log.originalDeleted || log.status === 'original_deleted') return [log];
         const outputs = (log.outputs || []).map((output, outputIndex) => {
             const item = smartHistoryOutputItem(output);
             return item?.url ? {...item, outputIndex} : null;
         }).filter(Boolean);
+        // Each trusted occurrence owns a rail cell; the legacy gallery intentionally clips to one image.
+        return retrieval.slots(group, outputs).map((row, index) => ({...log, _retrievalRow:row, _retrievalFirst:index === 0}));
+    });
+}
+
+function smartHistoryLogCardHtml(log, historyIndex){
+        const retrieval = window.canvasResultRetrieval;
+        const retrievalGroup = retrieval?.historyGroup(log);
+        const retrievalSummary = retrievalGroup ? retrieval.summaryHtml(retrievalGroup) : '';
+        if(retrievalSummary && !log._retrievalRow && !log.originalDeleted && log.status !== 'original_deleted'){
+            return smartHistoryDisplayLogs([log]).map(entry => smartHistoryLogCardHtml(entry, historyIndex)).join('');
+        }
+        const retrievalRow = log._retrievalRow;
+        const outputs = (log.outputs || []).map((output, outputIndex) => {
+            const item = smartHistoryOutputItem(output);
+            return item?.url ? {...item, outputIndex} : null;
+        }).filter(item => item && (!retrievalRow || retrievalRow.output && item.outputIndex === retrievalRow.output.outputIndex));
         const first = outputs[0] || null;
         const date = new Date(smartHistoryLogTimestamp(log) || Date.now()).toLocaleString(window.StudioI18n?.lang() === 'en' ? 'en-US' : 'zh-CN');
         const req = log.request || {};
@@ -2019,7 +2040,7 @@ function smartHistoryLogCardHtml(log, historyIndex){
         if(originalDeleted){
             thumbHtml = `<div class="log-thumb-square log-thumb-deleted"><div class="log-deleted-media"><svg class="ico" aria-hidden="true"><use href="#i-image-off"/></svg><span>${escapeHtml(tr('canvas.originalDeleted'))}</span></div></div>`;
         } else if(first){
-            const outputCards = outputs.map(item => {
+            const outputCardRows = outputs.map(item => {
                 const outputIndex = item.outputIndex;
                 const safe = escapeAttr(item.url);
                 const kind = item.kind || (outputUrlLooksVideo(item.url) ? 'video' : 'image');
@@ -2036,7 +2057,8 @@ function smartHistoryLogCardHtml(log, historyIndex){
                     ? `<button type="button" class="log-media-download-original" data-history-download-original="${outputIndex}" title="${escapeAttr(tr('smart.downloadOriginal'))}" aria-label="${escapeAttr(tr('smart.downloadOriginal'))}"><svg class="ico" aria-hidden="true"><use href="#i-download"/></svg><span>${escapeHtml(tr('smart.downloadOriginal'))}</span></button><button type="button" class="log-media-mark image-mark${getMarkedAssetIds().includes(String(item.asset_id)) ? ' image-marked' : ''}" data-history-mark="${escapeAttr(String(item.asset_id))}" data-marked-asset="${escapeAttr(String(item.asset_id))}" data-marked-title="1" title="${escapeAttr(tr(getMarkedAssetIds().includes(String(item.asset_id)) ? 'smart.unmarkImage' : 'smart.markImage'))}"><svg class="ico" aria-hidden="true"><use href="#i-star"/></svg></button>`
                     : '';
                 return `<article class="log-media-card ${kind === 'image' ? 'is-image' : ''}${selected ? ' is-selected' : ''}" draggable="false" data-history-output-index="${outputIndex}" data-output-id="${escapeAttr(item.output_id || '')}" data-url="${safe}" data-asset-id="${escapeAttr(item.asset_id || '')}" data-kind="${escapeAttr(kind)}" data-name="${escapeAttr(name)}"${selected ? ' data-history-selected="true"' : ''}>${kind === 'video' ? `<button class="log-media-preview" type="button" data-history-preview title="${escapeAttr(label || tr('canvas.originalImage'))}">${preview}</button>` : preview}${actionsHtml}</article>`;
-            }).join('');
+            });
+            const outputCards = outputCardRows.join('');
             const outputPreviews = outputs.length > 1 ? outputs.map((item, index) => {
                 const position = smartHistoryDetailPositionLabel(index + 1, outputs.length);
                 const preview = smartPreviewImgHtml(item, 192, `alt="${escapeAttr(position)}" draggable="false"`);
@@ -2054,6 +2076,8 @@ function smartHistoryLogCardHtml(log, historyIndex){
                 ${outputPreviews ? `<div class="log-output-preview-list" role="group" aria-label="${escapeAttr(tr('smart.generationOutputs'))}">${outputPreviews}</div>` : ''}
                 ${outputs.length > 1 ? `<span class="log-count-badge">×${outputs.length}</span>` : ''}
             </div>`;
+        } else if(retrievalSummary){
+            thumbHtml = `<div class="log-thumb-square"><div class="log-output-gallery" role="group">${(retrievalRow ? [retrievalRow.item] : retrievalGroup.items).map(item => `<article class="log-media-card retrieval-history-slot" data-output-id="${escapeAttr(item.output_id || '')}">${retrieval.slotHtml(retrievalGroup,item)}</article>`).join('')}</div></div>`;
         } else if(pending){
             thumbHtml = `<div class="log-thumb-square"><div class="log-thumb-placeholder log-history-placeholder" role="status" aria-label="${escapeAttr(tr('canvas.generating'))}"><span class="log-history-placeholder-spinner" aria-hidden="true"></span>${generationStageProgressHtml(log.progress || {})}</div></div>`;
         } else if(failed || cancelled){
@@ -2077,12 +2101,14 @@ function smartHistoryLogCardHtml(log, historyIndex){
         const deleteOriginalLabel = outputs.length > 1
             ? tr('canvas.deleteSelectedOriginal')
             : tr('canvas.deleteOriginal');
-        return `<div class="log-item ${failed ? 'failed' : cancelled ? 'cancelled' : pending ? 'pending' : ''}" data-canvas-history-id="${escapeAttr(log.id || '')}" data-history-index="${historyIndex}">
+        const cellId = retrievalRow ? JSON.stringify([log.id, retrievalRow.output?.output_id || retrievalRow.item?.id]) : String(log.id || '');
+        return `<div class="log-item ${retrievalRow ? 'retrieval-history-cell ' : ''}${failed ? 'failed' : cancelled ? 'cancelled' : pending ? 'pending' : ''}" data-canvas-history-id="${escapeAttr(log.id || '')}" data-history-cell="${escapeAttr(cellId)}" data-history-index="${historyIndex}">
             ${thumbHtml}
             <div class="log-prompt-data" hidden data-prompt="${escapeAttr(log.prompt || '')}"></div>
             <div class="log-main">
+                ${!retrievalRow || log._retrievalFirst ? retrievalSummary : ''}
                 <div class="log-meta">
-                    <span class="log-chip ${failed ? 'status-failed' : cancelled ? 'status-deleted' : pending ? 'status-pending' : originalDeleted ? 'status-deleted' : 'status-ok'}">${escapeHtml(failed ? tr('canvas.failed') : cancelled ? tr('canvas.historyCancelled') : pending ? tr('canvas.generating') : originalDeleted ? tr('canvas.originalDeleted') : tr('canvas.success'))}</span>
+                    <span class="log-chip ${failed ? 'status-failed' : cancelled ? 'status-deleted' : pending ? 'status-pending' : originalDeleted ? 'status-deleted' : 'status-ok'}">${escapeHtml(retrievalGroup ? retrieval.generatedText(retrievalGroup) : failed ? tr('canvas.failed') : cancelled ? tr('canvas.historyCancelled') : pending ? tr('canvas.generating') : originalDeleted ? tr('canvas.originalDeleted') : tr('canvas.success'))}</span>
                     <span class="log-chip">${escapeHtml(log.platform || log.actual_provider_name || '-')}</span>
                     ${modelMeta.label ? `<span class="log-chip model-chip" title="${escapeAttr(modelMeta.raw)}">${escapeHtml(modelMeta.label)}</span>` : ''}
                     ${resolutionTier ? `<span class="log-chip resolution-chip">${escapeHtml(resolutionTier)}</span>` : ''}
@@ -2094,8 +2120,8 @@ function smartHistoryLogCardHtml(log, historyIndex){
              </div>
              <div class="log-buttons">
                   ${pending && projectTask ? `<button type="button" data-history-cancel-task="${escapeAttr(taskId)}" title="${escapeAttr(tr('canvas.historyCancelTaskTitle'))}" aria-label="${escapeAttr(tr('canvas.historyCancelTaskTitle'))}"><svg class="ico" aria-hidden="true"><use href="#i-square"/></svg><span>${escapeHtml(tr('canvas.historyCancelTask'))}</span></button>` : ''}
-                  ${failed && projectTask ? `<button type="button" data-history-retry-task="${escapeAttr(taskId)}" title="${escapeAttr(tr('canvas.historyRetryTaskTitle'))}" aria-label="${escapeAttr(tr('canvas.historyRetryTaskTitle'))}"><svg class="ico" aria-hidden="true"><use href="#i-redo-2"/></svg><span>${escapeHtml(tr('canvas.historyRetryTask'))}</span></button>` : ''}
-                  ${!pending && (imageOutputCount || (failed && log.kind !== 'video')) ? `<button type="button" data-history-send-all title="${escapeAttr(tr('canvas.sendToCanvas'))}" aria-label="${escapeAttr(tr('canvas.sendToCanvas'))}"><svg class="ico" aria-hidden="true"><use href="#i-send"/></svg><span>${escapeHtml(tr('canvas.sendToCanvas'))}</span></button>` : ''}
+                  ${failed && projectTask && !retrievalGroup ? `<button type="button" data-history-retry-task="${escapeAttr(taskId)}" title="${escapeAttr(tr('canvas.historyRetryTaskTitle'))}" aria-label="${escapeAttr(tr('canvas.historyRetryTaskTitle'))}"><svg class="ico" aria-hidden="true"><use href="#i-redo-2"/></svg><span>${escapeHtml(tr('canvas.historyRetryTask'))}</span></button>` : ''}
+                  ${!pending && (!retrievalRow || log._retrievalFirst) && (imageOutputCount || (failed && log.kind !== 'video')) ? `<button type="button" data-history-send-all title="${escapeAttr(tr('canvas.sendToCanvas'))}" aria-label="${escapeAttr(tr('canvas.sendToCanvas'))}"><svg class="ico" aria-hidden="true"><use href="#i-send"/></svg><span>${escapeHtml(tr('canvas.sendToCanvas'))}</span></button>` : ''}
                   ${!pending && !originalDeleted && first?.asset_id && canvas?.format === 'firefly-canvas-v1' ? `<button type="button" class="danger" data-history-delete-original="${String(first.output_id || '').trim()}" data-history-delete-original-index="${first.outputIndex}" title="${escapeAttr(deleteOriginalLabel)}" aria-label="${escapeAttr(deleteOriginalLabel)}"><svg class="ico" aria-hidden="true"><use href="#i-unused"/></svg><span>${escapeHtml(deleteOriginalLabel)}</span></button>` : ''}
                   ${!pending && deletedOriginalAssetId ? `<button type="button" data-history-restore-original="${escapeAttr(deletedOriginalAssetId)}" data-deletion-id="${escapeAttr(deletedOriginalTombstone?.deletion_id || '')}" data-output-id="${escapeAttr(deletedOriginalTombstone?.deleted_output_id || '')}" title="${escapeAttr(tr('canvas.restoreOriginal'))}" aria-label="${escapeAttr(tr('canvas.restoreOriginal'))}"><svg class="ico" aria-hidden="true"><use href="#i-undo-2"/></svg><span>${escapeHtml(tr('canvas.restoreOriginal'))}</span></button>` : ''}
                   ${!pending ? `<button type="button" data-history-copy-prompt ${log.prompt ? '' : 'disabled'} title="${escapeAttr(tr('canvas.copyPrompt'))}" aria-label="${escapeAttr(tr('canvas.copyPrompt'))}"><svg class="ico" aria-hidden="true"><use href="#i-copy"/></svg><span>${escapeHtml(tr('canvas.copyPrompt'))}</span></button>
@@ -2113,7 +2139,9 @@ function smartHistoryFocusedCard(logs){
         : (smartHistoryVirtualState.focusCard?.isConnected ? smartHistoryVirtualState.focusCard : null);
     if(!card || !smartHistoryList?.contains(card)) return {card:null, index:-1, historyId:''};
     const historyId = card.dataset.canvasHistoryId || '';
-    return {card, index:logs.findIndex(log => String(log?.id || '') === historyId), historyId};
+    const index = logs.findIndex(log => String(log?.id || '') === historyId
+        && (!log._retrievalRow || card.dataset.historyCell === JSON.stringify([log.id, log._retrievalRow.output?.output_id || log._retrievalRow.item?.id])));
+    return {card, index, historyId};
 }
 
 function protectSmartHistoryFocus(){
@@ -2182,7 +2210,8 @@ function replaceSmartHistoryRail(html, focused, preserveFocusedCard=true){
     const template = document.createElement('template');
     template.innerHTML = html;
     const desiredNodes = [...template.content.children];
-    const focusPosition = desiredNodes.findIndex(node => node.dataset.canvasHistoryId === focused.historyId);
+    const focusPosition = desiredNodes.findIndex(node => node.dataset.canvasHistoryId === focused.historyId
+        && node.dataset.historyCell === focused.card.dataset.historyCell);
     if(focusPosition < 0){
         smartHistoryList.replaceChildren(template.content);
         return savedScrollLeft;
@@ -2250,6 +2279,7 @@ function bindLongContentHistoryTriggers(){
 }
 
 function bindSmartHistoryWindow(){
+    window.canvasResultRetrieval?.bind(smartHistoryList);
     bindSmartPreviewImageFallbacks(smartHistoryList);
     bindLongContentHistoryTriggers();
     smartHistoryList.querySelectorAll('[data-history-preview]').forEach(el => {
@@ -2405,7 +2435,6 @@ function bindSmartHistoryWindow(){
             if(item?.url) canvasCore.downloadPreviewFile(item);
         };
     });
-    // #89 第四轮：生图历史卡片上的星标。
     smartHistoryList.querySelectorAll('[data-history-mark]').forEach(button => {
         button.onclick = event => {
             event.preventDefault();
@@ -2423,13 +2452,14 @@ function bindSmartHistoryWindow(){
             const historyId = card?.dataset.canvasHistoryId || '';
             const log = smartHistoryEntryById(historyId);
             const images = smartHistoryImageOutputs(log);
-            // Bug fix: 删除当前选中的图片（通过 output_id 匹配），否则删除第一张
+            // Stable output identity must survive reordering and per-occurrence rail cells.
             const selectedIndex = (() => {
+                if(card?.classList.contains('retrieval-history-cell')) return Number(button.dataset.historyDeleteOriginalIndex);
                 if(canvasState.smartHistorySelectedImage?.historyId === historyId && canvasState.smartHistorySelectedImage?.outputId){
                     const matched = images.find(img => String(img.output_id || '') === canvasState.smartHistorySelectedImage.outputId);
                     if(matched) return matched.outputIndex;
                 }
-                return images[0]?.outputIndex ?? 0;
+                return Number(button.dataset.historyDeleteOriginalIndex ?? images[0]?.outputIndex ?? 0);
             })();
             deleteSmartProjectOriginal(historyId, selectedIndex);
         };
@@ -2488,9 +2518,9 @@ function renderSmartHistoryWindow(force=false){
     }
     // Keep tombstones in server history for undo and stable ordering, but do
     // not show a record whose last original output has been deleted.
-    const logs = (canvas?.history || []).filter(log =>
+    const logs = smartHistoryDisplayLogs((canvas?.history || []).filter(log =>
         !(log?.originalDeleted || log?.status === 'original_deleted') || (log?.outputs || []).length
-    );
+    ));
     if(!logs.length){
         smartHistoryList.innerHTML = `<div class="log-empty">${escapeHtml(tr('canvas.noLogs'))}</div>`;
         smartHistoryVirtualState.start = 0;

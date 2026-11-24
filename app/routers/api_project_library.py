@@ -39,6 +39,7 @@ from app.project_activity import (
     project_owner_admission,
 )
 from app.project_downloads import ProjectMediaFileResponse
+from app.services.result_downloads import downloads, provider_identity, result_metadata, ResultLinkExpired, ResultRecoveryPending, EXPIRED
 from app.project_sessions import project_has_open_session
 from firefly_projects import CleanupDrift
 from firefly_withdrawn_refs import AUTO_ARCHIVED_REFS, historical_image_retry_hint
@@ -343,6 +344,7 @@ PROJECT_IMAGE_PROGRESS_PHASES = {
     'uploading': (2, '上传'),
     'provider_generating': (3, '模型生成'),
     'receiving': (4, '接收结果'),
+    'downloading': (4, '图已生成，下载中'),
     'saving': (5, '写入画布'),
     'completed': (6, '已完成'),
     'cancelled': (6, '已取消'),
@@ -557,6 +559,7 @@ def recover_project_image_task(
     termination_reason: str = 'service_restart_unknown',
     termination_error: str = '服务重启后无法确认任务是否已调用在线模型；为避免重复计费，任务已终止，请显式重试',
     for_retry: bool = False,
+    for_download: bool = False,
 ) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
     """Reconcile one durable task under the project lock after registry loss."""
     with project_lifecycle_lock(project_id):
@@ -565,6 +568,8 @@ def recover_project_image_task(
         durable = durable_project_image_task(canvas, task_id)
         if durable is None:
             return opened, None
+        if for_download or durable.get('status') in {'generated_pending_download', 'download_failed'}:
+            return opened, durable
         if for_retry and not task_id.startswith('agent_img_') and durable['status'] in {'pending', 'failed'}:
             # A provider-less snapshot cannot be retried; don't write a recovery record first.
             require_canvas_image_provider(durable['request_payload'].get('provider_id'))
@@ -773,10 +778,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                 top_phase = max(active_phases, key=lambda name: PROJECT_IMAGE_PROGRESS_PHASES.get(name, (0, ''))[0])
                 update_project_image_task_progress(task_id, top_phase, candidate_phases=list(candidate_phases))
         try:
-            # #41: count=8 连发——受控并发（每 provider 信号量 + 429 退避，见
-            # run_provider_generation_with_backoff）+ 任务级硬超时。顺序串行会让用户
-            # 看到「间隔很久一张一张传」；无 deadline 则 provider 挂起时任务永远
-            # running、前端永远收不到终态。
+            # Bounded concurrent candidates need a task deadline so a hung provider cannot leave pending slots forever.
             timeout_seconds = image_generation_task_timeout_seconds()
             # Running and terminal publications share an id so partial outputs are not duplicated.
             progress_history_id = f'generation-{uuid.uuid4().hex}'
@@ -817,22 +819,50 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                     candidates = [image_data]
                 provider_elapsed = _app_main.now_ms() - candidate_start
                 await set_candidate_phase(candidate_index, 'receiving')
-                update_project_image_task_progress(task_id, 'saving')
+                result_queue = downloads(_app_main)
+                checkpoint_history = {'id': progress_history_id, 'task_id': task_id,
+                    'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image',
+                    'status': 'generated_pending_download', 'prompt': payload.prompt, 'executed_prompt': executed_prompt,
+                    'created_at': started_at, 'createdAt': started_at, 'result_node_id': payload.result_node_id,
+                    'actual_provider_id': route.provider_id, 'actual_model': route.model, 'model': route.model,
+                    'route': route.to_dict(), 'request_payload': payload.model_dump(), 'outputs': [], **metadata}
+                download_ids = {}
+                if any(str(candidate.get('value', '')).startswith(('https://', 'http://')) for candidate in candidates):
+                    approved = getattr(hooks, 'approved_provider', None) if hooks else None
+                    provider = approved or get_api_provider(route.provider_id)
+                    if not provider or provider.get('id') != route.provider_id:
+                        raise ProjectStoreError('原服务商配置不可用，已停止结果下载')
+                    download_ids = await result_queue.checkpoint(project_id, checkpoint_history, candidates, raw,
+                        provider, mutate=hooks.mutate if hooks else None)
                 for candidate in candidates:
                     raise_if_project_image_task_cancelled(task_id)
-                    await set_candidate_phase(candidate_index, 'saving')
+                    checkpoint_id = download_ids.get(id(candidate))
+                    download_id = checkpoint_id if (candidate.get('type', 'url') == 'url'
+                        and str(candidate.get('value', '')).startswith(('https://', 'http://'))) else None
+                    if not download_id:
+                        await set_candidate_phase(candidate_index, 'saving')
                     archive_start = _app_main.now_ms()
                     try:
-                        if hooks:
+                        if download_id:
+                            await set_candidate_phase(candidate_index, 'downloading')
+                            async def archive_download(*_args):
+                                return await result_queue.archive(progress_history_id, download_id,
+                                    refresh=_recover_project_image_result_link)
+                            if hooks:
+                                item = await hooks.archive(archive_download)
+                            else:
+                                item = await archive_download()
+                        elif hooks:
                             item = await hooks.archive(archive_project_generated_image, project_id, candidate, len(generated_items))
                         else:
                             item = await archive_project_generated_image(project_id, candidate, len(generated_items))
                     except BaseException as exc:
                         raise _CandidateWriteFailure(exc) from exc
                     logger.info(f'[gen-task {task_id[:8]}] provider={provider_elapsed}ms archive={_app_main.now_ms() - archive_start}ms item={len(generated_items) + 1}/{payload.n}')
-                    # Content-addressed originals may repeat within one task; assign
-                    # occurrence identity before any partial can be deleted (#491).
-                    if not item.get('output_id'):
+                    # Content-addressed originals may repeat; preserve the captured slot across Agent journal yields.
+                    if checkpoint_id:
+                        result_queue.remember_saved(progress_history_id, item, checkpoint_id)
+                    elif not item.get('output_id'):
                         item['output_id'] = f'output-{uuid.uuid4().hex}'
                     generated_items.append(item)
                     update_project_image_task_progress(task_id, 'saving', current=len(generated_items), total=payload.n)
@@ -856,8 +886,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                             partial=True,
                         )
                     except Exception:
-                        # 单张 partial 写回失败不中断任务：final complete 仍会携带全量
-                        # media（store 层按 history id 去重合并，不会重复）。
+                        # Final completion replays all outputs; the Store deduplicates by this history's identity.
                         pass
                     logger.info(f'[gen-task {task_id[:8]}] partial complete={_app_main.now_ms() - partial_start}ms')
                     if partial_canvas is not None:
@@ -902,6 +931,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
         timestamp = _app_main.now_ms()
         history_record = {'id': progress_history_id, 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': 'succeeded', 'prompt': payload.prompt, 'executed_prompt': executed_prompt, 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': timestamp, 'runMs': max(0, timestamp - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'outputs': _history_output_entries(generated_items, 'image'), 'result_node_id': payload.result_node_id}
         history_record.update(metadata)
+        history_record['download'] = None
         raise_if_project_image_task_cancelled(task_id)
         canvas = None
         last_complete_error = None
@@ -944,6 +974,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
         with CANVAS_TASK_LOCK:
             CANVAS_TASKS[task_id].update({'status': 'succeeded', 'result': result, 'error': '', 'updated_at': time.time()})
         update_project_image_task_progress(task_id, 'completed')
+        downloads(_app_main).discard(progress_history_id)
         # The Store commit above decides the business terminal state.  Snapshot,
         # cleanup, and websocket failures must never rewrite that success as a
         # failed task; restart reconciliation uses the terminal history marker.
@@ -972,6 +1003,15 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                 orphan_ids = PROJECT_IMAGE_GENERATION_ORPHANS.setdefault(project_id, set())
                 orphan_ids.update((item.get('asset_id') for item in generated_items if item.get('asset_id') and item.get('asset_id') not in preexisting_asset_ids))
             await cleanup_project_generation_orphans(project_id)
+            return
+        queued_result = downloads(_app_main).find_task(project_id, task_id)
+        if queued_result:
+            queued_result = await downloads(_app_main).failed(queued_result['history_id'],
+                exc.cause if isinstance(exc, _CandidateWriteFailure) else exc)
+            with CANVAS_TASK_LOCK:
+                CANVAS_TASKS[task_id].update(status='download_failed', error=queued_result.get('error', ''),
+                    download=downloads(_app_main).public(queued_result), updated_at=time.time())
+            await manager.broadcast_canvas_updated(project_id, _app_main.now_ms())
             return
         detail = getattr(exc, 'detail', None) or str(exc)
         recovery_detail = detail
@@ -1153,7 +1193,9 @@ async def run_project_video_task(task_id: str, project_id: str, payload: Project
         await cleanup_project_generation_orphans(project_id)
 
 async def shutdown_project_generation_tasks() -> None:
-    """Persist one explicit terminal for active project generation before shutdown."""
+    """Pause accepted result downloads; terminate generation that has no valid checkpoint."""
+    result_queue = downloads(_app_main)
+    await result_queue.shutdown()
     with CANVAS_TASK_LOCK:
         active_tasks = []
         for task_id, task in CANVAS_TASKS.items():
@@ -1163,8 +1205,6 @@ async def shutdown_project_generation_tasks() -> None:
                 continue
             if str(task_id).startswith('agent_img_'):
                 continue  # Agent lifetime drains first; never bypass its journal writer.
-            task['cancel_requested'] = True
-            task['updated_at'] = time.time()
             active_tasks.append((str(task_id), copy.deepcopy(task)))
 
     for task_id, task in active_tasks:
@@ -1172,6 +1212,19 @@ async def shutdown_project_generation_tasks() -> None:
         result_node_id = str(task.get('result_node_id') or '')
         if not project_id or not result_node_id:
             continue
+        if task.get('type') == 'project-online-image' and not task.get('cancel_requested'):
+            try:
+                checkpoint = result_queue.find_task(project_id, task_id)
+                if checkpoint is not None:
+                    result_queue.validate(checkpoint, project_id)
+                    # Shutdown is a pause, not user cancellation of an already-paid result (#493).
+                    continue
+            except (ProjectStoreError, OSError, ValueError):
+                pass  # Unprovable ownership must not preserve a live generation.
+        with CANVAS_TASK_LOCK:
+            current = CANVAS_TASKS.get(task_id)
+            if current is not None:
+                current.update(cancel_requested=True, updated_at=time.time())
         request_payload = copy.deepcopy(task.get('request_payload') or {})
         route = copy.deepcopy(task.get('route') or {})
         completed_at = _app_main.now_ms()
@@ -1461,6 +1514,151 @@ async def _maybe_recover_project_image_task(project_id: str, task_id: str, task:
     }
 
 
+async def _recover_project_image_result_link(queue, item):
+    """ADR 0017: query the original Soon task; never submit a generation."""
+    from firefly_generation import is_soon_provider
+    from app.services.generation import image_task_url_for_provider
+    opened, durable = await asyncio.to_thread(recover_project_image_task, queue['project_id'],
+                                              queue['task_id'], for_download=True)
+    upstream_id = item.get('upstream_task_id', '')
+    if durable is None or not upstream_id:
+        raise ResultLinkExpired(EXPIRED)
+    try:
+        provider = _app_main.get_api_provider_required(queue['provider_id'], allow_primary_when_empty=False)
+    except HTTPException:
+        raise ResultLinkExpired(EXPIRED) from None
+    headers = _app_main.api_headers(provider=provider)
+    if (not is_soon_provider(provider) or provider.get('id') != queue['provider_id']
+            or provider_identity(provider, headers) != queue['provider_identity']
+            or not re.fullmatch(r'[A-Za-z0-9_.:-]{1,200}', upstream_id)):
+        raise ResultLinkExpired(EXPIRED)
+    original = queue.get('history') or {}
+    model = queue.get('model') or original.get('actual_model') or (original.get('route') or {}).get('model') or original.get('model')
+    if not isinstance(model, str) or not model.strip():
+        raise ResultLinkExpired(EXPIRED)
+    headers = _app_main.api_headers(provider=provider, model=model)
+    if queue.get('model_identity') and provider_identity(provider, headers, model=model) != queue['model_identity']:
+        raise ResultLinkExpired(EXPIRED)
+    from app.services.providers import _soon_url_auto_provider
+    invocation_provider = _soon_url_auto_provider(provider, model)
+    if queue.get('invocation_identity'):
+        invocation_headers = _app_main.api_headers(provider=invocation_provider, model=model)
+        if provider_identity(invocation_provider, invocation_headers, model=model) != queue['invocation_identity']:
+            raise ResultLinkExpired(EXPIRED)
+        provider, headers = invocation_provider, invocation_headers
+    elif invocation_provider != provider:
+        # Legacy queues cannot distinguish the automatic profile from an older native submission.
+        raise ResultLinkExpired('无法核验原生成请求身份，不能安全取回；不会重新生成')
+    await asyncio.to_thread(_app_main.project_store_call, 'image_result_download_path', queue['project_id'],
+        queue['node_id'], queue['task_id'], queue['history_id'], queue['generation'], item['id'])
+    try:
+        from app.core import ensure_public_generation_target
+        from app.services.result_downloads import _PRIVATE_DOWNLOAD
+        target, pinned_headers, extensions = await ensure_public_generation_target(
+            image_task_url_for_provider(provider, upstream_id, model=model))
+        token = _PRIVATE_DOWNLOAD.set(True)
+        try:
+            from app.services.image_transport import create_image_transport_client, image_response_json
+            async with create_image_transport_client(phase_tag='poll', timeout=30, follow_redirects=False, trust_env=False) as client:
+                response = await client.get(target, headers={**headers, **pinned_headers}, extensions=extensions)
+                if response.status_code in {403, 404}:
+                    raise ResultLinkExpired(EXPIRED)
+                if response.status_code != 200:
+                    raise ResultRecoveryPending('原任务查询暂不可用，可重新取回')
+                raw = image_response_json(response)
+        finally:
+            _PRIVATE_DOWNLOAD.reset(token)
+        candidates = extract_images(raw)
+        candidate = candidates[item['upstream_output_index']]
+        if not str(candidate.get('value', '')).startswith(('https://', 'http://')):
+            raise ResultLinkExpired(EXPIRED)
+        return result_metadata(candidate, raw, time.time())
+    except ResultRecoveryPending:
+        raise
+    except httpx.HTTPError:
+        raise ResultRecoveryPending('原任务查询暂不可用，可重新取回') from None
+    except (ValueError, IndexError, HTTPException, ProjectStoreError):
+        raise ResultLinkExpired(EXPIRED) from None
+
+
+@router.get('/api/project-library/{project_id}/image-result-downloads')
+async def list_project_image_result_downloads(project_id: str, request: Request):
+    ensure_same_origin_request(request)
+    try:
+        opened = await asyncio.to_thread(_app_main.project_store_call, 'open_project', project_id)
+        service = downloads(_app_main)
+        groups = []
+        for queue in service.project_queues(project_id):
+            try:
+                await asyncio.to_thread(_app_main.project_store_call, 'image_result_download_path', project_id,
+                    queue['node_id'], queue['task_id'], queue['history_id'], queue['generation'], queue['items'][0]['id'])
+                service.sync_saved(queue, opened['canvas'])
+            except (ProjectNotFound, InvalidMutation):
+                continue
+            groups.append(service.public(queue))
+        return {'groups': groups}
+    except (ProjectNotFound, InvalidMutation) as exc:
+        raise HTTPException(status_code=404, detail='项目不存在或已失效') from exc
+
+
+@router.get('/api/project-library/{project_id}/image-result-downloads/{history_id}')
+async def get_project_image_result_download(project_id: str, history_id: str, request: Request):
+    ensure_same_origin_request(request)
+    try:
+        queue = downloads(_app_main).load(history_id, project_id)
+        downloads(_app_main).validate(queue, project_id)
+        await asyncio.to_thread(_app_main.project_store_call, 'image_result_download_path', project_id,
+            queue['node_id'], queue['task_id'], history_id, queue['generation'], queue['items'][0]['id'])
+        opened = await asyncio.to_thread(_app_main.project_store_call, 'open_project', project_id)
+        downloads(_app_main).sync_saved(queue, opened['canvas'])
+        return downloads(_app_main).public(queue)
+    except FileNotFoundError as exc:
+        opened = await asyncio.to_thread(_app_main.project_store_call, 'open_project', project_id)
+        record = next((h for h in opened['canvas'].get('history', []) if h.get('id') == history_id), None)
+        if record and record.get('status') == 'succeeded':
+            return {**(record.get('download') or {'history_id': history_id, 'status': 'succeeded'}),
+                    'node_exists': any(n.get('id') == record.get('result_node_id')
+                                       for n in opened['canvas'].get('nodes', []))}
+        raise HTTPException(status_code=404, detail='待取回结果不存在或已失效') from exc
+    except ProjectStoreError as exc:
+        raise HTTPException(status_code=404, detail='待取回结果不存在或已失效') from exc
+
+
+@router.post('/api/project-library/{project_id}/image-result-downloads/{history_id}/redownload')
+async def redownload_project_image_result(project_id: str, history_id: str, request: Request):
+    ensure_same_origin_request(request)
+    body = await request.body()
+    try:
+        def unique_object(pairs):
+            result = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError('duplicate field')
+                result[key] = value
+            return result
+        payload = json.loads(body, object_pairs_hook=unique_object) if body else {}
+        if not isinstance(payload, dict) or set(payload) - {'item_ids'}:
+            raise ValueError('unsupported fields')
+        item_ids = payload.get('item_ids')
+        if 'item_ids' in payload and (not isinstance(item_ids, list) or not item_ids
+                or any(type(i) is not str for i in item_ids) or len(set(item_ids)) != len(item_ids)):
+            raise ValueError('invalid items')
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=422, detail='只接受非空且不重复的 item_ids 列表') from None
+    current = await get_project_image_result_download(project_id, history_id, request)
+    if item_ids is not None and not set(item_ids) <= {i['id'] for i in current.get('items', [])}:
+        raise HTTPException(status_code=422, detail='结果标识无效或不属于本次生成')
+    if current['status'] == 'succeeded':
+        return current
+    queue = downloads(_app_main).load(history_id, project_id)
+    with CANVAS_TASK_LOCK:
+        original = CANVAS_TASKS.get(queue['task_id']) or {}
+        if original.get('project_id') == project_id and (original.get('status') in {'registering', 'queued', 'running'}
+                or original.get('agent_settled') is False):
+            return current
+    return await downloads(_app_main).resume(project_id, history_id, refresh=_recover_project_image_result_link, item_ids=item_ids)
+
+
 @router.get('/api/project-library/{project_id}/image-generation-tasks/{task_id}')
 async def get_project_image_task(request: Request, project_id: str, task_id: str, recover: Optional[int] = Query(default=None)):
     """查询项目生图任务。对 failed/timeout 且带上游任务 id 的任务默认主动重查上游成品
@@ -1468,6 +1666,14 @@ async def get_project_image_task(request: Request, project_id: str, task_id: str
     # #342：重查/恢复会下载上游成品、写入项目媒体并 complete/fail 任务（GET 改状态），
     # 属副作用 GET，要求显式同源头（Origin/Referer）。
     ensure_same_origin_request(request)
+    queued_result = downloads(_app_main).find_task(project_id, task_id)
+    if queued_result:
+        opened, durable = await asyncio.to_thread(recover_project_image_task, project_id, task_id, for_download=True)
+        if durable is None:
+            raise HTTPException(status_code=404, detail='项目生图任务不存在')
+        return {**durable, 'task_id': task_id, 'project_id': project_id,
+                'status': queued_result.get('status'), 'download': downloads(_app_main).public(queued_result),
+                'result': durable_project_image_result(project_id, opened['canvas'], durable)}
     with CANVAS_TASK_LOCK:
         current = copy.deepcopy(CANVAS_TASKS.get(str(task_id)) or {})
     if current:

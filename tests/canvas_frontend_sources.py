@@ -23,6 +23,7 @@ CANVAS_SCRIPTS: tuple[str, ...] = (
     "canvas-connections.js",
     # #223：下载层（接收响应 blob → 校验体积 → 落盘）从 smart-canvas.js 抽成独立模块。
     "canvas-download.js",
+    "canvas-result-retrieval.js",
     "canvas-media-history.js",
     "canvas-undo.js",
     # #272：画布批注层（可持久画布对象；ops.db anno_* 租户前端；逻辑独立，smart-canvas.js 只接线 2 行）。

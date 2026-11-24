@@ -221,10 +221,10 @@ class CanvasCouplingReportTests(unittest.TestCase):
     def test_reverse_coupling_is_measurable_and_pinned(self):
         # 两个引用方向必须独立实测；合法调用也须同步 ADR 0020 和精确计数，不能豁免。
         rev = _cached_reverse()
-        self.assertEqual(rev["reverse_names"], 264)
-        self.assertEqual(rev["reverse_core_refs"], 991)
-        self.assertEqual(rev["core_dominant_names"], 178)
-        self.assertEqual(rev["core_dominant_core_refs"], 818)
+        self.assertEqual(rev["reverse_names"], 265)
+        self.assertEqual(rev["reverse_core_refs"], 997)
+        self.assertEqual(rev["core_dominant_names"], 179)
+        self.assertEqual(rev["core_dominant_core_refs"], 823)
         rows = {(row["owner"], row["name"]): row for row in rev["reverse_rows"]}
         self.assertEqual(rows[("canvas-node-types.js", "NODE_TYPE_IMAGE")], {
             "name": "NODE_TYPE_IMAGE", "owner": "canvas-node-types.js",
@@ -234,6 +234,11 @@ class CanvasCouplingReportTests(unittest.TestCase):
             "name": "mediaReferencesForStorage", "owner": "canvas-media-history.js",
             "core_refs": 6, "owner_refs": 3, "category": "unclassified",
         })
+        self.assertEqual(rows[("canvas-result-retrieval.js", "canvasResultRetrieval")], {
+            "name": "canvasResultRetrieval", "owner": "canvas-result-retrieval.js",
+            "core_refs": 5, "owner_refs": 0, "category": "hub",
+        })
+        self.assertEqual(rows[("canvas-media-history.js", "scheduleSmartHistoryWindowRender")]["core_refs"], 3)
         # canvas-core.js 是合法下层，不能当「寄居在模块里」的 owner。
         self.assertNotIn("canvas-core.js", rev["by_owner"])
         self.assertNotIn("smart-canvas.js", rev["by_owner"])

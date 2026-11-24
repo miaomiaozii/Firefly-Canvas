@@ -944,6 +944,12 @@ async def _run(batch):
 
 
 async def _run_item(batch, row, item, actor, providers):
+    from .image_transport import _image_upload_retry_scope
+    with _image_upload_retry_scope():
+        return await _run_item_with_upload_budget(batch, row, item, actor, providers)
+
+
+async def _run_item_with_upload_budget(batch, row, item, actor, providers):
     api = _api()
     project = batch.preview.caller.project
 
@@ -997,7 +1003,7 @@ async def _run_item(batch, row, item, actor, providers):
                 if exc.status_code == 404:
                     break
                 raise
-            if current['status'] in ('succeeded', 'failed', 'timeout', 'cancelled'):
+            if current['status'] in ('succeeded', 'failed', 'timeout', 'cancelled', 'download_failed'):
                 status = current
                 break
             await asyncio.sleep(0.1)
@@ -1008,6 +1014,9 @@ async def _run_item(batch, row, item, actor, providers):
                 return
             failure = status.get('failure')
             row.update(status=status['status'], failure=failure)
+            if status['status'] == 'download_failed':
+                # An accepted paid result needs retrieval, never another generation attempt (#493).
+                row.update(result=status.get('result'), retrieval=status.get('retrieval'))
             batch.signal()
             code = (failure or {}).get('code')
             if batch.cancelled.is_set():

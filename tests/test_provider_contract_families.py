@@ -423,7 +423,7 @@ class ProviderFamilyContractTests(unittest.TestCase):
             patch.object(APP, "get_api_provider_exact", return_value=fixture),
             patch.object(APP, "api_headers", return_value={"Authorization": AUTHORIZATION}),
             patch.object(SERVICES, "gemini_endpoint_url", return_value="https://provider.invalid/v1/models/gemini-2.5-flash-image:generateContent"),
-            patch.object(SERVICES, "gemini_reference_part", side_effect=lambda ref: {"fileData": {"fileUri": ref["url"]}}),
+            patch.object(GENERATION, "_gemini_generation_reference_part", side_effect=lambda ref: {"fileData": {"fileUri": ref["url"]}}),
             patch.object(APP.httpx, "AsyncClient", capture.async_client),
         ):
             asyncio.run(APP.generate_ai_image(

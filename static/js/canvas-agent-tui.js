@@ -2876,18 +2876,23 @@ function agentTaskNodeBodyHtml(node){
     const paramsText = JSON.stringify(params, null, 0);
     const error = String(node?.error || '').trim();
     const resultNodeId = String(node?.result_node_id || '');
-    const resultLink = resultNodeId
+    const retrieval = window.canvasResultRetrieval;
+    const retrievalGroup = (canvas?.history || []).map(log => retrieval?.historyGroup(log))
+        .find(group => group && group.task_id === taskId && group.node_id === resultNodeId);
+    const retrievalHtml = retrievalGroup ? `${retrieval.summaryHtml(retrievalGroup)}<div class="retrieval-project-slots">${retrievalGroup.items.map(item => retrieval.slotHtml(retrievalGroup,item)).join('')}</div>` : '';
+    const resultLink = resultNodeId && retrievalGroup?.node_exists !== false
         ? `<a class="agent-task-result-link" data-agent-result-link="${escapeAttr(resultNodeId)}" href="#${escapeAttr(resultNodeId)}">${escapeHtml(tr('smart.viewResultNode'))}</a>`
         : '<span class="agent-task-result-link muted">' + escapeHtml(tr('smart.waitingResultNode')) + '</span>';
     return `<div class="agent-task-card agent-task-card-readonly" data-agent-task-card="${escapeAttr(taskId)}">
         <div class="agent-task-heading">
             <div><div class="agent-task-title">${escapeHtml(trf('smart.agentTaskTitle', {kind: kind}))}</div><div class="agent-task-id">${escapeHtml(taskId)}</div></div>
-            <span class="agent-task-status" data-agent-task-status="${escapeAttr(taskId)}" data-status="${escapeAttr(status)}" role="status">${escapeHtml(agentTaskStatusText(status))}</span>
+            <span class="agent-task-status" data-agent-task-status="${escapeAttr(taskId)}" data-status="${escapeAttr(status)}" role="status">${escapeHtml(retrievalGroup ? retrieval.generatedText(retrievalGroup) : agentTaskStatusText(status))}</span>
         </div>
         <div class="agent-task-meta"><span>${escapeHtml(trf('smart.agentTaskModelCount', {m: node?.model_type || 'online', c: Math.max(1, Number(node?.count || 1))}))}</span></div>
         <div class="agent-task-prompt">${escapeHtml(node?.prompt || '')}</div>
         <div class="agent-task-params" title="${escapeHtml(tr('smart.taskParams'))}">${escapeHtml(trf('smart.agentTaskParams', {p: paramsText}))}</div>
         ${error ? `<div class="agent-task-error" data-agent-task-error role="alert">${escapeHtml(error)}</div>` : ''}
+        ${retrievalHtml}
         <div class="agent-task-result">${resultLink}</div>
     </div>`;
 }

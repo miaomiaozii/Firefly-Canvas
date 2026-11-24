@@ -146,6 +146,7 @@ CATEGORY_BY_NAME = {
     "canvasAgentActivity": "hub",  # #410: public activity adapter, configured by canvas orchestration.
     "canvasAgentCompletion": "hub",  # #413: public completion adapter; project identity is injected by canvas orchestration.
     "canvasAgentChat": "hub",  # #415: GET-only reader; canvas owns project identity, TUI owns mount/host lifetime.
+    "canvasResultRetrieval": "hub",  # #493: injected project identity, retrieval state and view orchestration.
     # #418: classify actual responsibilities, without filtering either direction.
     "focusRevealNode": "hub",
     "isNodeSelected": "hub",

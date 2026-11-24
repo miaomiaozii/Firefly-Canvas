@@ -43,6 +43,7 @@ export const HTML_SCRIPT_ORDER = [
     'canvas-connections.js',
     // #223：下载层（见 static/js/canvas-download.js）
     'canvas-download.js',
+    'canvas-result-retrieval.js',
     'canvas-media-history.js',
     'canvas-undo.js',
     // #272：画布批注层（见 static/js/canvas-annotations.js）

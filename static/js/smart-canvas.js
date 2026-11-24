@@ -5403,6 +5403,13 @@ function scheduleCanvasMergeReload(delay=200, minUpdatedAt=0){
     }, delay);
 }
 function smartCanvasAgentActivityBridge(){
+    window.canvasResultRetrieval?.configure({
+        getProjectId: () => canvasId,
+        getHistory: () => canvas?.history || [],
+        adoptCanonical: project => mergeReloadCanvasNow(project),
+        repaint: () => { render(); scheduleSmartHistoryWindowRender(true); },
+    });
+    window.canvasResultRetrieval?.sync();
     window.canvasAgentCompletion?.configure({getProjectId: () => canvasId});
     window.canvasAgentChat?.configure({getProjectId: () => canvasId});
     const activity = window.canvasAgentActivity;
@@ -9531,6 +9538,11 @@ function nodeBodyHtml(node, layout){
     if(node.type === NODE_TYPE_LOOP) return smartLoopBodyHtml(node);
     if(node.type === NODE_TYPE_LOCAL_EDIT) return localEditBodyHtml(node);
     const imgs = (node.images || []).map(imageForDisplay);
+    const retrievalBody = window.canvasResultRetrieval?.nodeHtml(node, layout, (source, index, style) => {
+        const img = imageForDisplay(source);
+        return `<div class="thumb-item has-outside-image-name ${canvasState.selectedImage.nodeId === node.id && canvasState.selectedImage.index === index ? 'image-selected' : ''}" data-image-index="${index}" data-output-id="${escapeAttr(img?.output_id || '')}" data-asset-id="${escapeAttr(img?.asset_id || '')}" data-media-signature="${escapeAttr(`${mediaKindForItem(img)}:${img?.url || ''}`)}" style="${style}">${thumbMediaHtml(img)}${imageNameBadgeHtml(img, {outside:true})}${imageResolutionBadgeHtml(img)}<button class="mini-x image-delete" type="button" data-image-index="${index}" title="${escapeAttr(tr('smart.deleteImage'))}">${ico('trash-2')}</button>${imageMarkButtonHtml(img,index)}</div>`;
+    });
+    if(retrievalBody) return retrievalBody;
     const recoverTask = smartRecoverableImageTask(node);
     if(recoverTask && imgs.length === 0){
         return imageTaskRecoverBodyHtml(node, recoverTask, layout);
@@ -9859,6 +9871,7 @@ function rememberInlineVideoActivations(){
 }
 function render(){
     window.dispatchEvent(new CustomEvent('studio-canvas-selection-sync', {detail:{locate:focusRevealNode}}));
+    window.canvasResultRetrieval?.sync();
     normalizeAgentDockNodes(canvasState.nodes); // #407：旧多 dock 必须在 world 过滤前取回其它节点
     syncCanvasEmptyState();
     rememberInlineVideoActivations();
@@ -11636,6 +11649,7 @@ function bindLocalEditNodeControls(el, node){
     sync();
 }
 function bindNodeEvents(){
+    window.canvasResultRetrieval?.bind(world);
     world.querySelectorAll('.image-node').forEach(el => {
         const id = el.dataset.id;
         if(promptNodeFlowView.mode === 'flow' && promptNodeFlowView.element === el) return;
@@ -16326,6 +16340,7 @@ function canvasWheelIsReserved(target){
         '.asset-panel',
         '.asset-toggle',
         '.smart-log-toggle',
+        '.retrieval-panel',
         '.smart-shortcut-toggle',
         '.log-modal',
         '.shortcut-modal',

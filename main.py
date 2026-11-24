@@ -359,6 +359,10 @@ async def startup_event():
     GLOBAL_LOOP = asyncio.get_running_loop()
     _core_runtime.GLOBAL_LOOP = GLOBAL_LOOP
     _r_api_agent_tools.start_agent_ops_lifetime()
+    from app.services.result_downloads import downloads
+    from app.routers.api_project_library import _recover_project_image_result_link
+    app.state.result_download_startup = asyncio.create_task(
+        downloads(sys.modules[__name__]).startup(refresh=_recover_project_image_result_link))
     if PROJECT_CONVERSATION_RUNNER is not None:
         await PROJECT_CONVERSATION_RUNNER.stop()
     PROJECT_CONVERSATION_RUNNER = ProjectConversationTaskRunner()
@@ -366,7 +370,6 @@ async def startup_event():
         PROJECT_MEDIA_IMPORT_SHUTTING_DOWN = False
         PROJECT_MEDIA_IMPORT_ACCEPTING = True
     ensure_project_media_import_executor()
-    # 启动时整理全局资源库：给所有图片分组（含默认角色/场景）建好文件夹，并把根目录里的旧素材归整进去。
     try:
         await asyncio.to_thread(migrate_asset_library_into_dirs)
     except Exception as exc:
@@ -388,7 +391,6 @@ async def startup_event():
             logger.info(f"Agent 任务恢复提交: {recovered}")
     except Exception as exc:
         logger.error(f"Agent 任务恢复失败: {exc}")
-    # issue #95：启动对账 Photoshop 往返请求表（持久化 + 崩溃状态修复）。
     try:
         recovered_tables = await asyncio.to_thread(_photoshop_recover_round_trips)
         if recovered_tables:
@@ -414,6 +416,13 @@ async def startup_event():
 
 async def shutdown_event():
     global GLOBAL_LOOP, PROJECT_MEDIA_IMPORT_EXECUTOR, PROJECT_MEDIA_IMPORT_ACCEPTING, PROJECT_MEDIA_IMPORT_SHUTTING_DOWN, PROJECT_CONVERSATION_RUNNER
+    download_startup = getattr(app.state, 'result_download_startup', None)
+    if download_startup is not None and not download_startup.done():
+        download_startup.cancel()
+        try:
+            await download_startup
+        except asyncio.CancelledError:
+            pass
     conversation_runner = PROJECT_CONVERSATION_RUNNER
     if conversation_runner is not None:
         await conversation_runner.stop()
