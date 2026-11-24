@@ -1036,7 +1036,9 @@ def normalize_provider(item):
         model_selection_version = max(0, int(item.get('model_selection_version') or 0))
     except (TypeError, ValueError):
         model_selection_version = 0
-    return {'id': provider_id, 'name': name, 'base_url': base_url, 'protocol': protocol, 'image_request_mode': image_request_mode, 'image_generation_endpoint': image_generation_endpoint, 'image_edit_endpoint': image_edit_endpoint, 'video_generation_endpoint': video_generation_endpoint, 'enabled': bool(item.get('enabled', True)), 'primary': bool(item.get('primary', False)), 'image_models': image_models, 'image_model_capabilities': normalize_image_model_capabilities(item.get('image_model_capabilities'), image_models, {'base_url': base_url}), 'chat_models': model_list_from_values(item.get('chat_models') or []), 'chat_audio_input': bool(item.get('chat_audio_input', False)), 'video_models': video_models, 'video_model_capabilities': normalize_video_model_capabilities(item.get('video_model_capabilities'), video_models), 'recommended_models': normalize_recommended_models(item.get('recommended_models')), 'available_models': normalize_available_models(item.get('available_models')), 'model_selection_version': model_selection_version, 'model_names': normalize_model_name_map(item.get('model_names')), 'model_protocols': normalize_model_protocols(item.get('model_protocols')), 'model_request_modes': normalize_model_request_modes(item.get('model_request_modes')), 'ms_loras': normalize_ms_loras(item.get('ms_loras') or []), 'ms_defaults_version': int(item.get('ms_defaults_version') or 0), 'rh_apps': normalize_runninghub_entries(item.get('rh_apps') or [], 'app'), 'volcengine_project_name': volc_project, 'volcengine_region': volc_region}
+    # #493: Legacy truthy strings must not opt into a different image network route; CLI hosts own their networking.
+    image_bypass_system_proxy = item.get('image_bypass_system_proxy') is True and protocol not in {'codex', 'gemini-cli'}
+    return {'id': provider_id, 'name': name, 'base_url': base_url, 'protocol': protocol, 'image_request_mode': image_request_mode, 'image_bypass_system_proxy': image_bypass_system_proxy, 'image_generation_endpoint': image_generation_endpoint, 'image_edit_endpoint': image_edit_endpoint, 'video_generation_endpoint': video_generation_endpoint, 'enabled': bool(item.get('enabled', True)), 'primary': bool(item.get('primary', False)), 'image_models': image_models, 'image_model_capabilities': normalize_image_model_capabilities(item.get('image_model_capabilities'), image_models, {'base_url': base_url}), 'chat_models': model_list_from_values(item.get('chat_models') or []), 'chat_audio_input': bool(item.get('chat_audio_input', False)), 'video_models': video_models, 'video_model_capabilities': normalize_video_model_capabilities(item.get('video_model_capabilities'), video_models), 'recommended_models': normalize_recommended_models(item.get('recommended_models')), 'available_models': normalize_available_models(item.get('available_models')), 'model_selection_version': model_selection_version, 'model_names': normalize_model_name_map(item.get('model_names')), 'model_protocols': normalize_model_protocols(item.get('model_protocols')), 'model_request_modes': normalize_model_request_modes(item.get('model_request_modes')), 'ms_loras': normalize_ms_loras(item.get('ms_loras') or []), 'ms_defaults_version': int(item.get('ms_defaults_version') or 0), 'rh_apps': normalize_runninghub_entries(item.get('rh_apps') or [], 'app'), 'volcengine_project_name': volc_project, 'volcengine_region': volc_region}
 
 def modelscope_image_api_root():
     return MODELSCOPE_CHAT_BASE_URL.rstrip('/')
@@ -1256,6 +1258,7 @@ class ApiProviderPayload(BaseModel):
     base_url: str = ''
     protocol: str = 'openai'
     image_request_mode: str = 'openai'
+    image_bypass_system_proxy: StrictBool = False
     image_generation_endpoint: str = ''
     image_edit_endpoint: str = ''
     video_generation_endpoint: str = ''
@@ -2234,21 +2237,26 @@ def responses_output_text_image(raw):
 def _responses_wrap(url, status_code, payload):
     return httpx.Response(status_code, headers={'content-type': 'application/json'}, content=json.dumps(payload, ensure_ascii=False).encode('utf-8'), request=httpx.Request('POST', url))
 
+def _responses_image_submission(body):
+    """Image tools may charge even when the response fails (#493, ADR 0017)."""
+    tools = body.get('tools') or []
+    choice = body.get('tool_choice')
+    return any(isinstance(tool, dict) and tool.get('type') == 'image_generation' for tool in tools) or (isinstance(choice, dict) and choice.get('type') == 'image_generation')
+
+
 async def post_openai_responses(client, url, headers, body):
-    """RS / Responses 请求。图片编辑经常超过 120 秒，非流式请求会被中转前面的
-    Cloudflare 读超时掐断（Error 524）。策略按可靠性排序：
-    1) background:true 后台任务 + 轮询 GET /v1/responses/{id}（每个请求都秒回，彻底绕开超时）；
-    2) 后台模式被拒（4xx 参数类错误）→ SSE 流式；
-    3) 流式也被拒 → 非流式直接请求。
-    5xx/超时一律不自动重试，避免上游已开始生成后重复扣费。"""
+    """Keep text compatibility fallbacks; image submissions only poll accepted tasks."""
+    image_submission = _responses_image_submission(body)
     bg_body = dict(body)
     bg_body['background'] = True
     try:
         resp = await client.post(url, headers=headers, json=bg_body)
     except httpx.HTTPError as e:
+        if image_submission:
+            raise
         logger.warning(f'RS background 请求传输失败，改走流式：{e}')
         return await post_openai_responses_stream(client, url, headers, body)
-    if resp.status_code in RESPONSES_REJECT_STATUSES:
+    if not image_submission and resp.status_code in RESPONSES_REJECT_STATUSES:
         logger.warning(f'RS background 模式被拒（{resp.status_code}），改走流式：{resp.text[:200]}')
         return await post_openai_responses_stream(client, url, headers, body)
     if resp.status_code >= 400:
@@ -2293,9 +2301,8 @@ async def post_openai_responses(client, url, headers, body):
     return _responses_wrap(url, 502, {'error': {'message': f'RS 后台任务超过 {int(RESPONSES_POLL_MAX_SECONDS)}s 仍未完成（任务 id={rid}）'}})
 
 async def post_openai_responses_stream(client, url, headers, body):
-    """RS / Responses 的 SSE 流式请求：流式从一开始就持续有事件字节返回，
-    不会触发中转的 Cloudflare 120s 读超时。收到 response.completed 后
-    把完整 response 对象包装成普通 httpx.Response，下游解析逻辑不变。"""
+    """Normalize SSE results without replaying a potentially charged image POST."""
+    image_submission = _responses_image_submission(body)
     request = httpx.Request('POST', url)
 
     def wrap(status_code, payload):
@@ -2307,7 +2314,7 @@ async def post_openai_responses_stream(client, url, headers, body):
             ctype = (resp.headers.get('content-type') or '').lower()
             if resp.status_code >= 400 or 'text/event-stream' not in ctype:
                 content = await resp.aread()
-                if resp.status_code in {400, 404, 405, 415, 422}:
+                if not image_submission and resp.status_code in {400, 404, 405, 415, 422}:
                     logger.warning(f'RS 流式请求被拒（{resp.status_code}），回退非流式：{content[:200]!r}')
                     return await client.post(url, headers=headers, json=body)
                 return httpx.Response(resp.status_code, headers=resp.headers, content=content, request=request)
@@ -2390,6 +2397,8 @@ async def post_openai_responses_stream(client, url, headers, body):
                 return wrap(200, completed)
             return wrap(502, error_payload or {'error': {'message': 'RS 流式响应结束但没有 response.completed 事件'}})
     except httpx.HTTPError as e:
+        if image_submission:
+            raise
         logger.warning(f'RS 流式请求传输失败，回退非流式：{e}')
         return await client.post(url, headers=headers, json=body)
 
@@ -5155,6 +5164,7 @@ class TestConnectionPayload(BaseModel):
     provider_id: str = ''
     protocol: str = 'openai'
     image_request_mode: str = 'openai'
+    image_bypass_system_proxy: StrictBool = False
 
 def protocol_from_payload(payload):
     provider_id = str(getattr(payload, 'provider_id', '') or '').strip().lower()

@@ -56,7 +56,13 @@ def volcengine_provider_api_key(explicit_key: str='') -> str:
     return _svc._main('provider_env_key_value')('volcengine')
 
 def public_provider(provider):
-    provider = dict(provider or {})
+    # #493: Reuse the settings schema allowlist without re-normalizing model capabilities on a public read.
+    private_fields = {'api_key', 'wallet_api_key', 'volcengine_access_key_id', 'volcengine_secret_access_key',
+                      'clear_key', 'clear_wallet_key', 'clear_volcengine_access_key_id', 'clear_volcengine_secret_access_key'}
+    provider = {key: value for key, value in (provider or {}).items()
+                if key in ApiProviderPayload.model_fields and key not in private_fields}
+    provider['image_bypass_system_proxy'] = (provider.get('image_bypass_system_proxy') is True
+                                             and provider.get('protocol') not in {'codex', 'gemini-cli'})
     key = _svc._main('provider_env_key_value')(provider['id'])
     item = {**provider, 'has_key': bool(key), 'key_preview': mask_secret(key), 'key_env': provider_key_env(provider['id'])}
     if provider.get('id') == 'runninghub':
@@ -484,12 +490,13 @@ def load_api_providers(*, read_only=False):
             raise ValueError('Provider configuration must be an array')
     else:
         raw = None if read_only else firefly_json_io.read_global_json(path, list)
-    defaults = default_api_providers()
+    defaults = [{**item, 'image_bypass_system_proxy': False} for item in default_api_providers()]
     if raw is None:
         return merge_default_api_providers(defaults)
     providers = [_decrypt_provider_secrets(normalize_provider(item)) for item in raw if isinstance(item, dict)]
     providers = [item for item in providers if item.get('id') not in REMOVED_PROVIDER_IDS]
-    return merge_default_api_providers(providers or defaults, inject_missing=not bool(providers))
+    merged = merge_default_api_providers(providers or defaults, inject_missing=not bool(providers))
+    return [{**item, 'image_bypass_system_proxy': item.get('image_bypass_system_proxy') is True} for item in merged]
 
 def _decrypt_provider_secrets(provider):
     provider = dict(provider or {})
@@ -630,6 +637,34 @@ def public_base_url() -> str:
     if value and re.match('^https?://', value, re.I):
         return value
     return ''
+
+def _soon_url_verified_target(provider, model):
+    """#493 endpoint/model profile, not certification of every account's capabilities."""
+    if model != 'gemini-3.1-flash-image-preview':
+        return False
+    try:
+        target = urllib.parse.urlsplit(str((provider or {}).get('base_url') or '').strip().rstrip('/'))
+    except ValueError:
+        return False
+    return (target.scheme == 'https' and target.netloc == 'api.soonstudio.ai'
+            and target.path in ('', '/v1') and not target.query and not target.fragment
+            and not str(provider.get('image_generation_endpoint') or '').strip())
+
+
+def _soon_url_auto_provider(provider, model):
+    """Return an invocation-only profile; never mutate saved settings or model selection."""
+    if not _soon_url_verified_target(provider, model):
+        return provider
+    # Explicit per-model choices and non-default platform modes are not auto policy.
+    for field in ('model_protocols', 'model_request_modes'):
+        if isinstance(provider.get(field), dict) and model in provider[field]:
+            return provider
+    if provider_protocol(provider) != 'openai' or effective_image_request_mode(provider, model) != 'openai':
+        return provider
+    return {**provider,
+            'model_protocols': {**(provider.get('model_protocols') or {}), model: 'openai'},
+            'model_request_modes': {**(provider.get('model_request_modes') or {}), model: 'openai-json'}}
+
 
 def gemini_endpoint_url(provider, model):
     model_name = urllib.parse.quote(gemini_model_name(model), safe='')

@@ -91,7 +91,7 @@
         "globalSettings.theme": { zh: "主题", en: "Theme" },
         "globalSettings.dark": { zh: "深色", en: "Dark" },
         "globalSettings.light": { zh: "浅色", en: "Light" },
-        // #365：语言下拉已删，globalSettings.language / .chinese / .english 三个键没人用了，跟着删。
+        // #365：界面固定中文，不提供语言选择。
         "globalSettings.providers": { zh: "在线服务商与模型", en: "Online providers and models" },
         "globalSettings.addProvider": { zh: "添加服务商", en: "Add provider" },
         "globalSettings.saveProviders": { zh: "保存服务商", en: "Save providers" },
@@ -145,6 +145,8 @@
         "globalSettings.secretKey": { zh: "Secret Access Key", en: "Secret access key" },
         "globalSettings.enabled": { zh: "启用", en: "Enabled" },
         "globalSettings.primary": { zh: "首选服务商", en: "Preferred provider" },
+        "globalSettings.imageBypassSystemProxy": { zh: "生图请求不走系统代理", en: "Bypass system proxy for image requests" },
+        "globalSettings.imageBypassSystemProxyHint": { zh: "仅影响该服务商的图片 HTTP 请求，不影响对话、视频或 CLI。验证地址和拉取模型不验证此项。", en: "Only affects this provider's image HTTP requests, not chat, video, or CLI. Testing the endpoint or fetching models does not verify this setting." },
         "globalSettings.notConfigured": { zh: "未配置", en: "Not configured" },
         "globalSettings.installed": { zh: "已安装", en: "Installed" },
         "globalSettings.notInstalled": { zh: "未安装", en: "Not installed" },

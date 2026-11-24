@@ -100,11 +100,28 @@ def response_failure(response, *, uncertain=False):
         error_status = info.get('status') or info.get('status_code') or code
         if re.fullmatch(r'[45][0-9]{2}', str(error_status)):
             status = int(error_status)
-    # Some gateways include admission/output evidence even in an error response.
-    for item in (body, info, body.get('data') if isinstance(body, dict) else None):
-        if isinstance(item, dict) and any(item.get(k) for k in (
-                'task_id', 'taskId', 'request_id', 'requestId', 'outputs', 'images', 'b64_json')):
-            uncertain = True
+    # Only explicit admission/validation rejection is safe; generic 5xx/408 may be post-acceptance.
+    rejection = classify_generation_failure(response.text, status, None, error_code=code)
+    explicit = rejection.code in {'RATE_LIMITED', 'MODEL_UNAVAILABLE', 'INVALID_PARAMS',
+                                  'REF_UPLOAD_FAILED', 'CONTENT_REJECTED', 'QUOTA_EXHAUSTED'}
+    uncertain |= not (explicit and status >= 400 and status != 408)
+
+    def accepted(item):
+        if isinstance(item, list):
+            return any(accepted(child) for child in item)
+        if not isinstance(item, dict):
+            return False
+        if any(item.get(k) for k in ('id', 'task_id', 'taskId', 'request_id', 'requestId',
+                                     'outputs', 'output', 'images', 'b64_json', 'url', 'accepted')):
+            return True
+        if any(str(item.get(k, '')).lower() in {'accepted', 'submitted', 'queued', 'pending',
+                                               'running', 'processing', 'succeeded', 'completed'}
+               for k in ('status', 'state')):
+            return True
+        return any(accepted(child) for child in item.values() if isinstance(child, (dict, list)))
+
+    # Admission/output evidence wins even when a gateway labels the response as a rejection.
+    uncertain |= accepted(body)
     try:
         headers = response.request.headers
         sensitive = tuple(value for key, value in headers.items()
@@ -120,9 +137,12 @@ def provider_failure(exc):
     if isinstance(exc, UpstreamImageFailure):
         return exc
     if isinstance(exc, httpx.HTTPStatusError):
-        return response_failure(exc.response, uncertain=exc.request.method != 'POST')
+        return response_failure(exc.response, uncertain=exc.request.method != 'POST'
+                                or bool(getattr(exc, 'upstream_task_id', '')))
     if isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)):
-        return UpstreamImageFailure('Connection error', code='timeout' if isinstance(exc, httpx.TimeoutException) else None)
+        # Preserve pre-connection adapter failures, but never restart an SDK-finalized attempt.
+        return UpstreamImageFailure('Connection error', code='timeout' if isinstance(exc, httpx.TimeoutException) else None,
+                                    uncertain=bool(getattr(exc, '_image_transport_final', False)))
     if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)):
         # Once sending or waiting for a response, lack of ACK is not a rejection.
         return UpstreamImageFailure('Connection error or timeout', uncertain=True)

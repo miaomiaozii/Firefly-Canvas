@@ -3,6 +3,9 @@ from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
 from app.constants import NODE_TYPE_IMAGE
 import logging
+import warnings as _warnings
+import struct as _struct
+from PIL.PngImagePlugin import PngInfo as _GenerationPngInfo
 logger = logging.getLogger(__name__)
 
 def reset_canvas_result_nodes_for_media(canvas: Dict[str, Any], paths: List[str]) -> List[str]:
@@ -84,6 +87,94 @@ def reference_to_data_url(ref, max_size=None, max_bytes=None):
     with open(path, 'rb') as f:
         encoded = base64.b64encode(f.read()).decode('ascii')
     return f'data:{content_type_for_path(path)};base64,{encoded}'
+
+def _generation_reference_value(ref) -> str:
+    raw = ref.get('url', '') if isinstance(ref, Mapping) else getattr(ref, 'url', ref)
+    return str(raw or '').strip()
+
+
+def generation_reference_bytes(ref, max_edge=4096) -> Tuple[bytes, str, str]:
+    """Prepare a generation-only copy; unchanged images retain their exact bytes."""
+    if isinstance(max_edge, bool) or not isinstance(max_edge, int) or max_edge < 1:
+        raise ValueError('max_edge must be a positive integer')
+    value = _generation_reference_value(ref)
+    path = _svc._main('local_media_adapter_path')(value, 'image')
+    try:
+        if path:
+            with open(path, 'rb') as handle:
+                raw = handle.read()
+            filename = os.path.basename(path)
+        elif value.startswith('data:image/') and ';base64,' in value:
+            _header, encoded = value.split(';base64,', 1)
+            raw = base64.b64decode(encoded, validate=True)
+            filename = 'reference'
+        else:
+            raise ValueError('reference must resolve to local image bytes or an image data URL')
+        with _warnings.catch_warnings():
+            _warnings.simplefilter('error', Image.DecompressionBombWarning)
+            with Image.open(BytesIO(raw)) as probe:
+                probe.verify()
+            with Image.open(BytesIO(raw)) as image:
+                image.load()
+                fmt = image.format
+                mime = Image.MIME.get(fmt, '')
+                if not mime.startswith('image/'):
+                    raise ValueError('unrecognized image MIME type')
+                if content_type_for_path(filename).split(';', 1)[0] != mime:
+                    extension = {'PNG': '.png', 'JPEG': '.jpg'}.get(fmt) or mimetypes.guess_extension(mime)
+                    if not extension:
+                        raise ValueError('unrecognized image filename extension')
+                    filename = os.path.splitext(filename)[0] + extension
+                if max(image.size) <= max_edge:
+                    return raw, mime, filename
+                # #493: do not flatten animation or substitute a format when a faithful resize is unavailable.
+                if getattr(image, 'n_frames', 1) != 1 or fmt not in {'PNG', 'JPEG', 'WEBP'}:
+                    raise HTTPException(status_code=400, detail={'code': 'image_generation_reference_resize_unsupported', 'message': '该参考图格式或动画不支持保真缩放，请提供最长边不超过上限的原图，或改用静态 PNG/JPEG/WebP'})
+                options = {key: image.info[key] for key in ('icc_profile', 'exif', 'dpi', 'xmp') if key in image.info}
+                # Keep stored pixel orientation and its EXIF together; normalizing orientation would change unaffected inputs.
+                if fmt == 'JPEG':
+                    options.update(quality='keep', subsampling='keep', progressive=bool(image.info.get('progressive') or image.info.get('progression')))
+                    if 'comment' in image.info:
+                        options['comment'] = image.info['comment']
+                elif fmt == 'PNG':
+                    text = _GenerationPngInfo()
+                    for key, content in image.text.items():
+                        text.add_itxt(key, content, lang=getattr(content, 'lang', ''), tkey=getattr(content, 'tkey', ''))
+                    if 'gamma' in image.info:
+                        text.add(b'gAMA', _struct.pack('>I', round(image.info['gamma'] * 100000)))
+                    if 'srgb' in image.info:
+                        text.add(b'sRGB', bytes([image.info['srgb']]))
+                    if 'chromaticity' in image.info:
+                        text.add(b'cHRM', _struct.pack('>8I', *(round(value * 100000) for value in image.info['chromaticity'])))
+                    options['pnginfo'] = text
+                elif fmt == 'WEBP':
+                    options['lossless'] = True
+                resized = image
+                if fmt == 'PNG' and (image.mode == 'P' or 'transparency' in image.info):
+                    # Resample transparency as alpha, not palette indices or an RGB colour key.
+                    resized = image.convert('RGBA' if 'transparency' in image.info else 'RGB')
+                try:
+                    resized.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+                    buffer = BytesIO()
+                    resized.save(buffer, format=fmt, **options)
+                    return buffer.getvalue(), mime, filename
+                finally:
+                    if resized is not image:
+                        resized.close()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail={'code': 'image_generation_reference_invalid', 'message': '参考图无法完整读取或按原格式缩放，请检查图片或改用有效的 PNG/JPEG/WebP'}) from exc
+
+
+def generation_reference_to_data_url(ref, max_edge=4096) -> str:
+    """Preserve existing remote URI transport without fetching it locally."""
+    value = _generation_reference_value(ref)
+    if value.startswith(('http://', 'https://')):
+        return value
+    raw, mime, _filename = generation_reference_bytes(ref, max_edge=max_edge)
+    return f'data:{mime};base64,{base64.b64encode(raw).decode("ascii")}'
+
 
 def media_adapter_data_url(value: str, expected_kind: str, *, max_bytes: Optional[int]=None) -> str:
     """Encode one local adapter input without exposing an app/project URL upstream."""
@@ -780,3 +871,7 @@ def build_project_media_preview(project_id: str, asset_id: str, width: int) -> s
     finally:
         image.close()
     return str(preview_path)
+
+
+# Generation imports these helpers directly; the legacy service/main wildcard API must not expand.
+__all__ = [name for name in globals() if not name.startswith('_') and name not in {'generation_reference_bytes', 'generation_reference_to_data_url'}]

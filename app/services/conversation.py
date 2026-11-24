@@ -111,6 +111,21 @@ def gemini_reference_part(ref):
         return {'fileData': {'mimeType': 'image/png', 'fileUri': value}}
     return None
 
+def gemini_generation_reference_part(ref) -> Optional[Dict[str, Any]]:
+    """Use the generation-only byte policy without changing chat/video adapters."""
+    if ref is None:
+        return None
+    from .media import generation_reference_to_data_url
+    value = generation_reference_to_data_url(ref)
+    if value.startswith('data:image/') and ';base64,' in value:
+        header, encoded = value.split(';base64,', 1)
+        return {'inlineData': {'mimeType': header[5:], 'data': encoded}}
+    if value.startswith(('http://', 'https://')):
+        # A caller's MIME or URL suffix is not trusted project metadata; never guess PNG.
+        raise HTTPException(status_code=400, detail={'code': 'image_generation_reference_mime_unverified', 'message': '远程参考图缺少可信项目 MIME，请先导入项目媒体后再生图'})
+    raise HTTPException(status_code=400, detail={'code': 'image_generation_reference_invalid', 'message': '参考图无法转换为生图输入'})
+
+
 def upstream_message_from_record(item):
     role = item.get('role')
     if role not in {'user', 'assistant'} or item.get('type') == 'image':
@@ -520,3 +535,7 @@ async def persist_project_conversation_pending(project_id: str, node_id: str, us
         except RevisionConflict:
             continue
     raise HTTPException(status_code=409, detail='项目持续被修改，对话任务尚未登记')
+
+
+# Generation imports this helper directly; chat keeps its existing reference adapter.
+__all__ = [name for name in globals() if not name.startswith('_') and name != 'gemini_generation_reference_part']

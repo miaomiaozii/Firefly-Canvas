@@ -36,6 +36,11 @@
     baseInput.placeholder = PROTOCOL_BASE_URL_HINTS[protocolSelect.value] || '';
     const defaultUrl = PROTOCOL_BASE_URL_DEFAULTS[protocolSelect.value];
     if(defaultUrl && !String(baseInput.value || '').trim()) baseInput.value = defaultUrl;
+    const imageNetwork = card.querySelector('.provider-image-network');
+    const bypassInput = card.querySelector('[data-field="image_bypass_system_proxy"]');
+    const cliProtocol = ['codex', 'gemini-cli'].includes(protocolSelect.value);
+    if(imageNetwork) imageNetwork.hidden = cliProtocol;
+    if(bypassInput) bypassInput.disabled = cliProtocol;
   }
 
   function preferredModelForKind(kind, models, recommended=''){
@@ -193,6 +198,10 @@
         <div class="model-field"><span class="model-field-title">${tr('globalSettings.videoModels')}</span><textarea data-models="video_models"></textarea><div class="model-picker" data-model-picker="video_models" hidden></div></div>
       </div>
       <div class="provider-models-hint">${tr('globalSettings.modelsHint')}</div>
+      <div class="provider-image-network">
+        <label class="inline-check"><input data-field="image_bypass_system_proxy" type="checkbox"> ${tr('globalSettings.imageBypassSystemProxy')}</label>
+        <div class="provider-models-hint">${tr('globalSettings.imageBypassSystemProxyHint')}</div>
+      </div>
       <div class="provider-actions">
         <button type="button" class="quiet-button" data-provider-action="test">${tr('globalSettings.testConnection')}</button>
         <button type="button" class="quiet-button" data-provider-action="fetch">${tr('globalSettings.fetchModels')}</button>
@@ -212,13 +221,13 @@
     ['name', 'base_url', 'protocol'].forEach(field => {
       card.querySelector(`[data-field="${field}"]`).value = provider[field] || (field === 'protocol' ? 'openai' : '');
     });
-    // #330: 协议切换时同步 Base URL 占位提示，空值自动填默认（如 MiniMax 国内站）。
     syncProtocolBaseUrl(card);
     card.querySelector('[data-field="protocol"]').addEventListener('change', () => syncProtocolBaseUrl(card));
     const keyInput = card.querySelector('[data-field="api_key"]');
     keyInput.placeholder = provider.key_preview || tr('globalSettings.notConfigured');
     card.querySelector('[data-field="enabled"]').checked = provider.enabled !== false;
     card.querySelector('[data-field="primary"]').checked = provider.primary === true;
+    card.querySelector('[data-field="image_bypass_system_proxy"]').checked = provider.image_bypass_system_proxy === true;
     const secretFields = card.querySelector('.provider-extra-secrets');
     if(provider.id === 'runninghub'){
       secretFields.innerHTML = `<label>${tr('globalSettings.walletKey')}<input data-field="wallet_api_key" type="password" autocomplete="new-password"></label>`;
@@ -261,6 +270,7 @@
       protocol: value('protocol') || 'openai',
       enabled: card.querySelector('[data-field="enabled"]').checked,
       primary: card.querySelector('[data-field="primary"]').checked,
+      image_bypass_system_proxy: !card.querySelector('[data-field="image_bypass_system_proxy"]').disabled && card.querySelector('[data-field="image_bypass_system_proxy"]').checked,
       image_models: splitModels(card.querySelector('[data-models="image_models"]').value),
       chat_models: splitModels(card.querySelector('[data-models="chat_models"]').value),
       video_models: splitModels(card.querySelector('[data-models="video_models"]').value),
@@ -288,6 +298,7 @@
       api_key: payload.api_key || '',
       protocol: payload.protocol,
       image_request_mode: payload.image_request_mode || 'openai',
+      image_bypass_system_proxy: payload.image_bypass_system_proxy,
     };
   }
 
