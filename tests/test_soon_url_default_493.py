@@ -462,6 +462,37 @@ def test_manual_and_other_provider_modes_keep_existing_body(runtime, monkeypatch
     assert saved == soon_default_provider(**changes)
 
 
+def test_apimart_reference_baseline_is_original_bytes_no_4096_prescale(runtime, monkeypatch):
+    # #500 review 裁定（废 :786 预缩行）：基线=原图字节；长边 4200>4096 也必须原样直发。
+    runtime['_provider'] = soon_default_provider(base_url='https://api.apimart.ai/v1')
+    import random
+    buffer = io.BytesIO()
+    Image.frombytes('RGBA', (4200, 40), random.Random(500).randbytes(4200 * 40 * 4)).save(buffer, format='PNG')
+    raw = buffer.getvalue()
+    network = install_soon_memory_network(monkeypatch)
+    run_soon_default_generation(runtime, refs=[ref(raw)])
+    body = network.requests()[0][1]
+    assert body['image_urls'] == ['data:image/png;base64,' + base64.b64encode(raw).decode('ascii')]
+
+
+def test_apimart_oversize_413_engages_unified_ladder(runtime, monkeypatch):
+    # #500：apimart 未登记上限 → 与 soon 同走 UNKNOWN 政策的 413 驱动阶梯，压不动才败。
+    runtime['_provider'] = soon_default_provider(base_url='https://api.apimart.ai/v1')
+    import random
+    buffer = io.BytesIO()
+    Image.frombytes('RGBA', (2600, 1600), random.Random(7).randbytes(2600 * 1600 * 4)).save(buffer, format='PNG')
+    raw = buffer.getvalue()
+    network = install_soon_memory_network(monkeypatch, [(413, {'error': 'too large'})] * 5)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(runtime['run_provider_generation_with_backoff'](runtime['_provider']['id'],
+            runtime['generate_ai_image'], PROMPT, '1024x1024', '', MODEL, [ref(raw)], runtime['_provider']['id']))
+    assert caught.value.status_code == 413
+    bodies = network.raw_bodies()
+    assert len(bodies) == 5  # 首发 + 最多 4 次重发，与 soon 同构
+    for previous, current in zip(bodies, bodies[1:]):
+        assert len(current) < len(previous)
+
+
 def test_upstream_413_known_cap_conversion_then_final_fail(runtime, monkeypatch):
     # 裁定 A：已知上限仍被 413 → 阶梯转换一步后至多重提一次；再拒即最终失败。
     network = install_soon_memory_network(monkeypatch, [(413, {'error': 'request too large'}), (413, {'error': 'request too large'})])

@@ -22,7 +22,7 @@
 
 ## 边界与已知限制
 
-- **apimart 分支维持 4096 预缩放**（该通道未接预算阶梯，#500 未授权对其新增未知上限风险；如需一并废除另开票）。
+- **apimart 分支已按 review 裁定接入统一预算管线**（第二轮意见）：废 4096 强制预缩放，`image_urls` 基线=原图字节，经 `prepare_budgeted_request` + `_budgeted_json_send`；未登记上限→真实 413 驱动 UNKNOWN 阶梯，压不动才失败；远程参考图仍直通。ComfyUI 的官方面积档缩放（`comfyui_resize_to_edit_target`）不在本票范围，维持不动。
 - Pillow 12.2：JPEG 保存对字面量 `exif=None` 抛 TypeError（`info.get("exif", b"")` 取到 None），`encode_stage` 只传非空元数据；`Image.Exif.read()` 已移除，用 `Exif.load(bytes)`（需剥 `Exif\x00\x00` 前缀）。
 - 测试 `sof_sampling` 夹具的定长段跳过为 `i + 2 + len`（原式 `i + 4 + len` 多跳 2 字节落在下一段内部）。
 
@@ -30,3 +30,4 @@
 
 - `tests/test_image_request_budget_500.py`（新增 14 例：原图字节一致、质量优先、底线、4:4:4+ICC/EXIF、透明 WebP alpha、水位冻结/重分、到底零请求+N、顺序/索引、passthrough 计量）。
 - 旧 #493 断言按票面翻新的：`test_soon_url_default_493.py`（mandatory-4096 对、oversized-measured 对）、`test_image_generation_pipeline_493.py::test_real_native_reference_policy`、`test_image_request_budget_493.py`（stage 顺序、alpha 阶梯、基准重建、无损档废除、水位两轮语义、floor 文案）。函数名保留以稳定测试 ID。
+- review 第二轮（apimart）新增：`test_soon_url_default_493.py::test_apimart_reference_baseline_is_original_bytes_no_4096_prescale`（长边 4200 仍逐字节直发）与 `::test_apimart_oversize_413_engages_unified_ladder`（413 驱动、首发+4 重发、体积严格推进）；契约金样 `protocol:apimart`（远程 URL 直通、caller 顺序）不动。

@@ -2748,11 +2748,21 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
         elif is_apimart:
             apimart_size, resolution = (size, str((image_parameters or {}).get('resolution') or '')) if preserve_model else apimart_size_resolution(size)
             body = {'model': model, 'prompt': prompt, 'n': 1, 'size': apimart_size, 'resolution': resolution, 'official_fallback': False}
-            if image_refs:
-                body['image_urls'] = [_generation_reference_to_data_url(ref) for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]]
             if preserve_model and routed_image_params.get('aspect_ratio'):
                 body['aspect_ratio'] = routed_image_params['aspect_ratio']
-            response = await client.post(gen_url, headers=_svc._main('api_headers')(provider=provider, model=model), json=body)
+            # #500 review 裁定：废 4096 强制预缩放（原 :786 行）——基线发原图字节；
+            # 与 soon 同走 _budgeted_json_send 统一阶梯/水位（apimart 未登记上限 →
+            # 真实 413 驱动 UNKNOWN 政策），压不动再失败。远程参考图仍直通不压。
+            headers_json = _svc._main('api_headers')(provider=provider, model=model)
+            prepared_refs = _budgeted_prepared_references(image_refs[:ONLINE_IMAGE_REFERENCE_MAX])
+
+            def build_apimart_request(refs_list, _body=body, _has_refs=bool(image_refs)):
+                sent = dict(_body)
+                if _has_refs:
+                    sent['image_urls'] = [r.data_url() for r in refs_list]
+                return client.build_request('POST', gen_url, headers=headers_json, json=sent)
+
+            response, _sent_request = await _budgeted_json_send(client, build_apimart_request, prepared_refs, _lookup_known_body_limit(gen_url))
         elif is_gpt2 and (not image_refs) and (not mask_refs):
             body = {'model': model, 'prompt': prompt}
             if not routed_image_params.get('aspect_ratio'):
