@@ -326,8 +326,12 @@ class TestSpawnReadyTimeout(AgentHostKillBase):
         self._set_fake_env("FAKE_PI_PIDFILE", str(Path(self.temp_dir.name) / "fake.pid"))
 
     def test_spawn_ready_timeout_kills_sidecar(self):
-        self._patch("RPC_SPAWN_TIMEOUT_SECONDS", 1.5)
         session = self._session()
+        # 就绪等待读的是 adapter.startup_timeout_s；模块常量 RPC_SPAWN_TIMEOUT_SECONDS 已无读取方，patch 它会白等 60s。
+        adapter = self.manager._adapter_for(session)
+        patcher = patch.object(adapter, "startup_timeout_s", 1.5)
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.assertFalse(self._spawn(session))
         fake_pid = self._read_pid("fake.pid")
         self.assertTrue(
