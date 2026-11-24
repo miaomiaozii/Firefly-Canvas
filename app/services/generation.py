@@ -12,10 +12,128 @@ from .comfyui_workflows import COMFYUI_MAX_REFERENCES, COMFYUI_REFERENCE_JPEG_QU
 from firefly_diagnostics import emit as _diag_emit
 from firefly_generation import is_soon_openrouter_video_model, soon_gemini_native_model
 from .generation_failures import AGENT_IMAGE_ATTEMPT, UpstreamImageFailure, mark_accepted, response_failure, provider_failure
-from .conversation import gemini_generation_reference_part as _gemini_generation_reference_part
-from .media import generation_reference_to_data_url as _generation_reference_to_data_url, generation_reference_bytes as _generation_reference_bytes
-from .providers import _soon_url_auto_provider, _soon_url_verified_target
+from .media import generation_reference_to_data_url as _generation_reference_to_data_url, generation_reference_bytes as _generation_reference_bytes, _generation_reference_value
+from .providers import _soon_url_auto_provider, load_upstream_direct
+from .upstream_http import create_upstream_async_client as _create_upstream_async_client, create_upstream_client as _create_upstream_client
 from .image_transport import create_image_transport_client as _create_image_transport_client, image_response_json as _image_response_json, record_image_decode as _record_image_decode, _record_current_image_decode, _image_upload_retry_scope
+from .image_request_budget import (PreparedReference as _BudgetPreparedReference, lookup_known_body_limit as _lookup_known_body_limit,
+                                   prepare_budgeted_request as _prepare_budgeted_request, reference_projection as _reference_projection,
+                                   temporary_413_target as _temporary_413_target)
+
+# #493：每候选发送副本报告（ContextVar 任务本地）：路由快照后写入历史与节点标注；原图永不动，重试重算直接覆盖。
+_REFERENCE_PREPARATION = ContextVar('reference_preparation', default=None)
+
+
+def clear_reference_preparation():
+    _REFERENCE_PREPARATION.set(None)
+
+
+def open_reference_preparation():
+    # asyncio.gather 子任务继承的是 context 的浅拷贝：子任务里 .set() 新值传不回父任务。
+    # 父任务先放一个可变 box，子任务往里写，跨 gather 也能拿到报告。
+    box = {'__box__': True, 'report': None}
+    _REFERENCE_PREPARATION.set(box)
+    return box
+
+
+def record_reference_preparation(report):
+    holder = _REFERENCE_PREPARATION.get()
+    if isinstance(holder, dict) and holder.get('__box__'):
+        holder['report'] = report
+    else:
+        _REFERENCE_PREPARATION.set(report)
+
+
+def snapshot_reference_preparation():
+    report = _REFERENCE_PREPARATION.get()
+    if isinstance(report, dict) and report.get('__box__'):
+        report = report.get('report')
+    return copy.deepcopy(report) if report else None
+
+
+def _budgeted_prepared_references(references):
+    prepared = []
+    for index, ref in enumerate(references):
+        raw_source = _generation_reference_value(ref)
+        # 大小写不敏感的远程判定（HTTPS:// 也是远程）；先于本地解析，避免大写 scheme 被误当本地图报 400。
+        # 远程串诚实计入请求体、永不压（不抓取、不改写，阶梯上不推进）。
+        if raw_source.lower().startswith(('http://', 'https://')):
+            prepared.append(_BudgetPreparedReference(index, passthrough_value=raw_source))
+            continue
+        value = _generation_reference_to_data_url(ref)  # 强制 4096 基准，只在这里编码一次
+        if value.startswith(('http://', 'https://')):
+            prepared.append(_BudgetPreparedReference(index, passthrough_value=value))
+            continue
+        _header, _encoded = value.split(';base64,', 1)
+        raw = base64.b64decode(_encoded, validate=True)
+        mime = _header[5:].split(';', 1)[0]
+        try:
+            prepared.append(_BudgetPreparedReference(index, raw=raw, mime_hint=mime))
+        except ValueError:
+            # 动图等无法阶梯副本：原 data URL 直通，不可压。
+            prepared.append(_BudgetPreparedReference(index, passthrough_value=value))
+    return prepared
+
+
+def _reference_report(prepared, body_bytes, *, policy, resubmits=0, rejected_bodies=()):
+    return {'policy': policy, 'changed': any(r.changed for r in prepared), 'body_bytes': int(body_bytes),
+            'resubmits': int(resubmits), 'rejected_body_bytes': [int(b) for b in rejected_bodies],
+            'references': [_reference_projection(r) for r in prepared]}
+
+
+async def _budgeted_json_send(client, build_request, prepared_refs, known_limit):
+    """#493 裁定落地：已知上限按基准实际序列化判定、超限只压发送副本（每轮最大者、first-fit）；
+    已知上限仍 413 → 转换一步至多重提一次；未知上限 → floor(被拒正文×0.85) 临时上限、最多 4 次重发，
+    不写回登记；压到编码底线仍被拒才最终失败，错误附每次被拒体积。报告写 _REFERENCE_PREPARATION。"""
+    holder = _REFERENCE_PREPARATION.get()
+    if isinstance(holder, dict) and holder.get('__box__'):
+        holder['report'] = None  # 同一 box 跨多次 send：每次发送重置，报告对应最后一次 send
+    else:
+        clear_reference_preparation()
+    if known_limit is not None:
+        outcome = _prepare_budgeted_request(prepared_refs, build_request=build_request, local_bytes=known_limit.local_bytes)
+        request = outcome.request
+        response = await client.send(request)
+        if response.status_code == 413:
+            movers = [r for r in prepared_refs if r.has_next_stage()]
+            rejected = [len(request.content)]
+            if movers:
+                max(movers, key=lambda r: (r.current_bytes, -r.index)).advance()
+                request = build_request(prepared_refs)
+                response = await client.send(request)
+                record_reference_preparation(_reference_report(prepared_refs, len(request.content), policy='known_cap', resubmits=1, rejected_bodies=rejected))
+            else:
+                record_reference_preparation(_reference_report(prepared_refs, len(request.content), policy='known_cap', rejected_bodies=rejected))
+        elif outcome.changed:
+            record_reference_preparation(_reference_report(prepared_refs, len(request.content), policy='known_cap'))
+        return response, request
+    request = build_request(prepared_refs)
+    response = await client.send(request)
+    rejected_bodies, resubmits = [], 0
+    while response.status_code == 413 and resubmits < 4 and any(r.has_next_stage() for r in prepared_refs):
+        rejected_bodies.append(len(request.content))
+        target = _temporary_413_target(len(request.content))
+        try:
+            outcome = _prepare_budgeted_request(prepared_refs, build_request=build_request, local_bytes=target - 1)
+        except HTTPException as exc:
+            # 裁定：压到编码底线仍达不到 synthetic 目标时，阶梯已全量推进（refs 就地变更），
+            # 仍应发送当前最优副本让供应商裁决；只有连体积都无法推进才最终失败。
+            best = build_request(prepared_refs)
+            if not (isinstance(exc.detail, dict) and exc.detail.get('code') == 'request_body_floor_exceeded') \
+                    or len(best.content) >= len(request.content):
+                if isinstance(exc.detail, dict):
+                    exc.detail['rejected_body_bytes'] = list(rejected_bodies)
+                raise
+            request = best
+            response = await client.send(request)
+            resubmits += 1
+            break
+        request = outcome.request
+        response = await client.send(request)
+        resubmits += 1
+    if rejected_bodies:
+        record_reference_preparation(_reference_report(prepared_refs, len(request.content), policy='unknown_cap_413', resubmits=resubmits, rejected_bodies=rejected_bodies))
+    return response, request
 import logging
 logger = logging.getLogger(__name__)
 
@@ -103,7 +221,7 @@ async def upload_media_for_apimart(client, provider, ref_url: str, kind: str) ->
 
 async def submit_volcengine_avatar_asset(public_url: str, name: str, kind: str, project_name: str='default', group_name: str='') -> str:
     """把公网可访问素材提交到火山 Ark 私域素材库（异步）。返回 Asset Id 作为任务 ID。"""
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with _create_upstream_async_client(f"https://{_svc.VOLCENGINE_ARK_ASSET_HOST}", direct=load_upstream_direct(), timeout=120) as client:
         group_id = await _svc.volcengine_ensure_asset_group(client, project_name, group_name)
         created = await _svc.volcengine_ark_asset_call(client, 'CreateAsset', {'GroupId': group_id, 'URL': public_url, 'AssetType': apimart_avatar_asset_type(kind), 'Name': (name or 'asset')[:60], 'ProjectName': (project_name or 'default').strip() or 'default'})
     asset_id = str(created.get('Id') or '').strip()
@@ -113,7 +231,7 @@ async def submit_volcengine_avatar_asset(public_url: str, name: str, kind: str, 
 
 async def check_volcengine_avatar_task(asset_id: str, project_name: str='default') -> Dict[str, Any]:
     """查询一次火山素材状态。返回 {status: Active/Processing/Failed, asset_uri, detail}。"""
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with _create_upstream_async_client(f"https://{_svc.VOLCENGINE_ARK_ASSET_HOST}", direct=load_upstream_direct(), timeout=60) as client:
         info = await _svc.volcengine_ark_asset_call(client, 'GetAsset', {'Id': asset_id, 'ProjectName': (project_name or 'default').strip() or 'default'})
     status = str(info.get('Status') or '').strip()
     if status == 'Active':
@@ -162,7 +280,7 @@ async def generate_modelscope_provider_image(prompt, size, model, reference_imag
     if refs:
         payload['image_url'] = refs
     api_root = modelscope_image_api_root()
-    async with _create_image_transport_client(provider, client_factory=httpx.AsyncClient, phase_tag='generate', max_upload_retries=2, timeout=AI_REQUEST_TIMEOUT) as client:
+    async with _create_image_transport_client(provider, client_factory=httpx.AsyncClient, phase_tag='generate', max_upload_retries=2, timeout=AI_REQUEST_TIMEOUT, target_url=api_root, direct=load_upstream_direct()) as client:
         submit_res = await client.post(f'{api_root}/images/generations', headers=headers, json=payload)
         submit_res.raise_for_status()
         raw = submit_res.json()
@@ -895,7 +1013,7 @@ async def generate_runninghub_entry_image(prompt, size, model, reference_images,
         if height and 'height' in names:
             return height
         return None
-    async with _create_image_transport_client(provider, client_factory=httpx.AsyncClient, phase_tag='generate', max_upload_retries=2, timeout=timeout) as client:
+    async with _create_image_transport_client(provider, client_factory=httpx.AsyncClient, phase_tag='generate', max_upload_retries=2, timeout=timeout, target_url=runninghub_endpoint_url(provider, ''), direct=load_upstream_direct()) as client:
         uploaded = []
         for ref in (reference_images or [])[:ONLINE_IMAGE_REFERENCE_MAX]:
             ref_url = ref.get('url') if isinstance(ref, dict) else ref
@@ -998,7 +1116,7 @@ async def generate_runninghub_provider_image(prompt, size, model, reference_imag
     quality_field = runninghub_schema_field(params, 'quality')
     if quality_field:
         body['quality'] = runninghub_schema_value(quality_field, 'medium')
-    async with _create_image_transport_client(provider, client_factory=httpx.AsyncClient, phase_tag='generate', max_upload_retries=2, timeout=httpx.Timeout(connect=20.0, read=1800.0, write=180.0, pool=20.0)) as client:
+    async with _create_image_transport_client(provider, client_factory=httpx.AsyncClient, phase_tag='generate', max_upload_retries=2, timeout=httpx.Timeout(connect=20.0, read=1800.0, write=180.0, pool=20.0), target_url=runninghub_endpoint_url(provider, ''), direct=load_upstream_direct()) as client:
         image_urls = []
         for ref in (reference_images or [])[:ONLINE_IMAGE_REFERENCE_MAX]:
             url = await _svc.runninghub_upload_reference(client, provider, ref)
@@ -1073,7 +1191,7 @@ async def generate_runninghub_video(payload, provider):
         body['generateAudio'] = bool(payload.generate_audio)
     if runninghub_schema_field(params, 'watermark'):
         body['watermark'] = bool(payload.watermark)
-    async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as client:
+    async with _create_upstream_async_client(runninghub_endpoint_url(provider, ''), direct=load_upstream_direct(), timeout=VIDEO_POLL_TIMEOUT) as client:
         image_refs = []
         for ref in (payload.images or [])[:10]:
             ref_url = getattr(ref, 'url', '') or ''
@@ -1505,7 +1623,7 @@ async def submit_apimart_avatar_asset(provider, public_url: str, name: str, kind
         raise HTTPException(status_code=400, detail=f"{provider.get('name') or provider['id']} 未配置 Base URL")
     register_url = f'{base_url}/v1/seedance2/private-avatar'
     body = {'project_name': str(project_name or 'default').strip() or 'default', 'asset_type': apimart_avatar_asset_type(kind), 'group': {'name': (group_name or name or '数字人素材')[:60]}, 'assets': [{'url': public_url, 'name': (name or 'asset')[:60]}]}
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with _create_upstream_async_client(register_url, direct=load_upstream_direct(), timeout=120) as client:
         resp = await client.post(register_url, headers=_svc._main('api_headers')(provider=provider), json=body, timeout=120)
         if resp.status_code not in (200, 201):
             raise HTTPException(status_code=502, detail=f'APIMart 数字人注册失败（{resp.status_code}）：{resp.text[:300]}')
@@ -1522,7 +1640,7 @@ async def check_apimart_avatar_task(provider, task_id: str) -> Dict[str, Any]:
     if not base_url:
         raise HTTPException(status_code=400, detail=f"{provider.get('name') or provider['id']} 未配置 Base URL")
     task_url = f'{base_url}/v1/tasks/{task_id}'
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with _create_upstream_async_client(task_url, direct=load_upstream_direct(), timeout=60) as client:
         resp = await client.get(task_url, headers=_svc._main('api_headers')(provider=provider), timeout=60)
         if resp.status_code not in (200, 201):
             raise HTTPException(status_code=502, detail=f'查询审核状态失败（{resp.status_code}）：{resp.text[:200]}')
@@ -1596,7 +1714,7 @@ async def save_remote_video_to_output(url, prefix='video_', category='output'):
     try:
         timeout = httpx.Timeout(connect=20.0, read=VIDEO_POLL_TIMEOUT, write=60.0, pool=20.0)
         headers = {'User-Agent': 'Firefly-Canvas/1.0', 'Accept': 'video/*,application/octet-stream,*/*;q=0.8'}
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True, headers=headers) as client:
+        async with _create_upstream_async_client(url, direct=load_upstream_direct(), timeout=timeout, follow_redirects=True, headers=headers) as client:
             response = await client.get(url)
             response.raise_for_status()
             content_type = (response.headers.get('Content-Type') or '').lower()
@@ -1635,15 +1753,22 @@ async def save_remote_video_to_output(url, prefix='video_', category='output'):
 async def generate_gemini_provider_image(prompt, size, model, reference_images=None, provider=None, image_parameters=None):
     model_name = gemini_model_name(soon_gemini_native_model(provider, model))
     endpoint = _svc.gemini_endpoint_url(provider, model_name)
-    parts = [{'text': prompt.strip()}]
-    for ref in (reference_images or [])[:ONLINE_IMAGE_REFERENCE_MAX]:
-        part = _gemini_generation_reference_part(ref)
-        if part:
-            parts.append(part)
-    body = {'contents': [{'role': 'user', 'parts': parts}], 'generationConfig': {'responseModalities': ['TEXT', 'IMAGE'], 'imageConfig': gemini_image_config(size, image_parameters)}}
-    async with _create_image_transport_client(provider, client_factory=httpx.AsyncClient, phase_tag='generate', max_upload_retries=2, timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)) as client:
+    prepared_refs = _budgeted_prepared_references((reference_images or [])[:ONLINE_IMAGE_REFERENCE_MAX])
+    generation_config = {'responseModalities': ['TEXT', 'IMAGE'], 'imageConfig': gemini_image_config(size, image_parameters)}
+
+    def build_gemini_request(refs_list):
+        parts = [{'text': prompt.strip()}]
+        for r in refs_list:
+            if r.passthrough:
+                # 远程参考在 native 路径维持既有「可信项目 MIME」400 边界，不猜格式。
+                raise HTTPException(status_code=400, detail={'code': 'image_generation_reference_mime_unverified', 'message': '远程参考图缺少可信项目 MIME，请先导入项目媒体后再生图'})
+            parts.append({'inlineData': {'mimeType': r.current_mime, 'data': base64.b64encode(r.current_raw()).decode('ascii')}})
+        body = {'contents': [{'role': 'user', 'parts': parts}], 'generationConfig': generation_config}
+        return client.build_request('POST', endpoint, headers=_svc._main('api_headers')(provider=provider), json=body)
+
+    async with _create_image_transport_client(provider, client_factory=httpx.AsyncClient, phase_tag='generate', max_upload_retries=2, timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0), target_url=endpoint, direct=load_upstream_direct()) as client:
         try:
-            response = await client.post(endpoint, headers=_svc._main('api_headers')(provider=provider), json=body)
+            response, _sent_request = await _budgeted_json_send(client, build_gemini_request, prepared_refs, _lookup_known_body_limit(endpoint))
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             if AGENT_IMAGE_ATTEMPT.get():
@@ -1675,7 +1800,7 @@ async def generate_volcengine_provider_image(prompt, size, model, reference_imag
     images = [value for value in images if value]
     if images:
         body['image'] = images
-    async with _create_image_transport_client(provider, client_factory=httpx.AsyncClient, phase_tag='generate', max_upload_retries=2, timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0)) as client:
+    async with _create_image_transport_client(provider, client_factory=httpx.AsyncClient, phase_tag='generate', max_upload_retries=2, timeout=httpx.Timeout(connect=20.0, read=1800.0, write=120.0, pool=20.0), target_url=endpoint, direct=load_upstream_direct()) as client:
         response = await client.post(endpoint, headers=_svc._main('api_headers')(provider=provider), json=body)
         response.raise_for_status()
         raw = response.json()
@@ -1897,7 +2022,7 @@ async def generate_minimax_provider_image(prompt, size, model, reference_images=
             progress_callback('provider_generating')
         except Exception:
             pass
-    async with httpx.AsyncClient(timeout=timeout) as client:
+    async with _create_upstream_async_client(endpoint, direct=load_upstream_direct(), timeout=timeout) as client:
         try:
             response = await client.post(endpoint, headers=_svc._main('api_headers')(provider=provider, model=model), json=body)
         except httpx.TimeoutException as exc:
@@ -2397,33 +2522,6 @@ class _FalQueueResponse:
 
 
 # #493: conservative prepared-image SUM policy, not a discovered vendor/JSON hard limit.
-_SOON_URL_REFERENCE_BUDGET_BYTES = 8_000_000
-
-
-def _soon_url_reference_data_urls(references):
-    total = 0
-    values = []
-    for ref in references:
-        value = str(ref.get('url') or '').strip()
-        if value.lower().startswith(('http://', 'https://')):
-            raise HTTPException(status_code=413, detail={
-                'code': 'soon_url_reference_budget_unmeasurable',
-                'message': 'Soon URL 通道无法核算远程参考图字节；请先将图片导入项目后再生成。未提交生成请求。',
-                'budget_bytes': _SOON_URL_REFERENCE_BUDGET_BYTES,
-            })
-        raw, mime, _filename = _generation_reference_bytes(ref, max_edge=4096)
-        total += len(raw)
-        if total > _SOON_URL_REFERENCE_BUDGET_BYTES:
-            raise HTTPException(status_code=413, detail={
-                'code': 'soon_url_reference_budget_exceeded',
-                'message': 'Soon URL 通道参考图经最长边 4096 策略准备后合计超过 8,000,000 字节保守预算（非服务商硬限）。未提交生成请求；不会为预算压缩、转格式或再次缩小图片。',
-                'budget_bytes': _SOON_URL_REFERENCE_BUDGET_BYTES,
-                'prepared_bytes': total,
-            })
-        values.append(f'data:{mime};base64,{base64.b64encode(raw).decode("ascii")}')
-    return values
-
-
 async def _generate_soon_url_candidate(prompt, size, quality, model, reference_images=None, *, provider, image_parameters=None, progress_callback=None):
     """Retain the explicitly configured paid-candidate entry for body comparisons."""
     if effective_protocol(provider, model) != 'openai' or effective_image_request_mode(provider, model) != 'openai-json':
@@ -2525,13 +2623,10 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
     mask_refs = [ref for ref in refs if str(ref.get('role') or '').strip().lower() == 'mask' or str(ref.get('name') or '').lower().endswith('_mask.png')]
     image_refs = [ref for ref in refs if ref not in mask_refs]
     image_request_mode = effective_image_request_mode(provider, model)
-    soon_url_images = None
-    if image_request_mode == 'openai-json' and _soon_url_verified_target(provider, model):
-        # Prepare once before opening the submission client; budget never authorizes image degradation.
-        soon_url_images = _soon_url_reference_data_urls(image_refs[:ONLINE_IMAGE_REFERENCE_MAX])
+    # #493：预算判定移入分支内用 client.build_request 实测实际序列化；不再预扫参考图求和（旧 8M 求和策略已被用户裁定替换）。
     # #249: Long-running image modes share the configured read timeout; other phases are engineering limits.
     request_timeout = httpx.Timeout(connect=20.0, read=AI_REQUEST_TIMEOUT, write=120.0, pool=20.0) if is_gpt2 or is_apimart or image_request_mode in {'openai-json', 'openai-video-proxy', 'openai-responses', 'fal'} else AI_REQUEST_TIMEOUT
-    async with _create_image_transport_client(provider, client_factory=httpx.AsyncClient, phase_tag='generate', max_upload_retries=2, timeout=request_timeout) as client:
+    async with _create_image_transport_client(provider, client_factory=httpx.AsyncClient, phase_tag='generate', max_upload_retries=2, timeout=request_timeout, target_url=(gen_url, edit_url, base_url), direct=load_upstream_direct()) as client:
         response = None
 
         async def post_openai_edits(edit_files=None):
@@ -2600,7 +2695,7 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
                 headers = _svc._main('api_headers')(json_body=False, provider=provider, model=model)
 
                 def post_video_proxy_multipart():
-                    with httpx.Client(timeout=request_timeout) as sync_client:
+                    with _create_upstream_client(video_url, direct=load_upstream_direct(), timeout=request_timeout) as sync_client:
                         return sync_client.post(video_url, headers=headers, data=form_data, files=files)
                 response = await asyncio.to_thread(post_video_proxy_multipart)
             else:
@@ -2627,16 +2722,25 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
             response = await post_openai_responses(client, responses_url, _svc._main('api_headers')(provider=provider, model=model), body)
         elif image_request_mode == 'openai-json':
             extra_body = {'response_format': 'url'}
-            if image_refs:
-                extra_body['image'] = (soon_url_images if soon_url_images is not None else
-                                       [_generation_reference_to_data_url(ref) for ref in image_refs[:ONLINE_IMAGE_REFERENCE_MAX]])
+            refs_slice = image_refs[:ONLINE_IMAGE_REFERENCE_MAX]
             body = {'model': model, 'prompt': prompt}
             if not routed_image_params.get('aspect_ratio'):
                 body['size'] = size
             body['extra_body'] = extra_body
             if routed_image_params:
                 body.update(routed_image_params)
-            response = await client.post(gen_url, headers=_svc._main('api_headers')(provider=provider, model=model), json=body)
+            headers_json = _svc._main('api_headers')(provider=provider, model=model)
+            prepared_refs = _budgeted_prepared_references(refs_slice)
+
+            def build_json_request(refs_list, _body=body, _extra=extra_body, _has_refs=bool(refs_slice)):
+                eb = dict(_extra)
+                if _has_refs:
+                    eb['image'] = [r.data_url() for r in refs_list]
+                sent = dict(_body)
+                sent['extra_body'] = eb
+                return client.build_request('POST', gen_url, headers=headers_json, json=sent)
+
+            response, _sent_request = await _budgeted_json_send(client, build_json_request, prepared_refs, _lookup_known_body_limit(gen_url))
         elif is_apimart:
             apimart_size, resolution = (size, str((image_parameters or {}).get('resolution') or '')) if preserve_model else apimart_size_resolution(size)
             body = {'model': model, 'prompt': prompt, 'n': 1, 'size': apimart_size, 'resolution': resolution, 'official_fallback': False}
@@ -3842,7 +3946,7 @@ async def execute_canvas_video(payload: CanvasVideoRequest, provider: Mapping[st
     is_kling = _svc._main('is_kling_model')(requested_model)
     if is_kling:
         try:
-            async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as kling_client:
+            async with _create_upstream_async_client(base_url, direct=load_upstream_direct(), timeout=VIDEO_POLL_TIMEOUT) as kling_client:
                 return await generate_kling_video(kling_client, payload, provider, base_url, requested_model)
         except httpx.HTTPStatusError as exc:
             text = exc.response.text
@@ -3852,7 +3956,7 @@ async def execute_canvas_video(payload: CanvasVideoRequest, provider: Mapping[st
             raise HTTPException(status_code=502, detail=f'请求可灵视频接口失败：{exc}') from exc
     if is_agnes:
         try:
-            async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as agnes_client:
+            async with _create_upstream_async_client(base_url, direct=load_upstream_direct(), timeout=VIDEO_POLL_TIMEOUT) as agnes_client:
                 return await generate_agnes_video(agnes_client, payload, provider, base_url, requested_model)
         except httpx.HTTPStatusError as exc:
             text = exc.response.text
@@ -3862,7 +3966,7 @@ async def execute_canvas_video(payload: CanvasVideoRequest, provider: Mapping[st
             raise HTTPException(status_code=502, detail=f'请求 Agnes 视频接口失败：{exc}') from exc
     if is_lingjing:
         try:
-            async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as lingjing_client:
+            async with _create_upstream_async_client(base_url, direct=load_upstream_direct(), timeout=VIDEO_POLL_TIMEOUT) as lingjing_client:
                 return await generate_lingjing_openai_video(lingjing_client, payload, provider, base_url, requested_model)
         except httpx.HTTPStatusError as exc:
             text = exc.response.text
@@ -3872,7 +3976,7 @@ async def execute_canvas_video(payload: CanvasVideoRequest, provider: Mapping[st
             raise HTTPException(status_code=502, detail=f'请求灵境 API 视频接口失败：{exc}') from exc
     if is_soon_openrouter_video_model(provider, requested_model):
         try:
-            async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as soon_client:
+            async with _create_upstream_async_client(base_url, direct=load_upstream_direct(), timeout=VIDEO_POLL_TIMEOUT) as soon_client:
                 return await generate_soon_openrouter_video(soon_client, payload, provider, base_url, requested_model)
         except httpx.HTTPStatusError as exc:
             raise HTTPException(status_code=exc.response.status_code, detail=f'soon 视频接口错误：{exc.response.text}') from exc
@@ -3881,7 +3985,7 @@ async def execute_canvas_video(payload: CanvasVideoRequest, provider: Mapping[st
             raise HTTPException(status_code=502, detail=f'请求 soon 视频接口失败：{exc}') from exc
     if is_yuli and yuli_is_veo_openai_model(requested_model):
         try:
-            async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as yuli_client:
+            async with _create_upstream_async_client(base_url, direct=load_upstream_direct(), timeout=VIDEO_POLL_TIMEOUT) as yuli_client:
                 return await generate_yuli_openai_video(yuli_client, payload, provider, base_url, requested_model)
         except httpx.HTTPStatusError as exc:
             text = exc.response.text
@@ -3890,7 +3994,7 @@ async def execute_canvas_video(payload: CanvasVideoRequest, provider: Mapping[st
             log_net_error(f'视频(玉玉) 网络/TLS错误 model={requested_model}', exc)
             raise HTTPException(status_code=502, detail=f'请求上游视频接口失败：{exc}') from exc
     try:
-        async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as client:
+        async with _create_upstream_async_client(base_url, direct=load_upstream_direct(), timeout=VIDEO_POLL_TIMEOUT) as client:
             if is_apimart:
                 image_with_roles = []
                 invalid_images = []
@@ -4284,7 +4388,7 @@ async def caption_image_with_provider(abs_path, prompt, provider_id, model, ms_m
     messages = [{'role': 'user', 'content': [{'type': 'text', 'text': prompt_text}, {'type': 'image_url', 'image_url': {'url': data_url}}]}]
     raw = None
     try:
-        async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
+        async with _create_upstream_async_client(chat_base, direct=load_upstream_direct(), timeout=AI_REQUEST_TIMEOUT) as client:
             req_body = {'model': resolved_model, 'messages': messages}
             if is_apimart:
                 req_body['stream'] = False

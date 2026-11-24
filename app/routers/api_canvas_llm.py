@@ -9,6 +9,8 @@ _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from app.core import (AI_REQUEST_TIMEOUT, CODEX_DEFAULT_CHAT_MODELS, CanvasLLMRequest, GEMINI_CLI_DEFAULT_CHAT_MODELS, HTTPException, MAX_HISTORY_MESSAGES, PROJECT_MEDIA_ADAPTER_PROJECT, _os, _sys, chat_provider_supports_audio, friendly_chat_error_detail, httpx, is_apimart_provider, is_codex_provider, is_gemini_cli_provider, project_media_adapter_reference_from_url, require_project_media_values_scope, selected_model, text_from_chat_response, text_from_responses, unwrap_apimart_response)
 from app.services.conversation import chat_request_latest, chat_text_from_raw
+from app.services.providers import load_upstream_direct
+from app.services.upstream_http import create_upstream_async_client as _create_upstream_async_client
 _from_main_names = ['codex_chat_text', 'gemini_cli_chat_text', 'get_api_provider_required', 'is_image_reference_value', 'is_video_reference_value', 'media_reference_to_url', 'resolve_chat_provider', 'video_reference_to_frame_data_urls']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -122,7 +124,7 @@ async def canvas_llm(payload: CanvasLLMRequest):
     raw = None
     fmt = 'chat'
     try:
-        async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
+        async with _create_upstream_async_client(chat_base, direct=load_upstream_direct(), timeout=AI_REQUEST_TIMEOUT) as client:
             raw, fmt = await chat_request_latest(client, chat_base, chat_hdrs, model, upstream_messages, stream=False, provider_cfg=_llm_provider)
             if not raw:
                 raise HTTPException(status_code=502, detail='上游接口返回了空响应')

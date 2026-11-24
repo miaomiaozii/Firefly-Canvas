@@ -1335,6 +1335,9 @@ class FireflyProjectCreateRequest(BaseModel):
 class GlobalPreferencesPayload(BaseModel):
     theme: str = 'dark'
     language: str = 'zh'
+    # #493：严格 bool；路由用 model_fields_set 区分“没传”与“传了”，
+    # 旧页面只改主题时不能把已关的直连开关默默重新打开。null/字符串 → 422。
+    upstream_direct: bool = Field(default=True, strict=True)
 
 class ProjectLibraryChangeRequest(BaseModel):
     path: str = Field(min_length=1, max_length=1024)
@@ -3947,7 +3950,10 @@ async def apimart_upload_post(client, upload_url, headers, file_tuple, timeout=6
         try:
             if attempt == 0:
                 return await client.post(upload_url, headers=headers, files=files, timeout=timeout)
-            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=max(120.0, float(timeout)), write=120.0, pool=20.0), follow_redirects=True) as fresh:
+            # #493：重试新建的 fresh client 同样遵循全局直连策略，目标为 upload_url；不改变重试语义。
+            from app.services.upstream_http import create_upstream_async_client as _up_async
+            from app.services.providers import load_upstream_direct
+            async with _up_async(upload_url, direct=load_upstream_direct(), timeout=httpx.Timeout(connect=20.0, read=max(120.0, float(timeout)), write=120.0, pool=20.0), follow_redirects=True) as fresh:
                 return await fresh.post(upload_url, headers=headers, files=files, timeout=timeout)
         except Exception as e:
             if not is_transient_tls_error(e) or attempt == APIMART_UPLOAD_RETRY_ATTEMPTS - 1:

@@ -75,8 +75,7 @@ def runtime(pipeline, tmp_path):
          'is_volcengine_provider', 'is_minimax_provider', 'is_apimart_provider', 'is_fhl_provider'}, ns)
     load_soon_runtime_ast(BASE / 'app/services/providers.py', {'_soon_url_verified_target', '_soon_url_auto_provider',
          'provider_endpoint_url', 'gemini_endpoint_url'}, ns)
-    load_soon_runtime_ast(BASE / 'app/services/generation.py', {'generate_ai_image', '_soon_url_reference_data_urls',
-         '_SOON_URL_REFERENCE_BUDGET_BYTES', 'is_comfyui_provider'}, ns)
+    load_soon_runtime_ast(BASE / 'app/services/generation.py', {'generate_ai_image', 'is_comfyui_provider'}, ns)
     ns['_generation_reference_bytes'] = sys.modules['_pipeline493.media'].generation_reference_bytes
     ns.update(model_spec_for=lambda m: {},
               require_project_media_values_scope=lambda values: None,
@@ -134,6 +133,10 @@ class MemoryNetwork(httpcore.AsyncNetworkBackend):
             head, body = b''.join(wire.writes).split(b'\r\n\r\n', 1)
             result.append((head.split(b'\r\n', 1)[0].decode(), json.loads(body) if body else None))
         return result
+
+    def raw_bodies(self):
+        # #493：预算契约是对 HTTPX 实际序列化字节的断言，不是 dict 估算。
+        return [b''.join(wire.writes).split(b'\r\n\r\n', 1)[1] for wire in self.wires]
 
 
 def install_soon_memory_network(monkeypatch, replies=None):
@@ -311,44 +314,54 @@ def test_manual_json_stays_json_and_budgeted(runtime, monkeypatch):
     assert network.requests()[0][1]['extra_body']['response_format'] == 'url'
 
 
-@pytest.mark.parametrize('sizes,accepted', [([8_000_000], True), ([8_000_001], False),
-    ([4_000_000, 4_000_000], True), ([4_000_000, 4_000_001], False), ([], True)])
-def test_prepared_sum_threshold_before_any_post(runtime, monkeypatch, sizes, accepted):
-    assert runtime['_SOON_URL_REFERENCE_BUDGET_BYTES'] == 8_000_000
-    prepared = []
-    def prepare(item, max_edge):
-        assert max_edge == 4096
-        prepared.append(item['bytes'])
-        return b'x' * item['bytes'], 'image/png', 'reference.png'
-    runtime['_generation_reference_bytes'] = prepare
+# #493 用户裁定：旧「准备字节求和 > 8,000,000 即拒」策略已被替换——
+# 已知上限按 HTTPX 实际序列化请求体判定（本地目标 16,500,000 / 硬限 16,777,216），超限只压发送副本。
+def test_over_local_limit_ladder_engages_and_still_posts(runtime, monkeypatch):
+    import random
+    pixels = random.Random(493).randbytes(2000 * 1200 * 4)
+    buffer = io.BytesIO()
+    Image.frombytes('RGBA', (2000, 1200), pixels).save(buffer, format='PNG')
+    raw = buffer.getvalue()
+    assert 9_000_000 < len(raw) < 11_500_000  # 两张实际序列化必超 16.5M 本地目标；旧策略下也必拒
     network = install_soon_memory_network(monkeypatch)
-    references = [{'url': '/output/ref.png', 'bytes': size} for size in sizes]
-    if accepted:
-        run_soon_default_generation(runtime, references)
-        images = network.requests()[0][1]['extra_body'].get('image', [])
-        assert [len(base64.b64decode(value.split(',', 1)[1])) for value in images] == sizes
-    else:
-        with pytest.raises(HTTPException) as caught:
-            run_soon_default_generation(runtime, references)
-        assert caught.value.status_code == 413
-        assert caught.value.detail['code'] == 'soon_url_reference_budget_exceeded'
-        assert network.wires == []
-    assert prepared == sizes
+    run_soon_default_generation(runtime, [ref(raw), ref(raw)])
+    bodies = network.raw_bodies()
+    assert len(bodies) == 1  # 不预先拒绝，也不反复重试：一次达标即提交
+    assert len(bodies[0]) <= 16_500_000
+    body = json.loads(bodies[0])
+    sent = [base64.b64decode(value.split(',', 1)[1]) for value in body['extra_body']['image']]
+    assert any(value != raw for value in sent)  # 阶梯每轮只推进当前最大的一张，首个达标即停
+    for value in sent:
+        with Image.open(io.BytesIO(value)) as image:
+            assert max(image.size) <= 4096
+
+
+def test_within_local_limit_baseline_byte_identical_no_reencode(runtime, monkeypatch):
+    import random
+    pixels = random.Random(493).randbytes(2000 * 1200 * 4)
+    buffer = io.BytesIO()
+    Image.frombytes('RGBA', (2000, 1200), pixels).save(buffer, format='PNG')
+    raw = buffer.getvalue()
+    assert 9_000_000 < len(raw) < 11_500_000  # 单张实际序列化 ≈ 13M：旧 8M 求和会拒，新策略直通
+    network = install_soon_memory_network(monkeypatch)
+    with patch.object(Image.Image, 'save', side_effect=AssertionError('预算内不得重编码')):
+        run_soon_default_generation(runtime, [ref(raw)])
+    body = network.requests()[0][1]
+    assert len(network.raw_bodies()[0]) > 8_000_000  # 旧求和规则已废除：体积按实际序列化计
+    assert base64.b64decode(body['extra_body']['image'][0].split(',', 1)[1]) == raw
 
 
 @pytest.mark.parametrize('scheme', ['https://', 'HTTPS://', 'http://'])
 @pytest.mark.parametrize('manual', [False, True])
-def test_unmeasurable_remote_import_first_and_zero_posts(runtime, monkeypatch, manual, scheme):
+def test_remote_reference_passthrough_counted_and_posts(runtime, monkeypatch, manual, scheme):
+    # 裁定：全请求体可测后，远程引用不再「unmeasurable」拒绝；字符串诚实计入，永不压缩。
     if manual:
         runtime['_provider'] = soon_default_provider(model_protocols={MODEL: 'openai'}, model_request_modes={MODEL: 'openai-json'})
     network = install_soon_memory_network(monkeypatch)
-    with pytest.raises(HTTPException) as caught:
-        run_soon_default_generation(runtime, [{'url': scheme + 'remote.invalid/ref.png', 'bytes': 1, 'mime_type': 'image/png'}],
-            preserve_model=manual, lock_model=manual)
-    assert caught.value.status_code == 413
-    assert caught.value.detail['code'] == 'soon_url_reference_budget_unmeasurable'
-    assert '导入项目' in caught.value.detail['message']
-    assert network.wires == []
+    run_soon_default_generation(runtime, [{'url': scheme + 'remote.invalid/ref.png', 'bytes': 1, 'mime_type': 'image/png'}],
+        preserve_model=manual, lock_model=manual)
+    body = network.requests()[0][1]
+    assert body['extra_body']['image'] == [scheme + 'remote.invalid/ref.png']
 
 
 @pytest.mark.parametrize('size', [(4096, 9), (5000, 9)])
@@ -376,7 +389,7 @@ def test_budget_after_mandatory_4096_and_no_extra_encoding(runtime, monkeypatch,
 
 @pytest.mark.parametrize('count', [1, 2])
 def test_actual_valid_png_multi_reference_budget_not_source_or_json_size(runtime, monkeypatch, count):
-    # Valid, high-entropy RGBA files remain below max_edge; no mock byte counter.
+    # 同名接缝保留：高熵 RGBA 不超 max_edge；预算判定看实际序列化体积，不看源文件求和。
     import random
     pixels = random.Random(493).randbytes(1500 * 1000 * 4)
     buffer = io.BytesIO()
@@ -384,21 +397,20 @@ def test_actual_valid_png_multi_reference_budget_not_source_or_json_size(runtime
     raw = buffer.getvalue()
     assert 5_900_000 < len(raw) < 8_000_000
     network = install_soon_memory_network(monkeypatch)
-    with patch.object(Image.Image, 'save', side_effect=AssertionError('budget must not re-encode')):
-        if count == 1:
+    if count == 1:
+        with patch.object(Image.Image, 'save', side_effect=AssertionError('budget must not re-encode')):
             run_soon_default_generation(runtime, [ref(raw)])
-            body = network.requests()[0][1]
-            assert len(json.dumps(body)) > 8_000_000
-            assert base64.b64decode(body['extra_body']['image'][0].split(',', 1)[1]) == raw
-        else:
-            with pytest.raises(HTTPException) as caught:
-                run_soon_default_generation(runtime, [ref(raw)] * count)
-            assert caught.value.status_code == 413
-            assert network.wires == []
+        body = network.requests()[0][1]
+        assert len(json.dumps(body)) > 8_000_000
+        assert base64.b64decode(body['extra_body']['image'][0].split(',', 1)[1]) == raw
+    else:
+        run_soon_default_generation(runtime, [ref(raw)] * count)
+        assert len(network.raw_bodies()[0]) <= 16_500_000  # 阶梯介入后提交，不再预先拒
 
 
-@pytest.mark.parametrize('height,accepted', [(500, True), (1000, False)])
-def test_real_oversized_source_is_measured_only_after_mandatory_resize(runtime, monkeypatch, tmp_path, height, accepted):
+@pytest.mark.parametrize('height,expected', [(500, 'baseline'), (1000, 'ladder')])
+def test_real_oversized_source_is_measured_only_after_mandatory_resize(runtime, monkeypatch, tmp_path, height, expected):
+    # 基准仍是强制 4096；超限后按实际序列化走发送副本阶梯，不再预先拒提交。
     import random
     image = Image.frombytes('RGBA', (5000, height), random.Random(493).randbytes(5000 * height * 4))
     path = tmp_path / 'large.png'
@@ -408,20 +420,24 @@ def test_real_oversized_source_is_measured_only_after_mandatory_resize(runtime, 
     network = install_soon_memory_network(monkeypatch)
     saves = []
     save = Image.Image.save
-    def record_save(image, *a, **kw):
-        saves.append(image.size)
-        return save(image, *a, **kw)
+    def record_save(img, *a, **kw):
+        saves.append(img.size)
+        return save(img, *a, **kw)
     with patch.object(Image.Image, 'save', record_save):
-        if accepted:
-            run_soon_default_generation(runtime, [{'url': '/output/large.png'}])
-            sent = base64.b64decode(network.requests()[0][1]['extra_body']['image'][0].split(',', 1)[1])
-            assert len(sent) <= 8_000_000
-        else:
-            with pytest.raises(HTTPException) as caught:
-                run_soon_default_generation(runtime, [{'url': '/output/large.png'}])
-            assert caught.value.status_code == 413
-            assert network.wires == []
-    assert len(saves) == 1 and saves[0][0] == 4096
+        run_soon_default_generation(runtime, [{'url': '/output/large.png'}])
+    bodies = network.raw_bodies()
+    assert len(bodies) == 1
+    assert len(bodies[0]) <= 16_500_000
+    baseline = runtime['_generation_reference_bytes']({'url': '/output/large.png'}, max_edge=4096)[0]
+    sent = base64.b64decode(json.loads(bodies[0])['extra_body']['image'][0].split(',', 1)[1])
+    if expected == 'baseline':
+        assert sent == baseline
+    else:
+        assert len(baseline) * 4 // 3 > 16_500_000  # 4096 后仍超本地目标：阶梯必须介入
+        assert sent != baseline
+        with Image.open(io.BytesIO(sent)) as result:
+            assert max(result.size) <= 4096
+    assert any(size[0] == 4096 for size in saves)  # 强制 4096 基准保留
     assert path.read_bytes() == original
 
 
@@ -445,16 +461,59 @@ def test_manual_and_other_provider_modes_keep_existing_body(runtime, monkeypatch
     assert saved == soon_default_provider(**changes)
 
 
-def test_upstream_413_is_one_post_no_native_endpoint_or_model_retry(runtime, monkeypatch):
+def test_upstream_413_known_cap_conversion_then_final_fail(runtime, monkeypatch):
+    # 裁定 A：已知上限仍被 413 → 阶梯转换一步后至多重提一次；再拒即最终失败。
+    network = install_soon_memory_network(monkeypatch, [(413, {'error': 'request too large'}), (413, {'error': 'request too large'})])
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(runtime['run_provider_generation_with_backoff'](runtime['_provider']['id'],
+            runtime['generate_ai_image'], PROMPT, '4096x3072', '', MODEL, [ref(soon_reference_png((800, 600)))], runtime['_provider']['id']))
+    assert caught.value.status_code == 413
+    requests = network.requests()
+    assert len(requests) == 2
+    assert requests[0][0].startswith('POST /v1/images/generations ')
+    assert requests[1][0] == requests[0][0]  # 不换端点不换模型
+    assert requests[1][1]['extra_body']['image'] != requests[0][1]['extra_body']['image']
+
+
+def test_upstream_413_known_cap_no_images_no_blind_resubmit(runtime, monkeypatch):
     network = install_soon_memory_network(monkeypatch, [(413, {'error': 'request too large'})])
     with pytest.raises(HTTPException) as caught:
         asyncio.run(runtime['run_provider_generation_with_backoff'](runtime['_provider']['id'],
             runtime['generate_ai_image'], PROMPT, '4096x3072', '', MODEL, [], runtime['_provider']['id']))
     assert caught.value.status_code == 413
-    assert len(network.requests()) == 1
-    request, body = network.requests()[0]
-    assert request.startswith('POST /v1/images/generations ')
-    assert body['model'] == MODEL
+    assert len(network.requests()) == 1  # 无参考图可压：不盲目重发
+
+
+def test_unknown_cap_413_ladder_max_four_resubmits_no_writeback(runtime, monkeypatch):
+    import random
+    runtime['_provider'] = soon_default_provider(id='other-provider', base_url='https://soon-alt.soonstudio.ai',
+        image_request_mode='openai-json', model_protocols={MODEL: 'openai'})
+    import random
+    buffer = io.BytesIO()
+    # 高熵噪声 + alpha：各档体积阶梯真实递减；长边 2600 提供 2560/2048/1536 缩小档 + 1536@80 底线，
+    # 保证 4 次重发不会提前耗光阶梯（单调性由 prepare 契约保证：每轮 body ≤ floor(上轮×0.85)-1）。
+    Image.frombytes('RGBA', (2600, 1600), random.Random(7).randbytes(2600 * 1600 * 4)).save(buffer, format='PNG')
+    raw = buffer.getvalue()
+    network = install_soon_memory_network(monkeypatch, [(413, {'error': 'too large'})] * 5)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(runtime['run_provider_generation_with_backoff'](runtime['_provider']['id'],
+            runtime['generate_ai_image'], PROMPT, '1024x1024', '', MODEL, [ref(raw)], runtime['_provider']['id']))
+    assert caught.value.status_code == 413
+    print('F5DETAIL', getattr(caught.value,'detail',None))
+    bodies = network.raw_bodies()
+    print('F5BODIES', [len(b) for b in bodies])
+    assert caught.value.status_code == 413
+    bodies = network.raw_bodies()
+    assert len(bodies) == 5  # 首发 + 最多 4 次重发
+    for previous, current in zip(bodies, bodies[1:]):
+        # 目标临时上限 floor(被拒正文×0.85)；阶梯压到底线时允许未达目标，但重发体积必须严格推进。
+        assert len(current) < len(previous)
+    # 不写回登记：同一 URL 仍是「上限未知」
+    spec = importlib.util.spec_from_file_location('_budget493mod', BASE / 'app/services/image_request_budget.py')
+    budget_mod = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, '_budget493mod', budget_mod)  # dataclass 注解后处理需要模块先在 sys.modules
+    spec.loader.exec_module(budget_mod)
+    assert budget_mod.lookup_known_body_limit('https://soon-alt.soonstudio.ai/v1/images/generations') is None
 
 
 def test_ordinary_accepted_task_keeps_runtime_profile_for_get_only_poll(runtime, monkeypatch):
@@ -514,13 +573,12 @@ def test_observed_accepted_8007313_does_not_raise_conservative_policy(runtime, m
     with patch.object(Image.Image, 'save', side_effect=AssertionError('budget must not re-encode')):
         prepared, mime, _filename = runtime['_generation_reference_bytes'](ref(original), max_edge=4096)
         assert prepared == original and mime == 'image/png'
-        with pytest.raises(HTTPException) as caught:
-            run_soon_default_generation(runtime, [ref(original)], preserve_model=manual, lock_model=manual)
-    assert caught.value.status_code == 413
-    assert caught.value.detail['code'] == 'soon_url_reference_budget_exceeded'
-    assert caught.value.detail['budget_bytes'] == 8_000_000
-    assert caught.value.detail['prepared_bytes'] == len(original)
-    assert network.wires == []
+        run_soon_default_generation(runtime, [ref(original)], preserve_model=manual, lock_model=manual)
+    # 实测证据：该 10,676,846 B 实际 JSON 请求体历史上已被接受；新策略下它在 16.5M 本地目标内，
+    # 必须原字节提交，不触发任何阶梯。
+    bodies = network.raw_bodies()
+    assert len(bodies) == 1
+    assert network.requests()[0][1]['extra_body']['image'][0] == 'data:image/png;base64,' + base64.b64encode(original).decode('ascii')
 
 
 def test_generation_scope_rejection_precedes_preparation_and_post(runtime, monkeypatch):
@@ -532,3 +590,42 @@ def test_generation_scope_rejection_precedes_preparation_and_post(runtime, monke
         run_soon_default_generation(runtime, [ref(soon_reference_png())])
     assert caught.value.status_code == 403
     assert network.wires == []
+
+
+def test_reference_preparation_report_survives_generation_and_is_scalar_safe(runtime, monkeypatch):
+    import random
+    pixels = random.Random(493).randbytes(1650 * 1650 * 4)  # 交接会话的 fixture 尺寸基于旧 8M 求和策略；新实测基线（16.02M ≤ 16.5M）不会触发阶梯，尺寸调大使 known_cap 必然介入且两张都变。
+    buffer = io.BytesIO()
+    Image.frombytes('RGBA', (1650, 1650), pixels).save(buffer, format='PNG')
+    raw = buffer.getvalue()
+    assert 10_500_000 < len(raw) < 11_500_000
+    network = install_soon_memory_network(monkeypatch)
+
+    async def call():
+        await runtime['run_provider_generation_with_backoff'](runtime['_provider']['id'],
+            runtime['generate_ai_image'], PROMPT, '4096x3072', '', MODEL, [ref(raw)] * 2, runtime['_provider']['id'])
+        return runtime['snapshot_reference_preparation']()
+
+    report = asyncio.run(call())
+    assert report and report['changed'] is True and report['policy'] == 'known_cap'
+    changed = [item for item in report['references'] if item['changed']]
+    assert len(changed) == 2 and all(item['final_format'] in ('WEBP', 'JPEG') for item in changed)
+    allowed = {'index', 'source_format', 'final_format', 'quality', 'lossless', 'from_width', 'from_height',
+               'width', 'height', 'byte_count', 'stage', 'changed'}
+    assert all(set(item) == allowed for item in report['references'])
+
+
+def test_attach_reference_preparation_only_when_changed():
+    from app.services.misc import attach_reference_preparation
+    items = [{'url': '/output/a.png', 'kind': 'image'}]
+    attach_reference_preparation(items, None)
+    attach_reference_preparation(items, {'changed': False, 'references': []})
+    assert 'budget' not in items[0]
+    report = {'policy': 'known_cap', 'changed': True, 'body_bytes': 1, 'resubmits': 0, 'rejected_body_bytes': [],
+              'references': [{'index': 0, 'source_format': 'PNG', 'final_format': 'WEBP', 'lossless': False,
+                              'quality': 90, 'from_width': 4096, 'from_height': 4096, 'width': 3072, 'height': 3072,
+                              'byte_count': 1, 'stage': 2, 'changed': True}]}
+    attach_reference_preparation(items, report)
+    assert items[0]['budget']['references'][0]['final_format'] == 'WEBP'
+    report['references'][0]['quality'] = 'mutated'
+    assert items[0]['budget']['references'][0]['quality'] == 90  # 深拷贝：报告快照不被后续重试篡改

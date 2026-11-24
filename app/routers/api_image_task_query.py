@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 from app.core import (BaseModel, Field, GLOBAL_LOOP, HTTPException, IMAGE_TASK_FAILED_STATUSES, IMAGE_TASK_UNKNOWN_STATUSES, ImageTaskQueryRequest, _os, _sys, asyncio, extract_images, httpx, image_task_fail_reason, image_task_status, is_runninghub_provider, log_net_error, rewrite_runninghub_file_url, runninghub_endpoint_url, runninghub_extract_outputs, runninghub_fail_reason, time)
 _from_main_names = ['fetch_image_task_payload', 'get_api_provider_required', 'image_output_meta', 'manager', 'runninghub_api_key', 'runninghub_app_headers', 'runninghub_store_remote_output', 'save_ai_image_to_output', 'save_to_history']
 import app.services as _svc
+from app.services.providers import load_upstream_direct
+from app.services.upstream_http import create_upstream_async_client as _create_upstream_async_client
 for _nm in _from_main_names:
     _v = getattr(_app_main, _nm, None)
     if _v is None:
@@ -29,7 +31,7 @@ async def query_upstream_image_task(provider, task_id, *, record_history: bool =
         api_key = runninghub_api_key(provider)
         url = runninghub_endpoint_url(provider, '/task/openapi/outputs')
         try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=240.0, write=30.0, pool=20.0)) as client:
+            async with _create_upstream_async_client(url, direct=load_upstream_direct(), timeout=httpx.Timeout(connect=20.0, read=240.0, write=30.0, pool=20.0)) as client:
                 response = await client.post(url, headers=runninghub_app_headers(True), json={'apiKey': api_key, 'taskId': task_id})
                 response.raise_for_status()
                 raw = response.json()
@@ -61,7 +63,7 @@ async def query_upstream_image_task(provider, task_id, *, record_history: bool =
             raise HTTPException(status_code=502, detail=f'查询 RunningHub 任务失败：{exc}') from exc
     timeout = httpx.Timeout(connect=20.0, read=300.0, write=60.0, pool=20.0)
     try:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+        async with _create_upstream_async_client(provider.get('base_url') or '', direct=load_upstream_direct(), timeout=timeout, follow_redirects=True) as client:
             raw = await fetch_image_task_payload(client, task_id, provider)
     except httpx.HTTPStatusError as exc:
         log_net_error(f"查询生图任务 HTTP状态错误 provider={provider.get('id')} task_id={task_id}", exc)

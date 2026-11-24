@@ -533,6 +533,14 @@ async function fetchImageTaskQuery(providerId, taskId){
     });
 }
 
+function applyResultReferenceNote(targetNode, result){
+    // #493 §4.4：节点镜像最新一次任务的压缩标注；新结果没带就是没压缩，清掉旧文案。
+    if(!targetNode) return;
+    const note = String((result && result.reference_note) || (result && result.history_record && result.history_record.reference_note) || '');
+    if(note) targetNode.reference_note = note;
+    else delete targetNode.reference_note;
+}
+
 async function querySmartImageTaskNow(nodeId, localTaskId){
     const node = canvasState.nodes.find(n => n.id === nodeId);
     if(!node) return;
@@ -559,6 +567,7 @@ async function querySmartImageTaskNow(nodeId, localTaskId){
                 status: (body.recover && body.recover.status === 'running') ? 'running' : body.status,
                 images: result.images || [],
                 image_items: result.image_items || [],
+                reference_note: result.reference_note || (result.history_record && result.history_record.reference_note) || '',
                 error: (body.recover && body.recover.error) || body.error || '',
                 message: (body.recover && body.recover.status === 'running') ? (body.recover.error || tr('smart.taskStillGenerating')) : ''
             };
@@ -569,6 +578,7 @@ async function querySmartImageTaskNow(nodeId, localTaskId){
             task.failed = false;
             task.querying = false;
             finalizeSmartPendingTask(node, task.taskId, resultMediaUrls(data.image_items?.length ? data.image_items : (data.images?.length ? data.images : data)), task.kind || 'image');
+            if(data.reference_note) node.reference_note = String(data.reference_note);
             node.recoveredGenerationTasks = (node.recoveredGenerationTasks || []).filter(item => item.taskId !== task.taskId);
             if(!node.recoveredGenerationTasks.length) delete node.recoveredGenerationTasks;
             canvasCore.render();
@@ -693,6 +703,7 @@ function absorbProjectGenerationResult(result, taskId=''){
             if(Object.prototype.hasOwnProperty.call(finalNode, key)) resultNode[key] = finalNode[key];
             else delete resultNode[key];
         }
+        applyResultReferenceNote(resultNode, result);
         if(!smartPendingTasks(resultNode).length){
             delete resultNode._pendingHistoryId;
             resultNode.runFinishedAt = nowMs();

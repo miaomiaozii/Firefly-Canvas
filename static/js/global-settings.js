@@ -368,6 +368,8 @@
     renderProviders(data.providers || []);
     renderCli(data.cli || {});
     document.getElementById('themeSelect').value = data.preferences?.theme || 'dark';
+    // #493：直连开关只认严格 false；缺失/其它值按默认开。
+    document.getElementById('upstreamDirect').checked = data.preferences?.upstream_direct !== false;
     // #365：偏好里没有语言选项了（界面固定中文），这里不再读那个下拉。
     libraryPath.value = data.project_library?.path || '';
     document.getElementById('librarySummary').textContent = librarySummaryText(data.project_library);
@@ -437,7 +439,9 @@
     setStatus(localText('正在保存偏好…', 'Saving preferences…'));
     try {
       // #365：只存主题。payload 里的 language 不发了（模型默认就是 'zh'）。
-      const saved = await requestJson('/api/global-settings/preferences', {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify({theme})});
+      // #493：直连开关随同提交（严格 bool，后端缺省会保留已存值）。
+      const body = {theme, upstream_direct: document.getElementById('upstreamDirect').checked === true};
+      const saved = await requestJson('/api/global-settings/preferences', {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
       window.StudioTheme?.set(theme);
       state.preferences = saved.preferences;
       render(state);

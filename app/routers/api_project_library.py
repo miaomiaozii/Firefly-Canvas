@@ -29,6 +29,8 @@ from app.services.agent_refs import with_role_prefix
 from app.services.canvas_image_selection import require_canvas_image_provider, route_canvas_image
 from app.services.canvas_viewport import invalidate_project
 from app.services.misc import run_routed_image_candidate
+from app.services.generation import open_reference_preparation as _open_reference_preparation, snapshot_reference_preparation as _snapshot_reference_preparation
+from app.services.image_request_budget import report_note as _report_note
 from app.services.generation_failures import AGENT_IMAGE_ACCEPTED, AGENT_IMAGE_ATTEMPT, describe_failure, provider_failure, redact_failure_detail
 from app.core import is_registered_conversation_user_message
 from app.project_activity import (
@@ -46,6 +48,8 @@ from firefly_withdrawn_refs import AUTO_ARCHIVED_REFS, historical_image_retry_hi
 from app.routers import api_image_task_query as _api_image_task_query
 _from_main_names = ['FIREFLY_PROJECT_STORE', 'FLY_MAX_PACKAGE_BYTES', 'LOCAL_UPLOAD_DIR', 'PROJECT_AGENT_MAX_PENDING', 'PROJECT_AGENT_MAX_PER_NODE', 'PROJECT_CONVERSATION_MAX_IMAGE_REFERENCES', 'PROJECT_CONVERSATION_RUNNER', 'PROJECT_MEDIA_IMPORT_MAX_PER_PROJECT', 'PROJECT_VIDEO_REFERENCE_INLINE_MAX_BYTES', '_agent_active_counts', '_agent_apply_mutations', '_agent_mark_recovered_uncertain', '_agent_result_node', '_agent_submit_task', '_agent_task_node', '_local_upload_item', '_photoshop_mark_returned', '_photoshop_prune_requests_locked', '_photoshop_request_snapshot', 'archive_project_generated_image', 'archive_project_generated_video', 'build_project_media_preview', 'cleanup_project_generation_orphans', 'conversation_pending_task_keys', 'copy_project_media_to_global_library', 'execute_canvas_video', 'execute_project_video_generation', 'export_project_package', 'finalize_visible_project_conversation_terminal', 'forget_project_conversation_durable', 'generate_ai_image', 'generate_project_video', 'generate_video_preview_image', 'get_api_provider', 'load_api_providers', 'local_edit_adapter', 'manager', 'merge_project_conversation_result', 'now_ms', 'output_file_from_url', 'persist_project_conversation_pending', 'preflight_project_video_providers', 'project_agent_cancel_task', 'project_agent_connected_inputs', 'project_agent_retry_task', 'project_conversation_connected_references', 'project_has_active_conversation', 'project_image_references', 'project_lifecycle_store_call', 'project_media_adapter_path', 'project_media_source_path', 'project_store_call', 'project_video_adapter_incompatible_parameters', 'project_video_all_references', 'project_video_candidate_execution_incompatible_parameters', 'project_video_candidate_inline_reference_kinds', 'project_video_references', 'provider_env_key_value', 'reserve_project_media_import', 'route_image_generation', 'route_video_generation', 'run_project_image_task', 'run_project_video_task', 'runninghub_api_key', 'runninghub_model_definition', 'runninghub_wallet_key_value', 'schedule_project_conversation_task', 'video_adapter_incompatible_parameters', 'video_api_root']
 import app.services as _svc
+from app.services.providers import load_upstream_direct
+from app.services.upstream_http import create_upstream_async_client as _create_upstream_async_client
 for _nm in _from_main_names:
     _v = getattr(_app_main, _nm, None)
     if _v is None:
@@ -720,6 +724,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
     classify = hooks and hooks.failure_policy
     provider_errors = {}
     received_output = False
+    reference_reports = []  # #493 §4.4：每个候选自己的压缩报告；随生成记录落盘
     writing_outputs = False
 
     def browser_failure_description(failure):
@@ -790,6 +795,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                 candidate_start = _app_main.now_ms()
                 raise_if_project_image_task_cancelled(task_id)
                 await set_candidate_phase(candidate_index, 'uploading' if references else 'provider_generating')
+                _open_reference_preparation()  # 本子任务内开 box：同一 await 链上的预算发送才能把报告写回来
                 nonlocal received_output
                 token = AGENT_IMAGE_ATTEMPT.set(bool(classify))
                 accepted_token = AGENT_IMAGE_ACCEPTED.set(False)
@@ -801,6 +807,9 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
                            if hooks and getattr(hooks, 'approved_provider', None) is not None else {}),
                     )
                     received_output = True
+                    _prep_report = _snapshot_reference_preparation()
+                    if _prep_report and _prep_report.get('changed'):
+                        reference_reports.append(_prep_report)
                 except Exception as exc:
                     provider_errors[exc] = describe_failure(
                         exc, route.provider_id,
@@ -931,6 +940,9 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
         timestamp = _app_main.now_ms()
         history_record = {'id': progress_history_id, 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': 'succeeded', 'prompt': payload.prompt, 'executed_prompt': executed_prompt, 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': timestamp, 'runMs': max(0, timestamp - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'outputs': _history_output_entries(generated_items, 'image'), 'result_node_id': payload.result_node_id}
         history_record.update(metadata)
+        if reference_reports:
+            history_record['reference_preparation'] = reference_reports
+            history_record['reference_note'] = '；'.join(dict.fromkeys(note for note in (_report_note(r) for r in reference_reports) if note))
         history_record['download'] = None
         raise_if_project_image_task_cancelled(task_id)
         canvas = None
@@ -970,6 +982,7 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
             'executed_prompt': executed_prompt, 'provider_id': route.provider_id,
             'provider_name': route.provider_name, 'model': route.model, 'route': route.to_dict(),
             'history_id': history_record['id'], 'registered_revision': registered_revision,
+            'reference_note': history_record.get('reference_note') or '',
         })
         with CANVAS_TASK_LOCK:
             CANVAS_TASKS[task_id].update({'status': 'succeeded', 'result': result, 'error': '', 'updated_at': time.time()})
@@ -2337,7 +2350,7 @@ async def _resume_project_video_generation(task_id: str, project_id: str, durabl
         provider_task_id = str(provider_task.get('task_id') or '')
         if not provider_task_id:
             raise ProjectStoreError('重启恢复失败：没有记录到服务商任务 ID（专属适配器或提交前中断），无法重轮询，请手动重试')
-        async with httpx.AsyncClient(timeout=_app_main.VIDEO_POLL_TIMEOUT) as client:
+        async with _create_upstream_async_client(str(provider_task.get('task_url') or ''), direct=load_upstream_direct(), timeout=_app_main.VIDEO_POLL_TIMEOUT) as client:
             raw = await _app_main.wait_for_video_task(client, provider, provider_task_id, str(provider_task.get('task_url') or ''))
         urls = [str(url or '').strip() for url in _app_main.video_output_urls(raw) if str(url or '').strip()]
         if not urls:

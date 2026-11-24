@@ -453,12 +453,18 @@ class ImageTransportClient(_OriginalAsyncClient):
 
 
 def create_image_transport_client(provider=None, *, client_factory=None, telemetry_sink=None,
-                                  phase_tag="generate", max_upload_retries=0, **normal_client_kwargs):
+                                  phase_tag="generate", max_upload_retries=0,
+                                  target_url=None, direct=False, **normal_client_kwargs):
     factory = httpx.AsyncClient if client_factory is None else client_factory
     # 旧测试工厂拥有自己的构造合同，不能额外注入埋点参数。
     if factory is not _OriginalAsyncClient:
         return factory(**normal_client_kwargs)
-    # #493：代理开关延期；provider 不改变路由、证书环境或调用方显式的下载安全参数。
+    # #493：全局上游直连开关。只有调用方显式给出 target_url+direct 才注入策略；
+    # pinned 下载（trust_env=False、follow_redirects=False）不传这两个参数，行为不变。
+    # 挂载的是原生 httpx transport，:366 的“实际 URL 选中 transport 类型”重试安全判定仍然成立。
+    if direct and target_url:
+        from .upstream_http import upstream_client_options
+        normal_client_kwargs = upstream_client_options(target_url, direct=True, mode="async", **normal_client_kwargs)
     if telemetry_sink is None:
         telemetry_sink = _IMAGE_OBSERVATION_SINK.get()
     return ImageTransportClient(telemetry_sink=telemetry_sink, phase_tag=phase_tag,

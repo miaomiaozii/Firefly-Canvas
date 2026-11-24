@@ -2,6 +2,7 @@
 import ast
 import asyncio
 import base64
+import copy as _copy_mod
 from contextvars import ContextVar
 import importlib.util
 import io
@@ -89,6 +90,9 @@ def pipeline(monkeypatch, tmp_path):
               gemini_model_name=lambda m: m, soon_gemini_native_model=lambda p,m: m,
               AGENT_IMAGE_ATTEMPT=ContextVar('attempt493', default=False),
               _provider_generation_no_retry=lambda p: False,
+              # Harness pins the #493 direct policy OFF: these suites assert wire counts on the transport
+              # client; policy mount semantics are covered by tests/test_upstream_direct_493.py.
+              load_upstream_direct=lambda: False,
               _provider_generation_semaphore=lambda p: asyncio.Semaphore(1),
               _retry_after_seconds=lambda r: None, log_net_error=lambda *a: None,
               rewrite_runninghub_file_url=lambda v: v,
@@ -98,7 +102,22 @@ def pipeline(monkeypatch, tmp_path):
               _image_response_json=transport.image_response_json,
               _record_image_decode=transport.record_image_decode,
               _record_current_image_decode=transport._record_current_image_decode,
-              _generation_reference_to_data_url=media.generation_reference_to_data_url)
+              _generation_reference_to_data_url=media.generation_reference_to_data_url,
+              _generation_reference_bytes=media.generation_reference_bytes,
+              _generation_reference_value=media._generation_reference_value)
+    budget_spec = importlib.util.spec_from_file_location('_budget493', BASE / 'app/services/image_request_budget.py')
+    budget_mod = importlib.util.module_from_spec(budget_spec)
+    monkeypatch.setitem(sys.modules, '_budget493', budget_mod)  # dataclass 注解后处理需要模块在 sys.modules
+    budget_spec.loader.exec_module(budget_mod)
+    ns.update(_BudgetPreparedReference=budget_mod.PreparedReference,
+              _lookup_known_body_limit=budget_mod.lookup_known_body_limit,
+              _prepare_budgeted_request=budget_mod.prepare_budgeted_request,
+              _reference_projection=budget_mod.reference_projection,
+              _temporary_413_target=budget_mod.temporary_413_target,
+              _REFERENCE_PREPARATION=ContextVar('refprep493', default=None), copy=_copy_mod)
+    bodies('app/services/generation.py', {'clear_reference_preparation', 'snapshot_reference_preparation',
+           'open_reference_preparation', 'record_reference_preparation',
+           '_budgeted_prepared_references', '_reference_report', '_budgeted_json_send'}, ns)
     bodies('app/core.py', {'gemini_image_config', 'validate_generated_image'}, ns)
     bodies('app/services/providers.py', {'_soon_url_verified_target', '_soon_url_auto_provider'}, ns)
     bodies('app/services/generation.py', {'generate_gemini_provider_image', 'run_provider_generation_with_backoff',
@@ -121,6 +140,18 @@ class StubClient:
         return self
     async def __aexit__(self, *args):
         pass
+    def build_request(self, method, url, **kwargs):
+        return httpx.Request(method, url, **kwargs)
+    async def send(self, request):
+        entry = {'url': str(request.url), 'headers': dict(request.headers), 'content': request.content}
+        try:
+            entry['json'] = json.loads(request.content)
+        except Exception:
+            pass
+        self.calls.append(entry)
+        if isinstance(self.outcome, BaseException):
+            raise self.outcome
+        return httpx.Response(self.outcome or 200, json={'task_id': 'accepted', 'image': {'type': 'url', 'value': 'http://fixture.invalid/result'}}, request=request)
     async def post(self, url, **kwargs):
         self.calls.append(kwargs)
         if isinstance(self.outcome, BaseException):
@@ -399,9 +430,42 @@ def test_candidate_does_not_flip_native_default(pipeline):
 def test_private_imports_legacy_adapter_and_d_receipt_remain():
     tree = ast.parse((BASE / 'app/services/generation.py').read_text(encoding='utf-8'))
     imports = {(n.module,a.name,a.asname) for n in tree.body if isinstance(n,ast.ImportFrom) for a in n.names}
-    assert ('conversation','gemini_generation_reference_part','_gemini_generation_reference_part') in imports
+    # #493：gemini 参考字节策略已从 gemini_generation_reference_part 改走 image_request_budget 发送副本（同一 4096 基准），
+    # 钉住新接缝而非旧 import。
+    assert ('image_request_budget', 'PreparedReference', '_BudgetPreparedReference') in imports
+    assert ('image_request_budget', 'prepare_budgeted_request', '_prepare_budgeted_request') in imports
     conversation = (BASE / 'app/services/conversation.py').read_text(encoding='utf-8')
     legacy = next(n for n in ast.parse(conversation).body if isinstance(n,ast.FunctionDef) and n.name=='gemini_reference_part')
     assert "_svc._main('reference_to_data_url')(ref, max_size=1536)" in ast.get_source_segment(conversation,legacy)
     source = (BASE / 'app/services/generation.py').read_text(encoding='utf-8')
     assert "if isinstance(task_result, dict) and not extract_task_id(task_result):\n                task_result = {**task_result, 'task_id': task_id}" in source
+
+
+def test_reference_report_box_crosses_gather_task_boundary(pipeline):
+    # #493 §4.4：gather 子任务里的 ContextVar .set() 传不回父任务；open box 后子任务写 box 内层，
+    # 父任务 snapshot 必须拿到报告（misc 单发流程与批任务都依赖这条语义）。
+    from PIL import Image
+    pipeline['open_reference_preparation']()
+    assert pipeline['snapshot_reference_preparation']() is None
+    pixels = random.Random(493).randbytes(300 * 400 * 4)
+    buffer = io.BytesIO()
+    Image.frombytes('RGBA', (300, 400), pixels).save(buffer, format='PNG')
+    ref = pipeline['_BudgetPreparedReference'](0, raw=buffer.getvalue())
+    statuses = iter([413, 200])
+    class _Client:
+        async def send(self, request):
+            status = next(statuses)
+            class _Response:
+                status_code = status
+            return _Response()
+    def build(refs):
+        return types.SimpleNamespace(content=json.dumps({'image': [r.data_url() for r in refs]}).encode('ascii'))
+    async def child():
+        await pipeline['_budgeted_json_send'](_Client(), build, [ref], None)
+    async def main():
+        await asyncio.gather(child())
+    asyncio.run(main())
+    report = pipeline['snapshot_reference_preparation']()
+    assert report and report['policy'] == 'unknown_cap_413' and report['changed'] is True
+    assert report['rejected_body_bytes'] and report['resubmits'] == 1
+    assert report['references'][0]['index'] == 0 and report['references'][0]['changed'] is True

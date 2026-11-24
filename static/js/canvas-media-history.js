@@ -2116,6 +2116,7 @@ function smartHistoryLogCardHtml(log, historyIndex){
                  <div class="log-subline">${subParts.map(part => `<span title="${escapeAttr(part)}">${escapeHtml(part)}</span>`).join('')}</div>
                  ${promptPreview}
                  ${upstreamDeleted ? `<div class="log-reference-deleted" role="status"><svg class="ico" aria-hidden="true"><use href="#i-unlink"/></svg><span>${escapeHtml(tr('canvas.upstreamMediaDeleted'))}</span></div>` : ''}
+                 ${log.reference_note ? `<div class="log-reference-prepared" role="status"><svg class="ico" aria-hidden="true"><use href="#i-info"/></svg><span>${escapeHtml(String(log.reference_note))}</span></div>` : ''}
                  ${log.error ? `<button class="log-error long-content-trigger" type="button" data-long-content-open="history-error" aria-haspopup="dialog" title="${escapeAttr(tr('smart.generationErrorFull'))}" aria-label="${escapeAttr(tr('smart.generationErrorFull'))}"><span>${escapeHtml(log.error)}</span><svg class="ico" aria-hidden="true"><use href="#i-library"/></svg></button>` : ''}
              </div>
              <div class="log-buttons">

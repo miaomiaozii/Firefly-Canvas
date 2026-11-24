@@ -29,8 +29,8 @@ def load_global_preferences():
     return _svc.providers.load_global_preferences()
 
 
-def save_global_preferences(theme: str, language: str, autosave_interval_minutes: Optional[int]=None):
-    return _svc.providers.save_global_preferences(theme, language, autosave_interval_minutes)
+def save_global_preferences(theme: str, language: str, autosave_interval_minutes: Optional[int]=None, upstream_direct: Optional[bool]=None):
+    return _svc.providers.save_global_preferences(theme, language, autosave_interval_minutes, upstream_direct)
 
 
 def photoshop_connection_status():
@@ -115,7 +115,9 @@ async def update_global_preferences(payload: GlobalPreferencesPayload):
     # 那会让用户只改个主题也存不了。其它值仍然拒。
     if payload.theme not in {'light', 'dark'} or payload.language not in {'zh', 'en'}:
         raise HTTPException(status_code=400, detail='主题或语言无效')
-    return {'preferences': await asyncio.to_thread(save_global_preferences, payload.theme, payload.language)}
+    # #493：字段缺失 = 旧客户端，保留已存值；只有显式提供的严格 bool 才写入。
+    direct = payload.upstream_direct if 'upstream_direct' in payload.model_fields_set else None
+    return {'preferences': await asyncio.to_thread(save_global_preferences, payload.theme, payload.language, None, direct)}
 
 @router.get('/api/global-settings/preferences')
 async def get_global_preferences():

@@ -4,6 +4,7 @@ import app.services as _svc  # noqa: E402
 from app.core import _storage_abs_path  # noqa: E402,F401
 import firefly_json_io  # noqa: E402
 from . import secret_store, write_guard  # noqa: E402
+from .upstream_http import create_upstream_async_client as _create_upstream_async_client
 import logging
 logger = logging.getLogger(__name__)
 
@@ -336,7 +337,7 @@ def runninghub_app_headers(json_body=True, use_wallet=False, provider=None):
 async def fetch_runninghub_llm_models(provider=None):
     headers = runninghub_api_headers(provider)
     errors = []
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+    async with _create_upstream_async_client(RUNNINGHUB_LLM_MODELS_URLS, direct=load_upstream_direct(), timeout=20, follow_redirects=True) as client:
         for url in RUNNINGHUB_LLM_MODELS_URLS:
             try:
                 resp = await client.get(url, headers=headers)
@@ -419,7 +420,7 @@ async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str=
         raise HTTPException(status_code=400, detail=f'请先填写或保存 {key_name}')
     url = upstream_models_url(base_url, protocol)
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with _create_upstream_async_client((url, base_url), direct=load_upstream_direct(), timeout=30) as client:
             resp = await client.get(url, headers=upstream_model_headers(api_key, protocol))
             endpoint_label = '/v1beta/models' if protocol == 'gemini' else '/api/v3/models' if protocol == 'volcengine' else '/openapi/v2/models' if protocol == 'runninghub' else '/v1/models'
             if resp.status_code in (301, 302, 303, 307, 308):
@@ -444,7 +445,7 @@ async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str=
     except httpx.HTTPError as e:
         if protocol == 'volcengine':
             try:
-                async with httpx.AsyncClient(timeout=15) as client:
+                async with _create_upstream_async_client(base_url, direct=load_upstream_direct(), timeout=15) as client:
                     detected, probe = await probe_volcengine_auto_detect(client, base_url, api_key)
                     if detected:
                         payload = volcengine_default_model_payload(status=probe.get('status') or 0, message=f"{probe.get('message') or '方舟任务接口可达'}；但模型列表请求失败。请按实际方舟控制台模型名称手动填写视频模型。", raw={'models_error': str(e)[:300], **(probe.get('raw') or {})})
@@ -591,9 +592,12 @@ _GLOBAL_PREFERENCES_LOCK = Lock()
 
 def _public_global_preferences(raw):
     theme = raw.get('theme') if isinstance(raw, dict) else None
+    direct = raw.get('upstream_direct') if isinstance(raw, dict) else None
     # #365、#423：旧语言和未验证的文件访问模式只以安全值生效。
+    # #493：upstream_direct 只认 bool；缺失/其它值一律按默认开（True）生效。
     return {'theme': theme if theme in ('light', 'dark') else 'dark',
-            'language': 'zh', 'agent_file_access': 'read-only'}
+            'language': 'zh', 'agent_file_access': 'read-only',
+            'upstream_direct': direct if isinstance(direct, bool) else True}
 
 
 def load_global_preferences():
@@ -602,16 +606,27 @@ def load_global_preferences():
         return _public_global_preferences(raw)
 
 
-def save_global_preferences(theme: str, language: str, autosave_interval_minutes: Optional[int]=None):
+def save_global_preferences(theme: str, language: str, autosave_interval_minutes: Optional[int]=None, upstream_direct: Optional[bool]=None):
     # #365：保留旧客户端的 language 参数，但始终写入中文。
+    # #493：upstream_direct=None 表示旧客户端没提供这个字段，必须保留已存值，
+    # 不能让“只改主题”把关掉的代理又默默打开。
     with _GLOBAL_PREFERENCES_LOCK:
         path = _svc._main('GLOBAL_SETTINGS_FILE')
         raw = firefly_json_io.read_global_json(path, dict, encoding='utf-8-sig')
         preferences = dict(raw) if isinstance(raw, dict) else {}
         preferences.update({'theme': theme if theme in ('light', 'dark') else 'dark',
                             'language': 'zh', 'agent_file_access': 'read-only'})
+        # 保存时把解析后的严格 bool 写盘：旧字段缺失就落默认 True，
+        # 和 theme 等默认值“只在保存时落地”的既有语义一致。
+        stored_direct = raw.get('upstream_direct') if isinstance(raw, dict) else None
+        preferences['upstream_direct'] = upstream_direct if isinstance(upstream_direct, bool) else (
+            stored_direct if isinstance(stored_direct, bool) else True)
         firefly_json_io.write_json_atomic(path, preferences)
         return _public_global_preferences(preferences)
+
+def load_upstream_direct() -> bool:
+    # #493：上游请求直连开关的窄访问器；调用方在发起处读取并显式传给工厂。
+    return load_global_preferences()['upstream_direct']
 
 def api_headers(json_body=True, provider=None, model=''):
     if provider:
@@ -728,7 +743,7 @@ async def fetch_runninghub_model_registry(provider=None, include_fallback=True, 
     errors = []
     source = ''
     items = []
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+    async with _create_upstream_async_client(runninghub_openapi_url(provider, 'models'), direct=load_upstream_direct(), timeout=30, follow_redirects=True) as client:
         for source_name, url in urls:
             try:
                 if source_name == 'local':

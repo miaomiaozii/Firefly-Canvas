@@ -346,17 +346,17 @@ class GlobalSettingsApiTests(unittest.TestCase):
         saved = self.client.patch("/api/global-settings/preferences", json={"theme": "light", "language": "zh"})
 
         self.assertEqual(saved.status_code, 200)
-        self.assertEqual(saved.json()["preferences"], {"theme": "light", "language": "zh", "agent_file_access": "read-only"})
+        self.assertEqual(saved.json()["preferences"], {"theme": "light", "language": "zh", "agent_file_access": "read-only", "upstream_direct": True})
         with (
             patch.object(main, "codex_status_core", AsyncMock(return_value={})),
             patch.object(main, "gemini_cli_status_core", AsyncMock(return_value={})),
         ):
             loaded = self.client.get("/api/global-settings")
-        self.assertEqual(loaded.json()["preferences"], {"theme": "light", "language": "zh", "agent_file_access": "read-only"})
+        self.assertEqual(loaded.json()["preferences"], {"theme": "light", "language": "zh", "agent_file_access": "read-only", "upstream_direct": True})
 
     def test_new_install_defaults_are_persisted_only_on_save(self):
         path = Path(main.GLOBAL_SETTINGS_FILE)
-        expected = {"theme": "dark", "language": "zh", "agent_file_access": "read-only"}
+        expected = {"theme": "dark", "language": "zh", "agent_file_access": "read-only", "upstream_direct": True}
         self.assertEqual(self.client.get("/api/global-settings/preferences").json()["preferences"], expected)
         self.assertFalse(path.exists())
         self.assertEqual(main.save_global_preferences("dark", "zh"), expected)
@@ -382,11 +382,13 @@ class GlobalSettingsApiTests(unittest.TestCase):
                 path.write_text(json.dumps(raw), encoding="utf-8")
                 self.assertEqual(main.load_global_preferences(), {
                     "theme": "light", "language": "zh", "agent_file_access": "read-only",
+                    "upstream_direct": True,
                 })
                 self.assertEqual(json.loads(path.read_text(encoding="utf-8")), raw)
                 main.save_global_preferences("light", "en")
                 self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {
                     "theme": "light", "language": "zh", "agent_file_access": "read-only",
+                    "upstream_direct": True,
                     "other": {"keep": [1, 2]},
                 })
 
@@ -405,6 +407,7 @@ class GlobalSettingsApiTests(unittest.TestCase):
         self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {
             "theme": "light", "language": "zh", "agent_file_access": "read-only",
             "autosave_interval_minutes": 23, "future_setting": {"nested": [1, 2]},
+            "upstream_direct": True,
         })
 
     def test_preference_entry_points_share_the_read_modify_write_lock(self):
@@ -453,6 +456,7 @@ class GlobalSettingsApiTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {
             "theme": "dark", "language": "zh", "agent_file_access": "read-only", "future_setting": "keep",
+            "upstream_direct": True,
         })
 
     def test_global_agent_access_is_not_in_project_copies_or_exports(self):
@@ -489,7 +493,7 @@ class GlobalSettingsApiTests(unittest.TestCase):
         Path(main.GLOBAL_SETTINGS_FILE).write_text(
             json.dumps({"theme": "dark", "language": "en"}), encoding="utf-8"
         )
-        self.assertEqual(main.load_global_preferences(), {"theme": "dark", "language": "zh", "agent_file_access": "read-only"})
+        self.assertEqual(main.load_global_preferences(), {"theme": "dark", "language": "zh", "agent_file_access": "read-only", "upstream_direct": True})
 
     def test_unknown_language_is_still_rejected(self):
         """#365：en 是为了兼容老客户端才继续接的；其它乱值仍要 400。"""
@@ -547,7 +551,7 @@ class GlobalSettingsApiTests(unittest.TestCase):
         })
 
         self.assertEqual(saved.status_code, 200)
-        expected = {"theme": "dark", "language": "zh", "agent_file_access": "read-only"}
+        expected = {"theme": "dark", "language": "zh", "agent_file_access": "read-only", "upstream_direct": True}
         self.assertEqual(saved.json()["preferences"], expected)
         self.assertEqual(self.client.get("/api/global-settings/preferences").json()["preferences"], expected)
 

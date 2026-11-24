@@ -89,6 +89,7 @@
         "globalSettings.preferences": { zh: "外观与保存", en: "Appearance and saving" },
         "globalSettings.savePreferences": { zh: "保存偏好", en: "Save preferences" },
         "globalSettings.theme": { zh: "主题", en: "Theme" },
+        "globalSettings.upstreamDirect": { zh: "上游请求直连（不走系统代理）", en: "Direct upstream requests (bypass system proxy)" },
         "globalSettings.dark": { zh: "深色", en: "Dark" },
         "globalSettings.light": { zh: "浅色", en: "Light" },
         // #365：界面固定中文，不提供语言选择。

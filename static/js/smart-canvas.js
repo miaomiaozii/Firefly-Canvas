@@ -9824,6 +9824,12 @@ function nodeRunElapsedMs(node){
     if(node.runStartedAt) return nowMs() - Number(node.runStartedAt);
     return 0;
 }
+function nodeReferenceNoteHtml(node){
+    // #493 §4.4：发送副本压缩标注是后端预渲染数据；前端只转义渲染，不重复阶梯语义、不新增文案。
+    const note = String(node?.reference_note || '');
+    if(!note) return '';
+    return `<div class="node-reference-prepared" role="status" title="${escapeHtml(note)}"><svg class="ico" aria-hidden="true"><use href="#i-info"/></svg><span>${escapeHtml(note)}</span></div>`;
+}
 function runTimePillHtml(node){
     if(!node || node.runTimerHidden || node.type === NODE_TYPE_PROMPT) return '';
     const running = Boolean(node.pending || node.running);
@@ -9936,6 +9942,7 @@ function render(){
             ${smartNodeToolbarHtml(node)}${smartGroupToolbarHtml(node)}
             ${runTimePillHtml(node)}
             ${deletedInputMarker}
+            ${nodeReferenceNoteHtml(node)}
             <div class="node-body">${body}</div>
             ${isCompactMember && (isPrompt || isLoop) ? '<div class="smart-group-member-grab" title="' + escapeHtml(tr('smart.dragToUngroup')) + '"></div>' : ''}
             <div class="node-hint">${hint}</div>

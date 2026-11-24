@@ -16,6 +16,8 @@ from pydantic import BaseModel, Field
 from app.core import (AGNES_DEFAULT_VIDEO_MODELS, COMFYUI_DEFAULT_BASE_URL, Any, ApiProviderPayload, BaseModel, CHAT_MODEL, CODEX_DEFAULT_CHAT_MODELS, CODEX_DEFAULT_IMAGE_MODELS, Dict, Field, GEMINI_CLI_DEFAULT_CHAT_MODELS, GEMINI_CLI_DEFAULT_IMAGE_MODELS, GLOBAL_CONFIG_LOCK, HTTPException, IMAGE_MODEL, List, MODELSCOPE_DEFAULT_CHAT_MODELS, Optional, REMOVED_PROVIDER_IDS, RUNNINGHUB_DEFAULT_BASE_URL, RUNNINGHUB_DEFAULT_IMAGE_MODELS, RUNNINGHUB_DEFAULT_VIDEO_MODELS, RUNNINGHUB_FALLBACK_CHAT_MODELS, RUNNINGHUB_THUMBNAIL_EXTS, STATIC_DIR, STATIC_RUNNINGHUB_API_PROVIDERS_FILE, STATIC_RUNNINGHUB_DIR, STATIC_RUNNINGHUB_THUMBNAIL_DIR, SUPPORTED_PROVIDER_PROTOCOLS, TestConnectionPayload, VOLCENGINE_DEFAULT_PROJECT_NAME, VOLCENGINE_DEFAULT_REGION, _os, _sys, apply_agnes_model_defaults, apply_locked_recommended_model_rules, apply_runninghub_system_thumbnails, bearer_auth_value, codex_models_payload, detect_image_request_mode, ensure_same_origin_request, gemini_cli_models_payload, httpx, is_codex_provider, is_gemini_cli_provider, json, load_static_runninghub_provider, locked_recommended_provider_rule, looks_like_html_response, model_list, model_list_from_values, normalize_available_models, normalize_image_request_mode, normalize_provider, normalize_runninghub_entries, normalize_runninghub_entry, openai_compat_root_for_probe, os, parse_upstream_models, preserve_runninghub_hidden_overrides, probe_openai_compat_bearer_endpoint, probe_openai_models_endpoint, probe_volcengine_auto_detect, probe_volcengine_task_endpoint, protocol_from_payload, provider_key_env, provider_protocol, re, recommend_upstream_models, reload_env_globals, runninghub_entry_id, runninghub_model_display_name, runninghub_model_id, runninghub_openapi_url, runninghub_registry_payload, runninghub_wallet_key_env, static_runninghub_thumbnail_url, upstream_model_headers, upstream_models_url, urllib, volcengine_access_key_env, volcengine_default_model_payload, volcengine_secret_key_env, volcengine_task_probe_url)
 _from_main_names = ['API_PROVIDERS_FILE', 'DATA_DIR', 'api_key_from_payload', 'fetch_models_from_upstream', 'fetch_runninghub_model_registry', 'get_api_provider_exact', 'provider_env_key_value', 'public_api_providers', 'public_provider', 'runninghub_models_payload', 'save_api_providers', 'update_env_values', 'volcengine_provider_api_key']
 import app.services as _svc
+from app.services.providers import load_upstream_direct
+from app.services.upstream_http import create_upstream_async_client as _create_upstream_async_client
 for _nm in _from_main_names:
     _v = getattr(_app_main, _nm, None)
     if _v is None:
@@ -531,7 +533,7 @@ async def test_provider_connection(payload: TestConnectionPayload):
         raise HTTPException(status_code=400, detail=f'请先填写或保存 {key_name}')
     url = upstream_models_url(base_url, protocol)
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with _create_upstream_async_client((url, base_url), direct=load_upstream_direct(), timeout=15) as client:
             resp = await client.get(url, headers=upstream_model_headers(api_key, protocol))
             if resp.status_code in (301, 302, 303, 307, 308):
                 location = resp.headers.get('Location') or resp.headers.get('location') or ''
@@ -565,7 +567,7 @@ async def test_provider_connection(payload: TestConnectionPayload):
     except httpx.HTTPError as e:
         if protocol == 'volcengine':
             try:
-                async with httpx.AsyncClient(timeout=15) as client:
+                async with _create_upstream_async_client(base_url, direct=load_upstream_direct(), timeout=15) as client:
                     detected, probe = await probe_volcengine_auto_detect(client, base_url, api_key)
                     if detected:
                         message = f"{probe.get('message') or '方舟任务接口可达'}；但模型列表请求失败。请按实际方舟控制台模型名称手动填写视频模型。"
@@ -593,7 +595,7 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
         raise HTTPException(status_code=400, detail='请先填写或保存 API Key')
     if protocol == 'volcengine':
         try:
-            async with httpx.AsyncClient(timeout=15) as client:
+            async with _create_upstream_async_client(base_url, direct=load_upstream_direct(), timeout=15) as client:
                 task_ok, task_probe = await probe_volcengine_task_endpoint(client, base_url, api_key)
                 if task_ok:
                     return {'ok': True, 'protocol': 'volcengine', 'status_code': task_probe.get('status') or 200, 'message': '方舟/Ark 任务协议可用', 'raw': task_probe.get('raw')}
@@ -606,7 +608,7 @@ async def probe_async_endpoint(payload: TestConnectionPayload):
     tasks_base = base_url if base_url.endswith('/v1') else f'{base_url}/v1'
     probe_url = f'{tasks_base}/tasks/healthcheck_probe_do_not_submit'
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
+        async with _create_upstream_async_client(probe_url, direct=load_upstream_direct(), timeout=15) as client:
             resp = await client.get(probe_url, headers={'Authorization': bearer_auth_value(api_key), 'Accept': 'application/json'})
             try:
                 body = resp.json()
@@ -679,7 +681,7 @@ async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str=
         raise HTTPException(status_code=400, detail=f'请先填写或保存 {key_name}')
     url = upstream_models_url(base_url, protocol)
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with _create_upstream_async_client((url, base_url), direct=load_upstream_direct(), timeout=30) as client:
             resp = await client.get(url, headers=upstream_model_headers(api_key, protocol))
             endpoint_label = '/v1beta/models' if protocol == 'gemini' else '/api/v3/models' if protocol == 'volcengine' else '/openapi/v2/models' if protocol == 'runninghub' else '/v1/models'
             if resp.status_code in (301, 302, 303, 307, 308):
@@ -704,7 +706,7 @@ async def fetch_models_from_upstream(base_url: str, api_key: str, protocol: str=
     except httpx.HTTPError as e:
         if protocol == 'volcengine':
             try:
-                async with httpx.AsyncClient(timeout=15) as client:
+                async with _create_upstream_async_client(base_url, direct=load_upstream_direct(), timeout=15) as client:
                     detected, probe = await probe_volcengine_auto_detect(client, base_url, api_key)
                     if detected:
                         payload = volcengine_default_model_payload(status=probe.get('status') or 0, message=f"{probe.get('message') or '方舟任务接口可达'}；但模型列表请求失败。请按实际方舟控制台模型名称手动填写视频模型。", raw={'models_error': str(e)[:300], **(probe.get('raw') or {})})

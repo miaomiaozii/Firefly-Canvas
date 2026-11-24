@@ -1,6 +1,9 @@
 # misc domain — extracted from app/services.py (W1d)
 from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
+from .generation import (open_reference_preparation as _open_reference_preparation,
+                         snapshot_reference_preparation as _snapshot_reference_preparation)
+from .image_request_budget import report_note as _report_note
 
 # #212: 默认全局资源库的规范名 + 历史默认名（加载时一次性迁移）。
 # 只认默认库的稳定身份 id='default' 且名字为已知历史名，用户自己重命名的库不受影响。
@@ -125,6 +128,15 @@ async def run_routed_image_candidate(provider_id, model, prompt, size, quality, 
     )
 
 
+def attach_reference_preparation(items, report):
+    # #493 §4.4：每张图最终档位（格式/质量/尺寸/字节数）写进生成记录的 image_items；深拷贝隔离后续重试。
+    if not report or not report.get('changed'):
+        return
+    references = copy.deepcopy(report.get('references') or [])
+    for item in items or []:
+        if isinstance(item, dict):
+            item['budget'] = {'references': references}
+
 async def build_online_image_result(payload: OnlineImageRequest, *, canvas_selection=None):
     require_online_image_project_media_scope(payload)
     if canvas_selection is None:
@@ -158,6 +170,8 @@ async def build_online_image_result(payload: OnlineImageRequest, *, canvas_selec
                 local_items.append(_svc.image_output_meta(local_url, item))
         return (local_urls, local_items, raw_item)
     try:
+        # #493 §4.4：gather 子任务里 ContextVar 写入传不回父任务，先开共享 box；报告随生成记录落盘。
+        _open_reference_preparation()
         generated = await asyncio.gather(*(generate_one() for _ in range(count)))
     except httpx.HTTPStatusError as exc:
         log_net_error(f"生图 HTTP状态错误 provider={provider.get('id')} model={model} size={request_size}", exc)
@@ -176,6 +190,12 @@ async def build_online_image_result(payload: OnlineImageRequest, *, canvas_selec
         raw_text = json.dumps(raw, ensure_ascii=False)[:800] if isinstance(raw, (dict, list)) else str(raw)[:800]
         raise HTTPException(status_code=502, detail=f'{provider_name} 没有返回图片：{raw_text}')
     result = {'prompt': payload.prompt, 'images': local_urls, 'image_items': local_items, 'timestamp': time.time(), 'type': 'online', 'model': model, 'provider_id': provider['id'], 'provider_name': provider.get('name') or provider['id'], 'task_id': extract_task_id(raw) if isinstance(raw, dict) else None, 'request_id': raw.get('id') if isinstance(raw, dict) else None, 'params': {'provider_id': provider['id'], 'model': model, 'size': request_size, 'requested_size': payload.size, 'quality': payload.quality, 'n': count, 'reference_images': refs}, 'raw_usage': raw.get('usage') if isinstance(raw, dict) else None}
+    _prep_report = _snapshot_reference_preparation()
+    attach_reference_preparation(result['image_items'], _prep_report)
+    if _prep_report and _prep_report.get('changed'):
+        # 裁定 §4.4：历史/节点用预渲染文案，前端不重复实现阶梯语义。
+        result['reference_preparation'] = _prep_report
+        result['reference_note'] = _report_note(_prep_report)
     _svc.save_to_history(result)
     if GLOBAL_LOOP:
         asyncio.run_coroutine_threadsafe(_svc._main('manager').broadcast_new_image(result), GLOBAL_LOOP)

@@ -11,6 +11,8 @@ from pydantic import BaseModel, Field
 from app.core import (Any, BaseModel, Dict, HTTPException, List, RunningHubSubmitRequest, RunningHubUploadAssetRequest, SEED_UINT32_MAX, _os, _sys, content_type_for_path, ensure_same_origin_request, httpx, json, normalize_seed_uint32, os, rewrite_runninghub_file_url, rh_is_seed_like_name, runninghub_endpoint_url, runninghub_extract_outputs, runninghub_fail_reason, sanitize_runninghub_node_info_list, urllib)
 _from_main_names = ['image_output_meta', 'runninghub_api_key', 'runninghub_app_headers', 'runninghub_local_asset_path', 'runninghub_provider', 'runninghub_store_remote_output']
 import app.services as _svc
+from app.services.providers import load_upstream_direct
+from app.services.upstream_http import create_upstream_async_client as _create_upstream_async_client
 for _nm in _from_main_names:
     _v = getattr(_app_main, _nm, None)
     if _v is None:
@@ -54,7 +56,7 @@ async def runninghub_app_info(webappId: str=''):
     provider = runninghub_provider()
     api_key = runninghub_api_key(provider)
     url = runninghub_endpoint_url(provider, f'/api/webapp/apiCallDemo?apiKey={urllib.parse.quote(api_key)}&webappId={urllib.parse.quote(webapp_id)}')
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=120.0, write=30.0, pool=20.0)) as client:
+    async with _create_upstream_async_client(url, direct=load_upstream_direct(), timeout=httpx.Timeout(connect=20.0, read=120.0, write=30.0, pool=20.0)) as client:
         try:
             response = await client.get(url, headers=runninghub_app_headers(False))
             raw = response.json()
@@ -81,7 +83,7 @@ async def runninghub_submit(payload: RunningHubSubmitRequest):
     if instance_type:
         body['instanceType'] = instance_type
     url = runninghub_endpoint_url(provider, '/task/openapi/ai-app/run')
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=180.0, write=120.0, pool=20.0)) as client:
+    async with _create_upstream_async_client(url, direct=load_upstream_direct(), timeout=httpx.Timeout(connect=20.0, read=180.0, write=120.0, pool=20.0)) as client:
         try:
             response = await client.post(url, headers=runninghub_app_headers(True, payload.useWallet), json=body)
             raw = response.json()
@@ -107,7 +109,7 @@ async def runninghub_query(request: Request, taskId: str='', useWallet: bool=Fal
     provider = runninghub_provider()
     api_key = runninghub_api_key(provider, use_wallet=useWallet)
     url = runninghub_endpoint_url(provider, '/task/openapi/outputs')
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=240.0, write=30.0, pool=20.0)) as client:
+    async with _create_upstream_async_client(url, direct=load_upstream_direct(), timeout=httpx.Timeout(connect=20.0, read=240.0, write=30.0, pool=20.0)) as client:
         try:
             response = await client.post(url, headers=runninghub_app_headers(True, useWallet), json={'apiKey': api_key, 'taskId': task_id})
             raw = response.json()
@@ -148,7 +150,7 @@ async def runninghub_upload_asset(payload: RunningHubUploadAssetRequest):
     filename = 'asset.bin'
     content_type = 'application/octet-stream'
     content = b''
-    async with httpx.AsyncClient(timeout=httpx.Timeout(connect=20.0, read=240.0, write=240.0, pool=20.0), follow_redirects=True) as client:
+    async with _create_upstream_async_client((source_url, runninghub_endpoint_url(provider, '')), direct=load_upstream_direct(), timeout=httpx.Timeout(connect=20.0, read=240.0, write=240.0, pool=20.0), follow_redirects=True) as client:
         path = runninghub_local_asset_path(source_url)
         if path:
             filename = os.path.basename(path)

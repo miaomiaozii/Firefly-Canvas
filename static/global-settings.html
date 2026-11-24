@@ -43,6 +43,9 @@
       </div>
       <div class="preference-grid">
         <label><span data-i18n="globalSettings.theme">主题</span><select id="themeSelect"><option value="dark" data-i18n="globalSettings.dark">深色</option><option value="light" data-i18n="globalSettings.light">浅色</option></select></label>
+        <!-- #493：全局上游直连开关，默认开；只影响上游服务商的 HTTPX 请求，
+             不动系统代理/NO_PROXY/局域网与本地服务。 -->
+        <label><input id="upstreamDirect" type="checkbox" checked><span data-i18n="globalSettings.upstreamDirect">上游请求直连（不走系统代理）</span></label>
         <!-- #365：语言下拉已移除（英文选项实际用不到），界面固定中文。 -->
       </div>
     </section>

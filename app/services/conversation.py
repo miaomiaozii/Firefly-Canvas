@@ -3,6 +3,8 @@ from ._base import *  # noqa: F401,F403
 import app.services as _svc  # noqa: E402
 import firefly_json_io  # noqa: E402  # #383：对话文件走原子写 / 隔离读
 from app.constants import NODE_TYPE_CONVERSATION
+from .providers import load_upstream_direct
+from .upstream_http import create_upstream_async_client as _create_upstream_async_client
 from firefly_usage import normalize_usage, parse_codex_jsonl_usage, usage_has_data  # #258 用量采集
 
 def load_conversation(user_id, conversation_id):
@@ -454,7 +456,7 @@ async def decide_chat_agent_action(payload, conversation, refs):
             upstream_messages.append(msg)
     upstream_messages.append({'role': 'user', 'content': f"""当前用户输入：{payload.message}\n用户设置的系统提示词：{custom_system_prompt or '无'}\n本次上传参考图数量：{len(refs)}\n对话中是否已有上一张生成图：{('是' if has_previous_image else '否')}\n请返回 JSON，例如 {{"action":"generate_image","prompt":"...","reply":"..."}}"""})
     try:
-        async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
+        async with _create_upstream_async_client(chat_base, direct=load_upstream_direct(), timeout=AI_REQUEST_TIMEOUT) as client:
             raw, fmt = await chat_request_latest(client, chat_base, chat_hdrs, model, upstream_messages, provider_cfg=provider_cfg)
             decision = parse_agent_decision(chat_text_from_raw(raw, fmt), payload.message, refs, has_previous_image)
             decision['router_model'] = model
@@ -484,7 +486,7 @@ async def build_chat_text_reply(payload, conversation):
         if msg:
             upstream_messages.append(msg)
     try:
-        async with httpx.AsyncClient(timeout=AI_REQUEST_TIMEOUT) as client:
+        async with _create_upstream_async_client(chat_base, direct=load_upstream_direct(), timeout=AI_REQUEST_TIMEOUT) as client:
             raw, fmt = await chat_request_latest(client, chat_base, chat_hdrs, model, upstream_messages, provider_cfg=provider_cfg)
     except httpx.HTTPStatusError as exc:
         body = exc.response.text or ''

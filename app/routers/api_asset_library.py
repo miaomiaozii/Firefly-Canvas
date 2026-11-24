@@ -19,6 +19,8 @@ from app.core import (AVATAR_SUPPORTED_PLATFORMS, AVATAR_TASK_DONE_STATUSES, AVA
 from app.core import _volc_hmac
 _from_main_names = ['ASSET_LIBRARY_DIR', 'api_headers', 'check_apimart_avatar_task', 'check_volcengine_avatar_task', 'classify_asset_image_best_effort', 'classify_image_with_provider', 'find_asset_category_in_library', 'find_asset_category_with_library', 'find_asset_library', 'get_api_provider_required', 'load_asset_library', 'local_asset_public_url', 'make_asset_library_item', 'normalize_asset_library', 'now_ms', 'output_file_from_url', 'remove_asset_library_file', 'save_asset_library', 'submit_apimart_avatar_asset', 'submit_volcengine_avatar_asset', 'unique_asset_category_dir', 'upload_audio_for_apimart', 'upload_image_for_apimart', 'upload_media_for_apimart', 'upload_video_for_apimart', 'video_api_root', 'volcengine_access_key_value', 'volcengine_ark_asset_call', 'volcengine_ensure_asset_group', 'volcengine_public_asset_url', 'volcengine_secret_key_value']
 import app.services as _svc
+from app.services.providers import load_upstream_direct
+from app.services.upstream_http import create_upstream_async_client as _create_upstream_async_client
 for _nm in _from_main_names:
     _v = getattr(_app_main, _nm, None)
     if _v is None:
@@ -100,7 +102,7 @@ async def submit_apimart_avatar_asset(provider, public_url: str, name: str, kind
         raise HTTPException(status_code=400, detail=f"{provider.get('name') or provider['id']} 未配置 Base URL")
     register_url = f'{base_url}/v1/seedance2/private-avatar'
     body = {'project_name': str(project_name or 'default').strip() or 'default', 'asset_type': apimart_avatar_asset_type(kind), 'group': {'name': (group_name or name or '数字人素材')[:60]}, 'assets': [{'url': public_url, 'name': (name or 'asset')[:60]}]}
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with _create_upstream_async_client(register_url, direct=load_upstream_direct(), timeout=120) as client:
         resp = await client.post(register_url, headers=api_headers(provider=provider), json=body, timeout=120)
         if resp.status_code not in (200, 201):
             raise HTTPException(status_code=502, detail=f'APIMart 数字人注册失败（{resp.status_code}）：{resp.text[:300]}')
@@ -117,7 +119,7 @@ async def check_apimart_avatar_task(provider, task_id: str) -> Dict[str, Any]:
     if not base_url:
         raise HTTPException(status_code=400, detail=f"{provider.get('name') or provider['id']} 未配置 Base URL")
     task_url = f'{base_url}/v1/tasks/{task_id}'
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with _create_upstream_async_client(task_url, direct=load_upstream_direct(), timeout=60) as client:
         resp = await client.get(task_url, headers=api_headers(provider=provider), timeout=60)
         if resp.status_code not in (200, 201):
             raise HTTPException(status_code=502, detail=f'查询审核状态失败（{resp.status_code}）：{resp.text[:200]}')
@@ -205,7 +207,7 @@ async def volcengine_ensure_asset_group(client, project_name: str, group_name: s
 
 async def submit_volcengine_avatar_asset(public_url: str, name: str, kind: str, project_name: str='default', group_name: str='') -> str:
     """把公网可访问素材提交到火山 Ark 私域素材库（异步）。返回 Asset Id 作为任务 ID。"""
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with _create_upstream_async_client(f"https://{VOLCENGINE_ARK_ASSET_HOST}", direct=load_upstream_direct(), timeout=120) as client:
         group_id = await volcengine_ensure_asset_group(client, project_name, group_name)
         created = await volcengine_ark_asset_call(client, 'CreateAsset', {'GroupId': group_id, 'URL': public_url, 'AssetType': apimart_avatar_asset_type(kind), 'Name': (name or 'asset')[:60], 'ProjectName': (project_name or 'default').strip() or 'default'})
     asset_id = str(created.get('Id') or '').strip()
@@ -215,7 +217,7 @@ async def submit_volcengine_avatar_asset(public_url: str, name: str, kind: str, 
 
 async def check_volcengine_avatar_task(asset_id: str, project_name: str='default') -> Dict[str, Any]:
     """查询一次火山素材状态。返回 {status: Active/Processing/Failed, asset_uri, detail}。"""
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with _create_upstream_async_client(f"https://{VOLCENGINE_ARK_ASSET_HOST}", direct=load_upstream_direct(), timeout=60) as client:
         info = await volcengine_ark_asset_call(client, 'GetAsset', {'Id': asset_id, 'ProjectName': (project_name or 'default').strip() or 'default'})
     status = str(info.get('Status') or '').strip()
     if status == 'Active':
@@ -435,7 +437,7 @@ async def register_asset_library_avatar(item_id: str, payload: AssetAvatarRegist
         kind = 'image'
     if platform == 'apimart':
         project_name = str(payload.project_name or 'default').strip() or 'default'
-        async with httpx.AsyncClient(timeout=VIDEO_POLL_TIMEOUT) as client:
+        async with _create_upstream_async_client(video_api_root(provider), direct=load_upstream_direct(), timeout=VIDEO_POLL_TIMEOUT) as client:
             public_url = await upload_media_for_apimart(client, provider, target_item.get('url') or '', kind)
         if not valid_apimart_video_image_input(public_url):
             reason = public_url[4:] if isinstance(public_url, str) and public_url.startswith('ERR:') else '无法获取公网可访问地址'
