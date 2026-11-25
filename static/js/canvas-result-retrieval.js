@@ -64,7 +64,8 @@ var canvasResultRetrieval = (function () {
         return actionHtml(`<button type="button" data-retrieval-history="${esc(group.history_id)}" data-retrieval-item="${esc(item.id)}" ${actionable(group).includes(item) ? '' : 'disabled'} title="${text('只取回原结果，不会重新生成、不扣费','Retrieve original only; no generation or charge')}"><svg class="ico" aria-hidden="true"><use href="#i-download"/></svg>${text('重新取回','Retrieve again')}</button>`);
     }
     function slotHtml(group, item, style = '') {
-        const bytes = Number.isFinite(item.downloaded_bytes) ? `${item.downloaded_bytes}${Number.isFinite(item.total_bytes) ? ` / ${item.total_bytes}` : ''} B` : '';
+        const mb = value => `${(Number(value) / (1024 * 1024)).toFixed(1)} MB`;
+        const bytes = Number.isFinite(item.downloaded_bytes) ? `${mb(item.downloaded_bytes)}${Number.isFinite(item.total_bytes) ? ` / ${mb(item.total_bytes)}` : ''}` : '';
         return `<div class="retrieval-slot" style="${esc(style)}" data-retrieval-slot="${esc(item.id)}" role="group" aria-label="${esc(text('原结果 ', 'Original result ') + (item.index + 1))}"><span role="status">${esc(phase(group,item))}</span>${terminal(item) || item.status === 'succeeded' ? '' : button(group,item)}<small>${esc(ttl(item))}</small>${bytes ? `<small>${esc(bytes)}</small>` : ''}${item.error ? `<details><summary>${text('失败说明','Error details')}</summary><span>${esc(item.error)}</span></details>` : ''}</div>`;
     }
     function batchHtml(group) {

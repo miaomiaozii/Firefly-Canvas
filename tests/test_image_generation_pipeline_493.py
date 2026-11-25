@@ -447,9 +447,10 @@ def test_reference_report_box_crosses_gather_task_boundary(pipeline):
     from PIL import Image
     pipeline['open_reference_preparation']()
     assert pipeline['snapshot_reference_preparation']() is None
-    pixels = random.Random(493).randbytes(300 * 400 * 4)
+    # 不透明 PNG：413 后能降到 JPEG 档。透明小图只发 PNG、又低于所有尺寸档，没有可降的档位。
+    pixels = random.Random(493).randbytes(300 * 400 * 3)
     buffer = io.BytesIO()
-    Image.frombytes('RGBA', (300, 400), pixels).save(buffer, format='PNG')
+    Image.frombytes('RGB', (300, 400), pixels).save(buffer, format='PNG')
     ref = pipeline['_BudgetPreparedReference'](0, raw=buffer.getvalue())
     statuses = iter([413, 200])
     class _Client:

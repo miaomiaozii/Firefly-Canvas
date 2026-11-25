@@ -27,6 +27,18 @@ except ImportError:
 _IMAGE_OBSERVATION_SINK = ContextVar('image_observation_sink', default=None)
 _IMAGE_OBSERVATION_RESPONSE = ContextVar('image_observation_response', default=None)
 _IMAGE_UPLOAD_RETRY_BUDGET = ContextVar('image_upload_retry_budget', default=None)
+# 任务级上传进度回调 (bytes_done, bytes_total)：JSON 请求体是整块 ByteStream，不切片就永远只报 0 和 100%。
+_IMAGE_UPLOAD_PROGRESS = ContextVar('image_upload_progress', default=None)
+_UPLOAD_PROGRESS_CHUNK = 256 * 1024
+
+
+@contextmanager
+def image_upload_progress(callback):
+    token = _IMAGE_UPLOAD_PROGRESS.set(callback)
+    try:
+        yield
+    finally:
+        _IMAGE_UPLOAD_PROGRESS.reset(token)
 
 
 @contextmanager
@@ -157,15 +169,25 @@ class _Record:
 
 
 class _UploadTap(httpx.AsyncByteStream):
+    total = 0
     def __init__(self, stream, record):
         self.stream, self.record = stream, record
 
     async def __aiter__(self):
         data = self.record.data
         data["request_body_yielded_bytes"] = 0
+        progress = _IMAGE_UPLOAD_PROGRESS.get()
+        total = self.total
         async for chunk in self.stream:
-            data["request_body_yielded_bytes"] += len(chunk)
-            yield chunk
+            pieces = [chunk] if progress is None else [chunk[i:i + _UPLOAD_PROGRESS_CHUNK] for i in range(0, len(chunk), _UPLOAD_PROGRESS_CHUNK)] or [chunk]
+            for piece in pieces:
+                data["request_body_yielded_bytes"] += len(piece)
+                yield piece
+                if progress is not None:
+                    try:
+                        progress(data["request_body_yielded_bytes"], total)
+                    except Exception:
+                        pass
 
     async def aclose(self):
         await self.stream.aclose()
@@ -367,6 +389,10 @@ class ImageTransportClient(_OriginalAsyncClient):
             record = _Record(self._image_publish, self._image_phase, attempt,
                              getattr(request, "_image_transport_build_ms", None))
             tap = _UploadTap(original_stream, record)
+            try:
+                tap.total = int(request.headers.get("content-length") or 0)
+            except (TypeError, ValueError):
+                tap.total = 0
             request.stream = tap
             trusted = type(self._transport_for_url(request.url)) is _OriginalHTTPTransport
 

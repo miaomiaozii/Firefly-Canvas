@@ -15,7 +15,7 @@ from .generation_failures import AGENT_IMAGE_ATTEMPT, UpstreamImageFailure, mark
 from .media import generation_reference_to_data_url as _generation_reference_to_data_url, generation_reference_bytes as _generation_reference_bytes, _generation_reference_value
 from .providers import _soon_url_auto_provider, load_upstream_direct
 from .upstream_http import create_upstream_async_client as _create_upstream_async_client, create_upstream_client as _create_upstream_client
-from .image_transport import create_image_transport_client as _create_image_transport_client, image_response_json as _image_response_json, record_image_decode as _record_image_decode, _record_current_image_decode, _image_upload_retry_scope
+from .image_transport import create_image_transport_client as _create_image_transport_client, image_response_json as _image_response_json, record_image_decode as _record_image_decode, _record_current_image_decode, _image_upload_retry_scope, image_upload_progress as _image_upload_progress
 from .image_request_budget import (PreparedReference as _BudgetPreparedReference, lookup_known_body_limit as _lookup_known_body_limit,
                                    prepare_budgeted_request as _prepare_budgeted_request, reference_projection as _reference_projection,
                                    temporary_413_target as _temporary_413_target)
@@ -2827,7 +2827,9 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
                         stream = BytesIO(content) if isinstance(content, (bytes, bytearray)) else content
                         tracked_files.append((field, (filename, _ProgressUpload(stream, upload_sizes[index], lambda position, index=index: report_upload(index, position)), mime_type)))
                 try:
-                    response = await post_openai_edits(tracked_files)
+                    # multipart 已由 _ProgressUpload 按文件字节报进度，关掉传输层那份，免得两套分母交替跳动。
+                    with _image_upload_progress(None):
+                        response = await post_openai_edits(tracked_files)
                     if response.status_code >= 400:
                         if AGENT_IMAGE_ATTEMPT.get() or response.status_code == 429:
                             raise response_failure(response)

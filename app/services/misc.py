@@ -122,10 +122,26 @@ def apimart_video_reference_error(value: str) -> str:
 
 async def run_routed_image_candidate(provider_id, model, prompt, size, quality, references,
                                      image_parameters, **kwargs):
-    return await _svc._main('run_provider_generation_with_backoff')(
-        provider_id, _svc._main('generate_ai_image'), prompt, size, quality, model,
-        references, provider_id, preserve_model=True, image_parameters=image_parameters, lock_model=True, **kwargs,
-    )
+    try:
+        from app.services.image_transport import image_upload_progress
+    except ImportError:  # AST 独立装载夹具里没有真包，进度只是展示，缺了不影响生成。
+        from contextlib import nullcontext as image_upload_progress
+    callback = kwargs.get('progress_callback')
+
+    def report_upload(done, total):
+        # JSON 通道（Soon/Gemini 原生等）整包上传，按真实已发字节报进度；发完即进入「等待上游」。
+        if not callable(callback) or total <= 0:
+            return
+        if done >= total:
+            callback('provider_generating')
+        else:
+            callback('uploading', bytes_done=done, bytes_total=total)
+
+    with image_upload_progress(report_upload if callable(callback) else None):
+        return await _svc._main('run_provider_generation_with_backoff')(
+            provider_id, _svc._main('generate_ai_image'), prompt, size, quality, model,
+            references, provider_id, preserve_model=True, image_parameters=image_parameters, lock_model=True, **kwargs,
+        )
 
 
 def attach_reference_preparation(items, report):

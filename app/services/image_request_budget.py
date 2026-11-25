@@ -5,7 +5,9 @@
 - 放不下：保持原尺寸 JPEG q95→92→90→85→80；仍放不下按长边
   6144→5120→4096→3584→3072→2560→2048→1536、每档质量 80。最低质量 80。
 - 全程 4:4:4（subsampling=0）、保留 ICC（EXIF 方向一并保留，防止重编码后显示翻转）。
-- 透明图走 WebP（同样质量阶梯）；不透明照片不走无损 WebP——实测比原 JPEG 还大且每档多花十几秒。
+- 发送副本只用 JPEG / PNG（用户 2026-11-25 裁定：Soon 收到 WebP 参考图时出图与没传一样）。
+  不透明 → JPEG 阶梯；透明 → PNG（无损），只按尺寸档缩。源图不是 JPEG/PNG（WebP、BMP 等）
+  即使放得下也先转换：不透明转 JPEG q95，透明转原尺寸 PNG。
 - 多图水位分配：总预算平均分给每张；小于自己份额的保持原样，余量重分。
 - 全压到底仍超限：不发请求、不扣费，提示「参考图太多，请减少到 N 张」，N 按实际算出。
 - 压缩只作用于发送副本，每档从同一基准像素重新编码；原文件零写入；不放大。
@@ -56,7 +58,8 @@ def lookup_known_body_limit(resolved_url: str) -> Optional[KnownBodyLimit]:
     return None
 
 
-_MIME_BY_FORMAT = {'PNG': 'image/png', 'JPEG': 'image/jpeg', 'WEBP': 'image/webp'}
+_MIME_BY_FORMAT = {'PNG': 'image/png', 'JPEG': 'image/jpeg'}
+_SENDABLE_FORMATS = frozenset(_MIME_BY_FORMAT)
 
 # #500 票面阶梯。质量档保持原尺寸；尺寸档每档固定 q80；最低质量 80。
 _QUALITY_STEPS = (95, 92, 90, 85, 80)
@@ -88,11 +91,11 @@ def encode_stage(img: Image.Image, stage: Tuple, *, icc_profile: Optional[bytes]
         meta['exif'] = exif
     buf = io.BytesIO()
     if fmt == 'JPEG':
-        # 票面固定 4:4:4；ICC/EXIF 随档携带。不透明照片不走无损 WebP（票面明令跳过）。
+        # 票面固定 4:4:4；ICC/EXIF 随档携带。
         work.convert('RGB').save(buf, 'JPEG', quality=int(quality), subsampling=0, **meta)
     else:
-        # 透明图 WebP 走与 JPEG 相同的质量阶梯（lossy），保住 alpha。
-        work.save(buf, 'WEBP', quality=int(quality), method=4, **meta)
+        # 透明图只发 PNG（无损，保住 alpha），体积只靠尺寸档降。
+        work.save(buf, 'PNG', optimize=False, **({'icc_profile': icc_profile} if icc_profile else {}))
     return buf.getvalue()
 
 
@@ -157,7 +160,8 @@ class PreparedReference:
         self._stages = self._build_stages()
         self.stage = -1
         self.current_bytes = len(raw)
-        self.current_mime = mime_hint or _MIME_BY_FORMAT.get(self.source_format, 'image/png')
+        # mime 以实际解码格式为准，不信扩展名推出的 mime_hint：标错的 mime 会让上游当成坏图忽略。
+        self.current_mime = _MIME_BY_FORMAT.get(self.source_format) or mime_hint or 'image/png'
         self.current_format = self.source_format
         self.quality: Optional[int] = None
         self.lossless = False
@@ -165,6 +169,8 @@ class PreparedReference:
         self._raw_current = raw
         self._data_url: Optional[str] = None
         self._frozen = False
+        if self.source_format not in _SENDABLE_FORMATS:
+            self.advance()
 
     @property
     def passthrough_value(self) -> str:
@@ -175,11 +181,14 @@ class PreparedReference:
     def _build_stages(self) -> List[Tuple]:
         if self.passthrough:
             return []
-        # 票面单张规则：透明 → WebP；不透明 → JPEG（含不透明 PNG 源，重编码即 JPEG）。
-        fmt = 'WEBP' if self.has_alpha else 'JPEG'
         edge = max(self.from_width, self.from_height)
-        stages: List[Tuple] = [(fmt, q) for q in _QUALITY_STEPS]
-        stages.extend((fmt, ceiling, _FLOOR_QUALITY) for ceiling in _RESIZE_CEILINGS if ceiling < edge)
+        if self.has_alpha:
+            stages: List[Tuple] = [] if self.source_format == 'PNG' else [('PNG', None)]
+            stages.extend(('PNG', ceiling, None) for ceiling in _RESIZE_CEILINGS if ceiling < edge)
+            return stages
+        # 不透明 → JPEG（含不透明 PNG 源，重编码即 JPEG）。
+        stages = [('JPEG', q) for q in _QUALITY_STEPS]
+        stages.extend(('JPEG', ceiling, _FLOOR_QUALITY) for ceiling in _RESIZE_CEILINGS if ceiling < edge)
         return stages
 
     def stages(self) -> List[Tuple]:
@@ -198,9 +207,9 @@ class PreparedReference:
         self.stage += 1
         self.current_bytes = len(encoded)
         self.current_format = stage[0]
-        self.current_mime = 'image/webp' if stage[0] == 'WEBP' else 'image/jpeg'
-        self.lossless = False
-        self.quality = int(stage[-1])
+        self.current_mime = _MIME_BY_FORMAT[stage[0]]
+        self.lossless = stage[0] == 'PNG'
+        self.quality = None if stage[-1] is None else int(stage[-1])
         # 输出尺寸用算术推导，不重解码（省 CPU，且兼容只测体积的下游/夹具）。
         if len(stage) == 3:
             scaled = _fit_edge(self._baseline, stage[1])
@@ -277,18 +286,22 @@ def _suggested_max_references(references: Sequence[PreparedReference], body: int
     return count
 
 
+def _mb(value: int) -> str:
+    return f'{value / (1024 * 1024):.1f} MB'
+
+
 def _floor_error(references: Sequence[PreparedReference], build_request: Callable, local_bytes: int) -> HTTPException:
     body = len(build_request(list(references)).content)
     rows = [reference_projection(r) for r in references]
     excess = body - local_bytes
     n = _suggested_max_references(references, body, local_bytes)
     if not references:
-        message = (f'请求体 {body} B 超过本地目标 {local_bytes} B，但没有参考图可压缩：'
-                   f'超出部分来自 prompt/配置/JSON 等非图片开销（超出 {excess} B）。')
+        message = (f'请求体 {_mb(body)} 超过本地目标 {_mb(local_bytes)}，但没有参考图可压缩：'
+                   f'超出部分来自 prompt/配置/JSON 等非图片开销（超出 {_mb(excess)}）。')
         n = 0
     else:
-        message = (f'参考图太多：{len(references)} 张全部压到底线（长边 1536、质量 80）后请求体仍为 {body} B，'
-                   f'超过本地目标 {local_bytes} B（超出 {excess} B），请减少到 {n} 张。')
+        message = (f'参考图太多：{len(references)} 张全部压到底线（长边 1536、质量 80）后请求体仍为 {_mb(body)}，'
+                   f'超过本地目标 {_mb(local_bytes)}（超出 {_mb(excess)}），请减少到 {n} 张。')
     return HTTPException(status_code=413, detail={
         'code': 'request_body_floor_exceeded',
         'message': message,
@@ -365,7 +378,7 @@ def advance_until_below(ref: PreparedReference, *, build_single: Callable[[Seque
     return None
 
 
-_FORMAT_LABELS = {'WEBP': 'WebP', 'JPEG': 'JPEG', 'PNG': 'PNG'}
+_FORMAT_LABELS = {'WEBP': 'WebP', 'JPEG': 'JPEG', 'PNG': 'PNG', 'BMP': 'BMP', 'GIF': 'GIF', 'TIFF': 'TIFF'}
 
 
 def compression_label(projection: Dict[str, Any]) -> str:
