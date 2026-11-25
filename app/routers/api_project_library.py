@@ -941,7 +941,11 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
         history_record = {'id': progress_history_id, 'task_id': task_id, 'idempotency_key': payload.idempotency_key or task_id, 'type': 'online-image', 'status': 'succeeded', 'prompt': payload.prompt, 'executed_prompt': executed_prompt, 'angle_preset': payload.angle_preset, 'created_at': started_at, 'createdAt': started_at, 'completed_at': timestamp, 'runMs': max(0, timestamp - started_at), 'routing_mode': payload.routing_mode, 'requested_provider_id': payload.provider_id, 'requested_model': payload.model, 'actual_provider_id': route.provider_id, 'actual_provider_name': route.provider_name, 'actual_model': route.model, 'model': route.model, 'route': route.to_dict(), 'route_reason': route.reason, 'params': request_snapshot.to_dict(), 'request_payload': payload.model_dump(), 'outputs': _history_output_entries(generated_items, 'image'), 'result_node_id': payload.result_node_id}
         history_record.update(metadata)
         if reference_reports:
-            history_record['reference_preparation'] = reference_reports
+            # The Store rejects any history 'references' that are not project asset ids; these rows are
+            # scalar budget projections, so they travel under a non-media key.
+            history_record['reference_preparation'] = [
+                {**{k: v for k, v in report.items() if k != 'references'}, 'reference_rows': report.get('references') or []}
+                for report in reference_reports]
             history_record['reference_note'] = '；'.join(dict.fromkeys(note for note in (_report_note(r) for r in reference_reports) if note))
         history_record['download'] = None
         raise_if_project_image_task_cancelled(task_id)
@@ -1019,11 +1023,16 @@ async def run_project_image_task(task_id: str, project_id: str, payload: Project
             return
         queued_result = downloads(_app_main).find_task(project_id, task_id)
         if queued_result:
+            logger.warning('[gen-task %s] retrieval write failed (%s)', task_id[:8],
+                           type(exc.cause if isinstance(exc, _CandidateWriteFailure) else exc).__name__)
             queued_result = await downloads(_app_main).failed(queued_result['history_id'],
                 exc.cause if isinstance(exc, _CandidateWriteFailure) else exc)
-            with CANVAS_TASK_LOCK:
-                CANVAS_TASKS[task_id].update(status='download_failed', error=queued_result.get('error', ''),
-                    download=downloads(_app_main).public(queued_result), updated_at=time.time())
+            # failed() completes the task itself when every slot is archived; never downgrade that terminal.
+            if queued_result.get('status') != 'succeeded':
+                with CANVAS_TASK_LOCK:
+                    CANVAS_TASKS[task_id].update(status=queued_result.get('status') or 'download_failed',
+                        error=queued_result.get('error', ''),
+                        download=downloads(_app_main).public(queued_result), updated_at=time.time())
             await manager.broadcast_canvas_updated(project_id, _app_main.now_ms())
             return
         detail = getattr(exc, 'detail', None) or str(exc)

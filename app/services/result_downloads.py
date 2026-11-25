@@ -561,6 +561,19 @@ class ResultDownloads:
         queue = self.load(history_id)
         opened = await asyncio.to_thread(self.app.project_store_call, 'open_project', queue['project_id'])
         self.sync_saved(queue, opened['canvas'])
+        if queue['items'] and all(i.get('output') for i in queue['items']):
+            # Every slot is archived: a later write error is not a retrieval failure, and marking
+            # download_failed would strand the task with nothing left to retrieve.
+            try:
+                await self._complete(queue['project_id'], queue)
+                queue.update(status='succeeded', error='')
+                return queue
+            except ProjectStoreError as exc:
+                logging.getLogger(__name__).warning('Result retrieval completion deferred history=%s error=%s',
+                                                    history_id, type(exc).__name__)
+                queue.update(status='generated_pending_download', error='')
+                self.save(queue)
+                return queue
         queue.update(status='download_failed', error=EXPIRED if isinstance(error, ResultLinkExpired) else
                      '下载失败，可重新取回（不会重新生成、不扣费）')
         self.save(queue)
@@ -614,7 +627,6 @@ class ResultDownloads:
                 await self._mutate('publish_image_result_download', project_id, queue['node_id'], queue['task_id'],
                                   history_id, queue['generation'], outputs, self.public(queue))
             queue = self.load(history_id, project_id)
-            outputs = [item['output'] for item in queue['items'] if item.get('output')]
             if any(not i.get('output') for i in queue['items']):
                 errors = [i.get('error') for i in queue['items'] if i.get('error')]
                 queue.update(status='download_failed' if errors else 'generated_pending_download', error=errors[0] if errors else '')
@@ -624,23 +636,7 @@ class ResultDownloads:
                 await self._mutate('flush', project_id)
                 await self.app.manager.broadcast_canvas_updated(project_id, int(canvas['updated_at']))
                 return self.public(queue)
-            history = {**queue['history'], 'status': 'succeeded', 'outputs': outputs,
-                       'completed_at': round(time.time() * 1000), 'download': {**self.public(queue), 'status': 'succeeded'}}
-            canvas = await self._mutate('complete_image_result_download', project_id, queue['node_id'], queue['task_id'],
-                                       history_id, queue['generation'], outputs, history)
-            history = next(h for h in canvas.get('history', []) if h.get('id') == history_id)
-            from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK
-            from app.routers.api_project_library import durable_project_image_result
-            with CANVAS_TASK_LOCK:
-                task = CANVAS_TASKS.get(queue['task_id'])
-                if task and task.get('project_id') == project_id:
-                    task.update(status='succeeded', error='', updated_at=time.time(),
-                        result=durable_project_image_result(project_id, canvas,
-                            {'history_record': history, 'result_node_id': queue['node_id']}))
-            await self._mutate('flush', project_id)
-            self.discard(history_id)
-            await self.app.manager.broadcast_canvas_updated(project_id, int(canvas['updated_at']))
-            return {'history_id': history_id, 'status': 'succeeded'}
+            return await self._complete(project_id, queue)
         except (ProjectStoreError, OSError, httpx.HTTPError) as exc:
             try:
                 return self.public(await self.failed(history_id, exc))
@@ -652,6 +648,27 @@ class ResultDownloads:
         finally:
             with self.guard:
                 self.workers.discard(history_id)
+
+    async def _complete(self, project_id, queue):
+        history_id = queue['history_id']
+        outputs = [item['output'] for item in queue['items'] if item.get('output')]
+        history = {**queue['history'], 'status': 'succeeded', 'outputs': outputs,
+                   'completed_at': round(time.time() * 1000), 'download': {**self.public(queue), 'status': 'succeeded'}}
+        canvas = await self._mutate('complete_image_result_download', project_id, queue['node_id'], queue['task_id'],
+                                   history_id, queue['generation'], outputs, history)
+        history = next(h for h in canvas.get('history', []) if h.get('id') == history_id)
+        from app.core import CANVAS_TASKS, CANVAS_TASK_LOCK
+        from app.routers.api_project_library import durable_project_image_result
+        with CANVAS_TASK_LOCK:
+            task = CANVAS_TASKS.get(queue['task_id'])
+            if task and task.get('project_id') == project_id:
+                task.update(status='succeeded', error='', updated_at=time.time(),
+                    result=durable_project_image_result(project_id, canvas,
+                        {'history_record': history, 'result_node_id': queue['node_id']}))
+        await self._mutate('flush', project_id)
+        self.discard(history_id)
+        await self.app.manager.broadcast_canvas_updated(project_id, int(canvas['updated_at']))
+        return {'history_id': history_id, 'status': 'succeeded'}
 
     async def startup(self, *, refresh=None):
         if self.root.exists():

@@ -764,3 +764,66 @@ def test_ssrf_validation_still_rejects_private_dns(fixture):
     f.monkeypatch.setattr(core, '_resolve_generation_host', private_dns)
     with pytest.raises(ProjectStoreError, match='私有网络'):
         asyncio.run(core.ensure_public_generation_target(URL))
+
+
+def test_generation_all_items_retrieved_after_connect_retry_ends_succeeded(fixture):
+    f = fixture
+    from app import core
+    from app.routers import api_project_library as api
+    content = retrieval_result_png()
+    first_attempt = [True]
+    def respond(req):
+        if req.url.params.get('slot') == 'first' and first_attempt[0]:
+            first_attempt[0] = False
+            raise httpx.ConnectError('fixture connect refused')
+        return httpx.Response(200, headers={'Content-Length': str(len(content))}, stream=Body(content))
+    network(f, respond)
+    urls = iter([URL + '&slot=first', URL + '&slot=second'])
+    first_done = asyncio.Event()
+    async def generate(*args, **kwargs):
+        url = next(urls)
+        if url.endswith('second'):
+            # Mirrors the live log: item 1 is archived and partially published before item 2 returns.
+            await first_done.wait()
+        else:
+            asyncio.get_running_loop().call_later(0.5, first_done.set)
+        return {'type': 'url', 'value': url}, {'task_id': 'upstream-original', 'data': [{'url': url}]}
+    f.monkeypatch.setattr(api, 'run_routed_image_candidate', generate)
+    # The live task compressed its reference before sending; the report travels into the final history.
+    f.monkeypatch.setattr(api, '_snapshot_reference_preparation', lambda: {
+        'policy': 'known_limit', 'changed': True, 'body_bytes': 1, 'resubmits': 0, 'rejected_body_bytes': [],
+        'references': [{'index': 0, 'source_format': 'jpeg', 'final_format': 'jpeg', 'changed': True}]})
+    payload = core.ProjectImageGenerationRequest(prompt='fixture', result_node_id='result', provider_id=PROVIDER['id'],
+                                                 model='fixture-model', base_revision=2, n=2)
+    route = SimpleNamespace(provider_id=PROVIDER['id'], provider_name='Fixture', model='fixture-model', reason='manual',
+                            to_dict=lambda: {'provider_id': PROVIDER['id'], 'model': 'fixture-model'})
+    core.CANVAS_TASKS['task-local'] = {'id': 'task-local', 'type': 'project-online-image', 'project_id': f.project,
+        'status': 'queued', 'created_at': time.time(), 'result_node_id': 'result'}
+    try:
+        asyncio.run(api.run_project_image_task('task-local', f.project, payload, api.project_image_request(payload), route, 2))
+        assert core.CANVAS_TASKS['task-local']['status'] == 'succeeded', core.CANVAS_TASKS['task-local'].get('error')
+        record = f.store.canvas(f.project)['history'][0]
+        assert record['status'] == 'succeeded' and len(record['outputs']) == 2
+        assert len(f.store.find_canvas_node(f.project, 'result')['images']) == 2
+    finally:
+        core.CANVAS_TASKS.pop('task-local', None)
+
+
+def test_failed_never_downgrades_queue_whose_slots_all_have_outputs(fixture):
+    f = fixture
+    from app import core
+    content = retrieval_result_png()
+    network(f, lambda req: httpx.Response(200, stream=Body(content)))
+    core.CANVAS_TASKS['task-local'] = {'id': 'task-local', 'project_id': f.project, 'status': 'running'}
+    async def run():
+        item_id = await checkpoint(f)
+        await f.queue.archive(f.history['id'], item_id)
+        result = await f.queue.failed(f.history['id'], ProjectStoreError('late write error'))
+        assert result['status'] == 'succeeded'
+        assert core.CANVAS_TASKS['task-local']['status'] == 'succeeded'
+        record = f.store.canvas(f.project)['history'][0]
+        assert record['status'] == 'succeeded' and len(record['outputs']) == 1
+    try:
+        asyncio.run(run())
+    finally:
+        core.CANVAS_TASKS.pop('task-local', None)

@@ -181,7 +181,7 @@ def test_actual_auto_submission_checkpoint_and_recovery_match(auth):
         assert (await auth.recover(q))['url'] == 'https://result.invalid/fresh.png'
         post, get = auth.requests
         assert [r.method for r in auth.requests] == ['POST', 'GET']
-        assert str(post.url) == 'https://api.soonstudio.ai/v1/images/generations'
+        assert str(post.url) == 'https://api.soonstudio.ai/v1/images/generations?async=true'
         assert json.loads(post.content)['model'] == q['model'] == MODEL
         assert str(get.url) == 'https://api.soonstudio.ai/v1/images/tasks/original-task-493'
         assert auth_headers(post) == auth_headers(get) == {'authorization': 'Bearer offline-fake-auth-493'}
