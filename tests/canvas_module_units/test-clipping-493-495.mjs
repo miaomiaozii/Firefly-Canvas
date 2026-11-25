@@ -50,7 +50,7 @@ test('actual singleton renderer fits the inner flex viewport; all initial inform
         assert.equal(action.querySelector('.retrieval-no-charge').textContent,lang === 'zh' ? '不扣费' : 'No charge');
         assert.equal(slot.querySelector('button').disabled,false);
         assert.equal(slot.querySelectorAll('small')[0].textContent,lang === 'zh' ? '剩余 2 分钟' : '2 minutes remaining');
-        assert.equal(slot.querySelectorAll('small')[1].textContent,'0 / 1024 B');
+        assert.equal(slot.querySelectorAll('small')[1].textContent,'0.0 MB / 0.0 MB');
         assert.equal(slot.querySelector('details').hasAttribute('open'),false);
         assert.match(slot.querySelector('details').querySelector('span').textContent,/Long <failure>/);
     }
@@ -86,7 +86,7 @@ test('known bytes including zero are truthful; unknown progress does not invent 
         const root = new Element(); root.innerHTML = ctx.nodeBodyHtml(node,layout);
         const small = root.querySelector('.retrieval-slot').querySelectorAll('small');
         assert.equal(small.length,value === undefined ? 1 : 2);
-        if(value !== undefined) assert.equal(small[1].textContent,`${value} / 1024 B`);
+        if(value !== undefined) assert.equal(small[1].textContent,`${(value / (1024 * 1024)).toFixed(1)} MB / 0.0 MB`);
     }
 });
 

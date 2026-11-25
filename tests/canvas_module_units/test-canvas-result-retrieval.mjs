@@ -65,12 +65,12 @@ test('late project response cannot populate new project, including switch back',
 });
 
 test('mixed expiry independently renders recoverable, confirmed unavailable, byte metrics, no invented percent',async()=>{
-    const group=dto(); group.items[1]={...group.items[1],status:'expired',can_retrieve:true,remaining_seconds:0}; group.items[2]={...group.items[2],status:'unavailable',can_retrieve:false,error:'expired token'}; group.items[3]={...group.items[3],status:'downloading',can_retrieve:false,downloaded_bytes:20,total_bytes:null};
+    const group=dto(); group.items[1]={...group.items[1],status:'expired',can_retrieve:true,remaining_seconds:0}; group.items[2]={...group.items[2],status:'unavailable',can_retrieve:false,error:'expired token'}; group.items[3]={...group.items[3],status:'downloading',can_retrieve:false,downloaded_bytes:20*1024*1024,total_bytes:null};
     const {api}=await setup(group);
     const a=api.slotHtml(group,group.items[1]),b=api.slotHtml(group,group.items[2]),c=api.slotHtml(group,group.items[3]);
     assert.match(a,/仍可查询原结果/); assert.doesNotMatch(a,/ disabled/);
     assert.match(b,/已确认无法取回/); assert.doesNotMatch(b,/<button|data-retrieval-item=/);
-    assert.match(c,/20 B/); assert.doesNotMatch(c,/%/);
+    assert.match(c,/20\.0 MB/); assert.doesNotMatch(c,/%/);
     assert.match(api.summaryHtml(group),/全部取回（2）/);
 });
 
