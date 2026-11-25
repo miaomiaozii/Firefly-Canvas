@@ -603,12 +603,28 @@ async function querySmartImageTaskNow(nodeId, localTaskId){
     }
 }
 
+function smartTaskSettledByServer(taskId){
+    const id = String(taskId || '');
+    const stillPending = (canvasState.nodes || []).some(node => smartPendingTasks(node).some(task => task.taskId === id));
+    if(stillPending) return false;
+    // Only the orphan reaper: ordinary terminals must still reach the poll so callers get the result or failure.
+    return (canvas?.history || []).some(log => String(log?.task_id || '') === id
+        && log?.termination_reason === 'orphan_pending');
+}
+
 async function pollSmartCanvasTask(taskId){
     if(!taskId) throw new Error(tr('smart.errRunFailed'));
     if(activeSmartTaskPolls.has(taskId)) return activeSmartTaskPolls.get(taskId);
     const promise = (async () => {
         for(let i = 0; i < 900; i++){
             await new Promise(resolve => setTimeout(resolve, 2000));
+            // A canvas_updated merge may have dropped the card after the server reaped it as an orphan;
+            // polling on would only replay that terminal as a failure toast.
+            if(smartTaskSettledByServer(taskId)){
+                const settled = new Error(tr('smart.errRunFailed'));
+                settled.taskSettledByServer = true;
+                throw settled;
+            }
             const task = await fetch(projectImageTaskUrl(taskId)).then(async r => {
                 if(!r.ok) throw new Error(await r.text());
                 return r.json();
@@ -819,6 +835,8 @@ async function resumeSmartPendingNode(node, logContext={}){
             canvasCore.scheduleSave();
             return {succeeded:true};
         } catch(e) {
+            // The server terminal is already merged into this node; no toast, retry or second history record.
+            if(e?.taskSettledByServer) return {};
             if(e && e.imageTaskRecover && e.recoverTaskId){
                 // #41：终态失败仍保留上游任务号供手动取回，不重新提交。
                 task.failed = true;

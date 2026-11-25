@@ -564,9 +564,11 @@ def recover_project_image_task(
     termination_error: str = '服务重启后无法确认任务是否已调用在线模型；为避免重复计费，任务已终止，请显式重试',
     for_retry: bool = False,
     for_download: bool = False,
+    lock_held: bool = False,
 ) -> tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
     """Reconcile one durable task under the project lock after registry loss."""
-    with project_lifecycle_lock(project_id):
+    # project_lifecycle_lock is not reentrant; lock_held lets a caller check other owners and write in one hold.
+    with nullcontext() if lock_held else project_lifecycle_lock(project_id):
         opened = _app_main.project_store_call('open_project', project_id)
         canvas = opened.get('canvas') or {}
         durable = durable_project_image_task(canvas, task_id)
@@ -647,6 +649,41 @@ def recover_project_image_task(
             durable = durable_project_image_task(canvas, task_id)
             return {'canvas': canvas}, durable
         return opened, durable
+
+
+def reap_orphan_project_image_pending(project_id: str) -> Optional[Dict[str, Any]]:
+    """Terminate pendingTasks no owner can settle; returns the new canvas, or None if nothing changed.
+
+    Without this a pending entry whose history and download queue are gone stays
+    "queued 0s" forever: nothing on the server will ever write its terminal.
+    Only project_img_ tasks absent from the download queue, CANVAS_TASKS and history
+    qualify; anything still known there may be a paid in-flight task.  agent_img_
+    tasks are owned by the Agent journal and are skipped.
+    """
+    with project_lifecycle_lock(project_id):
+        canvas = _app_main.project_store_call('open_project', project_id).get('canvas') or {}
+        history_ids = {str(item.get('task_id') or item.get('taskId') or '')
+                       for item in canvas.get('history') or [] if isinstance(item, dict)}
+        candidates = [
+            str(pending.get('taskId') or '')
+            for node in canvas.get('nodes') or [] if isinstance(node, dict)
+            for pending in node.get('pendingTasks') or [] if isinstance(pending, dict)
+            if str(pending.get('taskId') or '').startswith('project_img_')
+            and str(pending.get('kind') or 'image') == 'image'
+            and str(pending.get('taskId') or '') not in history_ids
+        ]
+        reaped = None
+        for task_id in candidates:
+            with CANVAS_TASK_LOCK:
+                if task_id in CANVAS_TASKS:
+                    continue
+            if downloads(_app_main).find_task(project_id, task_id):
+                continue
+            opened, _durable = recover_project_image_task(
+                project_id, task_id, lock_held=True, termination_reason='orphan_pending',
+                termination_error='排队记录已没有对应的任务、历史或下载队列，已自动清理')
+            reaped = opened.get('canvas') or reaped
+        return reaped
 
 
 def project_image_idempotency_signature(payload: Any) -> str:
@@ -3582,6 +3619,10 @@ async def delete_project_media(
 @router.get('/api/project-library/{project_id}')
 async def open_firefly_project(project_id: str):
     try:
+        # Every client load and post-restart reopen passes here, so dead pendingTasks are reaped even when no tab polls them.
+        reaped = await asyncio.to_thread(reap_orphan_project_image_pending, project_id)
+        if reaped is not None:
+            await manager.broadcast_canvas_updated(project_id, int(reaped.get('updated_at') or _app_main.now_ms()))
         return await asyncio.to_thread(_app_main.project_store_call, 'open_project', project_id)
     except ProjectNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
