@@ -2737,11 +2737,18 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
                 body['size'] = size
             if top_level_fields:
                 body.update(extra_body)
+                body['n'] = 1
             else:
                 body['extra_body'] = extra_body
             if routed_image_params:
                 body.update(routed_image_params)
             headers_json = _svc._main('api_headers')(provider=provider, model=model)
+            json_url = gen_url
+            if top_level_fields:
+                # Mirrors Soon's official Python example: async submit returns a task id immediately instead of
+                # holding one connection for the whole generation (observed 66s), which is easier to drop mid-way.
+                headers_json = {**headers_json, 'x-studio-channel-group': 'default', 'x-studio-request-model': model}
+                json_url = gen_url + ('&' if '?' in gen_url else '?') + 'async=true'
             prepared_refs = _budgeted_prepared_references(refs_slice)
 
             def build_json_request(refs_list, _body=body, _extra=extra_body, _has_refs=bool(refs_slice), _top=top_level_fields):
@@ -2755,7 +2762,7 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
                     if images is not None:
                         eb['image'] = images
                     sent['extra_body'] = eb
-                return client.build_request('POST', gen_url, headers=headers_json, json=sent)
+                return client.build_request('POST', json_url, headers=headers_json, json=sent)
 
             response, _sent_request = await _budgeted_json_send(client, build_json_request, prepared_refs, _lookup_known_body_limit(gen_url))
         elif is_apimart:

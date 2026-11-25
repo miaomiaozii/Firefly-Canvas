@@ -182,10 +182,10 @@ def test_ordinary_default_entry_is_candidate_semantically_without_mutating_provi
         [ref(raw)], provider=explicit, image_parameters=params))
     ordinary, candidate = network.requests()
     assert ordinary == candidate
-    assert ordinary[0].startswith('POST /v1/images/generations ')
+    assert ordinary[0].startswith('POST /v1/images/generations?async=true ')
     assert ordinary[1] == {'model': MODEL, 'prompt': PROMPT,
         'aspect_ratio': '4:3', 'resolution': '4k', 'image_size': '4K',
-        'response_format': 'url', 'image': [ref(raw)['url']]}
+        'response_format': 'url', 'n': 1, 'image': [ref(raw)['url']]}
     assert runtime['_provider'] == original
     assert params == {'aspect_ratio': '4:3', 'resolution': '4k'}
     assert len(runtime['_scope_calls']) == 2
@@ -199,10 +199,15 @@ def test_references_and_response_format_are_top_level_fields(runtime, monkeypatc
     with patch.object(Image.Image, 'save', side_effect=AssertionError('reference within budget must not be re-encoded')):
         run_soon_default_generation(runtime, [ref(original)], image_parameters={'aspect_ratio': '4:3', 'resolution': '4k'})
     request, body = network.requests()[0]
-    assert request.startswith('POST /v1/images/generations ')
+    assert request.startswith('POST /v1/images/generations?async=true ')
     assert 'extra_body' not in body
     assert body['response_format'] == 'url'
+    assert body['n'] == 1
     assert base64.b64decode(body['image'][0].split(',', 1)[1], validate=True) == original
+    head = b''.join(network.wires[0].writes).split(b'\r\n\r\n', 1)[0].decode('latin-1').lower()
+    assert request.startswith('POST /v1/images/generations?async=true ')
+    assert 'x-studio-channel-group: default' in head
+    assert ('x-studio-request-model: ' + MODEL.lower()) in head
 
 
 @pytest.mark.parametrize('provider_id', ['synthetic-soon-alpha', 'synthetic-soon-beta'])
@@ -219,8 +224,8 @@ def test_endpoint_model_profile_is_independent_of_local_id(runtime, monkeypatch,
     runtime['_provider'] = saved
     network = install_soon_memory_network(monkeypatch)
     run_soon_default_generation(runtime, image_parameters={'aspect_ratio': '4:3', 'resolution': '4k'})
-    assert network.requests() == [('POST /v1/images/generations HTTP/1.1', {
-        'model': MODEL, 'prompt': PROMPT, 'response_format': 'url',
+    assert network.requests() == [('POST /v1/images/generations?async=true HTTP/1.1', {
+        'model': MODEL, 'prompt': PROMPT, 'response_format': 'url', 'n': 1,
         'aspect_ratio': '4:3', 'image_size': '4K', 'resolution': '4k'})]
     assert saved == original
 
@@ -462,7 +467,7 @@ def test_upstream_413_known_cap_conversion_then_final_fail(runtime, monkeypatch)
     assert caught.value.status_code == 413
     requests = network.requests()
     assert len(requests) == 2
-    assert requests[0][0].startswith('POST /v1/images/generations ')
+    assert requests[0][0].startswith('POST /v1/images/generations?async=true ')
     assert requests[1][0] == requests[0][0]  # 不换端点不换模型
     assert requests[1][1]['image'] != requests[0][1]['image']
 
@@ -528,7 +533,7 @@ def test_ordinary_accepted_task_keeps_runtime_profile_for_get_only_poll(runtime,
     result, raw = run_soon_default_generation(runtime)
     requests = network.requests()
     assert [request.split(' ', 2)[:2] for request, _body in requests] == [
-        ['POST', '/v1/images/generations'], ['GET', '/v1/images/tasks/paid-original-task']]
+        ['POST', '/v1/images/generations?async=true'], ['GET', '/v1/images/tasks/paid-original-task']]
     assert raw['task_id'] == 'paid-original-task'
     for wire in network.wires:
         head = b''.join(wire.writes).split(b'\r\n\r\n', 1)[0].lower()
