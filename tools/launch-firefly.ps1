@@ -46,18 +46,28 @@ if (-not (Test-FireflyServer)) {
     $checkScript = Join-Path $root 'tools\check_dependencies.py'
     $missingNames = @()
     $checkExit = 0
-    try {
-        # --names-only：只回纯 ASCII 的包名。PowerShell 5.1 按 OEM 码页解码子进程输出，
-        # 中间接中文文本容易乱码，所以中文提示由本脚本自己拼。
-        $missingNames = @(
-            & $PythonPath $checkScript --names-only 2>$null |
-                ForEach-Object { ([string]$_).Trim() } |
-                Where-Object { $_ }
-        )
-        $checkExit = $LASTEXITCODE
-    } catch {
+    # 只有命令本身找不到才算「找不到 Python」。PowerShell 5.1 在 ErrorActionPreference=Stop 下，
+    # 会把原生命令写到 stderr 的任何内容（例如 requests 的 RequestsDependencyWarning）
+    # 当成终止错误抛出，即使已重定向到 $null。以前这里被误报成「找不到可用的 Python」，
+    # 用户无法启动。依赖是否齐全只看退出码。
+    if (-not (Get-Command $PythonPath -ErrorAction SilentlyContinue)) {
         $checkExit = 1
         $missingNames = @("找不到可用的 Python：$PythonPath")
+    } else {
+        # --names-only：只回纯 ASCII 的包名。PowerShell 5.1 按 OEM 码页解码子进程输出，
+        # 中间接中文文本容易乱码，所以中文提示由本脚本自己拼。
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            $missingNames = @(
+                & $PythonPath $checkScript --names-only 2>$null |
+                    ForEach-Object { ([string]$_).Trim() } |
+                    Where-Object { $_ }
+            )
+            $checkExit = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $previousPreference
+        }
     }
     if ($checkExit -ne 0) {
         $lines = @("Firefly Canvas 启动失败：Python 依赖不完整，服务没有启动（端口 $Port）。", '')

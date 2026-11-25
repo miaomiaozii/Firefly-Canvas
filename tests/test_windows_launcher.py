@@ -40,3 +40,40 @@ class WindowsLauncherTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LauncherDependencyCheckStderrTests(unittest.TestCase):
+    """launch-firefly.ps1 must judge dependencies by exit code, not by stderr noise."""
+
+    def _run_with_fake_python(self, body: str):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "fakepy.cmd"
+            fake.write_text("@echo off\r\n" + body + "\r\n", encoding="ascii")
+            return subprocess.run(
+                ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                 "-File", str(ROOT / "tools" / "launch-firefly.ps1"),
+                 "-PythonPath", str(fake), "-NoPopup", "-NoBrowser", "-Port", "3199"],
+                cwd=ROOT, capture_output=True, timeout=60,
+            )
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows launcher")
+    def test_stderr_warning_with_exit_zero_is_not_reported_as_missing_python(self):
+        # The real trigger was requests' RequestsDependencyWarning on stderr; with
+        # ErrorActionPreference=Stop PowerShell 5.1 turned it into "找不到可用的 Python".
+        result = self._run_with_fake_python(
+            "if \"%2\"==\"--names-only\" (echo RequestsDependencyWarning 1>&2 & exit /b 0)\r\nexit /b 1"
+        )
+        out = result.stdout.decode("utf-8", "replace") + result.stderr.decode("utf-8", "replace")
+        self.assertNotIn("找不到可用的 Python", out)
+        self.assertNotIn("依赖不完整", out)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows launcher")
+    def test_missing_dependency_exit_code_still_blocks_launch(self):
+        result = self._run_with_fake_python(
+            "if \"%2\"==\"--names-only\" (echo RequestsDependencyWarning 1>&2 & echo Pillow-PIL & exit /b 1)\r\nexit /b 1"
+        )
+        out = result.stdout.decode("utf-8", "replace")
+        self.assertEqual(result.returncode, 1, out)
+        self.assertIn("Pillow-PIL", out)
+        self.assertNotIn("找不到可用的 Python", out)
