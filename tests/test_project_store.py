@@ -2957,11 +2957,12 @@ class BackgroundSnapshotLifecycleTests(unittest.TestCase):
         other_id = self.store.create_project("后续项目")["id"]
         original = OSError("同步保存的原异常")
         real_replace = os.replace
-        failed_path = self.root / self.project_id / "canvas.json"
+        # TEMP may be an 8.3 short path (ADMINI~1) while the store writes resolved long paths.
+        failed_path = (self.root / self.project_id / "canvas.json").resolve()
         completed, failures = threading.Event(), []
 
         def replace(source, target):
-            if Path(target) == failed_path:
+            if Path(target).resolve() == failed_path:
                 raise original
             return real_replace(source, target)
 
