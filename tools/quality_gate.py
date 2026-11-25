@@ -24,6 +24,7 @@ import textwrap
 import threading
 import time
 import zipfile
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -2417,6 +2418,53 @@ def is_private_test_step(name: str, command: list[str]) -> bool:
     return name == 'project-contract' or name.startswith('unit-contract-')
 
 
+def _spawn_step(
+    command: list[str], repo_root: Path, environment: dict[str, str]
+) -> subprocess.Popen:
+    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    return process_job().spawn(
+        command,
+        cwd=repo_root,
+        env=environment,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=creationflags,
+        start_new_session=os.name != "nt",
+    )
+
+
+def _step_output_text(output: str | bytes, *, partial: bool) -> str:
+    if isinstance(output, str):
+        return output
+    text = output.decode("utf-8", errors="replace")
+    # Match Popen text mode for communicate(), but preserve the newline bytes
+    # decoded from TimeoutExpired in the private fallback.
+    return text if partial else text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def classify_step_output(
+    command: list[str],
+    stdout: str,
+    stderr: str,
+    returncode: int | None,
+    *,
+    timed_out: bool = False,
+) -> tuple[str, int | None, bool, dict | None]:
+    """Return status, exit code, skip marker, and unittest counts for a launched step."""
+    summary = unittest_summary(command, stdout, stderr)
+    reported_skip = output_reports_skip(stdout, stderr)
+    if timed_out:
+        return "timed-out", 124, reported_skip, summary
+    if returncode != 0:
+        return "failed", returncode, reported_skip, summary
+    if reported_skip or (summary and any(summary.values())):
+        return "failed", 1, reported_skip, summary
+    return "passed", 0, reported_skip, summary
+
+
 def run_step(
     name: str,
     command: list[str],
@@ -2431,20 +2479,8 @@ def run_step(
     ids, files = project_contract_sources(command, repo_root) if project_contract else (set(), {})
     if project_contract:
         environment = {**environment, 'FIREFLY_QUALITY_GATE_PRIVATE_TEST_EVENTS': '1'}
-    creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     try:
-        process = process_job().spawn(
-            command,
-            cwd=repo_root,
-            env=environment,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            creationflags=creationflags,
-            start_new_session=os.name != "nt",
-        )
+        process = _spawn_step(command, repo_root, environment)
     except OSError as error:
         if project_contract:
             print(str(error), file=sys.stderr)
@@ -2460,14 +2496,17 @@ def run_step(
             "stderr_tail": "" if project_contract else redact_text(str(error), sensitive_values),
             **({'failure_diagnostics': {'completeness': 'incomplete', 'failures': []}} if project_contract else {}),
         }
+    partial_output = False
+    timed_out = False
+    returncode = None
     try:
-        # 登记：门自己被打断（Ctrl+C / SIGTERM）时也要能查到这一棵子树。
+        # 门自己被打断（Ctrl+C / SIGTERM）时也要能查到这一棵子树。
         with _ACTIVE_STEP_LOCK:
             _ACTIVE_STEP_PROCESSES.add(process)
         stdout, stderr = process.communicate(timeout=max(timeout, 0.01))
-        status = "passed" if process.returncode == 0 else "failed"
-        exit_code = process.returncode
+        returncode = process.returncode
     except subprocess.TimeoutExpired as first_timeout:
+        timed_out = True
         stop_process_tree(process)
         try:
             stdout, stderr = process.communicate(timeout=5)
@@ -2478,33 +2517,25 @@ def run_step(
                     stream.close()
             if project_contract:
                 # TimeoutExpired may carry the only available partial output.
-                stdout = error.stdout or first_timeout.stdout or b''
-                stderr = error.stderr or first_timeout.stderr or b''
-                if isinstance(stdout, bytes):
-                    stdout = stdout.decode('utf-8', errors='replace')
-                if isinstance(stderr, bytes):
-                    stderr = stderr.decode('utf-8', errors='replace')
+                stdout = error.stdout or first_timeout.stdout or ""
+                stderr = error.stderr or first_timeout.stderr or ""
+                partial_output = True
             else:
                 stdout, stderr = "", "process output did not close after timeout"
-        status = "timed-out"
-        exit_code = 124
     finally:
         with _ACTIVE_STEP_LOCK:
             _ACTIVE_STEP_PROCESSES.discard(process)
+    stdout = _step_output_text(stdout, partial=partial_output)
+    stderr = _step_output_text(stderr, partial=partial_output)
     if project_contract:
         # Full child output is deliberately terminal-only, not a report tail or file.
         sys.stdout.write(stdout)
         sys.stdout.flush()
         sys.stderr.write(stderr)
         sys.stderr.flush()
-    summary = unittest_summary(command, stdout, stderr)
-    reported_skip = output_reports_skip(stdout, stderr)
-    if summary and any(summary.values()) and status == "passed":
-        status = "failed"
-        exit_code = 1
-    if reported_skip and status == "passed":
-        status = "failed"
-        exit_code = 1
+    status, exit_code, reported_skip, summary = classify_step_output(
+        command, stdout, stderr, returncode, timed_out=timed_out
+    )
     result = {
         "name": name,
         "command": command,
@@ -2614,11 +2645,14 @@ def edge_compatibility_step_command(python: str, evidence_dir: Path) -> tuple[li
     return command, artifact_root
 
 
+BrowserStepSpec = tuple[list[str], Path, Callable[[Path], dict], Callable[[Path], dict], str]
+
+
 def browser_step_spec(
     name: str,
     python: str,
     evidence_dir: Path,
-) -> tuple[list[str], Path, object, object, str] | None:
+) -> BrowserStepSpec | None:
     """Resolve a browser evidence step to (command, artifact_root, validator,
     failed-evidence reader, display name); None for non-browser steps."""
     if name == "native-browser-evidence":
@@ -2694,6 +2728,41 @@ def browser_step_spec(
             "Edge compatibility",
         )
     return None
+
+
+def _finalize_step(
+    step: dict,
+    spec: BrowserStepSpec | None,
+    guard_events: list[dict],
+    retry_events: list[dict],
+    child_events: list[dict],
+    sensitive_values: list[str],
+    *,
+    parallel: bool = False,
+) -> None:
+    step["guard_events"] = classify_guard_events(guard_events)
+    step["retry_events"] = retry_events
+    step["child_events"] = child_events
+    if parallel:
+        step["parallel_group"] = True
+    if (blocking_guard_events(guard_events) or retry_events) and step["status"] == "passed":
+        step["status"] = "failed"
+        step["exit_code"] = 1
+    if spec is None:
+        return
+    _command, artifact_root, validator, failed_evidence, evidence_name = spec
+    if step["status"] == "passed":
+        try:
+            step["browser_evidence"] = validator(artifact_root)
+        except (OSError, ValueError) as error:
+            step["status"] = "failed"
+            step["exit_code"] = 1
+            step["stderr_tail"] = redact_text(
+                f"{evidence_name} evidence invalid: {error}", sensitive_values
+            )
+            step["browser_evidence"] = failed_evidence(artifact_root)
+    else:
+        step["browser_evidence"] = failed_evidence(artifact_root)
 
 
 def execution_groups(names: tuple[str, ...], *, fast: bool = False) -> list[tuple[str, list[str]]]:
@@ -2869,6 +2938,81 @@ def build_severity_findings(
             }
         )
     return findings
+
+
+def final_failure_verdict(
+    steps: list[dict],
+    final_exit_code: int,
+    guard_events: list[dict],
+    retry_events: list[dict],
+    *,
+    changed_during_run: bool,
+    mode: str,
+    run_budget: float,
+) -> tuple[int, dict | None]:
+    """Keep the first failed step ahead of any run-level failure."""
+    first_failure = next((step for step in steps if step["status"] != "passed"), None)
+    if final_exit_code == 0 and (blocking_guard_events(guard_events) or retry_events):
+        final_exit_code = 1
+        if first_failure is None:
+            first_failure = {
+                "name": "boundary-events",
+                "status": "failed",
+                "exit_code": 1,
+                "message": "guard or retry evidence arrived after step evaluation",
+            }
+    # #204: a shard can get too close to the deadline without actually timing out.
+    shard_budget_limit = run_budget * UNIT_CONTRACT_SHARD_BUDGET_RATIO
+    overshot_shard = next(
+        (
+            step
+            for step in steps
+            if is_unit_contract_shard(step["name"])
+            and (step.get("duration_seconds") or 0) > shard_budget_limit
+        ),
+        None,
+    )
+    if overshot_shard is not None:
+        if final_exit_code == 0:
+            final_exit_code = 1
+        if first_failure is None:
+            first_failure = {
+                "name": "unit-contract-shard-budget",
+                "status": "failed",
+                "exit_code": 1,
+                "message": (
+                    f"{overshot_shard['name']} 单片耗时 {overshot_shard.get('duration_seconds')}s "
+                    f"超过 {mode} 预算 {run_budget}s 的 {UNIT_CONTRACT_SHARD_BUDGET_RATIO:.0%}"
+                ),
+            }
+    if changed_during_run:
+        if final_exit_code == 0:
+            final_exit_code = 1
+        if first_failure is None:
+            first_failure = {
+                "name": "worktree-preservation",
+                "status": "failed",
+                "exit_code": 1,
+                "message": "worktree contents changed while the quality gate was running",
+            }
+    return final_exit_code, first_failure
+
+
+def _mode_budget_failure(
+    final_exit_code: int, elapsed: float, run_budget: float, *, writing_evidence: bool = False
+) -> dict | None:
+    if elapsed > run_budget and final_exit_code == 0:
+        return {
+            "name": "mode-budget",
+            "status": "timed-out",
+            "exit_code": 124,
+            "message": (
+                "mode budget was exceeded while writing quality gate evidence"
+                if writing_evidence
+                else "mode budget was exceeded during quality gate finalization"
+            ),
+        }
+    return None
 
 
 def verdict_reasons(
@@ -3817,7 +3961,6 @@ def main(argv: list[str] | None = None) -> int:
     guard_events = []
     retry_events = []
     child_events = []
-    boundary_events_failure = None
     workspace_info = {"isolated": True, "copied_files": 0}
     findings: list[dict] = []
     accept_s2 = False
@@ -3863,10 +4006,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 retry_events_file = Path(environment["FIREFLY_QUALITY_GATE_RETRY_EVENTS"])
                 child_events_file = Path(environment["FIREFLY_QUALITY_GATE_CHILD_EVENTS"])
-                # #204：并行组从 3 个巨型 unit 片 + 13 个浏览器步骤（总工作量
-                # ≈1000s）变成 8 个均衡 unit 片 + 13 个浏览器步骤。4 个 worker
-                # 时组耗时 ≈ 总工作量/4 ≈ 250s，贴着 300s 预算；8 个 worker
-                # ≈130s，留出确定性的余量。仍可用环境变量覆盖。
+                # #204：默认 8 个 worker，给 trial 的总预算留出余量。
                 parallel_workers = max(
                     1,
                     int(os.environ.get("FIREFLY_QUALITY_GATE_PARALLEL_WORKERS", "8")),
@@ -3950,46 +4090,17 @@ def main(argv: list[str] | None = None) -> int:
                             retry_events_file,
                             sensitive_values,
                         )[previous_retry_count:]
-                        step["guard_events"] = classify_guard_events(step_guard_events)
-                        step["retry_events"] = step_retry_events
-                        step["child_events"] = step_child_events
-                        if (
-                            blocking_guard_events(step_guard_events) or step_retry_events
-                        ) and step["status"] == "passed":
-                            step["status"] = "failed"
-                            step["exit_code"] = 1
-                        if spec is not None:
-                            _command, artifact_root, browser_validator, failed_browser_evidence, browser_evidence_name = spec
-                            if step["status"] == "passed":
-                                try:
-                                    step["browser_evidence"] = browser_validator(artifact_root)
-                                except (OSError, ValueError) as error:
-                                    step["status"] = "failed"
-                                    step["exit_code"] = 1
-                                    step["stderr_tail"] = redact_text(
-                                        f"{browser_evidence_name} evidence invalid: {error}",
-                                        sensitive_values,
-                                    )
-                                    step["browser_evidence"] = failed_browser_evidence(artifact_root)
-                            else:
-                                step["browser_evidence"] = failed_browser_evidence(artifact_root)
+                        _finalize_step(
+                            step, spec, step_guard_events, step_retry_events, step_child_events,
+                            sensitive_values,
+                        )
                         steps.append(step)
-                        # #370：不 break。fast 档 5 个步骤里前面红了，后面的 excel-api-smoke /
-                        # surface-contract / egress-attribution / doc-link-check 也得跑完并进报告——
-                        # 一次只看一个红点、修一个冒一个，来回成本太高。预算用尽时下面的
-                        # `remaining <= 0` 会把未跑的步骤标成 timed-out，不会无限吃墙钟。
+                        # #370：预算允许时保留后续步骤的证据，不只报告首败。
                         final_exit_code = merge_gate_exit_code(final_exit_code, step_exit_code(step))
                         continue
-                    # Parallel group: isolated unit shards and browser journeys
-                    # share one wall-clock deadline. Queued work recalculates its
-                    # timeout when a worker becomes available.
-                    #
-                    # Issue #174: the group used to share one guard/child/retry sink,
-                    # so a single violation recorded by one member was copied onto all
-                    # twelve siblings and rewrote their exit codes.  Each member now
-                    # records into its own sink; the group merges those records back
-                    # into the run-level evidence afterwards, so the audit trail and
-                    # every S0 finding stay complete while attribution stays exact.
+                    # Queued work must share the same deadline, not get a fresh budget.
+                    # #174: separate sinks keep each violation with its owning step;
+                    # merging them later keeps the run-level audit trail complete.
                     previous_guard_count = len(
                         read_guard_events(guard_events_file, sensitive_values)
                     )
@@ -4076,7 +4187,6 @@ def main(argv: list[str] | None = None) -> int:
                             ]
                         )
                     )
-                    group_failed = False
                     for name in group_names:
                         step = group_steps[name]
                         spec = specs[name]
@@ -4088,57 +4198,17 @@ def main(argv: list[str] | None = None) -> int:
                         merge_event_lines(sinks["guard"], guard_events_file)
                         merge_event_lines(sinks["child"], child_events_file)
                         merge_event_lines(sinks["retry"], retry_events_file)
-                        step["guard_events"] = classify_guard_events(step_guard_events)
-                        step["retry_events"] = step_retry_events
-                        step["child_events"] = step_child_events
-                        step["parallel_group"] = True
-                        if (
-                            blocking_guard_events(step_guard_events)
-                            or step_retry_events
-                        ) and step["status"] == "passed":
-                            step["status"] = "failed"
-                            step["exit_code"] = 1
-                        if spec is not None:
-                            (
-                                _command,
-                                artifact_root,
-                                browser_validator,
-                                failed_browser_evidence,
-                                browser_evidence_name,
-                            ) = spec
-                            if step["status"] == "passed":
-                                try:
-                                    step["browser_evidence"] = browser_validator(artifact_root)
-                                except (OSError, ValueError) as error:
-                                    step["status"] = "failed"
-                                    step["exit_code"] = 1
-                                    step["stderr_tail"] = redact_text(
-                                        f"{browser_evidence_name} evidence invalid: {error}",
-                                        sensitive_values,
-                                    )
-                                    step["browser_evidence"] = failed_browser_evidence(artifact_root)
-                            else:
-                                step["browser_evidence"] = failed_browser_evidence(artifact_root)
+                        _finalize_step(
+                            step, spec, step_guard_events, step_retry_events, step_child_events,
+                            sensitive_values, parallel=True,
+                        )
                         steps.append(step)
                         final_exit_code = merge_gate_exit_code(final_exit_code, step_exit_code(step))
-                    # #370：并行组里有成员红也不 break，后面的组继续跑。
 
-            # #230：合并后的全量事件一次性贴判据标签（跨 step 看目标，才能把
-            # 「A step 里产品请求过这个目标」和「B step 里同一目标的代理噪声」
-            # 对起来）；报告、S0 记录、按判据计数共用这一份带标签的事件。
+            # #230：报告、S0 记录和归属计数共用合并后的全量事件。
             guard_events = classify_guard_events(read_guard_events(guard_events_file, sensitive_values))
             retry_events = read_retry_events(retry_events_file, sensitive_values)
             child_events = read_child_events(child_events_file, sensitive_values)
-            if final_exit_code == 0 and (
-                blocking_guard_events(guard_events) or retry_events
-            ):
-                final_exit_code = 1
-                boundary_events_failure = {
-                    "name": "boundary-events",
-                    "status": "failed",
-                    "exit_code": 1,
-                    "message": "guard or retry evidence arrived after step evaluation",
-                }
             findings = build_severity_findings(steps, guard_events, retry_events)
             accept_s2 = os.environ.get("FIREFLY_QUALITY_GATE_ACCEPT_S2") == "1"
             s2_findings = [finding for finding in findings if finding["severity"] == "S2"]
@@ -4154,52 +4224,14 @@ def main(argv: list[str] | None = None) -> int:
 
     after = git_state(repo_root)
     changed_during_run = before != after
-    if changed_during_run and final_exit_code == 0:
-        final_exit_code = 1
-    first_failure = next((step for step in steps if step["status"] != "passed"), None)
-    if first_failure is None and boundary_events_failure is not None:
-        first_failure = boundary_events_failure
-    # #204 运行期守卫：任何单片的实测耗时不得超过当前模式预算的
-    # UNIT_CONTRACT_SHARD_BUDGET_RATIO（trial 为 300s 的 60% = 180s）。
-    # 并行组的墙钟就是最慢那片：单片从「远低于预算」静默爬到墙钟的过程中，
-    # 门一直是绿的——只有把「单片贴墙」本身变成失败，切分才不会再次腐烂。
-    shard_budget_limit = run_budget * UNIT_CONTRACT_SHARD_BUDGET_RATIO
-    overshot_shard = next(
-        (
-            step
-            for step in steps
-            if is_unit_contract_shard(step["name"])
-            and (step.get("duration_seconds") or 0) > shard_budget_limit
-        ),
-        None,
+    final_exit_code, first_failure = final_failure_verdict(
+        steps, final_exit_code, guard_events, retry_events,
+        changed_during_run=changed_during_run, mode=args.mode, run_budget=run_budget,
     )
-    if overshot_shard is not None and final_exit_code == 0:
-        final_exit_code = 1
-    if first_failure is None and overshot_shard is not None:
-        first_failure = {
-            "name": "unit-contract-shard-budget",
-            "status": "failed",
-            "exit_code": 1,
-            "message": (
-                f"{overshot_shard['name']} 单片耗时 {overshot_shard.get('duration_seconds')}s "
-                f"超过 {args.mode} 预算 {run_budget}s 的 {UNIT_CONTRACT_SHARD_BUDGET_RATIO:.0%}"
-            ),
-        }
-    if changed_during_run and first_failure is None:
-        first_failure = {
-            "name": "worktree-preservation",
-            "status": "failed",
-            "exit_code": 1,
-            "message": "worktree contents changed while the quality gate was running",
-        }
-    if time.monotonic() - started > run_budget and final_exit_code == 0:
-        final_exit_code = 124
-        first_failure = {
-            "name": "mode-budget",
-            "status": "timed-out",
-            "exit_code": 124,
-            "message": "mode budget was exceeded during quality gate finalization",
-        }
+    budget_failure = _mode_budget_failure(final_exit_code, time.monotonic() - started, run_budget)
+    if budget_failure is not None:
+        final_exit_code = budget_failure["exit_code"]
+        first_failure = budget_failure
     unit_contract_modules = executed_unit_contract_modules(repo_root)
     unit_contract_inventory = unit_contract_shards(
         unit_contract_modules, load_unit_contract_durations(repo_root), repo_root
@@ -4255,12 +4287,8 @@ def main(argv: list[str] | None = None) -> int:
         # 对不上的目标就是无法归属（真实宿主工具不跑我们的钩子），
         # 域名白名单只在这种情况下用。
         "guard_attribution": {
-            # #230 期望 2 + #232：所有数字走 guard_attribution_evidence 同一个
-            # 入口（一次 classify_guard_events 读数），不在报告里另起分母。
-            # 口径要写进证据：这里是对**全量合并事件流**（跨 step 看目标）做的，
-            # 而 guard_attribution.blocking 是逐 step 定的，两者可能不相等
-            # （A step 请求过、B step 噪声——全量流会升级，单看 step 不会）。
-            # 对账时先比口径再比数。blocking 在这里被逐 step 结果覆盖。
+            # #230/#232：计数基于全量合并事件流，blocking 基于逐步结果。
+            # 对账时先比口径再比数。
             **guard_attribution_evidence(guard_events),
             "blocking": attribute_blocking_guard_events(steps),
         },
@@ -4290,18 +4318,16 @@ def main(argv: list[str] | None = None) -> int:
     }
     report = redact_data(report, sensitive_values)
     write_report(evidence_dir, report)
-    if time.monotonic() - started > run_budget and final_exit_code == 0:
-        final_exit_code = 124
+    budget_failure = _mode_budget_failure(
+        final_exit_code, time.monotonic() - started, run_budget, writing_evidence=True
+    )
+    if budget_failure is not None:
+        final_exit_code = budget_failure["exit_code"]
         report["ended_at"] = utc_now()
         report["duration_seconds"] = round(time.monotonic() - started, 3)
         report["verdict"] = "failed"
         report["final_exit_code"] = final_exit_code
-        report["first_failure"] = {
-            "name": "mode-budget",
-            "status": "timed-out",
-            "exit_code": 124,
-            "message": "mode budget was exceeded while writing quality gate evidence",
-        }
+        report["first_failure"] = budget_failure
         write_report(evidence_dir, report)
     # #370：逐步结果直接打 stderr——门不再中途 break 后一次会出现多个红点，
     # 不打开 evidence JSON 也得能看见是哪几步红了（提交前 hook 就靠这段输出）。

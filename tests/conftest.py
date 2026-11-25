@@ -4,9 +4,21 @@ import pytest
 # 集中登记而不是在各文件写 pytestmark：这些文件多数是 unittest，quality_gate 还会用
 # `python -m unittest` 直接跑其中一部分，保持它们不依赖 pytest。
 # 入选标准：启动真实浏览器/子进程/门自测，且基线单例实测 ≳1s（见 D:/ff-qa/test-slim/REPORT.md）。
-# 键是相对 tests/ 的模块路径；值为 None 表示整个文件，否则只标这些类。
+# 键是相对 tests/ 的模块路径；None 表示整个文件，否则按类或 Class::test_method 登记。
 SLOW = {
-    "test_quality_gate.py": {"QualityGateTests"},
+    "test_quality_gate.py": {
+        "GateCliIntegrationTests",
+        "GateEvidenceIntegrationTests",
+        "GateNodeGuardIntegrationTests",
+        "GateNodeLaunchIntegrationTests",
+        "GateProcessIntegrationTests",
+        "GateProxyIntegrationTests",
+        "GatePythonGuardIntegrationTests",
+        "GateRetryIntegrationTests",
+        "GateShardIntegrationTests",
+        "GateToolIntegrationTests",
+        "ProcessLifecycleHooksTests::test_terminate_active_step_processes_kills_whole_tree",
+    },
     "test_quality_gate_issue435.py": {"ProjectContractDiagnosticsTests"},
     "test_comfyui_connection_472.py": None,
     "test_agent_host_kill.py": None,
@@ -33,5 +45,7 @@ def pytest_collection_modifyitems(config, items):
         if key not in SLOW:
             continue
         classes = SLOW[key]
-        if classes is None or (len(parts) > 2 and parts[1] in classes):
+        if classes is None or (
+            len(parts) > 2 and (parts[1] in classes or "::".join(parts[1:3]) in classes)
+        ):
             item.add_marker(pytest.mark.slow)

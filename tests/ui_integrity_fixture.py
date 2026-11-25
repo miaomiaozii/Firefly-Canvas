@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import io
 import json
+from functools import lru_cache
 from pathlib import Path
 
 from PIL import Image
@@ -125,6 +127,23 @@ def write_ui_integrity_runner(root: Path) -> Path:
     return path
 
 
+# Cache bytes, not files: evidence tests must be able to mutate their own copy.
+@lru_cache(maxsize=len(EXPECTED_VIEWPORTS) * len(EXPECTED_SCENES))
+def _screenshot_png(viewport_index: int, scene_index: int) -> bytes:
+    image = Image.new(
+        "RGB",
+        EXPECTED_VIEWPORTS[viewport_index],
+        (
+            20 + viewport_index * 20,
+            35 + scene_index * 18,
+            70 + viewport_index * 8 + scene_index,
+        ),
+    )
+    with io.BytesIO() as output:
+        image.save(output, format="PNG")
+        return output.getvalue()
+
+
 def write_valid_ui_integrity_artifact(root: Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
     attempts = []
@@ -136,15 +155,7 @@ def write_valid_ui_integrity_artifact(root: Path) -> None:
         screenshots = []
         for scene_index, scene in enumerate(EXPECTED_SCENES):
             path = screenshot_root / f"{scene}.png"
-            Image.new(
-                "RGB",
-                viewport,
-                (
-                    20 + viewport_index * 20,
-                    35 + scene_index * 18,
-                    70 + viewport_index * 8 + scene_index,
-                ),
-            ).save(path, format="PNG")
+            path.write_bytes(_screenshot_png(viewport_index, scene_index))
             screenshots.append({"scene": scene, "path": path.relative_to(root).as_posix()})
 
         operations = [

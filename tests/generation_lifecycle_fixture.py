@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import io
 import json
+from functools import lru_cache
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -16,6 +18,16 @@ VIEWPORTS = ((1920, 1080), (1440, 900), (1280, 720), (1024, 768), (800, 600))
 ASSET_ID = "a" * 64
 OUTPUT_ID = "output-" + "c" * 32
 DELETION_ID = "deletion-" + "d" * 32
+
+
+# Only the encoded pixels are shared; each candidate still gets its own files.
+@lru_cache(maxsize=len(VIEWPORTS))
+def _generation_screenshot_png(width: int, height: int) -> bytes:
+    image = Image.new("RGB", (width, height), (15, 23, 42))
+    ImageDraw.Draw(image).rectangle((10, 10, 100, 100), fill=(37, 99, 235))
+    with io.BytesIO() as output:
+        image.save(output, format="PNG")
+        return output.getvalue()
 
 
 def _operation(session: str, sequence: int, selector: str, dialog: bool) -> dict:
@@ -130,11 +142,10 @@ def build_fixture(root: Path, variant: str | None = None) -> None:
         (folder / "requests.json").write_text(json.dumps(requests), encoding="utf-8")
         (folder / "console-errors.json").write_text("[]\n", encoding="utf-8")
         screenshots = []
+        png = _generation_screenshot_png(width, height)
         for index in range(1, 6):
             name = f"0{index}-evidence.png"
-            image = Image.new("RGB", (width, height), (15, 23, 42))
-            ImageDraw.Draw(image).rectangle((10, 10, 100, 100), fill=(37, 99, 235))
-            image.save(folder / name, format="PNG")
+            (folder / name).write_bytes(png)
             screenshots.append(f"{prefix}/{name}")
         attempts.append(
             {

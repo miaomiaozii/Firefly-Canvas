@@ -3311,7 +3311,7 @@
         {
           "module": "tools/quality_gate.py",
           "ordinal": 1,
-          "ast_sha256": "4fee9a110804cca3e33d1605182e724d8c2c59333969daac29e014f74fa41af0"
+          "ast_sha256": "77595696a0865567c3e684214aea491339361db790c4b2810f2efe52b0cd8cff"
         },
         {
           "module": "tools/quality_gate_profile.py",
