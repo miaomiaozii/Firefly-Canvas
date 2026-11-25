@@ -79,6 +79,12 @@
 - Windows 进程回收（#361）：`tools/process_tree.py` 的 `ProcessJob` 负责门级兜底；`kill_process_tree` 在启动器先退出时从原始进程句柄取得生存窗口，`select_orphan_children(children, root_started_at, root_exited_at)` 筛选该窗口内创建的候选。回收证据不足的进程会有误杀风险，因此不做猜测。
 - 不变量：证据目录必须在仓库外；任何 guard 阻断事件或 retry 证据事件即判失败；首次失败永久保留不被重试覆盖；预算超限 exit 124 且不能靠超时/跳过/重试制造绿色；dirty worktree 保留并在报告记录。
 
+### Agent 方案应用（#475）
+
+- 入口：`app/routers/api_agent_plan.py` 的 `plan_core` 在原 scope 核验后交给 `_apply_agent_preview`；后者复用 `app/services/agent_confirmation.py` 的 `resumable`，只让 apply 跨越同步回包窗口。
+- 确认与日志：`app/routers/api_agent_tools.py` 的 `request_confirmation_core` 可转交 `waiting_guard`；`app/services/agent_ops_store.py` 的 `retain_turn` / `release_turn` 让待决执行保留已准入的外部显式轮次，不为省略轮次的请求创建身份。
+- 测试：`tests/test_agent_plan_resumable*_475.py`；权威合同见 ADR 0022「#475」，人工应用仍遵循「#482 / #484」。
+
 ### 结构化诊断日志（T17 #37）
 
 - 稳定符号：`firefly_diagnostics.py`（`STABLE_LEVELS` 11 个事件名、`emit`、`clear`、`read_events`）。

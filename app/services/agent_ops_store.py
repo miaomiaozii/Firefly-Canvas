@@ -45,6 +45,16 @@ class InvalidOperationParent(ValueError):
     pass
 
 
+def retain_turn(opsdb, project_id, turn_id):
+    """Extend an admitted request lease without creating or rebinding a turn."""
+    with _reservation_lock:
+        key = (str(opsdb.root.resolve()), project_id, turn_id)
+        if key not in _inflight_turns:
+            return False
+        _inflight_turns[key] += 1
+        return True
+
+
 def release_turn(opsdb, project_id, turn_id):
     with _reservation_lock:
         key = (str(opsdb.root.resolve()), project_id, turn_id)

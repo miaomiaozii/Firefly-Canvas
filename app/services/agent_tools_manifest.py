@@ -131,7 +131,7 @@ TOOLS = [
         ops={"type": "array", "minItems": 1, "maxItems": 200, "items": _layout_schema(
             ["task_id"], task_id=_PLAN_ID, select={"type": "boolean"}, rename={"type": "string", "maxLength": 200},
             merge_into=_PLAN_ID, set_section={"type": "string", "maxLength": 200})})},
-    {"name": "plan.apply", "description": "浏览器批准确切任务后，按板块一次提交缺失任务。提示词通过 input 边连入空生图槽，不生成、不导入或连接任何参考图。缺产品图是待用户补齐的状态。只撤销本批可用返回的 op_id；task_ids 省略时使用已勾选任务。", "inputSchema": _layout_schema(
+    {"name": "plan.apply", "description": "浏览器批准确切任务（三档均须确认）后，按板块一次提交缺失任务。提示词通过 input 边连入空生图槽，不生成、不导入或连接任何参考图。缺产品图是待用户补齐的状态。只撤销本批可用返回的 op_id；task_ids 省略时使用已勾选任务。超同步窗口返回 CONFIRM_PENDING / awaiting_confirmation 及 confirm_id，原执行保留，批准后仍复核输入、归属与 CAS。真正拒绝为 PLAN_NOT_CONFIRMED，陈旧或失效按 PLAN_STALE 等真实错误暂停，不保证无条件续跑。已回待决的有效 hosted 原用户逻辑轮接收真实终态；外部 MCP 不注入宿主，通过原通道查询预览应用回执。不承诺重启续跑。", "inputSchema": _layout_schema(
         ["plan_id"], plan_id=_PLAN_ID, generation=_PLAN_GENERATION, layout=_layout_enum("by_section"),
         task_ids={"type": "array", "items": _PLAN_ID, "maxItems": 200, "uniqueItems": True})},
     {"name": "ops.list", "description": "列出当前项目的 Agent 操作日志，可按 turn_id 筛选；外部 MCP 的 turn_id 不得复用，未提供轮次时只可逐条撤销。", "inputSchema": {"type": "object", "properties": {"turn_id": {"type": "string", "minLength": 1}, "limit": {"type": "integer", "minimum": 1, "maximum": 1000}}, "required": [], "additionalProperties": False}},
@@ -274,7 +274,7 @@ _EXTERNAL_MCP_TURN_NOTE = (
 _CONFIRMATION_RECEIPT_TOOLS = frozenset({
     "canvas.update_node", "canvas.delete_node", "canvas.disconnect", "canvas.edit_crop", "canvas.edit_rotate",
     "canvas.edit_flip", "canvas.edit_outpaint", "canvas.edit_erase", "canvas.batch_edit",
-    "generate.trigger", "generate.retry", "generate.request_batch", "media.delete",
+    "generate.trigger", "generate.retry", "generate.request_batch", "media.delete", "plan.apply",
 })
 _CONFIRMATION_RECEIPT_NOTE = (
     "确认门由服务端按操作及档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，"

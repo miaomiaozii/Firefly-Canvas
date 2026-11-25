@@ -206,7 +206,7 @@ search 额外字段：
 
 Pi/Codex 的首次与恢复提交共用一份默认策略；三档 suffix 仅保留空兼容值，确认档位只由服务端执行。策略要求先一次性提问、真实计划/差异回执、保护人工内容、附件和参考图角色按 §13、按真实错误与现有两次预算恢复、pending 后结束当前响应而非 abort、一句结果加真实差异。Pi 的工具 allowlist 包含共享扩展命名空间；不开放内置文件、shell 或网络工具。
 
-#406 的本地桩只证明文本、真实提交边界、工具/确认管线和 TUI，不证明模型行为；#405 保持 OPEN，真实 B2 指标 NOT_RUN/null。原 Agent `plan.apply` 超出同步窗口仍返回 PLAN_NOT_CONFIRMED，通用 resumable 缺口归 #475；下文 #484 仅接通人工应用，不修复此缺口。
+#406 的本地桩只证明文本、真实提交边界、工具/确认管线和 TUI，不证明模型行为；#405 保持 OPEN，真实 B2 指标 NOT_RUN/null。原 Agent `plan.apply` 的待决执行与回执由下文 #475 接通；#484 的人工应用不因此获得 Agent 续接。
 
 ## 修订（#482 / #484）：真实方案引用、人工预览编辑与统一人工应用
 
@@ -258,13 +258,23 @@ ready 表示当前代次尚未提交且无待决应用；awaiting_confirmation �
 
 人工应用直接复用准备变更、确切任务确认、输入/附件/画布复核、最终 CAS、operation journal 与 undo，不调用 `/prompt`，不向任何 Agent 注入输入或系统续接，不启动/恢复原生宿主。审计归属仍为原 Agent 节点与 `plan.apply`，人工来源由服务端记录，`turn_id=null`，不借旧 Agent 用户轮或制造新用户轮。只创建所选任务的非空提示词、input 边、空生图槽和板块框；不生图、不导入媒体、不连接产品图片，不覆盖幸存任务或扩张人工改过的框。原 Agent `plan.apply` 仍可用；省略 task_ids 才采用 selected，显式 task_ids 合同保留，但同受以下消费约束。
 
-仅人工应用接入 resumable，使用 `confirmation_transport(hosted=False)`，即使预览由 hosted 导入也不投递 Agent continuation。90 秒只是同步窗口；超窗返回真实 `CONFIRM_PENDING` / awaiting_confirmation 与 confirm_id，原执行继续等待人工决定，由 GET 查终态，不重发 POST 或 Agent apply 来回放，不把 pending 当成功。批准前不写画布/媒体；批准后仍复核原输入、附件、画布 revision、当时运行代次和确认归属，再执行最终 CAS。编辑、停止、节点/宿主/分支/输入 epoch/运行代次、画布或附件变化使旧确认失效；拒绝或已证明未提交的失败释放自身预留，不递增方案代次，也不能清理或覆盖新代次的状态。原 Agent 超窗缺口仍归 #475，不在本票扩展。
+人工应用使用 resumable 和 `confirmation_transport(hosted=False)`，即使预览由 hosted 导入也不投递 Agent continuation。90 秒只是同步窗口；超窗返回真实 `CONFIRM_PENDING` / awaiting_confirmation 与 confirm_id，原执行继续等待人工决定，由 GET 查终态，不重发 POST 或 Agent apply 来回放，不把 pending 当成功。批准前不写画布/媒体；批准后仍复核原输入、附件、画布 revision、当时运行代次和确认归属，再执行最终 CAS。编辑、停止、节点/宿主/分支/输入 epoch/运行代次、画布或附件变化使旧确认失效；拒绝或已证明未提交的失败释放自身预留，不递增方案代次，也不能清理或覆盖新代次的状态。原 Agent 的待决执行见下文 #475，不改变本段人工非续接合同。
 
 **#484 显式取代 #399「同 generation 重复成功、再补另一批任务」的增量合同**：在 Store 锁内预留当前代次，任一来源（human 或 agent）的首次真实非空提交消费该 generation。当前代次已消费后，任一来源再 apply 均为 `409 PLAN_ALREADY_APPLIED`，details 含 plan_id/generation、真实来源和回执；待决竞争请求为 `409 CONFLICT`，不新增确认卡或第二次执行。追加任务须先编辑形成新 generation，再重新批准。undo 或人工删除节点不复活已消费代次；旧代次仍由 CAS 拒绝，最新 receipt 保留真实提交代次。人工零勾选为 `400 INVALID_ARGUMENT`；原 Agent 空操作保留；全部所选项已存在时仅返回真实 no_changes/已有项信息，均不消费代次、不伪造 applied 或无操作日志。
 
 消费只按既有 journal/persisted proof 与操作回执结算，批准、内存变化、start 广播或单独拿到 op_id 均不是提交证据。已证明落盘前失败不标 applied；已证明落盘后，即使 end 广播/HTTP 报错或 sidecar append_failed，仍消费代次并保留真实 receipt，同时如实保留错误与日志限制。公开的 `application.error` 保留真实错误 code/message，并将已证明提交的错误标为不可重试、提示勿重复提交；同项目后续 flush 不能抹去该错误。append_failed 的响应为错误而非无警告的成功，details 中说明日志状态与撤销不可用；与流错误同时发生时两个线索都保留。无法判定有无提交则为 unknown，不解锁自动重做。撤销仍走真实 `ops.undo`；append_failed 可能意味着撤销不可用，不能声称所有报错都可逆。
 
 这些是后端接缝，不等于真实模型、原生 SDK 或 #411 浏览器视觉验收；本地同源信任也不扩成 OS 沙盒。
+
+## 修订（#475）：原 Agent 方案应用的待决执行与回执
+
+原 Agent `plan.apply` 在原 scope 校验后共用 apply-only resumable 入口，覆盖 REST、hosted Pi/Codex MCP 及原 SID 的 external MCP；import/edit 仍只读或仅编辑预览，不后台化。三档均须人工批准确切任务，不因 autonomous 自动批准。此修订取代上文原 Agent 超窗不恢复的缺口，不扩张 #484 的人工应用权限。
+
+- 90 秒仍只是同步回包窗口。超窗返回工具成功的待决收据 `CONFIRM_PENDING / status=awaiting_confirmation / confirm_id`（MCP `isError=false`），不是 PLAN_NOT_CONFIRMED 或已应用。原执行保留，沿同一确认门、冻结任务、预留及操作上下文等待；调用者结束当前响应，不重发 apply、不换入口回放、不 abort/stop 待决执行。
+- 真正拒绝仍为 `PLAN_NOT_CONFIRMED`；陈旧/失效及 CAS 错误沿用 `PLAN_STALE / CONFIRM_STALE / CONFLICT` 等原错误层，不统一改码。批准后仍复核原 Store/session、scope、宿主/输入/原轮、预览代次、附件及画布，最终按既有 CAS 提交；批准回执不等于执行完成。已回 pending 的请求没有第二个 HTTP 响应，终态通过既有 application 回执及有效 hosted 续接观察，不新建查询工具或错误接口。
+- 只有已回 pending 且仍有效的 hosted 原用户逻辑轮，经真实执行结果/错误与既有 FIFO 接收系统续接；不伪造 user_prompt 或新用户轮，正常 agent_end 不等于停止待决执行。新用户输入真正准入、停止或原身份失效不能借另一轮投递旧结果。external 保持原 SID 与显式 turn；省略 turn 不借活跃 hosted 轮，外部结果沿原通道/预览回执读取，不启动、恢复或注入承载宿主。
+- #484 人工应用仍不向 Agent 注入输入或系统续接，`turn_id=null`，不启动宿主；所有来源的预览仍为 `apply_via=human_apply`，原 Agent 工具 scope 与人工读写口的区别不变。当前代次仅按真实非空持久提交消费；竞争、空操作、故障结算、unknown、幂等 import 查询、真实 receipt 和 undo 限制继续遵守 #484，不以 pending 或批准冒充提交证据。
+- 默认策略由 Pi/Codex、三档及首轮/恢复轮共享：待决不等于拒绝，真正拒绝/失效按真实回执暂停，不承诺无条件自动续跑。manifest 的 plan.apply 及生成的 Pi 说明与待决收据一致；不新增工具、参数 schema、依赖或错误码。待决仅保留在本进程，不承诺重启恢复执行；离线原生管道测试不证明原生 SDK、模型服从或浏览器交互验收。
 
 ## 修订（#487）：生成批次子集批准与 batch-only 审批快照
 

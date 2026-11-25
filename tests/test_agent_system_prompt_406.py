@@ -278,8 +278,10 @@ def test_pending_ends_only_current_response_without_cancelling_or_reapproving(su
         assert "不要 abort/stop 或取消服务器待决执行" in prompt
         assert "只有已接入服务端续接的工具会在批准后继续原执行" in prompt
         assert "系统续接属于原用户逻辑轮，不是新用户消息" in prompt
-        assert "PLAN_NOT_CONFIRMED 不会自动恢复 plan.apply" in prompt
-        assert "不承诺自动续跑，也不盲重试 plan.apply" in prompt
+        assert "原执行仍由服务端保留（包括 plan.apply）" in prompt
+        assert "PLAN_NOT_CONFIRMED 不会自动恢复 plan.apply" not in prompt
+        assert "真正拒绝或失效（如 PLAN_NOT_CONFIRMED、PLAN_STALE / CONFIRM_STALE）" in prompt
+        assert "不承诺无条件自动续跑，也不盲重试 plan.apply" in prompt
         assert "90 秒只是同步回包窗口，不是批准有效期" in prompt
 
 

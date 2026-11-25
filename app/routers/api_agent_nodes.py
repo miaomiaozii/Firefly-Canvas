@@ -262,12 +262,11 @@ async def stop_agent_node(
     node_id: str,
     x_agent_project: str = Header(default=""),
 ):
-    """Stop an agent node session."""
+    """Explicit stop invalidates pending work even without a native process."""
     from app.services.agent_batch import invalidate
     invalidate(project_id, node_id, strict=True)
     session = await agent_host_manager.get_or_create_session(project_id, node_id)
-    if session.is_running:
-        await agent_host_manager.stop_session(session)
+    await agent_host_manager.stop_session(session)
     # Recreated nodes must not inherit an old session's generation quota.
     reset_generation_counts(project_id, node_id)
     return {"success": True, "node_id": node_id, "status": "stopped"}

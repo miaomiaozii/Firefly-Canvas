@@ -2706,7 +2706,7 @@ async def request_confirmation_core(
     message: str,
     timeout_seconds: float = 60,
     *, allow_automatic: bool = True, transient_session=None, cancel_event=None, confirm_id=None,
-    prepared_target_node_ids=None, decision_handler=None,
+    prepared_target_node_ids=None, decision_handler=None, waiting_guard=None,
 ) -> dict:
     """Share live, replayable approvals between HTTP, MCP and batch workers."""
     if not node_id:
@@ -2717,7 +2717,8 @@ async def request_confirmation_core(
     decision = await request(project_id, node_id, tool, params, message, timeout_seconds,
                              allow_automatic=allow_automatic, transient_session=transient_session,
                              cancel_event=cancel_event, confirm_id=confirm_id,
-                             prepared_target_node_ids=prepared_target_node_ids, decision_handler=decision_handler)
+                             prepared_target_node_ids=prepared_target_node_ids, decision_handler=decision_handler,
+                             waiting_guard=waiting_guard)
     if decision.get('approved'):
         # Stale approvals must fail before callers debit their generation quota.
         validate_pending(project_id, _app_main.FIREFLY_PROJECT_STORE.canvas(project_id))

@@ -280,7 +280,7 @@ _Avoid_: 独立音频项目、音频工作站
 - 共享 `agent.present` 只呈现 plan/question/diff，不批准、执行、建节点或扩权限；差异必须引用真实 op_id/diff_id，项目/宿主/generation/原轮及事件 seq 均来自服务端。多题同卡，推荐项来自真实选项；同一 ID 的答案/投递错误原位更新，历史只读。最薄 TUI 不代替 #411 完整交互。
 - 真实方案卡用 `plan_id/generation` 引用原预览，事件不复制任务；旧 steps 卡保留。人工预览接口须严格同源并带匹配项目头，编辑不等于批准。所有 hosted/external/REST 来源统一 `apply_via=human_apply`：#411「应用」直接调用人工接口，不向 Agent 发输入、续接或启动宿主；只为勾选任务建提示词、input 边、空生图槽和框，不生图或导入媒体。原 Agent 精确 scope 保留；幂等导入可查真实应用回执，首次非空提交消费代次，追加须编辑成新代次并重新批准。失效不能复活，#411 须显示「方案已过期，请让 Agent 重新导入」。精确接口、回执、确认与 RAM/附件限制以 [ADR 0022「#482 / #484」](docs/adr/0022-mcp-streamable-http-canvas-endpoint.md) 为准。
 - 人工答案走独立用户输入与 FIFO，不是 #402 的同轮系统确认续接；queued/answered 不证明宿主收到或执行。外部 MCP 仅原绑定取回答案，不跨宿主注入、不自动开跑，不承诺重启续跑。真实投递失败必须可见，不把答案记录冒充投递成功。
-- 精确 schema、回执/答题 REST 路径、绑定与预算见 [ADR 0022「#406」](docs/adr/0022-mcp-streamable-http-canvas-endpoint.md)。Pi/Codex 默认策略共用，三档 suffix 仅空值兼容；离线交付不证明模型行为，#405 保持 OPEN、真实指标 NOT_RUN/null。#484 仅人工应用可续等确认且不续接 Agent；原 Agent `plan.apply` 超窗缺口仍归 #475。
+- 精确 schema、回执/答题 REST 路径、绑定与预算见 [ADR 0022「#406」](docs/adr/0022-mcp-streamable-http-canvas-endpoint.md)。Pi/Codex 默认策略共用，三档 suffix 仅空值兼容；离线交付不证明模型行为，#405 保持 OPEN、真实指标 NOT_RUN/null。#475 将原 Agent `plan.apply` 接入待决执行：超窗回 `CONFIRM_PENDING / awaiting_confirmation` 与 confirm_id，原执行保留，不重发、不 abort；真正拒绝或失效按真实回执暂停。仅仍有效 hosted 原用户逻辑轮通过既有 FIFO 接收真实终态，external 不注入宿主，不承诺无条件或重启续跑。#484 人工应用仍不向 Agent 注入输入或系统续接，`turn_id=null`、不启动宿主；精确收据与失效边界见 ADR 0022「#475」。
 
 ### 设置请求 schema
 

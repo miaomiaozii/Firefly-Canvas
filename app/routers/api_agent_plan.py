@@ -84,7 +84,31 @@ async def plan_core(project, actor, args, *, tool, binding="rest"):
             records = submitted()
             return plan.edit(store, project, actor, preview, args["ops"], records).response(records)
 
-    return await _apply_preview(store, manager, project, actor, preview, args, applied_by="agent")
+    return await _apply_agent_preview(project, actor, store, manager, preview, args)
+
+
+@confirmation.resumable
+async def _apply_agent_preview(project_id, agent_node_id, store, manager, preview, args):
+    """Only apply may outlive delivery; retain its original admitted operation context."""
+    from app.services.agent_ops_store import retain_turn, release_turn
+    from firefly_opsdb import OpsDb
+
+    context = current_agent_ops_context()
+    lease = None
+    if context and not confirmation._transport_hosted.get():
+        # An external SID cannot borrow a hosted turn from its live carrier (#475).
+        origin = confirmation._current.get().origin
+        if origin is not None:
+            origin.turn, origin.hosted = context.turn_id, False
+        if context.turn_id:
+            db = OpsDb(store.root)
+            if retain_turn(db, project_id, context.turn_id):
+                lease = (db, project_id, context.turn_id)
+    try:
+        return await _apply_preview(store, manager, project_id, agent_node_id, preview, args, applied_by="agent")
+    finally:
+        if lease:
+            release_turn(*lease)
 
 
 async def _apply_preview(store, manager, project, actor, preview, args, *, applied_by):
@@ -270,6 +294,7 @@ async def _apply_preview(store, manager, project, actor, preview, args, *, appli
                 decision = await tools.request_confirmation_core(
                     project, actor, "plan.apply", params, "\n".join(lines), tools.AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS,
                     allow_automatic=False, cancel_event=cancel_event, confirm_id=confirm_id,
+                    waiting_guard=waiting_guard,
                 )
             with store._lock:
                 if decision.get("reason") != "pending":

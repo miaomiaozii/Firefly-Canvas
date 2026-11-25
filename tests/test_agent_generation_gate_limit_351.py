@@ -262,7 +262,7 @@ class McpGeneration351Tests(_Base):
         self._run_impl("generate.trigger", {"node_id": "prompt-1"})
 
     def test_agent_node_delete_rebuild_resets_quota(self):
-        # #351 review 裁定：DELETE /agent-nodes/{id} 后同 node_id 重建，额度从 0 开始。
+        # #351：显式停止后同 node_id 重建必须从零额度开始。
         self._approve()
         self._fake_build()
         api_agent_tools.GENERATION_SESSION_LIMIT = 1
@@ -271,14 +271,12 @@ class McpGeneration351Tests(_Base):
         self.assertEqual(r.status_code, 200)
         r = self.client.post(url, headers=self._headers(), json={"node_id": "prompt-1"})
         self.assertEqual(r.status_code, 429)
-        # 单测不拉真 pi/codex 进程：桩掉宿主会话获取（DELETE 处理器内仅 stop）
+        # 显式停止也结算无进程会话的待决执行，不能用空壳绕过停止合同（#475）。
         from app.services import agent_host as _ah
-
-        class _NoSession:
-            is_running = False
+        session = _ah.AgentSession(project_id=self.pid, node_id="agent-1")
 
         async def _fake_goc(project_id, node_id):
-            return _NoSession()
+            return session
 
         _prev = _ah.agent_host_manager.get_or_create_session
         _ah.agent_host_manager.get_or_create_session = _fake_goc

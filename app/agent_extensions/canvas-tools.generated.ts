@@ -38,7 +38,7 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     },
     {
         name: "plan.apply",
-        description: "浏览器批准确切任务后，按板块一次提交缺失任务。提示词通过 input 边连入空生图槽，不生成、不导入或连接任何参考图。缺产品图是待用户补齐的状态。只撤销本批可用返回的 op_id；task_ids 省略时使用已勾选任务。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        description: "浏览器批准确切任务（三档均须确认）后，按板块一次提交缺失任务。提示词通过 input 边连入空生图槽，不生成、不导入或连接任何参考图。缺产品图是待用户补齐的状态。只撤销本批可用返回的 op_id；task_ids 省略时使用已勾选任务。超同步窗口返回 CONFIRM_PENDING / awaiting_confirmation 及 confirm_id，原执行保留，批准后仍复核输入、归属与 CAS。真正拒绝为 PLAN_NOT_CONFIRMED，陈旧或失效按 PLAN_STALE 等真实错误暂停，不保证无条件续跑。已回待决的有效 hosted 原用户逻辑轮接收真实终态；外部 MCP 不注入宿主，通过原通道查询预览应用回执。不承诺重启续跑。确认门由服务端按操作及档位判断；需确认时返回 CONFIRM_PENDING（或批次 awaiting_confirmation）待确认收据；等待窗结束不等于拒绝，批准后原操作续跑，勿重复提交。停止或宿主/用户轮次失效会取消待决操作。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
         parameters: Type.Object({ plan_id: Type.String({minLength: 1, maxLength: 128}), generation: Type.Optional(Type.Integer({description: "最近预览的 generation；传入时旧版本会被拒绝", minimum: 1})), layout: Type.Optional(Type.Union([Type.Literal("by_section")])), task_ids: Type.Optional(Type.Array(Type.String({minLength: 1, maxLength: 128}), {maxItems: 200, uniqueItems: true})) }),
     },
     {
