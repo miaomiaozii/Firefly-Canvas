@@ -2725,23 +2725,36 @@ async def _generate_ai_image_impl(prompt, size, quality, model, reference_images
             responses_url = _svc.provider_endpoint_url(provider, 'image_generation_endpoint', '/v1/responses')
             response = await post_openai_responses(client, responses_url, _svc._main('api_headers')(provider=provider, model=model), body)
         elif image_request_mode == 'openai-json':
+            # `extra_body` is an OpenAI SDK client-side option that the SDK merges into the top level. Soon ignored a
+            # literal `extra_body.image` over raw HTTP and generated as if no reference was sent (paid probes,
+            # D:/ff-qa/soon-ref-probe/), so Soon gets top-level fields. Other openai-json providers (Agnes) keep the
+            # old shape until verified against them.
+            top_level_fields = urllib.parse.urlsplit(str(provider.get('base_url') or '')).netloc.lower() == 'api.soonstudio.ai'
             extra_body = {'response_format': 'url'}
             refs_slice = image_refs[:ONLINE_IMAGE_REFERENCE_MAX]
             body = {'model': model, 'prompt': prompt}
             if not routed_image_params.get('aspect_ratio'):
                 body['size'] = size
-            body['extra_body'] = extra_body
+            if top_level_fields:
+                body.update(extra_body)
+            else:
+                body['extra_body'] = extra_body
             if routed_image_params:
                 body.update(routed_image_params)
             headers_json = _svc._main('api_headers')(provider=provider, model=model)
             prepared_refs = _budgeted_prepared_references(refs_slice)
 
-            def build_json_request(refs_list, _body=body, _extra=extra_body, _has_refs=bool(refs_slice)):
-                eb = dict(_extra)
-                if _has_refs:
-                    eb['image'] = [r.data_url() for r in refs_list]
+            def build_json_request(refs_list, _body=body, _extra=extra_body, _has_refs=bool(refs_slice), _top=top_level_fields):
                 sent = dict(_body)
-                sent['extra_body'] = eb
+                images = [r.data_url() for r in refs_list] if _has_refs else None
+                if _top:
+                    if images is not None:
+                        sent['image'] = images
+                else:
+                    eb = dict(_extra)
+                    if images is not None:
+                        eb['image'] = images
+                    sent['extra_body'] = eb
                 return client.build_request('POST', gen_url, headers=headers_json, json=sent)
 
             response, _sent_request = await _budgeted_json_send(client, build_json_request, prepared_refs, _lookup_known_body_limit(gen_url))

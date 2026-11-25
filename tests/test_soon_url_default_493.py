@@ -185,64 +185,24 @@ def test_ordinary_default_entry_is_candidate_semantically_without_mutating_provi
     assert ordinary[0].startswith('POST /v1/images/generations ')
     assert ordinary[1] == {'model': MODEL, 'prompt': PROMPT,
         'aspect_ratio': '4:3', 'resolution': '4k', 'image_size': '4K',
-        'extra_body': {'response_format': 'url', 'image': [ref(raw)['url']]}}
+        'response_format': 'url', 'image': [ref(raw)['url']]}
     assert runtime['_provider'] == original
     assert params == {'aspect_ratio': '4:3', 'resolution': '4k'}
     assert len(runtime['_scope_calls']) == 2
 
 
-def test_ordinary_body_equals_frozen_paid_candidate_and_receipt(runtime, monkeypatch):
-    provenance = json.loads((FIXTURES / 'provenance.json').read_text(encoding='utf-8'))
-    frozen_body = gzip.decompress(base64.b64decode((FIXTURES / provenance['body']['path']).read_bytes()))
-    recorded = json.loads(frozen_body)
-    receipt = provenance['receipt']['request_proof']
-    # The original receipt anchors prompt/reference bytes; the body hash comes from offline frozen-source reconstruction.
-    assert provenance['source']['sha256'] == '01692128a43aaad571ce5b3e54f7b6a6aea3b65a709b1c51128d08b7f9725e62'
-    assert provenance['receipt']['sha256'] == '8d843a1c209ed10c47e81bd5da533528519f5419e32a7a0abbcb8e204f3aee1d'
-    assert hashlib.sha256(frozen_body).hexdigest() == provenance['body']['sha256'] == '4571273b3ae885cec3227383af92e45423553fcd4cb1dac35a97d1926d5d2a0c'
-    assert len(frozen_body) == provenance['body']['bytes'] == receipt['actual_json_body_bytes'] == 9182
-    assert provenance['paid_cohort_accounts'] == provenance['receipt']['observed_post_requests'] == 1
-    original = base64.b64decode(recorded['extra_body']['image'][0].split(',', 1)[1], validate=True)
-    assert len(original) == receipt['original_file_bytes'] == receipt['prepared_file_bytes'] == 6565
-    assert hashlib.sha256(original).hexdigest() == receipt['original_reference_sha256'] == receipt['prepared_reference_sha256'] == '1af00dc6751ec03031a507176068667a54eedc870f908a9c0b755f1db8fad9f4'
-    assert hashlib.sha256(PROMPT.encode()).hexdigest() == receipt['prompt_sha256']
-    with Image.open(io.BytesIO(original)) as image:
-        image.verify()
-    with Image.open(io.BytesIO(original)) as image:
-        assert image.size == (receipt['prepared_width'], receipt['prepared_height']) == (1024, 768)
-        assert image.mode == 'RGBA'
-    network = install_soon_memory_network(monkeypatch, [(200, {'image': {}})] * 2)
-    with patch.object(Image.Image, 'save', side_effect=AssertionError('frozen reference must not be re-encoded')):
-        run_soon_default_generation(runtime, [ref(original)], image_parameters={'aspect_ratio': '4:3', 'resolution': '4k'})
-        explicit = soon_default_provider(model_protocols={MODEL: 'openai'}, model_request_modes={MODEL: 'openai-json'})
-        asyncio.run(runtime['_generate_soon_url_candidate'](PROMPT, '4096x3072', '', MODEL,
-            [ref(original)], provider=explicit, image_parameters={'aspect_ratio': '4:3', 'resolution': '4k'}))
-    first, candidate = network.requests()
-    assert first == candidate == ('POST /v1/images/generations HTTP/1.1', recorded)
-    for wire in network.wires:
-        actual = b''.join(wire.writes).split(b'\r\n\r\n', 1)[1]
-        assert actual == frozen_body
-        assert hashlib.sha256(actual).hexdigest() == provenance['body']['sha256']
-        sent = base64.b64decode(json.loads(actual)['extra_body']['image'][0].split(',', 1)[1], validate=True)
-        assert sent == original
-
-
-def test_explicit_candidate_wire_body_matches_portable_frozen_record(runtime, monkeypatch):
-    provenance = json.loads((FIXTURES / 'provenance.json').read_text(encoding='utf-8'))
-    frozen_body = gzip.decompress(base64.b64decode((FIXTURES / provenance['body']['path']).read_bytes()))
-    recorded = json.loads(frozen_body)
-    original = base64.b64decode(recorded['extra_body']['image'][0].split(',', 1)[1], validate=True)
+def test_references_and_response_format_are_top_level_fields(runtime, monkeypatch):
+    # Raw HTTP has no SDK to merge `extra_body`; Soon ignored a literal `extra_body.image` and generated without the
+    # reference (paid probes, D:/ff-qa/soon-ref-probe/). The reference bytes must still be sent without re-encoding.
+    original = soon_reference_png()
     network = install_soon_memory_network(monkeypatch)
-    explicit = soon_default_provider(model_protocols={MODEL: 'openai'}, model_request_modes={MODEL: 'openai-json'})
-    with patch.object(Image.Image, 'save', side_effect=AssertionError('frozen reference must not be re-encoded')):
-        asyncio.run(runtime['_generate_soon_url_candidate'](PROMPT, '4096x3072', '', MODEL,
-            [ref(original)], provider=explicit, image_parameters={'aspect_ratio': '4:3', 'resolution': '4k'}))
-    assert network.requests() == [('POST /v1/images/generations HTTP/1.1', recorded)]
-    actual = b''.join(network.wires[0].writes).split(b'\r\n\r\n', 1)[1]
-    assert actual == frozen_body
-    assert len(actual) == provenance['receipt']['request_proof']['actual_json_body_bytes'] == 9182
-    assert hashlib.sha256(actual).hexdigest() == provenance['body']['sha256'] == '4571273b3ae885cec3227383af92e45423553fcd4cb1dac35a97d1926d5d2a0c'
-    assert hashlib.sha256(original).hexdigest() == provenance['receipt']['request_proof']['prepared_reference_sha256'] == '1af00dc6751ec03031a507176068667a54eedc870f908a9c0b755f1db8fad9f4'
+    with patch.object(Image.Image, 'save', side_effect=AssertionError('reference within budget must not be re-encoded')):
+        run_soon_default_generation(runtime, [ref(original)], image_parameters={'aspect_ratio': '4:3', 'resolution': '4k'})
+    request, body = network.requests()[0]
+    assert request.startswith('POST /v1/images/generations ')
+    assert 'extra_body' not in body
+    assert body['response_format'] == 'url'
+    assert base64.b64decode(body['image'][0].split(',', 1)[1], validate=True) == original
 
 
 @pytest.mark.parametrize('provider_id', ['synthetic-soon-alpha', 'synthetic-soon-beta'])
@@ -260,7 +220,7 @@ def test_endpoint_model_profile_is_independent_of_local_id(runtime, monkeypatch,
     network = install_soon_memory_network(monkeypatch)
     run_soon_default_generation(runtime, image_parameters={'aspect_ratio': '4:3', 'resolution': '4k'})
     assert network.requests() == [('POST /v1/images/generations HTTP/1.1', {
-        'model': MODEL, 'prompt': PROMPT, 'extra_body': {'response_format': 'url'},
+        'model': MODEL, 'prompt': PROMPT, 'response_format': 'url',
         'aspect_ratio': '4:3', 'image_size': '4K', 'resolution': '4k'})]
     assert saved == original
 
@@ -311,7 +271,7 @@ def test_manual_json_stays_json_and_budgeted(runtime, monkeypatch):
     network = install_soon_memory_network(monkeypatch)
     run_soon_default_generation(runtime, [ref(soon_reference_png())], preserve_model=True, lock_model=True,
         image_parameters={'aspect_ratio': '4:3', 'resolution': '4k'})
-    assert network.requests()[0][1]['extra_body']['response_format'] == 'url'
+    assert network.requests()[0][1]['response_format'] == 'url'
 
 
 # #493 用户裁定：旧「准备字节求和 > 8,000,000 即拒」策略已被替换——
@@ -329,7 +289,7 @@ def test_over_local_limit_ladder_engages_and_still_posts(runtime, monkeypatch):
     assert len(bodies) == 1  # 不预先拒绝，也不反复重试：一次达标即提交
     assert len(bodies[0]) <= 16_500_000
     body = json.loads(bodies[0])
-    sent = [base64.b64decode(value.split(',', 1)[1]) for value in body['extra_body']['image']]
+    sent = [base64.b64decode(value.split(',', 1)[1]) for value in body['image']]
     assert any(value != raw for value in sent)  # 阶梯每轮只推进当前最大的一张，首个达标即停
     for value in sent:
         with Image.open(io.BytesIO(value)) as image:
@@ -348,7 +308,7 @@ def test_within_local_limit_baseline_byte_identical_no_reencode(runtime, monkeyp
         run_soon_default_generation(runtime, [ref(raw)])
     body = network.requests()[0][1]
     assert len(network.raw_bodies()[0]) > 8_000_000  # 旧求和规则已废除：体积按实际序列化计
-    assert base64.b64decode(body['extra_body']['image'][0].split(',', 1)[1]) == raw
+    assert base64.b64decode(body['image'][0].split(',', 1)[1]) == raw
 
 
 @pytest.mark.parametrize('scheme', ['https://', 'HTTPS://', 'http://'])
@@ -361,7 +321,7 @@ def test_remote_reference_passthrough_counted_and_posts(runtime, monkeypatch, ma
     run_soon_default_generation(runtime, [{'url': scheme + 'remote.invalid/ref.png', 'bytes': 1, 'mime_type': 'image/png'}],
         preserve_model=manual, lock_model=manual)
     body = network.requests()[0][1]
-    assert body['extra_body']['image'] == [scheme + 'remote.invalid/ref.png']
+    assert body['image'] == [scheme + 'remote.invalid/ref.png']
 
 
 @pytest.mark.parametrize('size', [(4096, 9), (5000, 9)])
@@ -377,7 +337,7 @@ def test_budget_after_mandatory_4096_and_no_extra_encoding(runtime, monkeypatch,
         return save(image, *a, **kw)
     with patch.object(Image.Image, 'save', record_save):
         run_soon_default_generation(runtime, [{'url': '/output/alpha.png'}])
-    sent = base64.b64decode(network.requests()[0][1]['extra_body']['image'][0].split(',', 1)[1])
+    sent = base64.b64decode(network.requests()[0][1]['image'][0].split(',', 1)[1])
     # #500 废除了 #493 的强制 4096 预缩放：预算内逐字节发原图（两参都成立）；函数名保留以免打乱基线测试 ID 清单。
     with Image.open(io.BytesIO(sent)) as image:
         assert image.size == size
@@ -402,7 +362,7 @@ def test_actual_valid_png_multi_reference_budget_not_source_or_json_size(runtime
             run_soon_default_generation(runtime, [ref(raw)])
         body = network.requests()[0][1]
         assert len(json.dumps(body)) > 8_000_000
-        assert base64.b64decode(body['extra_body']['image'][0].split(',', 1)[1]) == raw
+        assert base64.b64decode(body['image'][0].split(',', 1)[1]) == raw
     else:
         run_soon_default_generation(runtime, [ref(raw)] * count)
         assert len(network.raw_bodies()[0]) <= 16_500_000  # 阶梯介入后提交，不再预先拒
@@ -429,7 +389,7 @@ def test_real_oversized_source_is_measured_only_after_mandatory_resize(runtime, 
     assert len(bodies) == 1
     assert len(bodies[0]) <= 16_500_000
     baseline = original  # #500 基线不再 4096 预缩放
-    sent = base64.b64decode(json.loads(bodies[0])['extra_body']['image'][0].split(',', 1)[1])
+    sent = base64.b64decode(json.loads(bodies[0])['image'][0].split(',', 1)[1])
     if expected == 'baseline':
         assert sent == baseline
         assert saves == []
@@ -456,7 +416,7 @@ def test_manual_and_other_provider_modes_keep_existing_body(runtime, monkeypatch
         image_parameters={'aspect_ratio': '4:3', 'resolution': '4k'})
     body = network.requests()[0][1]
     if changes.get('image_request_mode') == 'openai-json':
-        assert body['extra_body'] == {'response_format': 'url'}
+        assert body['response_format'] == 'url' and 'extra_body' not in body
     else:
         assert 'extra_body' not in body and body['n'] == 1
     assert saved == soon_default_provider(**changes)
@@ -504,7 +464,7 @@ def test_upstream_413_known_cap_conversion_then_final_fail(runtime, monkeypatch)
     assert len(requests) == 2
     assert requests[0][0].startswith('POST /v1/images/generations ')
     assert requests[1][0] == requests[0][0]  # 不换端点不换模型
-    assert requests[1][1]['extra_body']['image'] != requests[0][1]['extra_body']['image']
+    assert requests[1][1]['image'] != requests[0][1]['image']
 
 
 def test_upstream_413_known_cap_no_images_no_blind_resubmit(runtime, monkeypatch):
@@ -610,7 +570,7 @@ def test_observed_accepted_8007313_does_not_raise_conservative_policy(runtime, m
     # 必须原字节提交，不触发任何阶梯。
     bodies = network.raw_bodies()
     assert len(bodies) == 1
-    assert network.requests()[0][1]['extra_body']['image'][0] == 'data:image/png;base64,' + base64.b64encode(original).decode('ascii')
+    assert network.requests()[0][1]['image'][0] == 'data:image/png;base64,' + base64.b64encode(original).decode('ascii')
 
 
 def test_generation_scope_rejection_precedes_preparation_and_post(runtime, monkeypatch):
