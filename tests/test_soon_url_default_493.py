@@ -437,8 +437,8 @@ def test_real_oversized_source_is_measured_only_after_mandatory_resize(runtime, 
         assert len(baseline) * 4 // 3 > 16_500_000  # 原图序列化仍超本地目标：阶梯必须介入
         assert sent != baseline
         with Image.open(io.BytesIO(sent)) as result:
-            # RGBA 噪声源：#500 透明图走 WebP 质量档，先于尺寸档——尺寸保持原图。
-            assert result.format == 'WEBP' and result.size == (5000, height)
+            # RGBA 噪声源超限：铺白底走 JPEG 质量档，先于尺寸档，尺寸保持原图（用户 2026-11-25 裁定）。
+            assert result.format == 'JPEG' and result.size == (5000, height)
     assert path.read_bytes() == original
 
 

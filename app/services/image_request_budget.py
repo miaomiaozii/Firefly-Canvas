@@ -6,8 +6,8 @@
   6144→5120→4096→3584→3072→2560→2048→1536、每档质量 80。最低质量 80。
 - 全程 4:4:4（subsampling=0）、保留 ICC（EXIF 方向一并保留，防止重编码后显示翻转）。
 - 发送副本只用 JPEG / PNG（用户 2026-11-25 裁定：Soon 收到 WebP 参考图时出图与没传一样）。
-  不透明 → JPEG 阶梯；透明 → PNG（无损），只按尺寸档缩。源图不是 JPEG/PNG（WebP、BMP 等）
-  即使放得下也先转换：不透明转 JPEG q95，透明转原尺寸 PNG。
+  不透明 → JPEG 阶梯。透明 → 放得下发原尺寸 PNG；放不下铺白底转 JPEG，走同一阶梯（用户 2026-11-25 裁定）。
+  源图不是 JPEG/PNG（WebP、BMP 等）即使放得下也先转换：不透明转 JPEG q95，透明转原尺寸 PNG。
 - 多图水位分配：总预算平均分给每张；小于自己份额的保持原样，余量重分。
 - 全压到底仍超限：不发请求、不扣费，提示「参考图太多，请减少到 N 张」，N 按实际算出。
 - 压缩只作用于发送副本，每档从同一基准像素重新编码；原文件零写入；不放大。
@@ -78,6 +78,16 @@ def _fit_edge(img: Image.Image, ceiling: int) -> Image.Image:
     return img.resize((max(1, round(img.width * scale)), max(1, round(img.height * scale))), Image.LANCZOS)
 
 
+def _flatten_on_white(img: Image.Image) -> Image.Image:
+    # 透明图超预算转 JPEG 时铺白底（用户 2026-11-25 裁定）；直接 convert('RGB') 会把透明区露成黑块或脏色。
+    if img.mode in ('RGBA', 'LA', 'PA') or 'transparency' in img.info:
+        rgba = img.convert('RGBA')
+        base = Image.new('RGB', rgba.size, (255, 255, 255))
+        base.paste(rgba, mask=rgba.getchannel('A'))
+        return base
+    return img.convert('RGB')
+
+
 def encode_stage(img: Image.Image, stage: Tuple, *, icc_profile: Optional[bytes] = None, exif: Any = None) -> bytes:
     fmt = stage[0]
     quality = stage[-1]
@@ -92,9 +102,8 @@ def encode_stage(img: Image.Image, stage: Tuple, *, icc_profile: Optional[bytes]
     buf = io.BytesIO()
     if fmt == 'JPEG':
         # 票面固定 4:4:4；ICC/EXIF 随档携带。
-        work.convert('RGB').save(buf, 'JPEG', quality=int(quality), subsampling=0, **meta)
+        _flatten_on_white(work).save(buf, 'JPEG', quality=int(quality), subsampling=0, **meta)
     else:
-        # 透明图只发 PNG（无损，保住 alpha），体积只靠尺寸档降。
         work.save(buf, 'PNG', optimize=False, **({'icc_profile': icc_profile} if icc_profile else {}))
     return buf.getvalue()
 
@@ -183,8 +192,11 @@ class PreparedReference:
             return []
         edge = max(self.from_width, self.from_height)
         if self.has_alpha:
+            # 放得下就发原尺寸 PNG 保住透明；放不下铺白底走 JPEG 阶梯（用户 2026-11-25 裁定）。
+            # 透明 PNG 只靠缩尺寸降不下来：两张 1650px 压到底线仍各 9.4 MB，超过 Soon 整包上限。
             stages: List[Tuple] = [] if self.source_format == 'PNG' else [('PNG', None)]
-            stages.extend(('PNG', ceiling, None) for ceiling in _RESIZE_CEILINGS if ceiling < edge)
+            stages.extend(('JPEG', q) for q in _QUALITY_STEPS)
+            stages.extend(('JPEG', ceiling, _FLOOR_QUALITY) for ceiling in _RESIZE_CEILINGS if ceiling < edge)
             return stages
         # 不透明 → JPEG（含不透明 PNG 源，重编码即 JPEG）。
         stages = [('JPEG', q) for q in _QUALITY_STEPS]

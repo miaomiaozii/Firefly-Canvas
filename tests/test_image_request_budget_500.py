@@ -92,7 +92,8 @@ class TestSingleRules:
     def test_alpha_uses_webp_lossy_ladder_not_lossless(self):
         ref = make_ref(noise_png(9000, 100, 'RGBA'))
         stages = ref.stages()
-        assert all(s[0] == 'WEBP' for s in stages)
+        # 用户 2026-11-25 裁定：透明图超限铺白底走 JPEG 阶梯，不发 WebP（测试 ID 保留）。
+        assert all(s[0] == 'JPEG' for s in stages)
         assert [s[1] for s in stages if len(s) == 2] == [95, 92, 90, 85, 80]
         assert not any(s[1] == 'lossless' for s in stages)
 
@@ -121,8 +122,9 @@ class TestSingleRules:
         ref = make_ref(noise_png(3000, 2000, 'RGBA'), mime_hint='image/png')
         for _ in range(4):  # q95..q85
             ref.advance()
+        # 透明区铺白底，不能露成黑块（测试 ID 保留）。
         with Image.open(io.BytesIO(ref.current_raw())) as img:
-            assert img.format == 'WEBP' and img.mode == 'RGBA'
+            assert img.format == 'JPEG' and img.mode == 'RGB'
 
     def test_no_mandatory_4096_precondition(self):
         # 5000 边原图在预算内：逐字节原样（旧 4096 强制缩放废除）。

@@ -69,10 +69,11 @@ def test_baseline_passthrough_and_stage_order_opaque():
 def test_alpha_stages_keep_alpha_path_and_no_jpeg():
     ref = prepared(png_bytes(1600, 1200, alpha=True, seed=5))
     assert ref.has_alpha is True
+    # 用户 2026-11-25 裁定：只发 JPEG/PNG；透明 PNG 放不下时铺白底走 JPEG 阶梯（测试 ID 保留）。
     for stage in ref.stages():
-        assert stage[0] == 'WEBP', stage  # alpha 全程 WebP，不 JPEG
-    assert ref.stages()[0] == ('WEBP', 95)  # #500：透明图走与 JPEG 相同的质量阶梯，无无损档
-    assert ref.stages()[-1] == ('WEBP', 1536, 80)
+        assert stage[0] == 'JPEG', stage
+    assert ref.stages()[0] == ('JPEG', 95)
+    assert ref.stages()[-1] == ('JPEG', 1536, 80)
 
 def test_no_upscale_small_images_skip_resize_stages():
     ref = prepared(png_bytes(800, 600, seed=9))
@@ -93,12 +94,13 @@ def test_every_stage_rebuilt_from_baseline_pixels():
     assert ref.current_bytes == len(direct)  # 每档直接从基准像素生成，不叠已有损
 
 def test_lossless_webp_is_lossless_for_alpha():
-    # #500 废除无损 WebP 档：首档即 lossy WEBP q95 并保住 alpha（名字保留以稳定测试 ID）。
+    # 用户 2026-11-25 裁定：不发 WebP。透明 PNG 放得下就原样发；超限首档铺白底 JPEG q95（测试 ID 保留）。
     raw = png_bytes(120, 90, alpha=True, seed=4)
     ref = prepared(raw)
+    assert ref.current_raw() == raw and ref.current_format == 'PNG'
     ref.advance()
     img = Image.open(io.BytesIO(ref.current_raw()))
-    assert img.format == 'WEBP' and 'A' in img.getbands()
+    assert img.format == 'JPEG' and img.mode == 'RGB'
     assert ref.quality == 95 and ref.lossless is False
 
 # ---------- 控制器：每步实际序列化、最大当前者、first-fit ----------
