@@ -11,6 +11,8 @@ def parser():
     modes = command.add_subparsers(dest='mode', required=True)
     offline = modes.add_parser('offline', help='Zero-fee report; real E0 metrics remain explicitly unmeasured')
     offline.add_argument('--report', type=Path, required=True, help='NEW external JSON file')
+    stub = modes.add_parser('stub-check', help='Run the offline product pipeline with local generation faults')
+    stub.add_argument('--report', type=Path, required=True, help='NEW external JSON file')
     live = modes.add_parser('live', help='Requires separate user cost approval; NOT part of the zero-fee batch')
     live.add_argument('--ack-paid-model-approval', action='store_true', required=True,
                       help='Caller attests separate explicit user approval for real model inference')
@@ -42,6 +44,10 @@ def main(argv=None):
     if args.mode == 'offline':
         from tests.eval.trajectory.metrics import offline_report
         offline_report(args.report)
+        return 0
+    if args.mode == 'stub-check':
+        from tests.eval.trajectory.stub_check import stub_report
+        stub_report(args.report)
         return 0
     if args.mode == 'live':
         from tests.eval.trajectory.live import run

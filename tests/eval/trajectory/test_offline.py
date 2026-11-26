@@ -40,6 +40,32 @@ def test_offline_report_never_imports_or_starts_product(tmp_path, monkeypatch):
         main(['offline', '--report', str(report_path)])
 
 
+@pytest.mark.slow
+def test_stub_check_reports_observed_pipeline_separately_from_model_metrics(tmp_path):
+    report_path = tmp_path / 'stub-evidence/report.json'
+    assert main(['stub-check', '--report', str(report_path)]) == 0
+    report = json.loads(report_path.read_text(encoding='utf-8'))
+    assert report['mode'] == 'stub-verification'
+    assert report['real_model_evidence'] is False and report['b2_status'] == 'NOT_RUN'
+    assert 'metrics' not in report
+    cases = {(case['scenario'], case['autonomy']): case for case in report['cases']}
+    assert len(cases) == len(report['cases']) == 8
+    assert {scenario for scenario, _ in cases} == {'normal', 'no_channel', 'transient', 'rate_limit',
+                                                     'quota_exhausted', 'content_refusal', 'size_mismatch'}
+    for case in cases.values():
+        assert case['confirmation_tools'] == ['plan.apply', 'generate.request_batch']
+        assert case['tool_sequence'][:3] == ['plan.import_excel', 'plan.edit_preview', 'plan.apply']
+        assert case['stub_requests'] == case['attempts']
+    for scenario in ('no_channel', 'transient', 'rate_limit', 'size_mismatch'):
+        case = cases[scenario, 'autonomous']
+        assert (case['attempts'], case['status']) == (2, 'succeeded')
+    assert cases['quota_exhausted', 'autonomous']['status'] == 'paused'
+    assert cases['content_refusal', 'autonomous']['status'] == 'failed'
+    assert list(report_path.parent.iterdir()) == [report_path]
+    with pytest.raises(ValueError, match='NEW'):
+        main(['stub-check', '--report', str(report_path)])
+
+
 @pytest.mark.parametrize('options', [Namespace(), Namespace(ack_paid_model_approval=False)])
 def test_live_needs_separate_cost_approval_before_preflight(options, monkeypatch):
     def no_preflight(*args, **kwargs):

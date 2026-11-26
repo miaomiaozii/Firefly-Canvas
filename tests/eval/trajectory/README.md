@@ -23,13 +23,24 @@ No product files/behavior are changed. Pi live mode is intentionally unsupported
 
 ## Deterministic verification (no auth, model, corpus, billing or skips)
 
-From the worktree, using the parent's external-root wrapper:
+Run these from the worktree. Choose new paths under a dedicated external scratch root;
+Windows pytest defaults can land under `Users`, which the trajectory path guard intentionally rejects.
 
-```bash
-PYTHONUTF8=1 python D:/ff-qa/404-405-326/run_pytest.py b2-worker-UNIQUE tests/eval/trajectory
+```powershell
+python tools/run_agent_eval.py stub-check --report D:/ff-qa/405-stub-NEW/stub-report.json
+python -m pytest tests/eval/trajectory -q -p no:cacheprovider --basetemp D:/ff-qa/405-pytest-NEW
 ```
 
-This includes an actual private server bootstrap **without any native model prompt**,
+`stub-check` runs the same eight scripted pipeline cases as the tests in fresh,
+network-fenced children, then cleans the temporary data. Its report records observed
+policy cards, tool sequence, failure codes, task status and stub requests. It is
+separate from `offline`, which reports only the §2.2 targets and explicitly unmeasured
+model metrics. Two observed cards (`plan.apply`, `generate.request_batch`) in the
+synthetic autonomous case are a product-pipeline observation under #487, not a real
+E0 interruption score. Review this against the spec's zero-interruption target before
+planning an autonomous live run: the current live script only approves a standard batch.
+
+The pytest suite includes an actual private server bootstrap **without any native model prompt**,
 and synthetic workbook -> real MCP plan tools -> actual confirmations -> batch jobs ->
 actual OpenAI provider adapter -> fault-injected HTTP -> valid 8x8 PNG archive tests.
 Pipeline cases each use a fresh offline child process: cached product root constants and

@@ -129,13 +129,17 @@ def application(tmp_path, monkeypatch, *, autonomy='autonomous'):
         asyncio.set_event_loop_policy(previous_policy)
 
 
-@pytest.mark.parametrize('scenario,expected_attempts,code,expected_status', [
+PIPELINE_CASES = (
     ('normal', 1, None, 'succeeded'), ('rate_limit', 2, 'RATE_LIMITED', 'succeeded'),
     ('no_channel', 2, 'MODEL_UNAVAILABLE', 'succeeded'), ('size_mismatch', 2, 'INVALID_PARAMS', 'succeeded'),
     ('transient', 2, 'TRANSIENT', 'succeeded'), ('quota_exhausted', 1, 'QUOTA_EXHAUSTED', 'paused'),
-    ('content_refusal', 1, 'CONTENT_REJECTED', 'failed')])
-def test_real_plan_tools_batch_provider_adapter_and_media_pipeline(tmp_path, scenario, expected_attempts, code, expected_status, autonomy='autonomous'):
+    ('content_refusal', 1, 'CONTENT_REJECTED', 'failed'),
+)
+
+
+def run_pipeline_case(tmp_path, scenario, expected_attempts, code, expected_status, autonomy='autonomous'):
     inherited = tmp_path / 'child'
+    observations = tmp_path / 'observations.json'
     env, folders = isolated_env(inherited)
     for relative in set(folders.values()):
         (inherited / relative / 'synthetic-sentinel.txt').write_text('not application-owned', encoding='utf-8')
@@ -143,16 +147,23 @@ def test_real_plan_tools_batch_provider_adapter_and_media_pipeline(tmp_path, sce
     before = set(sys.modules)
     previous_policy = asyncio.get_event_loop_policy()
     result = subprocess.run([sys.executable, '-B', '-m', 'tests.eval.trajectory.test_pipeline', str(tmp_path / 'owned'),
-                             json.dumps([scenario, expected_attempts, code, expected_status, autonomy])],
+                             json.dumps([scenario, expected_attempts, code, expected_status, autonomy]),
+                             str(observations)],
                             cwd=REPO, env=env, capture_output=True, text=True, encoding='utf-8', timeout=90)
     assert result.returncode == 0, result.stdout + result.stderr
     assert {p.relative_to(inherited): p.read_bytes() for p in inherited.rglob('*') if p.is_file()} == sentinels
     assert not {'main', 'app.core'} & (set(sys.modules) - before)
     assert asyncio.get_event_loop_policy() is previous_policy
+    return json.loads(observations.read_text(encoding='utf-8'))
+
+
+@pytest.mark.parametrize('scenario,expected_attempts,code,expected_status', PIPELINE_CASES)
+def test_real_plan_tools_batch_provider_adapter_and_media_pipeline(tmp_path, scenario, expected_attempts, code, expected_status):
+    run_pipeline_case(tmp_path, scenario, expected_attempts, code, expected_status)
 
 
 def test_standard_pipeline_requires_one_generation_confirmation(tmp_path):
-    test_real_plan_tools_batch_provider_adapter_and_media_pipeline(tmp_path, 'normal', 1, None, 'succeeded', autonomy='standard')
+    run_pipeline_case(tmp_path, *PIPELINE_CASES[0], autonomy='standard')
 
 
 def exercise_pipeline(application, scenario, expected_attempts, code, expected_status, autonomy):
@@ -204,17 +215,18 @@ def exercise_pipeline(application, scenario, expected_attempts, code, expected_s
     if row['status'] != expected_status:
         pytest.fail(json.dumps({'row': row, 'seam': journal.rows, 'history': store.canvas(pid)['history']}, ensure_ascii=False))
     assert row['attempts'] == expected_attempts
-    if code:
-        failure = row['last_failure'] if expected_status == 'succeeded' else row['failure']
-        assert failure['code'] == code
-    assert len([r for r in journal.rows if r['kind'] == 'stub_request']) == expected_attempts
+    failure = row.get('last_failure') if row['status'] == 'succeeded' else row.get('failure')
+    failure_code = failure['code'] if failure else None
+    assert failure_code == code
+    requests = [entry for entry in journal.rows if entry['kind'] == 'stub_request']
+    assert len(requests) == expected_attempts
     if expected_status == 'succeeded':
         assert store.find_canvas_node(pid, row['result_node_id'])['images']
     else:
         assert store.find_canvas_node(pid, row['result_node_id']) is None
         assert store.find_canvas_node(pid, node)['lastFailure']['code'] == code
-    assert [r['tool'] for r in journal.rows if r['kind'] == 'tool_start'][:3] == [
-        'plan.import_excel', 'plan.edit_preview', 'plan.apply']
+    tool_sequence = [entry['tool'] for entry in journal.rows if entry['kind'] == 'tool_start']
+    assert tool_sequence[:3] == ['plan.import_excel', 'plan.edit_preview', 'plan.apply']
     from PIL import Image
     for item in store.list_media(pid):
         assert item['filename'].endswith('.png')
@@ -222,7 +234,13 @@ def exercise_pipeline(application, scenario, expected_attempts, code, expected_s
             image.load()
             assert image.size == (8, 8)
     # #487：每种自治档位都须先确认批次选择；计划落地仍须单独批准。
-    assert [event['tool'] for event in confirmations] == ['plan.apply', 'generate.request_batch']
+    confirmation_tools = [event['tool'] for event in confirmations]
+    assert confirmation_tools == ['plan.apply', 'generate.request_batch']
+    return {
+        'scenario': scenario, 'autonomy': autonomy, 'status': row['status'],
+        'attempts': row['attempts'], 'failure_code': failure_code, 'stub_requests': len(requests),
+        'confirmation_tools': confirmation_tools, 'tool_sequence': tool_sequence,
+    }
 
 
 if __name__ == '__main__':
@@ -233,9 +251,11 @@ if __name__ == '__main__':
         case = json.loads(sys.argv[2])
         fixture = application.__wrapped__(Path(sys.argv[1]), patch, autonomy=case[-1])
         try:
-            exercise_pipeline(next(fixture), *case)
+            observations = exercise_pipeline(next(fixture), *case)
         finally:
             fixture.close()
     assert dict(os.environ) == previous_env
     assert asyncio.get_event_loop_policy() is previous_policy
     assert subprocess.Popen is original_popen
+    if len(sys.argv) > 3:
+        Path(sys.argv[3]).write_text(json.dumps(observations), encoding='utf-8')
