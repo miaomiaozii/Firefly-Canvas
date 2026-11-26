@@ -61,8 +61,8 @@ class ProjectApiContractTests(unittest.TestCase):
     def test_startup_entry_is_project_list_and_empty_library_has_no_default(self):
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
-        self.assertIn("你的项目", response.text)
-        self.assertIn("一个项目，一张画布", response.text)
+        self.assertIn('id="projectsTitle"', response.text)
+        self.assertIn('id="gridCreate"', response.text)
         self.assertEqual(self.client.get("/api/project-library").json(), {"projects": []})
         self.assertEqual(self.client.get("/api/projects").json(), {"projects": []})
         self.assertEqual(self.client.post("/api/projects", json={"name": "legacy"}).status_code, 410)

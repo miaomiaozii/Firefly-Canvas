@@ -25,7 +25,7 @@ from tests import conversation_browser as harness
 
 
 CLIENT_SCRIPT = ROOT / "tests" / "project_list_browser_client.js"
-VIEWPORTS = [(1408, 710), (500, 749)]
+VIEWPORTS = [(1408, 710), (390, 844)]
 
 
 def seed_store(store: ProjectStore) -> str:

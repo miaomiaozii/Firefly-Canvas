@@ -143,7 +143,7 @@ def run_viewport(
             card_index = browser.evaluate(
                 f"[...document.querySelectorAll('#projectGrid .project-card h2')].findIndex(item => item.textContent === {json.dumps(project_name)})"
             )
-            browser.native_click(f"#projectGrid .project-card:nth-child({card_index + 1}) .project-open")
+            browser.native_click(f"#projectGrid .project-card:nth-of-type({card_index + 1}) .project-open")
             browser.wait_for("document.querySelector('[data-id=\"flow-target\"]')", timeout=20)
 
         open_project_from_list()

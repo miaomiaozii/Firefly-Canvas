@@ -3205,6 +3205,8 @@ def expected_native_focus(operation: dict) -> bool:
         selector = operation.get("selector")
         if isinstance(selector, str) and ".project-open" in selector:
             return focus.startswith("button.project-open")
+        if isinstance(selector, str) and ".project-more" in selector:
+            return focus.startswith("button#project-more-") and "project-more" in focus.split(".")[1:]
         if isinstance(selector, str) and ".project-duplicate" in selector:
             return focus.startswith("button.") and "project-duplicate" in focus.split(".")[1:]
         if isinstance(selector, str) and ".project-cleanup-preview" in selector:

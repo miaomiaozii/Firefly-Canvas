@@ -717,7 +717,7 @@ def run_viewport(
         card_index = browser.evaluate(
             f"[...document.querySelectorAll('#projectGrid .project-card h2')].findIndex(item=>item.textContent==={json.dumps(project_name)})"
         )
-        browser.native_click(f"#projectGrid .project-card:nth-child({card_index + 1}) .project-open")
+        browser.native_click(f"#projectGrid .project-card:nth-of-type({card_index + 1}) .project-open")
         browser.wait_for("document.querySelector('[data-id=\"integrity-image\"]')", timeout=20)
         environment = settle(browser)
         try:
@@ -1941,7 +1941,7 @@ def run_viewport(
             duplicate_card_index = browser.evaluate(
                 f"[...document.querySelectorAll('#projectGrid .project-card h2')].findIndex(item=>item.textContent==={json.dumps(duplicate_project_name)})"
             )
-            browser.native_click(f"#projectGrid .project-card:nth-child({duplicate_card_index + 1}) .project-open")
+            browser.native_click(f"#projectGrid .project-card:nth-of-type({duplicate_card_index + 1}) .project-open")
             browser.wait_for("document.querySelector('[data-id=\"integrity-duplicate-node\"]')", timeout=20)
             settle(browser)
             browser.native_click("#smartHistoryToggle")

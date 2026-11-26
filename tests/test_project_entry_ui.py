@@ -66,8 +66,26 @@ class ProjectEntryUiTests(unittest.TestCase):
         self.assertIn("project_mode=1", script)
         self.assertIn("/api/project-library/import", script)
         self.assertNotIn("'default'", script)
-        self.assertIn("一个项目，一张画布", page)
-        self.assertIn("id=\"emptyState\"", page)
+        self.assertIn('id="emptyState"', page)
+
+    def test_project_grid_starts_with_create_and_exposes_search_and_toolbar(self):
+        page = (ROOT / "static" / "project-list.html").read_text(encoding="utf-8")
+        css = (ROOT / "static" / "css" / "project-list.css").read_text(encoding="utf-8")
+        self.assertRegex(page, r'id="projectGrid"[^>]*>\s*<button id="gridCreate"')
+        self.assertIn('id="projectSearch" type="search"', page)
+        for control in ('importProject', 'showTrash', 'projectSettings', 'showCreate'):
+            self.assertIn(f'id="{control}"', page.split('id="projectTools"', 1)[1].split('</nav>', 1)[0])
+        self.assertIn('min-block-size: var(--height-utility)', css)
+
+    def test_project_card_separates_open_and_disclosed_actions(self):
+        script = (ROOT / "static" / "js" / "project-list.js").read_text(encoding="utf-8")
+        self.assertRegex(script, r'<button class="project-open"[^>]*></button>\s*<button class="tool-button tool-icon project-more"')
+        self.assertIn('class="project-menu" role="group" hidden', script)
+        self.assertIn("more.setAttribute('aria-controls', menu.id)", script)
+        metadata = script[script.index('function cardBase'):script.index('function closeProjectMenu')]
+        self.assertIn('title.textContent = project.name', metadata)
+        self.assertIn('time.dateTime = updated.toISOString()', metadata)
+        self.assertNotRegex(metadata, r'node_count|justCreated|deleted_at')
 
     def test_project_canvas_websocket_registers_the_open_project_session(self):
         script = canvas_source()
@@ -88,15 +106,18 @@ class ProjectEntryUiTests(unittest.TestCase):
         script = (ROOT / "static" / "js" / "project-list.js").read_text(encoding="utf-8")
         page = (ROOT / "static" / "project-list.html").read_text(encoding="utf-8")
         self.assertIn("/export`;", script)
-        self.assertIn("method:'DELETE'", script)
+        self.assertIn("requestProjectMutation(`/api/project-library/${id}`, 'DELETE'", script)
         self.assertIn("/api/project-library/trash", script)
-        self.assertIn("/restore`, {method:'POST'}", script)
+        self.assertIn("/restore`, 'POST'", script)
+        self.assertIn("label: tr('common.undo')", script)
+        self.assertIn("window.ffDialog?.ask", script)
+        self.assertIn('id="trashCount"', page)
         self.assertIn('id="showTrash"', page)
         self.assertIn('aria-controls="trashPanel" aria-expanded="false"', page)
         self.assertIn('id="trashPanel"', page)
         self.assertIn("showTrash.setAttribute('aria-expanded', 'true')", script)
         self.assertIn("showTrash.setAttribute('aria-expanded', 'false')", script)
-        self.assertIn("closeTrash.focus()", script)
+        self.assertIn("closeTrash.focus({preventScroll:true})", script)
         self.assertIn("showTrash.focus()", script)
 
     def test_closed_project_cleanup_entry_previews_read_only_then_binds_confirmed_execution(self):
@@ -115,7 +136,7 @@ class ProjectEntryUiTests(unittest.TestCase):
         self.assertIn("candidate.source_category", script)
         preview_flow = script[
             script.index("async function showCleanupPreview"):
-            script.index("function render(projects)")
+            script.index("function cardBase(project)")
         ]
         self.assertIn("method:'GET'", preview_flow)
         self.assertNotIn("method:'DELETE'", preview_flow)
@@ -147,12 +168,11 @@ class ProjectEntryUiTests(unittest.TestCase):
     def test_project_entry_exposes_project_duplication(self):
         script = (ROOT / "static" / "js" / "project-list.js").read_text(encoding="utf-8")
         self.assertIn('class="project-action project-duplicate"', script)
-        self.assertIn("/${encodeURIComponent(project.id)}/duplicate`, {method:'POST'}", script)
-        self.assertIn("await load()", script)
-        self.assertRegex(
-            script,
-            r"project-duplicate[\s\S]+?catch\s*\([^)]*\)[\s\S]+?duplicateFailed[\s\S]+?finally[\s\S]+?disabled\s*=\s*false",
-        )
+        self.assertIn("/${encodeURIComponent(project.id)}/duplicate`, 'POST', 'projectList.duplicateFailed'", script)
+        duplicate = script[script.index("const duplicateButton"):script.index("const deleteButton")]
+        self.assertIn("await load()", duplicate)
+        self.assertIn("status.textContent = error.message", duplicate)
+        self.assertRegex(duplicate, r"finally\s*\{\s*duplicateButton.disabled = false")
 
     def test_core_canvas_sends_node_and_edge_diffs_to_incremental_endpoint(self):
         script = canvas_source()

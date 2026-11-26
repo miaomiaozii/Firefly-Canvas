@@ -739,7 +739,7 @@ def run_image_organization(
     )
     if not isinstance(card_index, int) or card_index < 0:
         raise AssertionError("organized project was not visible after close")
-    browser.native_click(f"#projectGrid .project-card:nth-child({card_index + 1}) .project-open")
+    browser.native_click(f"#projectGrid .project-card:nth-of-type({card_index + 1}) .project-open")
     browser.wait_for(
         f"location.pathname === '/static/smart-canvas.html' "
         f"&& new URLSearchParams(location.search).get('project') === {json.dumps(project_id)} "
@@ -1048,7 +1048,7 @@ def run_project_roundtrip(
     )
     if not isinstance(source_card_index, int) or source_card_index < 0:
         raise AssertionError("augmented source project is unavailable for browser persistence")
-    browser.native_click(f"#projectGrid .project-card:nth-child({source_card_index + 1}) .project-open")
+    browser.native_click(f"#projectGrid .project-card:nth-of-type({source_card_index + 1}) .project-open")
     generated_selector = '.image-node[data-id="t05-generated-original"]'
     browser.wait_for(
         f"location.pathname === '/static/smart-canvas.html' "
@@ -1125,9 +1125,9 @@ def run_project_roundtrip(
     if not isinstance(source_card_index, int) or source_card_index < 0:
         raise AssertionError("saved source project is unavailable for native duplication")
     card_count_before_duplicate = int(browser.evaluate("document.querySelectorAll('#projectGrid .project-card').length") or 0)
-    browser.native_click(
-        f"#projectGrid .project-card:nth-child({source_card_index + 1}) .project-duplicate"
-    )
+    source_card = f"#projectGrid .project-card:nth-of-type({source_card_index + 1})"
+    browser.native_click(f"{source_card} .project-more")
+    browser.native_click(f"{source_card} .project-duplicate")
     browser.wait_for(
         f"document.querySelectorAll('#projectGrid .project-card').length === {card_count_before_duplicate + 1}",
         timeout=30,
@@ -1223,7 +1223,7 @@ def run_project_roundtrip(
     )
     if not isinstance(card_index, int) or card_index < 0:
         raise AssertionError("saved project did not return to the project list")
-    browser.native_click(f"#projectGrid .project-card:nth-child({card_index + 1}) .project-open")
+    browser.native_click(f"#projectGrid .project-card:nth-of-type({card_index + 1}) .project-open")
     browser.wait_for(
         f"location.pathname === '/static/smart-canvas.html' "
         f"&& new URLSearchParams(location.search).get('project') === {json.dumps(project_id)} "
@@ -1382,9 +1382,9 @@ def run_viewport(
         )
         if not isinstance(cleanup_index, int) or cleanup_index < 0:
             raise AssertionError("cleanup project is unavailable from the project list")
-        cleanup_operation = browser.native_click(
-            f"#projectGrid .project-card:nth-child({cleanup_index + 1}) .project-cleanup-preview"
-        )
+        cleanup_card = f"#projectGrid .project-card:nth-of-type({cleanup_index + 1})"
+        browser.native_click(f"{cleanup_card} .project-more")
+        cleanup_operation = browser.native_click(f"{cleanup_card} .project-cleanup-preview")
         browser.wait_for(
             "document.querySelector('#cleanupPreviewDialog')?.open === true "
             "&& document.querySelector('#cleanupCandidateCount')?.textContent === '1' "
@@ -1425,9 +1425,8 @@ def run_viewport(
         }
         # T16: the confirmed cleanup execution deletes exactly the previewed
         # candidate and touches nothing else in the project tree.
-        browser.native_click(
-            f"#projectGrid .project-card:nth-child({cleanup_index + 1}) .project-cleanup-preview"
-        )
+        browser.native_click(f"{cleanup_card} .project-more")
+        browser.native_click(f"{cleanup_card} .project-cleanup-preview")
         browser.wait_for(
             "document.querySelector('#cleanupPreviewDialog')?.open === true "
             "&& document.querySelector('#cleanupCandidateCount')?.textContent === '1' "
@@ -1499,7 +1498,7 @@ def run_viewport(
         if not isinstance(seed_index, int) or seed_index < 0:
             raise AssertionError("seed project is unavailable from the project list")
         open_operation = browser.native_click(
-            f"#projectGrid .project-card:nth-child({seed_index + 1}) .project-open"
+            f"#projectGrid .project-card:nth-of-type({seed_index + 1}) .project-open"
         )
         browser.wait_for("location.pathname.endsWith('/static/smart-canvas.html')")
         browser.wait_for("document.querySelector('[data-id=\"seed-prompt\"] .prompt-node-text')")

@@ -991,6 +991,7 @@ class GateWiringTests(InProcessGateFixture):
             {"action": "click", "selector": "#projectGrid .project-card:nth-child(1) .project-open", "focus_after": "button.project-open"},
             {"action": "click", "selector": "#projectGrid .project-card:nth-child(1) .project-duplicate", "focus_after": "button.project-action.project-duplicate"},
             {"action": "click", "selector": "#projectGrid .project-card:nth-child(1) .project-cleanup-preview", "focus_after": "button.project-action.project-cleanup-preview"},
+            {"action": "click", "selector": "#projectGrid .project-card:nth-of-type(1) .project-more", "focus_after": "button#project-more-seed.tool-button.tool-icon.project-more"},
             {"action": "click", "selector": "#closeCleanupPreview", "focus_after": "button#closeCleanupPreview.button.secondary"},
             {"action": "click", "selector": "#confirmCleanup", "focus_after": "button#confirmCleanup.button.danger"},
             {"action": "keyboard", "observed_target": "input#projectName", "focus_after": "input#projectName"},

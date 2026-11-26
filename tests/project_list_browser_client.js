@@ -24,10 +24,14 @@
     throw new Error(`等待 ${name} 超时: ${last || '无结果'}`);
   }
   const projectList = async () => (await (await fetch('/api/project-library')).json()).projects || [];
-  const cardFor = name => [...document.querySelectorAll('#projectGrid .project-card')]
-    .find(card => card.querySelector('h2')?.textContent === name);
-  const cardForId = id => [...document.querySelectorAll('#projectGrid .project-card')]
-    .find(card => card.querySelector('a[download]')?.href.includes(encodeURIComponent(id)));
+  const cardForId = (id, container = '#projectGrid') => [...document.querySelectorAll(`${container} .project-card`)]
+    .find(card => card.dataset.projectId === id);
+  const clickAction = (id, selector) => {
+    const card = cardForId(id);
+    card.querySelector('.project-more').click();
+    card.querySelector(selector).click();
+  };
+  const press = (element, key) => element.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
 
   const px = value => Number.parseFloat(value) || 0;
   const colorParts = value => {
@@ -68,7 +72,8 @@
       panel: rootStyle.getPropertyValue('--panel').trim(),
       accent: rootStyle.getPropertyValue('--accent').trim().toLowerCase(),
       body: elementContrast(document.body),
-      subtitle: elementContrast(elements.subtitle),
+      summary: elementContrast(elements.summary),
+      metadata: elementContrast(elements.metadata),
       primary: elementContrast(elements.primary),
       cardTitle: elementContrast(elements.cardTitle),
     };
@@ -77,69 +82,95 @@
   try {
     const cards = await waitFor('project cards', () => document.querySelectorAll('#projectGrid .project-card').length >= 1);
     check('project list loads seeded project', Boolean(cards));
-    const seedId = (await projectList()).find(item => item.name === 'Browser lifecycle project')?.id;
+    const seed = (await projectList()).find(item => item.name === 'Browser lifecycle project');
+    const seedId = seed.id;
     const seedCard = cardForId(seedId);
-    check('seed project name is visible', Boolean(seedCard));
-    check('project card exposes Fly export', Boolean(seedCard?.querySelector('a[download]')));
-    check('project card exposes delete action', Boolean(seedCard?.querySelector('.danger')));
+    check('seed project name is visible', seedCard?.querySelector('h2')?.textContent === seed.name);
+    check('create is the first tile', document.querySelector('#projectGrid').firstElementChild.id === 'gridCreate');
     check('empty state is hidden when projects exist', document.querySelector('#emptyState')?.hidden === true);
+    check('card shows the real modified timestamp', seedCard.querySelector('time').dateTime === new Date(seed.updated_at).toISOString());
+
+    const more = seedCard.querySelector('.project-more');
+    const menu = seedCard.querySelector('.project-menu');
+    check('more controls a closed menu', menu.hidden && more.getAttribute('aria-controls') === menu.id && more.getAttribute('aria-expanded') === 'false');
+    more.focus();
+    press(more, 'ArrowDown');
+    check('down arrow opens menu and focuses version history', !menu.hidden && more.getAttribute('aria-expanded') === 'true' && document.activeElement.matches('.project-versions'));
+    press(document.activeElement, 'ArrowDown');
+    check('down arrow moves to duplicate', document.activeElement.matches('.project-duplicate'));
+    press(document.activeElement, 'End');
+    check('end moves to move-to-trash action', document.activeElement.matches('.project-trash'));
+    press(document.activeElement, 'Escape');
+    check('escape closes menu and restores focus', menu.hidden && document.activeElement === more);
+    more.click();
+    const menuRect = menu.getBoundingClientRect();
+    check('open menu fits inside viewport', menuRect.left >= 0 && menuRect.right <= window.innerWidth + 1 && menuRect.top >= 0 && menuRect.bottom <= window.innerHeight + 1);
+    document.querySelector('#projectsTitle').click();
+    check('outside click closes menu', menu.hidden);
+    clickAction(seedId, '.project-versions');
+    check('version history opens without entering the canvas', menu.hidden && document.querySelector('#versionsDialog').open);
+    document.querySelector('#closeVersions').click();
+
+    const search = document.querySelector('#projectSearch');
+    search.value = 'no project has this name';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    check('search preserves create and reports no matches', !document.querySelector('#searchEmpty').hidden && document.querySelector('#projectGrid').children.length === 1);
+    search.value = '';
+    search.dispatchEvent(new Event('input', { bubbles: true }));
+    const visibleSeed = cardForId(seedId);
 
     const foundationLink = document.querySelector('link[href*="/static/css/studio-foundation.css"]');
     check('shared studio foundation is loaded', Boolean(foundationLink), foundationLink?.getAttribute('href') || 'missing');
     check('legacy theme stylesheet is not imported', !document.querySelector('link[href*="/static/css/theme.css"]'));
 
-    const pageTitle = document.querySelector('h1');
-    const subtitle = document.querySelector('.subtitle');
-    const cardTitle = seedCard?.querySelector('h2');
-    const metadata = seedCard?.querySelector('time');
+    const pageTitle = document.querySelector('#projectsTitle');
+    const summary = document.querySelector('#projectSummary');
+    const cardTitle = visibleSeed.querySelector('h2');
+    const metadata = visibleSeed.querySelector('time');
     const createButton = document.querySelector('#showCreate');
-    const cardAction = seedCard?.querySelector('.project-action');
+    const cardAction = visibleSeed.querySelector('.project-action');
+    const rootStyle = getComputedStyle(document.documentElement);
+    const tokenPx = token => px(rootStyle.getPropertyValue(token));
     const typography = [
-      [subtitle, 14],
-      [cardTitle, 18],
-      [metadata, 12],
-      [createButton, 12],
-      [cardAction, 12],
+      [pageTitle, '--font-section-title'],
+      [summary, '--font-body'],
+      [cardTitle, '--font-card-title'],
+      [metadata, '--font-caption'],
+      [createButton, '--font-control'],
+      [cardAction, '--font-control'],
     ];
-    check('project typography follows foundation', typography.every(([el, expected]) => el && Math.abs(px(getComputedStyle(el).fontSize) - expected) < 0.25) && px(getComputedStyle(pageTitle).fontSize) >= 32 && px(getComputedStyle(pageTitle).fontSize) <= 48, typography.concat([[pageTitle, '32-48']]).map(([el]) => el ? getComputedStyle(el).fontSize : 'missing').join('/'));
-
-    const sizeMetrics = {
-      button: px(getComputedStyle(createButton).minHeight),
-      action: px(getComputedStyle(cardAction).minHeight),
-      cardRadius: px(getComputedStyle(seedCard).borderRadius),
-      buttonRadius: px(getComputedStyle(createButton).borderRadius),
-    };
-    check('project controls and cards use shared scale', sizeMetrics.button === 34 && sizeMetrics.action === 30 && sizeMetrics.cardRadius === 8 && sizeMetrics.buttonRadius === 6, JSON.stringify(sizeMetrics));
-
-    const cardStyle = getComputedStyle(seedCard);
-    check('project surfaces remove gradients shadows and glow', getComputedStyle(document.body).backgroundImage === 'none' && cardStyle.backgroundImage === 'none' && cardStyle.boxShadow === 'none' && getComputedStyle(document.querySelector('.firefly-mark')).filter === 'none', `body=${getComputedStyle(document.body).backgroundImage} card=${cardStyle.backgroundImage}/${cardStyle.boxShadow}`);
-
-    const interactive = [...document.querySelectorAll('button, a.button, .project-action, input:not([type="file"])')];
-    const undersized = interactive.filter(el => px(getComputedStyle(el).fontSize) < 12);
-    check('project interactive text stays readable', undersized.length === 0, undersized.map(el => `${el.tagName}.${el.className}:${getComputedStyle(el).fontSize}`).join(', ') || 'all >= 12px');
+    check('project typography follows foundation', typography.every(([el, token]) => px(getComputedStyle(el).fontSize) === tokenPx(token)));
+    check('toolbar uses canvas utility height', [...document.querySelectorAll('#projectTools .tool-button, .project-search')].every(el => el.getBoundingClientRect().height === tokenPx('--height-utility')));
+    check('cards use the shared panel radius', px(getComputedStyle(visibleSeed).borderRadius) === tokenPx('--radius-panel'));
+    check('placeholder is a decorative 16:10 dot matrix', (() => {
+      const thumb = visibleSeed.querySelector('.project-thumb');
+      const bounds = thumb.getBoundingClientRect();
+      return thumb.getAttribute('aria-hidden') === 'true' && getComputedStyle(thumb).backgroundImage.startsWith('radial-gradient') && Math.abs(bounds.width / bounds.height - 1.6) < 0.01;
+    })());
 
     const initialTheme = document.documentElement.classList.contains('studio-theme-dark') ? 'dark' : 'light';
-    const themeElements = { subtitle, primary: createButton, cardTitle };
+    const themeElements = { summary, metadata, primary: createButton, cardTitle };
     const lightMetrics = themeMetrics('light', themeElements);
     const darkMetrics = themeMetrics('dark', themeElements);
     window.StudioTheme.apply(initialTheme);
     check('light and dark project surfaces are distinct', lightMetrics.page !== darkMetrics.page && lightMetrics.panel !== darkMetrics.panel, JSON.stringify({ light: lightMetrics, dark: darkMetrics }));
-    check('project page shares canvas accent', lightMetrics.accent === '#5879dc' && darkMetrics.accent === '#5879dc', `${lightMetrics.accent}/${darkMetrics.accent}`);
-    check('light project content meets readable contrast', Math.min(lightMetrics.body, lightMetrics.subtitle, lightMetrics.primary, lightMetrics.cardTitle) >= 4.5, JSON.stringify(lightMetrics));
-    check('dark project content meets readable contrast', Math.min(darkMetrics.body, darkMetrics.subtitle, darkMetrics.primary, darkMetrics.cardTitle) >= 4.5, JSON.stringify(darkMetrics));
+    check('project page shares canvas amber accent', lightMetrics.accent === '#865500' && darkMetrics.accent === '#edbd62', `${lightMetrics.accent}/${darkMetrics.accent}`);
+    for (const [theme, metrics] of [['light', lightMetrics], ['dark', darkMetrics]]) {
+      const { body, summary, metadata, primary, cardTitle } = metrics;
+      check(`${theme} project content meets readable contrast`, Math.min(body, summary, metadata, primary, cardTitle) >= 4.5, JSON.stringify(metrics));
+    }
 
-    if (window.innerWidth <= 700) {
-      const shellRect = document.querySelector('.project-shell').getBoundingClientRect();
+    check('project list stays inside viewport', document.documentElement.scrollWidth <= window.innerWidth + 1, `viewport=${window.innerWidth} scroll=${document.documentElement.scrollWidth}`);
+    if (window.innerWidth <= 440) {
       const gridColumns = getComputedStyle(document.querySelector('#projectGrid')).gridTemplateColumns.trim().split(/\s+/).length;
-      const headerDirection = getComputedStyle(document.querySelector('.project-header')).flexDirection;
-      const actionColumns = getComputedStyle(document.querySelector('.header-actions')).gridTemplateColumns.trim().split(/\s+/).length;
-      check('mobile project list has explicit compact layout', headerDirection === 'column' && gridColumns === 1 && actionColumns <= 2, `header=${headerDirection} projects=${gridColumns} actions=${actionColumns}`);
-      check('mobile project list stays inside viewport', shellRect.left >= -1 && shellRect.right <= window.innerWidth + 1 && document.documentElement.scrollWidth <= window.innerWidth + 1, `shell=${shellRect.left.toFixed(1)}..${shellRect.right.toFixed(1)} viewport=${window.innerWidth} scroll=${document.documentElement.scrollWidth}`);
+      const find = document.querySelector('.project-find').getBoundingClientRect();
+      const tools = document.querySelector('.project-tools').getBoundingClientRect();
+      check('narrow project list stacks toolbar capsules and cards', gridColumns === 1 && tools.top >= find.bottom);
     }
 
     const dialog = document.querySelector('#createDialog');
-    document.querySelector('#showCreate').click();
-    check('new project dialog opens', Boolean(dialog?.open));
+    document.querySelector('#gridCreate').click();
+    check('create tile opens the new project dialog', Boolean(dialog?.open));
     const dialogInputStyle = getComputedStyle(document.querySelector('#projectName'));
     check('create dialog form uses shared control typography', Math.abs(px(dialogInputStyle.height) - 34) < 0.25 && px(dialogInputStyle.fontSize) === 12 && px(dialogInputStyle.borderRadius) === 8 && px(getComputedStyle(dialog).borderRadius) === 12, `input=${dialogInputStyle.height}/${dialogInputStyle.fontSize}/${dialogInputStyle.borderRadius} dialog=${getComputedStyle(dialog).borderRadius}`);
     document.querySelector('#projectName').value = '';
@@ -148,7 +179,7 @@
     document.querySelector('#cancelCreate').click();
     check('new project dialog closes', dialog?.open === false);
 
-    const exportResponse = await fetch(seedCard.querySelector('a[download]').href);
+    const exportResponse = await fetch(visibleSeed.querySelector('.project-export[download]').href);
     const exportBytes = await exportResponse.arrayBuffer();
     check('Fly export returns a package', exportResponse.ok && exportBytes.byteLength > 100, `${exportResponse.status}/${exportBytes.byteLength}`);
     check('Fly export has download filename', /\.fly/i.test(exportResponse.headers.get('content-disposition') || ''));
@@ -165,22 +196,38 @@
       check('imported project canvas is readable', imported.canvas?.nodes?.some(node => node.id === 'lifecycle-prompt'));
     }
 
-    window.confirm = () => true;
-    cardForId(seedId).querySelector('.danger').click();
-    await waitFor('deleted project leaves active list', () => !cardForId(seedId));
-    check('delete moves project out of active list', true);
+    const trashCard = () => cardForId(seedId, '#trashGrid');
+    const trashCount = () => document.querySelector('#trashCount').textContent;
+    clickAction(seedId, '.project-trash');
+    const undo = await waitFor('move to trash shows undo and updates the count', () =>
+      !cardForId(seedId) && trashCount() === '1' && document.querySelector('.ff-toast-action'));
+    undo.click();
+    await waitFor('undo restores the project and count', () => cardForId(seedId) && trashCount() === '0');
 
+    clickAction(seedId, '.project-trash');
+    await waitFor('move to trash refreshes the grid and count', () => !cardForId(seedId) && trashCount() === '1');
     document.querySelector('#showTrash').click();
-    await waitFor('trash card', () => document.querySelector('#trashGrid .trash-card'));
-    check('deleted project appears in trash', document.querySelector('#trashGrid h2')?.textContent === 'Browser lifecycle project');
-    document.querySelector('#trashGrid .restore').click();
-    await waitFor('restored project card', () => cardForId(seedId));
-    check('restore returns project to active list', true);
+    await waitFor('trash card', trashCard);
+    check('deleted project has the same card treatment', trashCard().querySelector('h2').textContent === seed.name && trashCard().querySelector('.project-thumb') && !trashCard().querySelector('.project-open'));
+    check('trash is a separate view with safety copy', document.querySelector('#projectLibrary').hidden && !document.querySelector('.trash-note').hidden);
+    trashCard().querySelector('.restore').click();
+    await waitFor('restore refreshes the list and trash count', () => cardForId(seedId) && !trashCard() && trashCount() === '0');
+    document.querySelector('#closeTrash').click();
+    check('close returns to the grid and restores focus', !document.querySelector('#projectLibrary').hidden && document.activeElement.id === 'showTrash');
 
-    cardForId(seedId).querySelector('.danger').click();
-    await waitFor('second trash card', () => document.querySelector('#trashGrid .trash-card'));
-    document.querySelector('#trashGrid .purge').click();
-    await waitFor('empty trash', () => !document.querySelector('#trashGrid .trash-card'));
+    clickAction(seedId, '.project-trash');
+    await waitFor('second move to trash', () => !cardForId(seedId) && trashCount() === '1');
+    document.querySelector('#showTrash').click();
+    await waitFor('second trash card', trashCard);
+    trashCard().querySelector('.purge').click();
+    const confirmation = document.querySelector('.ff-dialog-card[role="alertdialog"]');
+    check('purge asks before irreversible deletion', confirmation?.querySelector('.ff-dialog-message')?.textContent.includes(seed.name) && !!trashCard());
+    confirmation.querySelector('.ff-dialog-btn:not(.ff-dialog-btn-danger)').click();
+    check('cancel keeps the trash entry', !!trashCard());
+    await sleep(0);
+    trashCard().querySelector('.purge').click();
+    document.querySelector('.ff-dialog-btn-danger').click();
+    await waitFor('confirmed purge empties trash', () => !trashCard() && trashCount() === '0');
     check('purge permanently removes project from trash', true);
     check('imported project remains after lifecycle actions', (await projectList()).some(item => item.id === importedId));
   } catch (error) {

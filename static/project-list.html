@@ -18,45 +18,60 @@
   <link rel="stylesheet" href="/static/css/project-list.css?v=20261119.001800">
 </head>
 <body>
-  <main class="project-shell">
-    <header class="project-header">
-      <div>
-        <p class="eyebrow" data-i18n="common.productName">萤火画布</p>
-        <h1 data-i18n="projectList.heading">你的项目</h1>
-        <p class="subtitle" data-i18n="projectList.subtitle">一个项目，一张画布，所有创作内容都随项目保存。</p>
-      </div>
-      <div class="header-actions">
-        <a class="button secondary" href="/static/global-settings.html" data-i18n="projectList.settings">全局设置</a>
-        <button id="showTrash" class="button secondary" type="button" aria-controls="trashPanel" aria-expanded="false" data-i18n="projectList.trash">项目回收站</button>
-        <button id="importProject" class="button secondary" type="button" data-i18n="projectList.import">导入 .fly</button>
-        <input id="importFile" type="file" accept=".fly,application/zip" hidden>
-        <button id="showCreate" class="button primary" type="button" data-i18n="projectList.create">新建项目</button>
-      </div>
-    </header>
+  <header class="project-header">
+    <div class="project-bar project-find">
+      <span class="project-brand"><span class="project-brand-dot" aria-hidden="true"></span><span data-i18n="common.productName">萤火画布</span></span>
+      <span class="project-bar-divider" aria-hidden="true"></span>
+      <label class="project-search">
+        <svg class="project-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <span id="projectSearchLabel" hidden data-i18n="projectList.search">搜索项目名称</span>
+        <input id="projectSearch" type="search" aria-labelledby="projectSearchLabel" aria-controls="projectGrid" placeholder="搜索项目名称" data-i18n-placeholder="projectList.search" autocomplete="off">
+      </label>
+    </div>
+    <nav id="projectTools" class="project-bar project-tools" aria-label="项目库工具栏">
+      <button id="importProject" class="tool-button" type="button" data-i18n="projectList.import">导入 .fly</button>
+      <button id="showTrash" class="tool-button" type="button" aria-controls="trashPanel" aria-expanded="false"><span data-i18n="projectList.trashShort">回收站</span><span id="trashCount" class="trash-count" hidden></span></button>
+      <a id="projectSettings" class="tool-button tool-icon" href="/static/global-settings.html" aria-labelledby="projectSettingsLabel" data-i18n-title="projectList.settings">
+        <svg class="project-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 7 19.4l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 13.7H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 2.9-1.2V3a2 2 0 1 1 4 0v.1A1.7 1.7 0 0 0 17 4.6l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0 1.2 2.9H21a2 2 0 1 1 0 4h-.1z"/></svg>
+        <span id="projectSettingsLabel" hidden data-i18n="projectList.settings">全局设置</span>
+      </a>
+      <span class="project-bar-divider" aria-hidden="true"></span>
+      <button id="showCreate" class="tool-button primary" type="button"><span aria-hidden="true">＋</span><span data-i18n="projectList.create">新建项目</span></button>
+    </nav>
+    <input id="importFile" type="file" accept=".fly,application/zip" hidden>
+  </header>
 
-    <p id="importHint" class="import-hint" hidden></p>
-    <section id="status" class="status" role="status" aria-live="polite" data-i18n="projectList.loading">正在读取项目库…</section>
-    <section id="emptyState" class="empty-state" hidden>
-      <div class="firefly-mark" aria-hidden="true">✦</div>
-      <h2 data-i18n="projectList.emptyTitle">从第一张画布开始</h2>
-      <p data-i18n="projectList.emptyBody">项目库现在是空的。新建项目后会直接打开它唯一的画布。</p>
-      <button id="emptyCreate" class="button primary" type="button" data-i18n="projectList.create">新建项目</button>
+  <main class="project-shell">
+    <p id="importHint" class="import-hint" role="status" hidden></p>
+    <p id="status" class="status" role="status" data-i18n="projectList.loading">正在读取项目库…</p>
+    <section id="projectLibrary" aria-labelledby="projectsTitle">
+      <div class="project-heading">
+        <h1 id="projectsTitle" data-i18n="projectList.heading">项目</h1>
+        <p id="projectSummary" class="project-summary" role="status"></p>
+      </div>
+      <div id="projectGrid" class="project-grid">
+        <button id="gridCreate" class="project-create" type="button">
+          <span class="project-create-icon" aria-hidden="true">＋</span><span data-i18n="projectList.create">新建项目</span>
+        </button>
+      </div>
+      <p id="emptyState" class="project-note" hidden data-i18n="projectList.emptyBody">项目库现在是空的。新建项目后会直接打开它唯一的画布。</p>
+      <p id="searchEmpty" class="project-note" hidden data-i18n="projectList.searchEmpty">没有符合搜索条件的项目。</p>
     </section>
-    <section id="projectGrid" class="project-grid" aria-label="项目列表" data-i18n-title="projectList.region"></section>
-    <section id="trashPanel" class="trash-panel" hidden aria-labelledby="trashTitle">
-      <div class="trash-head">
-        <div><p class="eyebrow">PROJECT TRASH</p><h2 id="trashTitle" data-i18n="projectList.trash">项目回收站</h2></div>
+    <section id="trashPanel" hidden aria-labelledby="trashTitle">
+      <div class="project-heading trash-head">
+        <h1 id="trashTitle" data-i18n="projectList.trash">项目回收站</h1>
         <button id="closeTrash" class="button secondary" type="button" data-i18n="projectList.closeTrash">关闭回收站</button>
       </div>
-      <p class="trash-note" data-i18n="projectList.trashNote">删除会移动整个项目；恢复会原样放回，永久删除才释放磁盘空间。</p>
+      <p class="project-note trash-note" data-i18n="projectList.trashNote">删除会移动整个项目；恢复会原样放回，永久删除才释放磁盘空间。</p>
       <div id="trashGrid" class="project-grid"></div>
+      <p id="trashEmpty" class="project-note" hidden data-i18n="projectList.trashEmpty">项目回收站是空的。</p>
     </section>
   </main>
 
-  <dialog id="createDialog" class="create-dialog">
+  <dialog id="createDialog" class="create-dialog" aria-labelledby="createTitle">
     <form id="createForm" method="dialog">
       <p class="eyebrow">NEW PROJECT</p>
-      <h2 data-i18n="projectList.newHeading">新建项目</h2>
+      <h2 id="createTitle" data-i18n="projectList.newHeading">新建项目</h2>
       <label for="projectName" data-i18n="projectList.projectName">项目名称</label>
       <input id="projectName" name="name" maxlength="60" autocomplete="off" placeholder="例如：夏日产品主视觉" data-i18n-placeholder="projectList.namePlaceholder" required>
       <p id="createError" class="form-error" role="alert"></p>

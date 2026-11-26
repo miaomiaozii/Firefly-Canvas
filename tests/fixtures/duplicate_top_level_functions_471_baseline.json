@@ -4939,12 +4939,12 @@
         {
           "module": "tests/composer_flow_native_browser.py",
           "ordinal": 1,
-          "ast_sha256": "78d2624fe36966dcd397299034232e12e67f8d6063dbd7845662c0c7101b4b7c"
+          "ast_sha256": "8d3dd2a831712c0e5d6d00da986f596f2004c6352b567bea9cd2360cf7f145c0"
         },
         {
           "module": "tests/core_surface_browser.py",
           "ordinal": 1,
-          "ast_sha256": "06060fbb639fb0592cde822d232f6fcc4e693b101a978cce1d6ce6f7cdd3fa55"
+          "ast_sha256": "483eea44ef8ad536fc5ba6382e507977580bef0917f84f82d0ed1a925d3fa422"
         },
         {
           "module": "tests/generation_lifecycle_browser.py",
@@ -4954,12 +4954,12 @@
         {
           "module": "tests/long_content_native_browser.py",
           "ordinal": 1,
-          "ast_sha256": "9c0e0707edc192a6a4d793ff37f2face9f9d290d0003dbd2aad69cf605a360a6"
+          "ast_sha256": "ac24cfd835b7ddee14fb0be640fedc9257382f5cd249f2cb23e968554f684d19"
         },
         {
           "module": "tests/ui_integrity_native_browser.py",
           "ordinal": 1,
-          "ast_sha256": "7ed9dcace68154f46d28a461f215381f06edc6e5e7c5ec61a1904f4928ecce35"
+          "ast_sha256": "b3c96c617d151c40715c9b3167eb0454adaeffecf5a457f21e373409b5a79330"
         }
       ]
     },
