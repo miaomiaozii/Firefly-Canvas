@@ -32,7 +32,7 @@ function createAgentHostView() {
         _historyPrefetch: null, _replayAgain: false, _historyGapSince: null,
         confirm: null, pendingConfirms: new Map(), confirmModalShown: null, confirmModalOwner: null, stopPending: false, queuedInputs: new Set(),
         effortState: null, eventsError: '', stopStatusError: '', lastError: '', sessionModel: undefined,
-        planPreviews: new Map(),
+        planPreviews: new Map(), batchDrafts: new Map(), batchReads: new Map(), batchEditor: null,
     };
 }
 function agentNodeHost(node) { return node.agentCli || 'pi'; } // legacy nodes belong only to Pi
@@ -96,6 +96,9 @@ function agentCaptureComposer(state, nodeId) {
 }
 function agentChangeHostView(nodeId, state, host) {
     agentCaptureComposer(state, nodeId);
+    state.batchEditor?.dialog.close();
+    for (const controller of state.batchReads.values()) controller?.abort();
+    state.batchReads.clear();
     if (state.nodeRefsDraft) state.nodeRefsDraft.lastDepartureEpoch = state.viewEpoch;
     for (const view of state.planPreviews.values()) if (view.busy) {
         if (view.requestEpoch !== state.viewEpoch) view.invalidOwner = true;
@@ -1407,11 +1410,18 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
             finalizeAgentStreamingTurn(state);
             break;
         case 'confirm': {
-            state.pendingConfirms.set(event.confirm_id, event);
-            state.confirm = event;
+            const previous = state.pendingConfirms.get(event.confirm_id);
+            state.pendingConfirms.set(event.confirm_id, previous || event);
+            if (!previous || state.confirm?.confirm_id === event.confirm_id) state.confirm = previous || event;
             state.status = 'waiting_confirm';
-            // 模态结果须仍匹配待确认ID；关闭后仍可内联确认，两路共用单次发送防双发（#357）。
-            if (!agentIsReadonly(state) && !state._applyingReplay && window.ffDialog && state.confirmModalShown !== event.confirm_id) {
+            if (state.batchEditor && state.batchEditor.confirmation !== state.confirm) state.batchEditor.dialog.close();
+            // Structured approvals must never fall through to a generic whole-batch modal (#412).
+            if (agentHasPreparedBatch(state.confirm) && state.confirmModalOwner) {
+                state.confirmModalOwner = null;
+                window.ffDialog?.close?.();
+            }
+            if (!agentHasPreparedBatch(event) && !agentIsReadonly(state) && !state._applyingReplay
+                && window.ffDialog && state.confirm === event && state.confirmModalShown !== event.confirm_id) {
                 state.confirmModalShown = event.confirm_id;
                 // Restoring a pending ID must not revive a preempted dialog's callback (#487).
                 const modalOwner = {};
@@ -1432,10 +1442,17 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
             break;
         }
         case 'confirm_resolved': {
-            // 服务端终结时静默关闭模态，不能把撤卡误当人工拒绝（#389）。
+            const confirmation = state.pendingConfirms.get(event.confirm_id);
+            const batch = agentBatchSnapshot(confirmation);
+            if (batch && event.approved && !state._applyingReplay) agentWatchBatch(nodeId, state, confirmation);
+            if (batch && event.reason !== 'replaced') state.batchDrafts.delete(batch.id);
+            const hadModal = Boolean(state.confirmModalOwner);
             if (agentResolveConfirmation(state, event.confirm_id)) {
-                if (!state._applyingReplay && window.ffDialog && window.ffDialog.close) window.ffDialog.close();
-                const outcome = event.approved ? '已批准'
+                // A server resolution is not a human rejection (#389).
+                if (hadModal && !state._applyingReplay) window.ffDialog?.close?.();
+                if (event.reason === 'replaced') break;
+                const outcome = event.reason === 'empty_batch' ? '已停止（批次为空）'
+                    : event.approved ? (batch?.stage === 'select' ? '已确认所选项，等待逐项批准' : '已批准')
                     : (event.reason === 'timeout' ? '已超时' : '已拒绝');
                 agentAppendMessage(state, { role: 'system',
                     text: `Agent 操作确认${outcome}：${event.tool || ''}` });
@@ -2185,54 +2202,337 @@ async function showAgentCliTakeover(nodeId, projectId) {
     dlg.showModal();
 }
 
+function agentHasPreparedBatch(confirmation) {
+    return confirmation?.tool === 'generate.request_batch' && Boolean(confirmation.params?.preflight);
+}
+
+function agentBatchSnapshot(confirmation) {
+    const params = confirmation?.params;
+    const preview = params?.preflight;
+    if (!agentHasPreparedBatch(confirmation) || typeof confirmation.confirm_id !== 'string' || !confirmation.confirm_id.startsWith('batch-confirm-')
+        || typeof params?.batch_id !== 'string' || !['select', 'pay_item', 'pay_batch'].includes(params.approval_stage)
+        || !Number.isInteger(preview?.preview_revision) || !/^[a-f0-9]{64}$/.test(preview?.snapshot_sha256)
+        || !Array.isArray(preview?.items) || !preview.items.length
+        || !preview.items.every(row => typeof row?.item_id === 'string' && Number.isInteger(row.count) && row.count > 0)
+        || new Set(preview.items.map(row => row.item_id)).size !== preview.items.length
+        || (params.approval_stage === 'pay_item' && preview.items.length !== 1)) return null;
+    return { id: params.batch_id, stage: params.approval_stage, preview, params };
+}
+
+function agentBatchDraft(state, batch) {
+    const prior = state.batchDrafts.get(batch.id);
+    const hash = batch.preview.snapshot_sha256;
+    if (prior?.hash === hash) return prior;
+    const ids = new Set(batch.preview.items.map(row => row.item_id));
+    const retain = values => new Set([...(values || [])].filter(id => ids.has(id)));
+    const draft = { hash, excluded: retain(prior?.excluded), expanded: retain(prior?.expanded) };
+    state.batchDrafts.set(batch.id, draft);
+    return draft;
+}
+
+function agentBatchSelected(batch, draft) {
+    return batch.preview.items.filter(row => batch.stage === 'pay_item' || !draft.excluded.has(row.item_id));
+}
+
+function agentBatchNodePath(nodeId) { return `agent-nodes/${encodeURIComponent(nodeId)}`; }
+
+function agentBatchViewOwner(nodeId, projectId, state) {
+    const epoch = state.viewEpoch, host = state.viewHost;
+    return () => agentTuiState.get(nodeId) === state && !state.closing && state.viewEpoch === epoch
+        && state.viewHost === host && state.projectId === projectId && !agentIsReadonly(state);
+}
+
+async function agentBatchRequest(projectId, path, body, signal) {
+    const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/${path}`, {
+        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Agent-Project': projectId },
+        body: JSON.stringify(body), signal,
+    });
+    let data = null;
+    try { data = await response.json(); } catch (_) { /* #348: 非 JSON 响应用 HTTP 状态或无效回执提示。 */ }
+    if (!response.ok) throw Object.assign(new Error(agentNodeRefsError(data, `HTTP ${response.status}`)), { code: data?.detail?.code });
+    return data;
+}
+
+function agentBatchRowLabel(row) {
+    const node = canvasState.nodes.find(node => node.id === row.node_id);
+    return node?.title || node?.name || row.node_id;
+}
+
+function agentBatchRefHtml(ref) {
+    const caption = `参考图 ${ref.n} · ${ref.role}`;
+    // Prepared refs can include archived legacy URLs, but not external URLs or arbitrary API routes.
+    let thumb = '';
+    if (typeof ref.thumb === 'string' && /^\/(?!\/)[^\\\s]+$/.test(ref.thumb)) {
+        const url = new URL(ref.thumb, location.origin);
+        if (/^\/(?:assets\/|output\/|api\/storage-files\/|api\/project-library\/[^/]+\/media\/)\S/.test(url.pathname)) {
+            thumb = `<img src="${escapeAttr(url.pathname + url.search)}" alt="" loading="lazy">`;
+        }
+    }
+    return `<span class="agent-batch-ref" title="${escapeAttr(caption)}" aria-label="${escapeAttr(caption)}">${thumb}<b>${escapeHtml(String(ref.n))}</b><span>${escapeHtml(ref.role)}</span></span>`;
+}
+
+function agentBatchCard(nodeId, state, confirmation, batch) {
+    const draft = agentBatchDraft(state, batch);
+    const paidItem = batch.stage === 'pay_item';
+    const selected = agentBatchSelected(batch, draft);
+    const total = selected.reduce((sum, row) => sum + row.count, 0);
+    const models = [...new Set(selected.map(row => row.model).filter(Boolean))];
+    const fallbacks = Array.isArray(batch.params.fallback_models) ? batch.params.fallback_models : [];
+    const locked = agentIsReadonly(state) || confirmation.sending || draft.mutating || draft.stale;
+    const disabled = locked ? ' disabled' : '';
+    const id = escapeAttr(nodeId);
+    const rows = batch.preview.items.map(row => {
+        const item = escapeAttr(row.item_id), label = escapeHtml(agentBatchRowLabel(row));
+        const refs = Array.isArray(row.refs) ? row.refs.map(agentBatchRefHtml).join('') : '';
+        return `<li class="agent-batch-row"><div class="agent-batch-row-head">${paidItem ? `<strong>${label}</strong>` : `<label><input type="checkbox" data-agent-batch-select="${item}"${draft.excluded.has(row.item_id) ? '' : ' checked'}${disabled}> ${label}</label><button type="button" class="agent-tui-confirm-btn" data-agent-batch-remove="${item}" aria-label="移出 ${escapeAttr(agentBatchRowLabel(row))}"${disabled}>移出</button>`}</div>
+            ${refs ? `<div class="agent-batch-refs">${refs}</div>` : ''}
+            <div class="agent-batch-meta">${escapeHtml([row.aspect_ratio, row.size || '默认尺寸', `${row.count} 张`, row.model].filter(Boolean).join(' · '))}</div>
+            <details data-agent-batch-prompt="${item}"${draft.expanded.has(row.item_id) ? ' open' : ''}><summary>最终提示词</summary><pre>${escapeHtml(row.final_prompt || '')}</pre></details></li>`;
+    }).join('');
+    const waiting = batch.stage === 'select';
+    const title = paidItem ? '逐项生成确认' : '批量生成确认';
+    const primary = waiting ? `确认所选 ${total} 张` : `生成 ${total} 张`;
+    const warnings = new Set(Array.isArray(batch.preview.warnings) ? batch.preview.warnings.map(row => row.code) : []);
+    return `<section class="agent-tui-confirm agent-batch-card" data-agent-confirm="${id}">
+        <h4>${title}</h4><ul class="agent-batch-list">${rows}</ul>
+        <div class="agent-batch-summary"><strong>已选 ${total} 张</strong>${models.length ? ` · ${escapeHtml(models.join('、'))}` : ''}
+        <div>备选模型：${fallbacks.length ? escapeHtml(fallbacks.join('、')) : '无'}</div>
+        ${waiting ? '<div>本步不消耗额度；所选项还需逐项确认。</div>' : '<div>批准后消耗外部生成额度。</div>'}</div>
+        ${warnings.has('BUDGET_EXCEEDED') ? '<p class="agent-batch-notice">全选超出会话张数上限，请检查所选张数。</p>' : ''}
+        ${warnings.has('COPY_IN_PROMPT') ? '<p class="agent-batch-notice">提示词可能包含上图文字，请在生成前核对。</p>' : ''}
+        ${warnings.has('REFS_MANY') ? '<p class="agent-batch-notice">有项目使用较多参考图，请在生成前核对。</p>' : ''}
+        ${draft.error ? `<p class="agent-batch-notice" role="alert">${escapeHtml(draft.error)}</p>` : ''}
+        ${draft.stale ? '<p class="agent-batch-notice" role="status">此次确认已失效，请等待新卡或重新预检。</p>' : ''}
+        <div class="agent-tui-confirm-buttons">
+            <button type="button" class="agent-tui-confirm-btn agent-tui-confirm-approve" data-agent-confirm-approve="${id}"${locked || !total ? ' disabled' : ''}>${primary}</button>
+            ${paidItem ? '' : `<button type="button" class="agent-tui-confirm-btn" data-agent-batch-edit${disabled}>改一下</button>`}
+            <button type="button" class="agent-tui-confirm-btn agent-tui-confirm-reject" data-agent-confirm-reject="${id}"${disabled}>取消</button>
+        </div></section>`;
+}
+
+async function agentMutateBatch(nodeId, projectId, state, confirmation, action, itemId, patch) {
+    const batch = agentBatchSnapshot(confirmation);
+    const owned = agentBatchViewOwner(nodeId, projectId, state);
+    if (!owned() || state.confirm !== confirmation || !batch || batch.stage === 'pay_item' || confirmation.sending
+        || !batch.preview.items.some(row => row.item_id === itemId)) return false;
+    const draft = agentBatchDraft(state, batch);
+    if (draft.mutating || draft.stale) return false;
+    draft.mutating = true;
+    draft.error = '';
+    renderAgentNode(nodeId);
+    const { preview_revision, snapshot_sha256 } = batch.preview;
+    try {
+        const receipt = await agentBatchRequest(projectId, `${agentBatchNodePath(nodeId)}/batches/${encodeURIComponent(batch.id)}/preview/${action}`, {
+            preview_revision, snapshot_sha256, item_id: itemId, ...(patch ? { patch } : {}),
+        });
+        if (receipt?.batch_id !== batch.id) throw new Error('预检响应无效');
+        if (!owned() || !state.pendingConfirms.has(confirmation.confirm_id)) return true;
+        if (receipt.status === 'stopped' && !receipt.actionable && receipt.confirm_id === null && receipt.preflight?.items?.length === 0) {
+            state.batchDrafts.delete(batch.id);
+            agentResolveConfirmation(state, confirmation.confirm_id);
+            agentAppendMessage(state, { role: 'system', text: '已停止（批次为空）' });
+        } else {
+            const next = { ...confirmation, confirm_id: receipt.confirm_id, params: { ...batch.params, preflight: receipt.preflight } };
+            if (receipt.status !== 'awaiting_confirmation' || receipt.actionable !== true || !agentBatchSnapshot(next)
+                || (receipt.confirm_id === confirmation.confirm_id
+                    ? receipt.preflight.snapshot_sha256 !== snapshot_sha256 || receipt.preflight.preview_revision !== preview_revision
+                    : receipt.preflight.preview_revision !== preview_revision + 1)) throw new Error('预检响应无效');
+            // Only replace the gate that this mutation still owns; its WS resolution may have arrived first.
+            if (receipt.confirm_id !== confirmation.confirm_id) {
+                state.pendingConfirms.delete(confirmation.confirm_id);
+                state.pendingConfirms.set(next.confirm_id, state.pendingConfirms.get(next.confirm_id) || next);
+                if (state.confirm === confirmation) state.confirm = state.pendingConfirms.get(next.confirm_id);
+            }
+        }
+        return true;
+    } catch (error) {
+        if (owned() && state.pendingConfirms.has(confirmation.confirm_id)) {
+            draft.error = `预检更新未获接受回执：${error.message}`;
+            draft.stale = ['CONFIRM_STALE', 'PREFLIGHT_STALE'].includes(error.code);
+        }
+        return false;
+    } finally {
+        draft.mutating = false;
+        if (owned()) renderAgentNode(nodeId);
+    }
+}
+
+function openAgentBatchEditor(nodeId, projectId, state, confirmation, batch) {
+    if (state.batchEditor) return;
+    const draft = agentBatchDraft(state, batch);
+    const dialog = document.createElement('dialog');
+    dialog.className = 'agent-batch-editor';
+    dialog.setAttribute('aria-label', '批量生成预检');
+    const input = (label, name, value, attrs = '') => `<label>${label}<input name="${name}" value="${escapeAttr(String(value ?? ''))}" ${attrs}></label>`;
+    dialog.innerHTML = `<header><h3>批量生成预检</h3><button type="button" class="agent-tui-confirm-btn" data-agent-batch-editor-close>关闭</button></header>
+        <p>修改只更新此批次，不改画布。保存后须重新确认。</p><p role="alert" data-agent-batch-editor-error></p>
+        ${batch.preview.items.map(row => `<details><summary>${escapeHtml(agentBatchRowLabel(row))}</summary><form data-agent-batch-edit-row="${escapeAttr(row.item_id)}">
+            <label>任务正文（参考图前缀由预检生成）<textarea name="prompt" rows="4" required maxlength="100000">${escapeHtml(row.user_prompt || '')}</textarea></label>
+            <div class="agent-batch-editor-fields">${input('比例', 'aspect_ratio', row.aspect_ratio, 'maxlength="200"')}${input('张数', 'count', row.count, 'type="number" min="1" max="8" required')}${input('模型', 'model', row.model, 'maxlength="200" required')}${input('服务商', 'provider_id', row.provider, 'maxlength="200" required')}</div>
+            <button class="agent-tui-confirm-btn" type="submit">保存并重新预检</button></form></details>`).join('')}`;
+    state.batchEditor = { dialog, confirmation };
+    dialog.addEventListener('close', () => {
+        if (state.batchEditor?.dialog === dialog) state.batchEditor = null;
+        dialog.remove();
+    });
+    dialog.querySelector('[data-agent-batch-editor-close]').addEventListener('click', () => dialog.close());
+    dialog.querySelectorAll('form').forEach(form => form.addEventListener('submit', async event => {
+        event.preventDefault();
+        if (draft.mutating || draft.stale || !dialog.open) return;
+        const row = batch.preview.items.find(row => row.item_id === form.getAttribute('data-agent-batch-edit-row'));
+        const values = new FormData(form), patch = {}, runSettings = {};
+        if (values.get('prompt') !== (row.user_prompt || '')) patch.prompt = values.get('prompt');
+        for (const field of ['aspect_ratio', 'count', 'model', 'provider_id']) {
+            const value = field === 'count' ? Number(values.get(field)) : values.get(field).trim();
+            if (value !== (field === 'provider_id' ? row.provider : row[field])) runSettings[field] = value;
+        }
+        if ('model' in runSettings || 'provider_id' in runSettings) runSettings.routingMode = 'manual';
+        if (Object.keys(runSettings).length) patch.runSettings = runSettings;
+        if (!Object.keys(patch).length) { dialog.close(); return; }
+        const button = form.querySelector('button[type="submit"]');
+        button.disabled = true;
+        if (await agentMutateBatch(nodeId, projectId, state, confirmation, 'edit', row.item_id, patch)) dialog.close();
+        else if (dialog.open) dialog.querySelector('[data-agent-batch-editor-error]').textContent = draft.error;
+        button.disabled = draft.stale;
+    }));
+    document.body.appendChild(dialog);
+    dialog.showModal();
+}
+
+function bindAgentBatchControls(el, nodeId, projectId, state, confirmation) {
+    const batch = agentBatchSnapshot(confirmation);
+    if (!batch) return;
+    const draft = agentBatchDraft(state, batch);
+    const owned = agentBatchViewOwner(nodeId, projectId, state);
+    const current = () => owned() && state.confirm === confirmation;
+    el.querySelectorAll('[data-agent-batch-select]').forEach(box => box.addEventListener('change', () => {
+        if (!current() || confirmation.sending || draft.mutating || draft.stale) return;
+        const item = box.getAttribute('data-agent-batch-select');
+        if (box.checked) draft.excluded.delete(item);
+        else draft.excluded.add(item);
+        renderAgentNode(nodeId);
+    }));
+    el.querySelectorAll('[data-agent-batch-prompt]').forEach(details => details.addEventListener('toggle', () => {
+        if (!current() || !details.isConnected) return;
+        const item = details.getAttribute('data-agent-batch-prompt');
+        if (details.open) draft.expanded.add(item);
+        else draft.expanded.delete(item);
+    }));
+    el.querySelector('[data-agent-batch-edit]')?.addEventListener('click', () => {
+        if (current() && !confirmation.sending && !draft.mutating && !draft.stale) openAgentBatchEditor(nodeId, projectId, state, confirmation, batch);
+    });
+    el.querySelectorAll('[data-agent-batch-remove]').forEach(button => button.addEventListener('click', () => {
+        if (current()) agentMutateBatch(nodeId, projectId, state, confirmation, 'remove', button.getAttribute('data-agent-batch-remove'));
+    }));
+}
+
+function agentBatchDiagnostics(status, batch) {
+    const notes = [];
+    const quota = status.status === 'paused' && status.reason === 'QUOTA_EXHAUSTED';
+    if (quota) notes.push({ warning: true, text: '服务商额度用尽，整个批次已暂停。请充值或更换服务商。' });
+    for (const row of status.items) {
+        const prepared = batch.preview.items.find(item => item.item_id === row.item_id);
+        if (!prepared) continue;
+        const label = agentBatchRowLabel(prepared);
+        if (row.status === 'succeeded' && row.attempts > 1 && row.last_failure?.message) {
+            const action = row.model && row.model !== prepared.model ? `切换至 ${row.model} 后已生成` : '自动重试后已生成';
+            notes.push({ warning: false, text: `${label}：${row.last_failure.message}；${action}。` });
+        } else if (['failed', 'timeout', 'download_failed', 'paused'].includes(row.status) && !(quota && row.status === 'paused')) {
+            const message = row.failure?.message || '生成未完成';
+            const hint = row.failure?.hint;
+            notes.push({ warning: true, text: `${label}：${message}${hint ? ` · ${hint}` : ''}` });
+        }
+    }
+    return notes;
+}
+
+async function agentWatchBatch(nodeId, state, confirmation) {
+    const batch = agentBatchSnapshot(confirmation);
+    // The existing REST status tool cannot read an external MCP SID's batch. Never
+    // reconstruct that caller, or infer its status from assistant text or a confirm receipt.
+    if (confirmation.source !== 'rest' || !batch || batch.stage === 'pay_item' || state.batchReads.has(batch.id)) return;
+    const projectId = state.projectId;
+    const owned = agentBatchViewOwner(nodeId, projectId, state);
+    if (!owned()) return;
+    const controller = new AbortController();
+    state.batchReads.set(batch.id, controller);
+    try {
+        while (owned() && !controller.signal.aborted) {
+            const status = await agentBatchRequest(projectId, `generate/batch_status?agent_node_id=${encodeURIComponent(nodeId)}`,
+                { batch_id: batch.id, wait_seconds: 20 }, controller.signal);
+            if (!owned() || status?.batch_id !== batch.id || status.snapshot_sha256 !== batch.preview.snapshot_sha256
+                || !Array.isArray(status.items)) break;
+            if (['awaiting_confirmation', 'running'].includes(status.status) || status.items.some(row => row.status === 'running')) continue;
+            for (const notice of agentBatchDiagnostics(status, batch)) {
+                agentAppendMessage(state, { role: 'system', text: notice.text, batchDiagnosis: notice.warning ? 'warning' : 'recovered' });
+            }
+            renderAgentNode(nodeId);
+            break;
+        }
+    } catch (error) {
+        if (owned() && !controller.signal.aborted) console.warn('[agent-tui] 无法读取批次状态', error);
+    } finally {
+        if (state.batchReads.get(batch.id) === controller) state.batchReads.set(batch.id, null);
+    }
+}
+
 // Independent batch gates coexist; accepting one must not discard another pending card (#487).
 function agentResolveConfirmation(state, confirmId) {
     state.pendingConfirms.delete(confirmId);
     if (state.confirm?.confirm_id !== confirmId) return false;
     state.confirmModalOwner = null;
+    if (state.batchEditor?.confirmation.confirm_id === confirmId) state.batchEditor.dialog.close();
     state.confirm = Array.from(state.pendingConfirms.values()).at(-1) || null;
     if (state.confirm) state.status = 'waiting_confirm';
     else if (state.status === 'waiting_confirm') state.status = 'busy';
     return true;
 }
 
-function sendAgentConfirm(nodeId, projectId, approved) {
+function sendAgentConfirm(nodeId, projectId, approved, expected) {
     const state = getAgentTuiState(nodeId);
-    if (agentIsReadonly(state) || !state.confirm) return;
+    if (agentIsReadonly(state) || !state.confirm || (expected && expected !== state.confirm)) return;
     const confirmation = state.confirm;
     const confirmId = confirmation.confirm_id;
     // Browser WebSockets cannot carry the project header required by batch decisions (#487).
     if (typeof confirmId === 'string' && confirmId.startsWith('batch-confirm-')) {
         if (confirmation.sending) return;
+        const batch = agentBatchSnapshot(confirmation);
+        const decision = { confirm_id: confirmId, approved };
+        if (batch) {
+            const draft = agentBatchDraft(state, batch);
+            if (draft.mutating || draft.stale) return;
+            decision.snapshot_sha256 = batch.preview.snapshot_sha256;
+            if (approved) {
+                decision.approved_item_ids = agentBatchSelected(batch, draft).map(row => row.item_id);
+                if (!decision.approved_item_ids.length) return;
+            }
+        } else if (confirmation.tool === 'generate.request_batch' && confirmation.params?.preflight) return;
         confirmation.sending = true;
-        const epoch = state.viewEpoch, host = state.viewHost, project = state.projectId;
-        const owned = () => agentTuiState.get(nodeId) === state && !state.closing
-            && state.viewEpoch === epoch && state.viewHost === host && state.projectId === project
-            && !agentIsReadonly(state);
+        const owned = agentBatchViewOwner(nodeId, projectId, state);
         const current = () => owned() && state.confirm === confirmation;
-        return fetch(`/api/projects/${encodeURIComponent(projectId)}/agent-nodes/${encodeURIComponent(nodeId)}/confirm`, {
-            method: 'POST', credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json', 'X-Agent-Project': projectId },
-            body: JSON.stringify({ confirm_id: confirmId, approved: approved }),
-        }).then(async res => {
-            let data;
-            try { data = await res.json(); } catch (_) { data = null; }
-            if (!res.ok) throw new Error(agentNodeRefsError(data, `HTTP ${res.status}`));
+        if (batch) renderAgentNode(nodeId);
+        return agentBatchRequest(projectId, `${agentBatchNodePath(nodeId)}/confirm`, decision).then(data => {
             if (data?.ok !== true || data.confirm_id !== confirmId || data.approved !== approved) throw new Error('确认响应无效');
-            // A resolved/replaced gate, including the next cautious paid gate, owns its own UI.
+            if (!owned()) return;
+            if (approved && batch) agentWatchBatch(nodeId, state, confirmation);
+            // A resolution or the following cautious gate can arrive before this receipt.
             if (!current()) {
-                if (owned()) state.pendingConfirms.delete(confirmId);
+                state.pendingConfirms.delete(confirmId);
                 return;
             }
+            if (batch) state.batchDrafts.delete(batch.id);
             agentResolveConfirmation(state, confirmId);
-            agentAppendMessage(state, { role: 'system', text: approved ? '✅ 已批准' : '❌ 已取消' });
+            agentAppendMessage(state, { role: 'system', text: approved
+                ? (batch?.stage === 'select' ? '已确认所选项，等待逐项批准' : '✅ 已批准') : '❌ 已取消' });
             renderAgentNode(nodeId);
         }).catch(e => {
-            console.error('Failed to send agent batch confirm:', e);
             if (!current()) return;
+            if (batch && ['CONFIRM_STALE', 'PREFLIGHT_STALE'].includes(e.code)) agentBatchDraft(state, batch).stale = true;
             agentAppendMessage(state, { role: 'system', text: `⚠️ 确认未获接受回执：${e.message || e}` });
-            renderAgentNode(nodeId);
-        }).finally(() => { delete confirmation.sending; });
+        }).finally(() => {
+            delete confirmation.sending;
+            if (current()) renderAgentNode(nodeId);
+        });
     }
     agentResolveConfirmation(state, confirmId);
     if (!state.confirm) state.status = 'busy';
@@ -2678,7 +2978,8 @@ function agentNodeBodyHtml(node) {
         } else if (msg.role === 'presentation') {
             messagesHtml += agentPresentationHtml(msg, readonly, state, nodeId);
         } else if (msg.role === 'system') {
-            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-system"><span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span></div>`;
+            const diagnosis = msg.batchDiagnosis === 'warning' ? ' agent-batch-diagnosis-warning' : msg.batchDiagnosis === 'recovered' ? ' agent-batch-diagnosis-recovered' : '';
+            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-system${diagnosis}"><span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span></div>`;
         } else if (msg.role === 'completion') {
             messagesHtml += agentCompletionBridge()?.html(msg.completion, state) || '';
         }
@@ -2761,7 +3062,10 @@ function agentNodeBodyHtml(node) {
     let confirmHtml = '';
     if (state.confirm) {
         const c = state.confirm;
-        confirmHtml = `<div class="agent-tui-confirm" data-agent-confirm="${escapeAttr(nodeId)}">
+        const batch = agentBatchSnapshot(c);
+        if (batch) confirmHtml = agentBatchCard(nodeId, state, c, batch);
+        else if (agentHasPreparedBatch(c)) confirmHtml = '<div class="agent-tui-confirm" role="status">缺少有效的批量预检快照，请重新预检。</div>';
+        else confirmHtml = `<div class="agent-tui-confirm" data-agent-confirm="${escapeAttr(nodeId)}">
             <div class="agent-tui-confirm-message${c.tool === 'plan.apply' ? ' agent-tui-confirm-plan' : ''}">${agentIco('triangle-alert')} ${escapeHtml(c.message || '请确认操作')}</div>
             <div class="agent-tui-confirm-buttons">
                 <button type="button" class="agent-tui-confirm-btn agent-tui-confirm-approve" data-agent-confirm-approve="${escapeAttr(nodeId)}">批准</button>
@@ -3667,12 +3971,14 @@ function bindAgentNodeControls(el, node){
         });
     });
 
+    const confirmation = initialState.confirm;
+    bindAgentBatchControls(el, nodeId, projectId, initialState, confirmation);
     const approveBtn = el.querySelector('[data-agent-confirm-approve]');
     if (approveBtn) {
         approveBtn.addEventListener('mousedown', event => event.stopPropagation());
         approveBtn.addEventListener('click', event => {
             event.stopPropagation();
-            sendAgentConfirm(nodeId, projectId, true);
+            sendAgentConfirm(nodeId, projectId, true, confirmation);
         });
     }
 
@@ -3681,7 +3987,7 @@ function bindAgentNodeControls(el, node){
         rejectBtn.addEventListener('mousedown', event => event.stopPropagation());
         rejectBtn.addEventListener('click', event => {
             event.stopPropagation();
-            sendAgentConfirm(nodeId, projectId, false);
+            sendAgentConfirm(nodeId, projectId, false, confirmation);
         });
     }
 
@@ -4257,6 +4563,8 @@ function cleanupAgentTuiState(nodeId) {
         }
         // Invalidate before closing: onclose must not schedule a reconnect for a deleted node.
         state.closing = true;
+        state.batchEditor?.dialog.close();
+        for (const controller of state.batchReads.values()) controller?.abort();
         if (state.reconnectTimer) {
             clearTimeout(state.reconnectTimer);
             state.reconnectTimer = null;

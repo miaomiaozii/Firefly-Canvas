@@ -151,7 +151,7 @@ def test_read_only_preview_matches_executed_provider_and_journals_after_turn(fx)
     assert gate['preflight']['items'] == preview['items']
     assert event['type'] == 'confirm' and event['params'] == {
         'batch_id': batch, 'fallback_models': ['alternate', 'last'], 'max_retries': 3, 'total_images': 2,
-        'preflight': gate['preflight']}
+        'preflight': gate['preflight'], 'approval_stage': 'pay_batch'}
     assert 'alternate' in event['message'] and event['message'].endswith('2')
     assert tree(fx) == before and set(main.CANVAS_TASKS) == tasks and fx.calls.empty()
     assert not agent._GENERATION_COUNTS.get((fx.pid, 'actor'))

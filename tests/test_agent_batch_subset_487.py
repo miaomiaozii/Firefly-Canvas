@@ -335,6 +335,7 @@ def test_cautious_subset_selection_and_item_gates_charge_once(fx):
                    runSettings={'model': 'fixture', 'provider_id': 'offline', 'routingMode': 'manual',
                                 'aspect_ratio': '1:1', 'count': count})
     preview, receipt, selection = _transports_start_batch_487(fx, ['a', 'b', 'ref'])
+    assert selection['params']['approval_stage'] == 'select'
     ids = [row['item_id'] for row in preview['items']]
     assert dispatch(fx, 'http', {'confirm_id': selection['confirm_id'], 'approved': True,
         'approved_item_ids': [ids[2], ids[1]], 'snapshot_sha256': preview['snapshot_sha256']})[0] == 200
@@ -342,6 +343,7 @@ def test_cautious_subset_selection_and_item_gates_charge_once(fx):
     _, waiting = rest(fx, 'batch_status', {'batch_id': receipt['batch_id']})
     assert waiting['approved_item_ids'] == ids[1:]
     assert waiting['spent'] == waiting['approved_count'] == 0 and fx.calls.empty()
+    assert fee['params']['approval_stage'] == 'pay_item'
     assert fee['params']['preflight']['items'] == [preview['items'][1]]
     assert dispatch(fx, 'http', {'confirm_id': fee['confirm_id'], 'approved': True})[0] == 200
     rejected_fee = next_gate(fx)

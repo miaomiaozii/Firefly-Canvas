@@ -58,7 +58,9 @@ def test_prompt_override_repreflights_effective_text_and_preserves_refs(fx):
     assert new['preflight']['items'][0]['final_prompt'].endswith('NEW effective body')
     assert 'OLD upstream body' not in new['preflight']['items'][0]['final_prompt']
     assert new['preflight']['items'][0]['refs'] == preview['items'][0]['refs']
-    assert next_gate(fx)['confirm_id'] == new['confirm_id'] != event['confirm_id']
+    replacement = next_gate(fx)
+    assert replacement['confirm_id'] == new['confirm_id'] != event['confirm_id']
+    assert replacement['params']['approval_stage'] == event['params']['approval_stage'] == 'pay_batch'
     final = approve_current(fx, receipt)
     assert final['status'] == 'done' and final['spent'] == 1, final
     assert fx.calls.get(timeout=3)[0] == new['preflight']['items'][0]['final_prompt']

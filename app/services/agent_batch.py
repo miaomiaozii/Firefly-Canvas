@@ -677,7 +677,7 @@ async def human_mutate(project, actor, batch_id, body, action):
                         'old_snapshot_sha256': old.prepared['snapshot_sha256'],
                         'preview_revision': candidate.prepared['preview_revision'],
                         'snapshot_sha256': candidate.prepared['snapshot_sha256']}
-            params = {**options, 'total_images': candidate.prepared['total_images'], 'preflight': candidate.prepared}
+            params = _gate_params(batch, options, candidate.prepared)
             saved_old, saved_new = handler.batch_prepare_replace(
                 new_id, params, _gate_message(batch, candidate.prepared['total_images']), revision)
             if (not batch.origin.valid() or batch.cancelled.is_set() or not handler.batch_pending()
@@ -805,6 +805,12 @@ def _gate_message(batch, count):
             f'允许自动重试次数：{min(batch.max_retries, 2)}')
 
 
+def _gate_params(batch, options, prepared, item=None):
+    stage = 'pay_item' if item is not None else (
+        'select' if batch.origin.session.autonomy == 'cautious' else 'pay_batch')
+    return {**options, 'total_images': prepared['total_images'], 'preflight': prepared, 'approval_stage': stage}
+
+
 async def _confirm(batch, project, actor, options, count, item=None):
     api = _api()
     # Independent batches must return their audited pending receipts without waiting for another human gate.
@@ -838,7 +844,7 @@ async def _confirm(batch, project, actor, options, count, item=None):
             handler.initial_event = batch.pending_event
             batch.pending_event = None
             result = await api.request_confirmation_core(
-                project, actor, 'generate.request_batch', {**options, 'total_images': count, 'preflight': prepared},
+                project, actor, 'generate.request_batch', _gate_params(batch, options, prepared, item),
                 _gate_message(batch, count),
                 None, allow_automatic=False, transient_session=batch.origin.session,
                 cancel_event=batch.cancelled, confirm_id=confirm_id, decision_handler=handler)

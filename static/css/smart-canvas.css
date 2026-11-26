@@ -4165,6 +4165,34 @@ button.prompt-flow-context-image { cursor:pointer; }
 .agent-tui-confirm-btn { padding:6px 12px; border:1px solid var(--line); border-radius:6px; background:var(--surface, var(--card)); color:var(--ink, var(--text)); font-size:12px; cursor:pointer; }
 .agent-tui-confirm-approve { background:var(--ink, var(--text)); color:var(--surface, var(--card)); border-color:var(--ink, var(--text)); }
 .agent-tui-confirm-reject { color:var(--danger); }
+.agent-batch-card h4, .agent-batch-editor h3 { margin:0; font-size:var(--font-control); }
+.agent-batch-list { display:grid; gap:6px; margin:8px 0; padding:0; list-style:none; }
+.agent-batch-row { padding:8px; border:1px solid var(--line); border-radius:6px; background:var(--surface, var(--card)); }
+.agent-batch-row-head, .agent-batch-editor header { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.agent-batch-row-head label { min-width:0; font-weight:600; cursor:pointer; }
+.agent-batch-row-head button { flex:none; }
+.agent-batch-refs { display:flex; flex-wrap:wrap; gap:6px; margin:6px 0; }
+.agent-batch-ref { display:inline-flex; align-items:center; gap:4px; position:relative; border:1px solid var(--line); border-radius:4px; padding:2px 4px; font-size:max(.72rem, var(--font-tiny)); }
+.agent-batch-ref img { width:32px; height:32px; object-fit:cover; border-radius:3px; }
+.agent-batch-meta, .agent-batch-summary { color:var(--muted); font-size:max(.75rem, var(--font-control)); }
+.agent-batch-row details { margin-top:4px; }
+.agent-batch-row summary, .agent-batch-editor summary { cursor:pointer; }
+.agent-batch-row pre { white-space:pre-wrap; overflow-wrap:anywhere; margin:4px 0 0; font:inherit; }
+.agent-batch-summary { margin:8px 0; }
+.agent-batch-notice { margin:6px 0; color:var(--danger); }
+.agent-batch-card button:disabled { opacity:.55; cursor:default; }
+.agent-batch-editor { width:min(640px, calc(100vw - 32px)); max-height:85vh; box-sizing:border-box; padding:16px; overflow:auto; border:1px solid var(--line); border-radius:10px; color:var(--ink, var(--text)); background:var(--surface, var(--card)); }
+.agent-batch-editor::backdrop { background:color-mix(in srgb, var(--shadow-color) 42%, var(--transparent)); }
+.agent-batch-editor p { margin:8px 0; }
+.agent-batch-editor details { border-top:1px solid var(--line); padding:8px 0; }
+.agent-batch-editor form, .agent-batch-editor form label { display:grid; gap:4px; }
+.agent-batch-editor form { gap:8px; margin:8px 0 0; }
+.agent-batch-editor-fields { display:grid; gap:8px; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); }
+.agent-batch-editor input, .agent-batch-editor textarea { min-width:0; padding:6px; border:1px solid var(--line); border-radius:4px; color:inherit; font:inherit; background:var(--surface-sunken, var(--soft)); }
+.agent-batch-editor button[type="submit"] { justify-self:start; }
+.agent-batch-editor [role="alert"], .agent-batch-diagnosis-warning { color:var(--danger); }
+.agent-batch-diagnosis-warning, .agent-batch-diagnosis-recovered { border-inline-start:2px solid var(--muted); padding-inline-start:8px; }
+.agent-batch-diagnosis-warning { border-inline-start-color:var(--danger); }
 
 /* r3：三行输入 + 参数 + 操作行；附件、运行中排队/steer/停止仍可达。 */
 .agent-tui-composer { flex:none; min-width:0; padding:0 16px 13px; background:var(--surface, var(--card)); border-radius:0 0 var(--agent-panel-radius) var(--agent-panel-radius); }
