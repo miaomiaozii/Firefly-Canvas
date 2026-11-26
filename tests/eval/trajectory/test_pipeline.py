@@ -36,7 +36,7 @@ def workbook():
 
 
 @pytest.fixture
-def application(tmp_path, monkeypatch, *, autonomy='autonomous'):
+def application(tmp_path, monkeypatch, *, autonomy='autonomous', images_factory=None):
     previous_policy = asyncio.get_event_loop_policy()
     try:
         with monkeypatch.context() as patch, ExitStack() as stack:
@@ -50,7 +50,8 @@ def application(tmp_path, monkeypatch, *, autonomy='autonomous'):
             patch.setenv('FIREFLY_AGENT_API_BASE', 'http://127.0.0.1:3194')
             asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
             journal = Journal()
-            fence = stack.enter_context(ProviderFence(journal=journal))
+            images = images_factory(journal) if images_factory else None
+            fence = stack.enter_context(ProviderFence(journal=journal, async_image_route=images, egress=images))
 
             def no_subprocess(*args, **kwargs):
                 journal.emit('subprocess_blocked', reason='Offline pipeline cannot launch a host or generator')
@@ -68,6 +69,10 @@ def application(tmp_path, monkeypatch, *, autonomy='autonomous'):
             from tests.eval.trajectory.backend import ToolObserver
             from fastapi.testclient import TestClient
             from firefly_projects import ProjectStore
+            if images is not None:
+                from app.services import generation
+
+                images.install(stack, main, generation)
             assert fence.preflight()['installed']
             initial_store = main.FIREFLY_PROJECT_STORE
             stack.callback(initial_store.close)
@@ -166,7 +171,7 @@ def test_standard_pipeline_requires_one_generation_confirmation(tmp_path):
     run_pipeline_case(tmp_path, *PIPELINE_CASES[0], autonomy='standard')
 
 
-def exercise_pipeline(application, scenario, expected_attempts, code, expected_status, autonomy):
+def exercise_pipeline(application, scenario, expected_attempts, code, expected_status, autonomy, *, media_fence=None):
     import main
     from app.services import generation
     client, store, manager, pid, asset, journal, confirmations = application
@@ -199,7 +204,7 @@ def exercise_pipeline(application, scenario, expected_attempts, code, expected_s
     tool('canvas.attach_refs', {'node_id': node, 'refs': [{'source': {'asset_id': asset}, 'role': 'product'}], 'mode': 'replace'})
     tool('canvas.update_node', {'node_id': node, 'runSettings': {'model': MODELS[0], 'provider_id': 'trajectory-stub',
                                                               'routingMode': 'manual', 'aspect_ratio': '16:9', 'count': 1}})
-    with ProviderFence(scenario, journal=journal):
+    with (media_fence(journal) if media_fence else ProviderFence(scenario, journal=journal)):
         preview = tool('generate.preflight', {'node_ids': [node]})
         assert preview['blockers'] == []
         receipt = tool('generate.request_batch', {'preflight_id': preview['preflight_id'],
@@ -219,7 +224,9 @@ def exercise_pipeline(application, scenario, expected_attempts, code, expected_s
     failure_code = failure['code'] if failure else None
     assert failure_code == code
     requests = [entry for entry in journal.rows if entry['kind'] == 'stub_request']
-    assert len(requests) == expected_attempts
+    observations = requests if media_fence is None else [entry for entry in journal.rows
+                                                         if entry['kind'] in {'stub_request', 'soon_submit'}]
+    assert len(observations) == expected_attempts
     if expected_status == 'succeeded':
         assert store.find_canvas_node(pid, row['result_node_id'])['images']
     else:
@@ -236,11 +243,12 @@ def exercise_pipeline(application, scenario, expected_attempts, code, expected_s
     # #487：每种自治档位都须先确认批次选择；计划落地仍须单独批准。
     confirmation_tools = [event['tool'] for event in confirmations]
     assert confirmation_tools == ['plan.apply', 'generate.request_batch']
-    return {
-        'scenario': scenario, 'autonomy': autonomy, 'status': row['status'],
-        'attempts': row['attempts'], 'failure_code': failure_code, 'stub_requests': len(requests),
-        'confirmation_tools': confirmation_tools, 'tool_sequence': tool_sequence,
-    }
+    summary = {'scenario': scenario, 'autonomy': autonomy, 'status': row['status'],
+               'attempts': row['attempts'], 'failure_code': failure_code, 'stub_requests': len(requests),
+               'confirmation_tools': confirmation_tools, 'tool_sequence': tool_sequence}
+    if media_fence is not None:
+        summary['final_jobs'] = final
+    return summary
 
 
 if __name__ == '__main__':

@@ -34,6 +34,7 @@ class SoonPostBudget(httpx.AsyncBaseTransport):
             raise ValueError('Unknown Soon budget scope')
         self.upstream, self.budget, self.scenario, self.journal = upstream, budget, scenario, journal
         self.claimed = False
+        self.dispatched = False
         self.poll_url = None
         self.polls = 0
 
@@ -65,6 +66,7 @@ class SoonPostBudget(httpx.AsyncBaseTransport):
         if not await asyncio.to_thread(self.budget.reserve, self.scenario):
             self._blocked('budget_exhausted', SoonBudgetExhausted)
         self.journal.emit('soon_submit', scenario=self.scenario, method='POST', images=1, model=MODEL)
+        self.dispatched = True
         try:
             response = await self.upstream.handle_async_request(request)
         except BaseException:

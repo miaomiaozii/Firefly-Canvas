@@ -29,6 +29,8 @@ def parser():
     strata.set_defaults(mode='live', strata=True, host='codex', autonomy='standard', auth_home_source=None,
                         ack_owned_auth_copy=False, ack_paid_model_approval=False)
     native_options(strata, ('normal', 'campaign'))
+    strata.add_argument('--soon-ledger', type=Path, help='Original successful smoke image-budget.sqlite; opt in to Soon')
+    strata.add_argument('--ack-soon-image-approval', action='store_true', help='Attest approval for this single E0 run')
     soon = modes.add_parser('soon-smoke', allow_abbrev=False, help='One explicitly approved real Soon image')
     soon.add_argument('--ack-soon-image-approval', action='store_true', required=True)
     soon.add_argument('--output-root', type=Path, required=True, help='NEW external run root; keeps the shared image ledger')

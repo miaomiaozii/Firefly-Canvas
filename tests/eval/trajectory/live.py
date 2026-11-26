@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 from contextlib import ExitStack
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -32,9 +33,11 @@ def policy(event, autonomy):
     return False
 
 
-def prompt(attachment, product):
+def prompt(attachment, product, *, soon=False):
+    media_policy = ('普通生图由评测器按批准额度处理，故障样本、超额或外域素材用本地桩；不要通过其他渠道生成。' if soon else
+                    '所有图片生成服务已由本地桩隔离，不会收费。')
     return (
-        '这是 E0 金属雪铲的真实 Agent 轨迹评测；所有图片生成服务已由本地桩隔离，不会收费。'
+        '这是 E0 金属雪铲的真实 Agent 轨迹评测；' + media_policy +
         '只用 firefly 的画布/plan/generate 工具，不读本地文件、不运行 shell、不搜索网页、不改设置。'
         f'用户发送的 Excel 附件为 {attachment}。先看画布，再 plan.import_excel，逐物理行2–16共15个brief，'
         '主图8+A+7；一个brief一个任务，不拆分、不丢任务；同主图意向保留，不猜具体编号。'
@@ -88,7 +91,7 @@ async def drive(config, root, relay=None):
                                        headers={'X-Attachment-Name': 'E0-plan.xlsx',
                                                 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'})
             save(root / 'attachment.json', attachment)
-            text = prompt(attachment['id'], seed['product_asset'])
+            text = prompt(attachment['id'], seed['product_asset'], soon=bool(config.get('soon_ledger')))
             journal.emit('user_action', action='initial_goal', source='scenario-script', decision_id='initial', message=text)
             save(root / 'prompt-receipt.json', await request('POST', prefix + '/prompt',
                  json={'message': text, 'attachments': [attachment['id']]}))
@@ -154,9 +157,44 @@ async def drive(config, root, relay=None):
                 data = await request('GET', prefix + '/events')
                 save(root / 'host-events.json', data)
                 canvas = await request('GET', f'/api/project-library/{pid}')
-                save(root / 'final-canvas.json', canvas.get('canvas', canvas))
+                final = canvas.get('canvas', canvas)
+                save(root / 'final-canvas.json', final)
+                if config.get('soon_ledger'):
+                    jobs_path = root / 'final-jobs.json'
+                    jobs = json.loads(jobs_path.read_text(encoding='utf-8')) if jobs_path.is_file() else {}
+                    save(root / 'canvas-image-hashes.json', await canvas_image_hashes(client, pid, final, jobs))
             except (RuntimeError, httpx.HTTPError) as exc:
                 journal.emit('cleanup_error', message=str(exc))
+
+
+async def canvas_image_hashes(client, project, canvas, jobs):
+    ids = {row['result_node_id'] for row in jobs.get('items', [])
+           if row.get('status') == 'succeeded' and row.get('result_node_id')}
+    records = []
+    seen = set()
+    for node in canvas.get('nodes', []):
+        if node.get('id') not in ids:
+            continue
+        for image in node.get('images', []):
+            asset = image.get('asset_id')
+            if not isinstance(asset, str) or not asset.isascii() or not asset.replace('-', '').isalnum():
+                continue
+            key = node['id'], asset
+            if key in seen:
+                continue
+            seen.add(key)
+            async with client.stream('GET', f'/api/project-library/{project}/media/{asset}') as response:
+                if response.status_code != 200:
+                    continue
+                sha, size = hashlib.sha256(), 0
+                async for chunk in response.aiter_bytes():
+                    size += len(chunk)
+                    if size > 20 * 1024 * 1024:
+                        break
+                    sha.update(chunk)
+                else:
+                    records.append({'node_id': node['id'], 'asset_id': asset, 'sha256': sha.hexdigest()})
+    return records
 
 
 def extract_result(response):
@@ -245,8 +283,20 @@ def run(args):
     if strata:
         require_strata_fixture(manifest, args.product_render)
     book, render = e0_inputs(manifest, args.product_render)
+    ledger = getattr(args, 'soon_ledger', None)
+    ack = getattr(args, 'ack_soon_image_approval', False)
+    if bool(ledger) != ack or (ledger and not strata):
+        raise ValueError('Soon requires the original smoke ledger and explicit approval with live-strata')
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', args.port))
+    if ledger:
+        from tests.eval.trajectory.soon_scenarios import claim_soon_scenario
+        from tests.eval.trajectory.safety import overlaps, safe_path
+
+        ledger = safe_path(ledger)
+        if overlaps(ledger.parent, root) or overlaps(ledger.parent, manifest.parent):
+            raise ValueError('Soon ledger, fixtures and new evidence directory must be disjoint')
+        claim_soon_scenario(ledger, args.scenario)
     root.mkdir(parents=True, exist_ok=False)
     env, folders = isolated_env(root)
     save(root / 'run-owner.json', {'pid': os.getpid(), 'created': time.time()})
@@ -257,6 +307,8 @@ def run(args):
               'render_path': str(manifest.parent / render['relative_path'])}
     if strata:
         config['strata'] = True
+    if ledger:
+        config['soon_ledger'] = str(ledger)
     save(root / 'provenance.json', {'schema': 1, 'kind': 'live-native-model', 'execution_requested': True,
          'host': args.host, 'requested_model': args.model, 'scenario': args.scenario,
          'native_cli': str(args.native_cli.resolve()), 'native_cli_sha256': digest(args.native_cli),
@@ -271,7 +323,8 @@ def run(args):
          'question_coverage': 'structured-only; natural-language questions need human adjudication',
          'auth': ('none; fixed unsigned Strata Responses relay, no credential files' if strata else
                   'explicit owned copy; only auth.json copied; no config/env credential fallback'),
-         'real_generated_images': 0})
+         'real_generated_images': None if ledger else 0,
+         'generation_mode': 'approved_soon_with_stubs' if ledger else 'stub_only'})
     shutil.copyfile(GOLD, root / 'E0-gold.json')
     shutil.copyfile(manifest, root / 'fixture-manifest.json')
     env.update(FIREFLY_PORT=str(args.port), FIREFLY_AGENT_API_BASE=f'http://127.0.0.1:{args.port}')
@@ -327,6 +380,10 @@ def run(args):
                     log.write(json.dumps(redact(row), ensure_ascii=False) + '\n')
         cleanup['private_data_removed'] = clean_private(root)
         save(root / 'cleanup.json', cleanup)
+        if ledger:
+            from tests.eval.trajectory.stub import ImageBudget
+
+            save(root / 'image-budget-snapshot.json', ImageBudget(ledger).snapshot())
         save(root / 'run-timing.json', {'elapsed_s': time.time() - json.loads(
             (root / 'run-owner.json').read_text(encoding='utf-8'))['created']})
         from tests.eval.trajectory.metrics import report_from_root

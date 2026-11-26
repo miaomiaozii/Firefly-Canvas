@@ -320,14 +320,33 @@ def report_from_root(root, annotations=None):
                  'FAIL' if 'FAIL' in statuses or not e0_passed else
                  'UNAVAILABLE' if 'UNAVAILABLE' in statuses or coverage['missing'] or not completed else 'PASS')
     fence_observed = not errors and any(row['kind'] == 'preflight' and row.get('installed') is True for row in backend)
+    billing = {'real_media_provider_calls': 0 if fence_observed else None, 'fence_observed': fence_observed,
+               'method': 'inert provider HTTP send + server external network/subprocess fence; native shell/web/image tools disabled'}
+    if provenance.get('generation_mode') == 'approved_soon_with_stubs':
+        from tests.eval.trajectory.stub import tiny_png
+        import hashlib
+
+        hashes = {row['sha256'] for row in backend if row['kind'] == 'soon_image_material'}
+        stub_sha = hashlib.sha256(tiny_png(marked=True)).hexdigest()
+        assets = load('canvas-image-hashes.json', [])
+        billing.update(real_media_provider_calls=sum(row['kind'] == 'soon_submit' for row in backend),
+                       method='Soon exact POST budget and same-origin asset GET; other slots stay stubbed',
+                       image_receipts=sum(row['kind'] == 'soon_image_receipt' for row in backend),
+                       materialized_images=sum(row['kind'] == 'soon_image_material' for row in backend),
+                       stub_requests=sum(row['kind'] == 'stub_request' for row in backend),
+                       stub_successes=sum(row['kind'] == 'stub_outcome' and row.get('status') == 200 for row in backend),
+                       foreign_asset_stubs=sum(row['kind'] == 'stub_request' and row.get('image_route') == 'foreign_soon_asset'
+                                               for row in backend),
+                       canvas_real_matches=sum(row['sha256'] in hashes and row['sha256'] != stub_sha for row in assets),
+                       canvas_stub_matches=sum(row['sha256'] == stub_sha for row in assets),
+                       canvas_unclassified_assets=sum(row['sha256'] not in hashes and row['sha256'] != stub_sha for row in assets),
+                       ledger=load('image-budget-snapshot.json'))
     return {'schema': 1, 'provenance': provenance, 'real_model_evidence': real, 'completed': completed, 'b2_status': b2_status,
             'recording_safety': {'applicable': provenance.get('kind') == 'live-native-model',
                                  'available': provenance.get('kind') == 'live-native-model' and not errors, 'errors': errors},
             'e0_import': e0, 'final_plan_generation_nodes': len(plan_nodes), 'final_jobs': jobs,
             'injections': injected, 'fault_coverage': coverage, 'elapsed_s': load('run-timing.json', {}).get('elapsed_s'),
-            'generation_billing': {'real_media_provider_calls': 0 if fence_observed else None,
-                                   'fence_observed': fence_observed,
-                                   'method': 'inert provider HTTP send + server external network/subprocess fence; native shell/web/image tools disabled'},
+            'generation_billing': billing,
             'native_spawn_count': len(spawn), 'native_frame_count': len(frames),
             'actual_native_tools': normalized_native_tools(host),
             'model_provenance': {'requested': provenance.get('requested_model'),

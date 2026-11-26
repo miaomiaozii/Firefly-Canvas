@@ -82,10 +82,11 @@ class ImageBudget:
         return dict(zip(('normal', 'campaign', 'smoke'), counts, strict=True), total=sum(counts))
 
 
-def tiny_png():
+def tiny_png(*, marked=False):
     def chunk(kind, value):
         return struct.pack('!I', len(value)) + kind + value + struct.pack('!I', zlib.crc32(kind + value))
-    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('!2I5B', 8, 8, 8, 2, 0, 0, 0))
+    label = chunk(b'tEXt', b'FireflyEvaluation\0STUB - not provider image') if marked else b''
+    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('!2I5B', 8, 8, 8, 2, 0, 0, 0)) + label
             + chunk(b'IDAT', zlib.compress((b'\0' + b'\x33\x66\x99' * 8) * 8)) + chunk(b'IEND', b''))
 
 
@@ -182,14 +183,17 @@ def request_fields(request, *, budgeted=False):
 
 class ProviderFence:
     """Installed only within a context; HTTP plus socket guards also cover unexpected generators."""
-    def __init__(self, scenario='normal', *, port=3194, limit=60, journal=None, image_budget=None, image_transport=None, egress=None):
+    def __init__(self, scenario='normal', *, port=3194, limit=60, journal=None, image_budget=None,
+                 image_transport=None, egress=None, async_image_route=None):
         if (image_budget is None) != (image_transport is None) or (image_transport is not None and not callable(image_transport)):
             raise ValueError('Image budget and one-shot transport must be supplied together')
         if image_budget is not None and scenario not in ('normal', 'campaign'):
             raise ValueError('Budgeted images only support E0 normal and campaign')
         self.faults, self.port = Faults(scenario, limit), port
+        if async_image_route is not None and (image_budget is not None or not callable(async_image_route)):
+            raise ValueError('Only one image dispatch boundary may reserve the same request')
         self.image_budget, self.image_transport = image_budget, image_transport
-        self.egress = egress
+        self.egress, self.async_image_route = egress, async_image_route
         self.journal = journal or Journal()
         self.stack = ExitStack()
         self.installed = False
@@ -198,18 +202,40 @@ class ProviderFence:
         self.journal.emit('network_blocked', reason=reason)
         raise SafetyViolation(reason)
 
-    def response(self, request):
-        import httpx
+    def inspect(self, request):
         if request.url.host != 'trajectory.invalid' or request.method != 'POST' or request.url.path not in (
                 '/v1/images/generations', '/v1/images/edits'):
             return self.deny('Unexpected provider URL/method; zero real image/video network')
-        if self.image_budget is not None and (request.url.scheme != 'https' or request.url.port is not None
-                or request.url.query or request.url.fragment or request.url.userinfo):
+        budgeted = self.image_budget is not None or self.async_image_route is not None
+        if budgeted and (request.url.scheme != 'https' or request.url.port is not None or request.url.query
+                         or request.url.fragment or request.url.userinfo):
             return self.deny('Unexpected budgeted image origin or URL parameters')
-        fields = request_fields(request, budgeted=self.image_budget is not None)
+        fields = request_fields(request, budgeted=budgeted)
         if fields.get('model') not in MODELS or not fields.get('prompt'):
             return self.deny('Unexpected generator model or empty prompt')
-        outcome = self.faults.next(fields['prompt'], fields['model'])
+        return fields, self.faults.next(fields['prompt'], fields['model'])
+
+    async def async_response(self, request):
+        fields, outcome = self.inspect(request)
+        if outcome['configured'] != 'normal':
+            reason = 'fault_scenario'
+        elif not fields['single_image_payload']:
+            reason = 'unsupported_image_payload'
+        elif outcome['attempt'] != 1:
+            # An outer product retry cannot resubmit a potentially accepted paid image.
+            import httpx
+
+            self.journal.emit('soon_repeat_denied', **outcome)
+            return httpx.Response(400, json={'error': {'code': 'content_policy_violation',
+                                 'message': 'Evaluation repeated image request blocked'}}, request=request)
+        else:
+            response, reason = await self.async_image_route(request, fields, outcome)
+            if response is not None:
+                return response
+        return self.stub_response(request, fields, outcome, image_route=reason)
+
+    def response(self, request):
+        fields, outcome = self.inspect(request)
         route = {}
         if self.image_budget is not None:
             if outcome['configured'] != 'normal':
@@ -222,6 +248,11 @@ class ProviderFence:
                 self.journal.emit('image_dispatch', scenario=self.faults.scenario, images=1,
                                   method=request.method, path=request.url.path, request=fields, **outcome)
                 return self.image_transport(request)
+        return self.stub_response(request, fields, outcome, **route)
+
+    def stub_response(self, request, fields, outcome, **route):
+        import httpx
+
         self.journal.emit('stub_request', method=request.method, path=request.url.path, request=fields, **outcome, **route)
         fault = outcome['injected']
         errors = {'no_channel': (503, 'model_not_found', '无可用渠道'),
@@ -232,7 +263,8 @@ class ProviderFence:
         if fault == 'transient':
             self.journal.emit('stub_outcome', **outcome, status='connect_error')
             raise httpx.ConnectError('Connection error: injected before submission', request=request)
-        status, body, headers = 200, {'data': [{'b64_json': base64.b64encode(tiny_png()).decode()}]}, {}
+        image = tiny_png(marked=self.async_image_route is not None)
+        status, body, headers = 200, {'data': [{'b64_json': base64.b64encode(image).decode()}]}, {}
         if fault in errors:
             status, code, message = errors[fault]
             body = {'error': {'code': code, 'message': message}}
@@ -255,6 +287,8 @@ class ProviderFence:
                 return await original_async(client, request, **kwargs)
             if request.url.host == 'trajectory.invalid':
                 await request.aread()
+                if fence.async_image_route is not None:
+                    return await fence.async_response(request)
                 if fence.image_budget is not None:
                     return await asyncio.to_thread(fence.response, request)
                 return fence.response(request)
@@ -264,6 +298,8 @@ class ProviderFence:
 
         def sync_send(client, request, **kwargs):
             if request.url.host == 'trajectory.invalid':
+                if fence.async_image_route is not None:
+                    return fence.deny('Synchronous generator unavailable in the Soon scenario')
                 request.read()
                 return fence.response(request)
             if not fence.local(request.url.host, request.url.port):

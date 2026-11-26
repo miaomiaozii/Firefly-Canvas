@@ -128,10 +128,20 @@ def serve(config):
             raise SafetyViolation('Strata requires credential-free, loopback-only native configuration')
     elif auth.exists():
         register_owned_secrets(json.loads(auth.read_text(encoding='utf-8')))
+    images = None
+    if ledger := config.get('soon_ledger'):
+        from tests.eval.trajectory.soon_scenarios import SoonScenarioImages, completed_smoke_ledger
+
+        if not strata or config['autonomy'] != 'standard' or config['scenario'] not in {'normal', 'campaign'}:
+            raise SafetyViolation('Soon is restricted to the approved Strata scenarios')
+        marker = Path(ledger).parent / f'soon-{config["scenario"]}.claimed'
+        if not marker.is_file():
+            raise SafetyViolation('Missing one-run Soon authorization receipt')
+        images = SoonScenarioImages(config['scenario'], completed_smoke_ledger(ledger), journal, config['render_path'])
     children = []
     with ExitStack() as stack:
-        fence = stack.enter_context(ProviderFence(config['scenario'], port=config['port'],
-                                                 limit=config['max_provider_calls'], journal=journal))
+        fence = stack.enter_context(ProviderFence(config['scenario'], port=config['port'], limit=config['max_provider_calls'],
+                                                 journal=journal, async_image_route=images, egress=images))
         # Imports/startup are fenced too; they cannot launch a generator before the native allowlist exists.
         original_popen = subprocess.Popen
         stack.enter_context(patch.object(subprocess, 'Popen', side_effect=SafetyViolation('Pre-bootstrap subprocess blocked')))
@@ -211,6 +221,9 @@ def serve(config):
         preflight = fence.preflight()
         # Assert the adapter/tool path was not replaced by an evaluator success function.
         from app.services import generation
+        if images is not None:
+            images.install(stack, main, generation)
+            preflight['soon_scenario'] = config['scenario']
         if main.generate_ai_image is not generation.generate_ai_image or not isinstance(manager._adapters['codex'], CodexAdapter):
             raise SafetyViolation('Actual adapter/generation pipeline missing')
         save(root / 'seed.json', {'project': project, 'node': 'trajectory-agent', 'product_asset': product['asset_id'],
