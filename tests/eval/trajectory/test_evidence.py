@@ -54,6 +54,28 @@ def test_redaction_includes_owned_auth_values_and_jwt(monkeypatch):
     assert redact('eyJabcdefgh.abcdefgh.signature') == '[REDACTED]'
 
 
+def test_recorded_tool_result_preserves_all_fifteen_task_ids_without_retaining_credentials(tmp_path, monkeypatch):
+    monkeypatch.setattr('tests.eval.trajectory.safety._KNOWN_SECRETS', set())
+    task_ids = [f'task-{i:032x}' for i in range(15)]
+    owned = 'task-ffffffffffffffffffffffffffffffff'
+    register_owned_secrets({'api_key': owned})
+    path = tmp_path / 'backend.jsonl'
+    journal = Journal(path)
+    payload = {'preview': {'tasks': [{'task_id': item} for item in task_ids]}}
+    mcp_text = json.dumps(payload | {'api_key': task_ids[0]})
+    journal.emit('tool_end', result={'result': {'content': [{'type': 'text', 'text': mcp_text}]}},
+                 preview=payload['preview'], other={'task_id': owned, 'api_key': task_ids[0]},
+                 diagnostics=[f'Bearer {task_ids[0]}', owned,
+                 'sk-0123456789abcdef', 'sess-0123456789abcdef', f'sk-{task_ids[1]}',
+                 f'api_key={task_ids[2]}', f'{task_ids[3]}-extra'])
+    record = json.loads(path.read_text(encoding='utf-8'))
+    tool_output = json.loads(record['result']['result']['content'][0]['text'])
+    assert tool_output['preview'] == record['preview'] == payload['preview']
+    assert task_ids[0] not in tool_output['api_key']
+    assert record['other'] == {'task_id': '[REDACTED]', 'api_key': '[REDACTED]'}
+    assert record['diagnostics'] == ['[REDACTED]'] * 6 + ['ta[REDACTED]']
+
+
 def test_observed_native_pipe_records_real_read_and_iteration_not_invented_events():
     journal = Journal()
     pipe = ObservedPipe(io.StringIO('{"type":"turn.started"}\nnot-json\n'), journal, 123, 'stderr')

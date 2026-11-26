@@ -13,6 +13,7 @@ REPO = Path(__file__).resolve().parents[3]
 MARKER = '.trajectory-owned-auth'
 SECRET_KEY = re.compile(r'(?i)authorization|cookie|password|secret|api.?key|access.?token|refresh.?token|id_token')
 SECRET_TEXT = re.compile(r'(?i)(?:bearer\s+[^\s"\']+|(?:sk-|sess-)[\w-]{12,}|eyJ[\w-]+\.[\w-]+\.[\w-]+|(?:access_token|refresh_token|api_key|authorization)\s*[:=]\s*[^\s,;}]+)')
+_PLAN_TASK_ID = re.compile(r'task-[0-9a-f]{32}')
 _KNOWN_SECRETS = set()
 
 
@@ -130,14 +131,27 @@ def e0_inputs(manifest_path, render):
     return books[0], chosen[0]
 
 
-def redact(value):
+def redact(value, *, _task_id=False):
     if isinstance(value, dict):
-        return {k: '[REDACTED]' if SECRET_KEY.search(k) else redact(v) for k, v in value.items()}
+        return {redact(k): '[REDACTED]' if SECRET_KEY.search(k) else redact(v, _task_id=k == 'task_id')
+                for k, v in value.items()}
     if isinstance(value, (list, tuple)):
         return [redact(v) for v in value]
     if isinstance(value, str):
         for secret in sorted(_KNOWN_SECRETS, key=len, reverse=True):
             value = value.replace(secret, '[REDACTED]')
+        # Synthetic plan IDs contain "sk-"; exempt only canonical IDs in the actual task field.
+        if _task_id and _PLAN_TASK_ID.fullmatch(value):
+            return value
+        # MCP embeds the plan as JSON text; inspect fields before masking credential-shaped text.
+        if '"task_id"' in value and value.lstrip().startswith(('{', '[')):
+            try:
+                decoded = json.loads(value)
+            except (ValueError, RecursionError):
+                pass
+            else:
+                cleaned = redact(decoded)
+                return value if cleaned == decoded else json.dumps(cleaned, ensure_ascii=False)
         return SECRET_TEXT.sub('[REDACTED]', value)
     return value
 
