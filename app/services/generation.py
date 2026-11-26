@@ -13,7 +13,7 @@ from firefly_diagnostics import emit as _diag_emit
 from firefly_generation import is_soon_openrouter_video_model, soon_gemini_native_model
 from .generation_failures import AGENT_IMAGE_ATTEMPT, UpstreamImageFailure, mark_accepted, response_failure, provider_failure
 from .media import generation_reference_to_data_url as _generation_reference_to_data_url, generation_reference_bytes as _generation_reference_bytes, _generation_reference_value
-from .providers import _soon_url_auto_provider, load_upstream_direct
+from .providers import _AGENT_BATCH_QUOTA_AUTH, _soon_url_auto_provider, load_upstream_direct
 from .upstream_http import create_upstream_async_client as _create_upstream_async_client, create_upstream_client as _create_upstream_client
 from .image_transport import create_image_transport_client as _create_image_transport_client, image_response_json as _image_response_json, record_image_decode as _record_image_decode, _record_current_image_decode, _image_upload_retry_scope, image_upload_progress as _image_upload_progress
 from .image_request_budget import (PreparedReference as _BudgetPreparedReference, lookup_known_body_limit as _lookup_known_body_limit,
@@ -2131,6 +2131,9 @@ def _provider_diagnostic_sensitive_values(prompt, provider_id, preserve_model=Fa
         provider_key = ''
     if provider_key:
         values.append(str(provider_key))
+    pinned = _AGENT_BATCH_QUOTA_AUTH.get()
+    if pinned and pinned[0] == provider_label:
+        values.append(pinned[1])
     try:
         # #381 没改这一行：它只为日志脱敏取“该藏哪个 Key”，不参与选服务商；
         # 选哪一家由 _generate_ai_image_impl 里的 required/exact 决定，整段又在 try 里。

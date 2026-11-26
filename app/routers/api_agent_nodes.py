@@ -618,13 +618,42 @@ async def send_agent_abort(
     return {"success": True, "node_id": node_id}
 
 
-@router.get("/{node_id}/batches/{batch_id}/preview")
-async def get_agent_batch_preview(project_id: str, node_id: str, batch_id: str, request: Request):
+def _require_human_batch_request(request: Request, project_id: str):
     ensure_same_origin_request(request)
     if request.headers.getlist('X-Agent-Project') != [project_id]:
         raise agent_error(403, 'PROJECT_MISMATCH', 'X-Agent-Project must match the requested project')
     if request.query_params:
-        raise agent_error(400, 'INVALID_ARGUMENT', 'Human batch preview does not accept query fields')
+        raise agent_error(400, 'INVALID_ARGUMENT', 'Human batch requests do not accept query fields')
+
+
+@router.get("/{node_id}/batches/{batch_id}/status")
+async def get_agent_batch_status(project_id: str, node_id: str, batch_id: str, request: Request):
+    _require_human_batch_request(request, project_id)
+    from app.services.agent_batch import human_batch_status
+    return human_batch_status(project_id, node_id, batch_id)
+
+
+@router.post("/{node_id}/batches/{batch_id}/skip")
+@router.post("/{node_id}/batches/{batch_id}/resume")
+@router.post("/{node_id}/batches/{batch_id}/retry")
+async def recover_agent_batch(project_id: str, node_id: str, batch_id: str, request: Request):
+    from app.services import agent_batch
+    _require_human_batch_request(request, project_id)
+    try:
+        body = await request.json()
+    except ValueError:
+        raise agent_error(400, 'INVALID_ARGUMENT', 'Expected a JSON object') from None
+    action = request.url.path.rsplit('/', 1)[-1]
+    if action == 'retry':
+        return await agent_batch.human_retry_batch_item(project_id, node_id, batch_id, body)
+    if action == 'resume':
+        return agent_batch.human_resume_batch(project_id, node_id, batch_id, body)
+    return agent_batch.human_skip_batch_item(project_id, node_id, batch_id, body)
+
+
+@router.get("/{node_id}/batches/{batch_id}/preview")
+async def get_agent_batch_preview(project_id: str, node_id: str, batch_id: str, request: Request):
+    _require_human_batch_request(request, project_id)
     from app.services.agent_batch import human_preview
     return human_preview(project_id, node_id, batch_id)
 
@@ -632,11 +661,7 @@ async def get_agent_batch_preview(project_id: str, node_id: str, batch_id: str, 
 @router.post("/{node_id}/batches/{batch_id}/preview/edit")
 @router.post("/{node_id}/batches/{batch_id}/preview/remove")
 async def mutate_agent_batch_preview(project_id: str, node_id: str, batch_id: str, request: Request):
-    ensure_same_origin_request(request)
-    if request.headers.getlist('X-Agent-Project') != [project_id]:
-        raise agent_error(403, 'PROJECT_MISMATCH', 'X-Agent-Project must match the requested project')
-    if request.query_params:
-        raise agent_error(400, 'INVALID_ARGUMENT', 'Human batch preview does not accept query fields')
+    _require_human_batch_request(request, project_id)
     try:
         body = await request.json()
     except Exception:
@@ -662,13 +687,9 @@ async def post_agent_node_confirm(
     if type(approved) is not bool:
         raise agent_error(400, 'INVALID_ARGUMENT', 'approved must be a boolean')
 
-    if confirm_id.startswith('batch-confirm-') or 'approved_item_ids' in body or 'snapshot_sha256' in body:
-        ensure_same_origin_request(request)
-        if request.headers.getlist('X-Agent-Project') != [project_id]:
-            raise agent_error(403, 'PROJECT_MISMATCH', 'X-Agent-Project must match the requested project')
-        if request.query_params:
-            raise agent_error(400, 'INVALID_ARGUMENT', 'Human batch confirmation does not accept query fields')
-        from app.services.agent_batch import human_confirm
+    from app.services.agent_batch import HUMAN_RETRY_PREFIX, human_confirm
+    if confirm_id.startswith(('batch-confirm-', HUMAN_RETRY_PREFIX)) or 'approved_item_ids' in body or 'snapshot_sha256' in body:
+        _require_human_batch_request(request, project_id)
         return await human_confirm(project_id, node_id, body)
 
     session = (agent_host_manager.conversation_session(project_id, node_id) or
@@ -872,10 +893,10 @@ async def agent_event_stream(
                 await agent_host_manager.send_abort(session)
 
             elif cmd_type == "confirm":
+                from app.services.agent_batch import HUMAN_RETRY_PREFIX, websocket_confirm
                 confirm_id = command.get("confirm_id", "")
-                if (isinstance(confirm_id, str) and confirm_id.startswith('batch-confirm-')
+                if (isinstance(confirm_id, str) and confirm_id.startswith(('batch-confirm-', HUMAN_RETRY_PREFIX))
                         or any(key in command for key in ('approved_item_ids', 'snapshot_sha256', 'decision_token'))):
-                    from app.services.agent_batch import websocket_confirm
                     try:
                         # Only batch decisions require the browser bridge; legacy WS commands keep their contract.
                         if not (origin_from_url(websocket.headers.get('origin', ''))

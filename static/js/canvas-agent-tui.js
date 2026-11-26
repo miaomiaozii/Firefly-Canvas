@@ -16,6 +16,7 @@ function isSmartAgentTaskNode(node){
 
 // Agent TUI state management
 const agentTuiState = new Map(); // nodeId -> { socket, messages, status, model, autonomy }
+let agentConfirmDialogOwner = null;
 
 // All host views are transient. Persisted settings/bindings belong to the canvas receiver.
 function createAgentHostView() {
@@ -32,7 +33,7 @@ function createAgentHostView() {
         _historyPrefetch: null, _replayAgain: false, _historyGapSince: null,
         confirm: null, pendingConfirms: new Map(), confirmModalShown: null, confirmModalOwner: null, stopPending: false, queuedInputs: new Set(),
         effortState: null, eventsError: '', stopStatusError: '', lastError: '', sessionModel: undefined,
-        planPreviews: new Map(), batchDrafts: new Map(), batchReads: new Map(), batchEditor: null,
+        planPreviews: new Map(), batchDrafts: new Map(), batchRecovery: new Map(), retryResolutions: new Set(), batchEditor: null,
     };
 }
 function agentNodeHost(node) { return node.agentCli || 'pi'; } // legacy nodes belong only to Pi
@@ -97,8 +98,9 @@ function agentCaptureComposer(state, nodeId) {
 function agentChangeHostView(nodeId, state, host) {
     agentCaptureComposer(state, nodeId);
     state.batchEditor?.dialog.close();
-    for (const controller of state.batchReads.values()) controller?.abort();
-    state.batchReads.clear();
+    agentStopBatchRecovery(state);
+    agentStopRetryDecisions(state);
+    agentDismissConfirmModal(state);
     if (state.nodeRefsDraft) state.nodeRefsDraft.lastDepartureEpoch = state.viewEpoch;
     for (const view of state.planPreviews.values()) if (view.busy) {
         if (view.requestEpoch !== state.viewEpoch) view.invalidOwner = true;
@@ -141,6 +143,7 @@ function agentChangeHostView(nodeId, state, host) {
             agentNodeRefsSettle(nodeId, state, snapshot, receipt, error, uncertain);
         }
         for (const view of state.planPreviews.values()) view.resume?.();
+        agentSyncBatchRecovery(nodeId, state);
     });
 }
 function agentSyncHostView(node, state) {
@@ -1070,6 +1073,10 @@ function replayAgentEvents(nodeId, state) {
                 state._historyGapSince = null;
             }
         }
+        if (succeeded) {
+            agentSyncBatchRecovery(nodeId, state);
+            if (state.confirm?.tool === 'generate.retry') agentOpenConfirmModal(nodeId, state, state.confirm);
+        }
         renderAgentNode(nodeId);
     });
     state._replayPromise = replay;
@@ -1416,40 +1423,21 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
             state.status = 'waiting_confirm';
             if (state.batchEditor && state.batchEditor.confirmation !== state.confirm) state.batchEditor.dialog.close();
             // Structured approvals must never fall through to a generic whole-batch modal (#412).
-            if (agentHasPreparedBatch(state.confirm) && state.confirmModalOwner) {
-                state.confirmModalOwner = null;
-                window.ffDialog?.close?.();
-            }
-            if (!agentHasPreparedBatch(event) && !agentIsReadonly(state) && !state._applyingReplay
-                && window.ffDialog && state.confirm === event && state.confirmModalShown !== event.confirm_id) {
-                state.confirmModalShown = event.confirm_id;
-                // Restoring a pending ID must not revive a preempted dialog's callback (#487).
-                const modalOwner = {};
-                state.confirmModalOwner = modalOwner;
-                window.ffDialog.ask({
-                    title: '确认 Agent 操作',
-                    message: event.message || '请确认操作',
-                    scrollMessage: event.tool === 'plan.apply' || event.tool === 'generate.request_batch',
-                    confirmText: '批准',
-                    cancelText: '取消',
-                    danger: true,
-                }).then(ok => {
-                    if (state.confirmModalOwner === modalOwner && state.confirm && state.confirm.confirm_id === event.confirm_id) {
-                        sendAgentConfirm(nodeId, state.projectId, !!ok);
-                    }
-                });
-            }
+            if (agentHasPreparedBatch(state.confirm)) agentDismissConfirmModal(state);
+            if (event.tool === 'generate.retry') agentObserveBatchRetry(nodeId, state, event);
+            agentOpenConfirmModal(nodeId, state, event);
             break;
         }
         case 'confirm_resolved': {
             const confirmation = state.pendingConfirms.get(event.confirm_id);
             const batch = agentBatchSnapshot(confirmation);
-            if (batch && event.approved && !state._applyingReplay) agentWatchBatch(nodeId, state, confirmation);
+            if (event.approved === true && (event.tool || confirmation?.tool) === 'generate.request_batch') {
+                agentTrackBatchRecovery(nodeId, state, event, batch);
+            }
+            if ((event.tool || confirmation?.tool) === 'generate.retry') agentObserveBatchRetry(nodeId, state, event, confirmation);
             if (batch && event.reason !== 'replaced') state.batchDrafts.delete(batch.id);
-            const hadModal = Boolean(state.confirmModalOwner);
             if (agentResolveConfirmation(state, event.confirm_id)) {
-                // A server resolution is not a human rejection (#389).
-                if (hadModal && !state._applyingReplay) window.ffDialog?.close?.();
+                if (state.confirm?.tool === 'generate.retry') agentOpenConfirmModal(nodeId, state, state.confirm);
                 if (event.reason === 'replaced') break;
                 const outcome = event.reason === 'empty_batch' ? '已停止（批次为空）'
                     : event.approved ? (batch?.stage === 'select' ? '已确认所选项，等待逐项批准' : '已批准')
@@ -1459,6 +1447,11 @@ function applyAgentEventBody(nodeId, event, recordedAt) {
             }
             break;
         }
+        case 'batch_item_skipped':
+        case 'batch_resumed':
+        case 'batch_stopped':
+            agentTrackBatchRecovery(nodeId, state, event, null, true);
+            break;
         case 'response':
             break;
         case 'error': {
@@ -1692,6 +1685,9 @@ function resetAgentSettingsHistory(request) {
     if (request.viewEpoch !== state.viewEpoch || request.history !== agentSettingsHistoryFingerprint(state)) return;
     state.messages = [];
     state.toolActivities.clear();
+    agentStopBatchRecovery(state);
+    state.batchRecovery.clear();
+    state.retryResolutions.clear();
     // #408: a confirmed branch boundary also invalidates display and replay state.
     resetAgentTimeline(state);
     state.lastSeq = 0;
@@ -2244,12 +2240,15 @@ function agentBatchViewOwner(nodeId, projectId, state) {
 
 async function agentBatchRequest(projectId, path, body, signal) {
     const response = await fetch(`/api/projects/${encodeURIComponent(projectId)}/${path}`, {
-        method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', 'X-Agent-Project': projectId },
-        body: JSON.stringify(body), signal,
+        credentials: 'same-origin', mode: 'same-origin', referrerPolicy: 'same-origin', signal, redirect: 'error',
+        ...(body === undefined ? { method: 'GET', cache: 'no-store', headers: { 'X-Agent-Project': projectId } }
+            : { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Agent-Project': projectId }, body: JSON.stringify(body) }),
     });
     let data = null;
     try { data = await response.json(); } catch (_) { /* #348: 非 JSON 响应用 HTTP 状态或无效回执提示。 */ }
-    if (!response.ok) throw Object.assign(new Error(agentNodeRefsError(data, `HTTP ${response.status}`)), { code: data?.detail?.code });
+    if (!response.ok) throw Object.assign(new Error(agentNodeRefsError(data, `HTTP ${response.status}`)), {
+        code: data?.detail?.code, status: response.status,
+    });
     return data;
 }
 
@@ -2426,61 +2425,358 @@ function bindAgentBatchControls(el, nodeId, projectId, state, confirmation) {
     }));
 }
 
-function agentBatchDiagnostics(status, batch) {
-    const notes = [];
-    const quota = status.status === 'paused' && status.reason === 'QUOTA_EXHAUSTED';
-    if (quota) notes.push({ warning: true, text: '服务商额度用尽，整个批次已暂停。请充值或更换服务商。' });
-    for (const row of status.items) {
-        const prepared = batch.preview.items.find(item => item.item_id === row.item_id);
-        if (!prepared) continue;
-        const label = agentBatchRowLabel(prepared);
-        if (row.status === 'succeeded' && row.attempts > 1 && row.last_failure?.message) {
-            const action = row.model && row.model !== prepared.model ? `切换至 ${row.model} 后已生成` : '自动重试后已生成';
-            notes.push({ warning: false, text: `${label}：${row.last_failure.message}；${action}。` });
-        } else if (['failed', 'timeout', 'download_failed', 'paused'].includes(row.status) && !(quota && row.status === 'paused')) {
-            const message = row.failure?.message || '生成未完成';
-            const hint = row.failure?.hint;
-            notes.push({ warning: true, text: `${label}：${message}${hint ? ` · ${hint}` : ''}` });
-        }
-    }
-    return notes;
+const AGENT_BATCH_STATUS = {
+    awaiting_confirmation: '等待确认', running: '执行中', paused: '已暂停', done: '执行结束',
+    stopped: '已停止', rejected: '未获批准',
+};
+const AGENT_BATCH_ROW_STATUS = {
+    queued: '尚未启动', running: '执行中', paused: '已暂停', succeeded: '已生成', failed: '生成失败',
+    timeout: '超时', download_failed: '结果未取回', skipped: '未执行', stopped: '已停止',
+    rejected: '未获批准', cancelled: '已取消',
+};
+
+function agentBatchRecoveryPath(nodeId, batchId, action) {
+    return `${agentBatchNodePath(nodeId)}/batches/${encodeURIComponent(batchId)}/${action}`;
 }
 
-async function agentWatchBatch(nodeId, state, confirmation) {
-    const batch = agentBatchSnapshot(confirmation);
-    // The existing REST status tool cannot read an external MCP SID's batch. Never
-    // reconstruct that caller, or infer its status from assistant text or a confirm receipt.
-    if (confirmation.source !== 'rest' || !batch || batch.stage === 'pay_item' || state.batchReads.has(batch.id)) return;
+function agentTrackBatchRecovery(nodeId, state, event, batch, refresh = false) {
+    if (!state.projectId || agentIsReadonly(state) || (event.project_id && event.project_id !== state.projectId)
+        || (event.agent_node_id && event.agent_node_id !== nodeId)) return;
+    const id = batch?.id || event.batch_id;
+    const hash = batch?.preview.snapshot_sha256 || event.snapshot_sha256;
+    if (typeof id !== 'string' || !id || !/^[a-f0-9]{64}$/.test(hash)) return;
+    let track = state.batchRecovery.get(id);
+    const isNew = !track;
+    if (!track) {
+        track = { id, hash, prepared: new Map(), status: null, issue: '', actionIssue: '', io: null, timer: null,
+            retryGates: new Map() };
+        state.batchRecovery.set(id, track);
+    }
+    if (track.hash !== hash) return;
+    for (const row of batch?.preview.items || []) track.prepared.set(row.item_id, row);
+    if ((isNew || refresh) && !state._batchHistory && !state._replayInFlight) agentRefreshBatchRecovery(nodeId, state, track, refresh);
+    return track;
+}
+
+function agentObserveBatchRetry(nodeId, state, event, confirmation) {
+    if (!state.projectId || agentIsReadonly(state) || (event.project_id && event.project_id !== state.projectId)
+        || (event.agent_node_id && event.agent_node_id !== nodeId)) return;
+    const confirmId = event.confirm_id;
+    if (typeof confirmId !== 'string' || !confirmId) return;
+    const resolved = event.type === 'confirm_resolved';
+    if (resolved) state.retryResolutions.add(confirmId);
+    const id = event.batch_id || confirmation?.batch_id;
+    const existing = id ? state.batchRecovery.get(id) : [...state.batchRecovery.values()].find(view => view.retryGates.has(confirmId));
+    const track = existing || (id && agentTrackBatchRecovery(nodeId, state, { ...confirmation, ...event }));
+    if (!track || (event.snapshot_sha256 && event.snapshot_sha256 !== track.hash)) return;
+    const itemId = event.item_id || confirmation?.item_id || track.retryGates.get(confirmId)?.itemId;
+    if (resolved) track.retryGates.delete(confirmId);
+    else if (!state.retryResolutions.has(confirmId)) {
+        track.retryGates.set(confirmId, { itemId, until: Date.now() + 120000 });
+    }
+    if (existing && !state._batchHistory && !state._replayInFlight) agentRefreshBatchRecovery(nodeId, state, track, true);
+}
+
+function agentStopBatchRecovery(state) {
+    for (const track of state.batchRecovery.values()) {
+        clearTimeout(track.timer);
+        track.timer = null;
+        const io = track.io;
+        track.io = null;
+        io?.controller.abort();
+        track.status = null;
+    }
+}
+
+function agentSyncBatchRecovery(nodeId, state) {
+    if (agentIsReadonly(state)) return;
+    for (const track of state.batchRecovery.values()) agentRefreshBatchRecovery(nodeId, state, track, true);
+}
+
+function agentBatchRecoveryStatus(data, track) {
+    if (data?.batch_id !== track.id || data.snapshot_sha256 !== track.hash) {
+        throw Object.assign(new Error('Batch snapshot mismatch'), { code: 'CONFIRM_STALE' });
+    }
+    if (!Object.hasOwn(AGENT_BATCH_STATUS, data.status) || !Array.isArray(data.items)
+        || !data.items.every(row => typeof row?.item_id === 'string' && row.item_id && typeof row.status === 'string')
+        || new Set(data.items.map(row => row.item_id)).size !== data.items.length) throw new Error('Invalid batch status');
+    const failure = value => value ? { code: value.code, message: value.message, hint: value.hint } : null;
+    return {
+        status: data.status, reason: data.reason, can_resume: data.can_resume === true,
+        items: data.items.map(row => ({
+            item_id: row.item_id, node_id: row.node_id, model: row.model, attempts: row.attempts, status: row.status,
+            failure: failure(row.failure), last_failure: failure(row.last_failure),
+            can_skip: row.can_skip === true, can_retry: row.can_retry === true,
+            user_skipped: row.user_skipped === true, retry_pending: row.retry_pending === true,
+            retry_status: row.retry_result?.status,
+        })),
+    };
+}
+
+function agentBatchRecoveryIssue(error, action) {
+    if ([401, 403].includes(error.status)) {
+        return action ? '未获授权执行该操作。' : '当前项目或 Agent 会话无权访问此批次。';
+    }
+    if ([404, 409, 410].includes(error.status) || ['CONFIRM_STALE', 'PREFLIGHT_STALE'].includes(error.code)) {
+        return action ? '操作已过期或条件已变化；请以重新核验的批次状态为准。' : '此批次已过期或不属于当前 Agent 会话。';
+    }
+    return action ? '未收到有效操作回执；请核验当前状态，不要重复提交。' : '未能核验批次状态。';
+}
+
+function agentBatchRetryPending(track, row) {
+    return row?.retry_pending === true || [...track.retryGates.values()].some(gate => !gate.itemId || gate.itemId === row?.item_id);
+}
+
+function agentBatchRecoveryCan(track, action, itemId) {
+    if (!track.status || track.issue) return false;
+    if (action === 'resume') return track.status.can_resume;
+    const row = track.status.items.find(item => item.item_id === itemId);
+    return Boolean(row && !agentBatchRetryPending(track, row) &&
+        (action === 'skip' ? row.can_skip : action === 'retry' && row.can_retry));
+}
+
+function agentRefreshBatchRecovery(nodeId, state, track, revalidate = false) {
+    if (track.io?.action) { track.io.refresh = true; return; }
+    if (track.io && !revalidate) return;
+    return agentBatchRecoveryIO(nodeId, state, track);
+}
+
+async function agentBatchRecoveryIO(nodeId, state, track, action, itemId, snapshot) {
     const projectId = state.projectId;
     const owned = agentBatchViewOwner(nodeId, projectId, state);
-    if (!owned()) return;
-    const controller = new AbortController();
-    state.batchReads.set(batch.id, controller);
-    try {
-        while (owned() && !controller.signal.aborted) {
-            const status = await agentBatchRequest(projectId, `generate/batch_status?agent_node_id=${encodeURIComponent(nodeId)}`,
-                { batch_id: batch.id, wait_seconds: 20 }, controller.signal);
-            if (!owned() || status?.batch_id !== batch.id || status.snapshot_sha256 !== batch.preview.snapshot_sha256
-                || !Array.isArray(status.items)) break;
-            if (['awaiting_confirmation', 'running'].includes(status.status) || status.items.some(row => row.status === 'running')) continue;
-            for (const notice of agentBatchDiagnostics(status, batch)) {
-                agentAppendMessage(state, { role: 'system', text: notice.text, batchDiagnosis: notice.warning ? 'warning' : 'recovered' });
-            }
-            renderAgentNode(nodeId);
-            break;
-        }
-    } catch (error) {
-        if (owned() && !controller.signal.aborted) console.warn('[agent-tui] 无法读取批次状态', error);
-    } finally {
-        if (state.batchReads.get(batch.id) === controller) state.batchReads.set(batch.id, null);
+    if (!projectId || !owned() || state.batchRecovery.get(track.id) !== track) return;
+    if (action && (track.io?.action || snapshot !== track.status || !agentBatchRecoveryCan(track, action, itemId))) return;
+    // An earlier GET cannot restore old action flags after an action or new audit event.
+    track.io?.controller.abort();
+    clearTimeout(track.timer);
+    track.timer = null;
+    const io = { controller: new AbortController(), action, refresh: false };
+    track.io = io;
+    const current = () => owned() && state.batchRecovery.get(track.id) === track && track.io === io;
+    const timeout = setTimeout(() => io.controller.abort(), 12000);
+    if (action) {
+        track.actionIssue = '';
+        renderAgentNode(nodeId);
     }
+    const before = track.status;
+    const issue = track.issue;
+    let gateChanged = false;
+    let refresh = false;
+    try {
+        const body = action ? { snapshot_sha256: track.hash, ...(action === 'resume' ? {} : { item_id: itemId }) } : undefined;
+        const data = await agentBatchRequest(projectId, agentBatchRecoveryPath(nodeId, track.id, action || 'status'), body, io.controller.signal);
+        if (!current()) return;
+        if (action === 'retry') {
+            if (data?.status !== 'awaiting_confirmation' || typeof data.confirm_id !== 'string' || !data.confirm_id) {
+                throw new Error('Invalid retry receipt');
+            }
+            // Only the actual confirmation event can open the paid gate; its resolution may beat this receipt.
+            if (!state.retryResolutions.has(data.confirm_id)) {
+                track.retryGates.set(data.confirm_id, { itemId, until: Date.now() + 120000 });
+                if (!state.pendingConfirms.has(data.confirm_id)) replayAgentEvents(nodeId, state);
+            }
+            refresh = true;
+        } else {
+            const checked = agentBatchRecoveryStatus(data, track);
+            if (JSON.stringify(checked) !== JSON.stringify(track.status)) track.status = checked;
+            for (const [id, gate] of track.retryGates) if (gate.until <= Date.now()) {
+                track.retryGates.delete(id);
+                gateChanged = true;
+            }
+        }
+        track.issue = '';
+    } catch (error) {
+        if (!current()) return;
+        track.status = null;
+        if (action) {
+            track.actionIssue = agentBatchRecoveryIssue(error, true);
+            // Auth failures are not fixed by retrying the operation or silently re-enabling it.
+            refresh = ![401, 403].includes(error.status);
+        } else {
+            track.issue = agentBatchRecoveryIssue(error, false);
+        }
+    } finally {
+        clearTimeout(timeout);
+        if (current()) {
+            track.io = null;
+            if (action || track.status !== before || track.issue !== issue || gateChanged) renderAgentNode(nodeId);
+            const status = track.status;
+            if (owned() && (refresh || io.refresh)) agentRefreshBatchRecovery(nodeId, state, track);
+            else if (owned() && status && (['awaiting_confirmation', 'running'].includes(status.status) || track.retryGates.size
+                || status.items.some(row => row.status === 'running' || row.retry_pending))) {
+                track.timer = setTimeout(() => agentRefreshBatchRecovery(nodeId, state, track), 1200);
+            }
+        }
+    }
+}
+
+function agentBatchRecoveryHtml(track, readonly) {
+    const status = track.status;
+    const io = track.io;
+    const actionButton = (action, text, row) => readonly || !agentBatchRecoveryCan(track, action, row?.item_id) ? '' :
+        `<button type="button" class="agent-tui-confirm-btn" data-agent-recovery-action="${action}"${row ? ` data-agent-recovery-item="${escapeAttr(row.item_id)}"` : ''}${io?.action ? ' disabled' : ''}>${text}</button>`;
+    const notice = (id, text, recovered = false) => `<p class="agent-tui-msg agent-tui-msg-system agent-batch-diagnosis-${recovered ? 'recovered' : 'warning'}" data-agent-batch-notice="${escapeAttr(id)}"><span class="agent-tui-msg-text">${escapeHtml(text)}</span></p>`;
+    const pausedForQuota = status?.status === 'paused' && status.reason === 'QUOTA_EXHAUSTED';
+    const rows = (status?.items || []).map((row, i) => {
+        const prepared = track.prepared.get(row.item_id);
+        const label = agentBatchRowLabel({ node_id: row.node_id || prepared?.node_id }) || `项目 ${i + 1}`;
+        const failed = ['paused', 'failed', 'timeout', 'download_failed'].includes(row.status);
+        let diagnosis = '';
+        if (row.status === 'succeeded' && row.attempts > 1 && row.last_failure?.message) {
+            const action = prepared?.model && row.model && row.model !== prepared.model ? `切换至 ${row.model} 后已生成` : '自动重试后已生成';
+            diagnosis = notice(row.item_id, `${label}：${row.last_failure.message}；${action}。`, true);
+        } else if (failed) {
+            const quota = row.failure?.code === 'QUOTA_EXHAUSTED';
+            const detail = quota ? '遇到服务商额度限制。' : row.failure?.message || '生成未完成';
+            diagnosis = notice(row.item_id, `${label}：${detail}${!quota && row.failure?.hint ? ` · ${row.failure.hint}` : ''}`);
+        }
+        const actions = actionButton('skip', '跳过', row) + actionButton('retry', '申请付费重试', row);
+        const retryStatus = row.retry_status === 'succeeded' ? '独立付费重试已生成，原任务记录保留。'
+            : row.retry_status === 'blocked' ? '独立付费重试未能启动。'
+            : row.retry_status === 'unverified' ? '独立付费重试结果尚未核实，请查看任务记录。'
+            : row.retry_status ? '独立付费重试未完成，请查看任务记录。' : '';
+        const stateLabel = Object.hasOwn(AGENT_BATCH_ROW_STATUS, row.status) ? AGENT_BATCH_ROW_STATUS[row.status] : '状态未知';
+        return `<li class="agent-batch-row" data-agent-batch-status-item="${escapeAttr(row.item_id)}">
+            <div class="agent-batch-row-head"><strong>${escapeHtml(label)}</strong><span class="agent-batch-meta">${stateLabel}${row.user_skipped ? ' · 已手动跳过' : ''}</span></div>
+            ${diagnosis}${agentBatchRetryPending(track, row) ? '<p class="agent-batch-meta" role="status">此项重试处理中，以付费确认和任务状态为准。</p>' : ''}
+            ${retryStatus ? `<p class="agent-batch-meta" role="status">${retryStatus}</p>` : ''}
+            ${actions ? `<div class="agent-tui-confirm-buttons">${actions}</div>` : ''}</li>`;
+    }).join('');
+    const resume = actionButton('resume', '恢复批次');
+    const read = !readonly && (!status || !['done', 'stopped', 'rejected'].includes(status.status)) ?
+        `<button type="button" class="agent-tui-confirm-btn" data-agent-recovery-action="status"${io ? ' disabled' : ''}>刷新状态</button>` : '';
+    return `<section class="agent-tui-confirm agent-batch-card agent-batch-recovery" aria-label="批量生成状态" data-agent-batch-status="${escapeAttr(track.id)}">
+        <h4>批量生成状态${status ? ` · ${AGENT_BATCH_STATUS[status.status]}` : ''}</h4>
+        ${pausedForQuota ? notice('quota', '服务商额度用尽，整个批次已暂停。') : ''}
+        ${!status && !track.issue && !track.actionIssue ? '<p class="agent-batch-meta" role="status">等待核验批次状态…</p>' : ''}
+        ${track.actionIssue ? `<p class="agent-batch-notice" role="alert">${escapeHtml(track.actionIssue)}</p>` : ''}
+        ${track.issue && track.issue !== track.actionIssue ? `<p class="agent-batch-notice" role="status">${escapeHtml(track.issue)}</p>` : ''}
+        ${rows ? `<ul class="agent-batch-list">${rows}</ul>` : ''}
+        ${resume ? '<p class="agent-batch-meta">仅继续原批次尚未启动的项目，不重发失败项；逐项付费确认仍按原设置进行。</p>' : ''}
+        ${resume || read ? `<div class="agent-tui-confirm-buttons">${resume}${read}</div>` : ''}
+    </section>`;
+}
+
+function bindAgentBatchRecovery(el, nodeId, state) {
+    for (const card of el.querySelectorAll('[data-agent-batch-status]')) {
+        const track = state.batchRecovery.get(card.getAttribute('data-agent-batch-status'));
+        if (!track) continue;
+        const snapshot = track.status;
+        for (const button of card.querySelectorAll('[data-agent-recovery-action]')) {
+            button.addEventListener('mousedown', event => event.stopPropagation());
+            button.addEventListener('click', event => {
+                event.stopPropagation();
+                if (!button.isConnected || button.disabled) return;
+                const action = button.getAttribute('data-agent-recovery-action');
+                if (action === 'status') agentRefreshBatchRecovery(nodeId, state, track);
+                else agentBatchRecoveryIO(nodeId, state, track, action, button.getAttribute('data-agent-recovery-item'), snapshot);
+            });
+        }
+    }
+}
+
+function agentDismissConfirmModal(state) {
+    const owner = state.confirmModalOwner;
+    if (!owner) return;
+    state.confirmModalOwner = null;
+    if (state.pendingConfirms.get(owner.id)?.tool === 'generate.retry') state.confirmModalShown = null;
+    if (agentConfirmDialogOwner !== owner) return;
+    agentConfirmDialogOwner = null;
+    // The shared dialog may already have been replaced by a non-Agent dialog (#389).
+    if (owner.backdrop?.isConnected !== false) window.ffDialog?.close?.();
+}
+
+function agentOpenConfirmModal(nodeId, state, confirmation) {
+    if (agentHasPreparedBatch(confirmation) || agentIsReadonly(state) || state._applyingReplay || !window.ffDialog
+        || state.confirm !== confirmation || confirmation.sending || state.confirmModalShown === confirmation.confirm_id) return;
+    const projectId = state.projectId;
+    const owned = agentBatchViewOwner(nodeId, projectId, state);
+    state.confirmModalShown = confirmation.confirm_id;
+    // Restoring a pending ID must not revive a preempted dialog's callback (#487).
+    const owner = { id: confirmation.confirm_id, backdrop: null };
+    agentConfirmDialogOwner = state.confirmModalOwner = owner;
+    const decision = window.ffDialog.ask({
+        title: '确认 Agent 操作', message: confirmation.message || '请确认操作',
+        scrollMessage: ['plan.apply', 'generate.request_batch', 'generate.retry'].includes(confirmation.tool),
+        confirmText: '批准', cancelText: '取消', danger: true,
+    });
+    const backdrop = document.body?.children[document.body.children.length - 1];
+    if (backdrop?.className === 'ff-dialog-backdrop') owner.backdrop = backdrop;
+    decision.then(ok => {
+        if (state.confirmModalOwner !== owner || agentConfirmDialogOwner !== owner) return;
+        state.confirmModalOwner = agentConfirmDialogOwner = null;
+        if (!ok && owner.backdrop && document.querySelector('.ff-dialog-backdrop')) return;
+        if (owned() && state.confirm === confirmation) sendAgentConfirm(nodeId, projectId, !!ok, confirmation);
+    });
+}
+
+function agentStopRetryDecisions(state) {
+    for (const confirmation of state.pendingConfirms.values()) confirmation.retryDecision?.cancel();
+}
+
+function sendAgentRetryDecision(nodeId, projectId, state, confirmation, approved) {
+    if (confirmation.sending) return;
+    const confirmId = confirmation.confirm_id;
+    const owned = agentBatchViewOwner(nodeId, projectId, state);
+    const controller = new AbortController();
+    const pending = () => owned() && state.pendingConfirms.get(confirmId) === confirmation;
+    let httpInFlight = false;
+    let resolved = false;
+    const release = () => {
+        delete confirmation.sending;
+        delete confirmation.retryDecision;
+    };
+    const cancel = () => {
+        clearTimeout(timer);
+        controller.abort();
+        release();
+    };
+    const settle = () => {
+        // A live resolution can arrive before the HTTP response. Retire the gate without cancelling its receipt.
+        resolved = true;
+        if (!httpInFlight) clearTimeout(timer);
+        release();
+    };
+    const unverified = error => {
+        cancel();
+        if (!pending()) return;
+        confirmation.decisionIssue = [401, 403].includes(error?.status) ? '当前项目或 Agent 会话无权提交此确认。'
+            : [404, 409, 410].includes(error?.status) ? '确认已过期或条件已变化，请等待会话同步。'
+                : '尚未核验确认结果，请等待会话同步。';
+        replayAgentEvents(nodeId, state);
+        renderAgentNode(nodeId);
+    };
+    const timer = setTimeout(unverified, 12000);
+    confirmation.sending = true;
+    confirmation.decisionIssue = '';
+    confirmation.retryDecision = { cancel, settle };
+    renderAgentNode(nodeId);
+    const decision = { confirm_id: confirmId, approved };
+    // Batch retries require scoped HTTP even when the socket is connected. Its ack is not the audited outcome.
+    if (!confirmId.startsWith('confirm-batch-retry-') && state.socket && state.socket.readyState === WebSocket.OPEN) {
+        try { state.socket.send(JSON.stringify({ type: 'confirm', ...decision })); }
+        catch (_) { unverified(); }
+        return;
+    }
+    httpInFlight = true;
+    return agentBatchRequest(projectId, `${agentBatchNodePath(nodeId)}/confirm`, decision, controller.signal).then(data => {
+        if (!pending()) return;
+        if (data?.ok !== true || data.confirm_id !== confirmId || data.approved !== approved) unverified();
+        else replayAgentEvents(nodeId, state);
+    }).catch(error => {
+        if (pending() && !controller.signal.aborted) unverified(error);
+    }).finally(() => {
+        httpInFlight = false;
+        if (resolved) clearTimeout(timer);
+    });
 }
 
 // Independent batch gates coexist; accepting one must not discard another pending card (#487).
 function agentResolveConfirmation(state, confirmId) {
+    if (state.confirmModalOwner?.id === confirmId) agentDismissConfirmModal(state);
+    state.pendingConfirms.get(confirmId)?.retryDecision?.settle();
     state.pendingConfirms.delete(confirmId);
     if (state.confirm?.confirm_id !== confirmId) return false;
-    state.confirmModalOwner = null;
     if (state.batchEditor?.confirmation.confirm_id === confirmId) state.batchEditor.dialog.close();
     state.confirm = Array.from(state.pendingConfirms.values()).at(-1) || null;
     if (state.confirm) state.status = 'waiting_confirm';
@@ -2494,7 +2790,7 @@ function sendAgentConfirm(nodeId, projectId, approved, expected) {
     const confirmation = state.confirm;
     const confirmId = confirmation.confirm_id;
     // Browser WebSockets cannot carry the project header required by batch decisions (#487).
-    if (typeof confirmId === 'string' && confirmId.startsWith('batch-confirm-')) {
+    if (confirmation.tool !== 'generate.retry' && typeof confirmId === 'string' && confirmId.startsWith('batch-confirm-')) {
         if (confirmation.sending) return;
         const batch = agentBatchSnapshot(confirmation);
         const decision = { confirm_id: confirmId, approved };
@@ -2514,7 +2810,7 @@ function sendAgentConfirm(nodeId, projectId, approved, expected) {
         return agentBatchRequest(projectId, `${agentBatchNodePath(nodeId)}/confirm`, decision).then(data => {
             if (data?.ok !== true || data.confirm_id !== confirmId || data.approved !== approved) throw new Error('确认响应无效');
             if (!owned()) return;
-            if (approved && batch) agentWatchBatch(nodeId, state, confirmation);
+            if (approved && batch) agentTrackBatchRecovery(nodeId, state, confirmation, batch);
             // A resolution or the following cautious gate can arrive before this receipt.
             if (!current()) {
                 state.pendingConfirms.delete(confirmId);
@@ -2524,6 +2820,7 @@ function sendAgentConfirm(nodeId, projectId, approved, expected) {
             agentResolveConfirmation(state, confirmId);
             agentAppendMessage(state, { role: 'system', text: approved
                 ? (batch?.stage === 'select' ? '已确认所选项，等待逐项批准' : '✅ 已批准') : '❌ 已取消' });
+            if (state.confirm?.tool === 'generate.retry') agentOpenConfirmModal(nodeId, state, state.confirm);
             renderAgentNode(nodeId);
         }).catch(e => {
             if (!current()) return;
@@ -2534,6 +2831,7 @@ function sendAgentConfirm(nodeId, projectId, approved, expected) {
             if (current()) renderAgentNode(nodeId);
         });
     }
+    if (confirmation.tool === 'generate.retry') return sendAgentRetryDecision(nodeId, projectId, state, confirmation, approved);
     agentResolveConfirmation(state, confirmId);
     if (!state.confirm) state.status = 'busy';
 
@@ -2978,8 +3276,7 @@ function agentNodeBodyHtml(node) {
         } else if (msg.role === 'presentation') {
             messagesHtml += agentPresentationHtml(msg, readonly, state, nodeId);
         } else if (msg.role === 'system') {
-            const diagnosis = msg.batchDiagnosis === 'warning' ? ' agent-batch-diagnosis-warning' : msg.batchDiagnosis === 'recovered' ? ' agent-batch-diagnosis-recovered' : '';
-            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-system${diagnosis}"><span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span></div>`;
+            messagesHtml += `<div class="agent-tui-msg agent-tui-msg-system"><span class="agent-tui-msg-text">${escapeHtml(msg.text)}</span></div>`;
         } else if (msg.role === 'completion') {
             messagesHtml += agentCompletionBridge()?.html(msg.completion, state) || '';
         }
@@ -3052,10 +3349,11 @@ function agentNodeBodyHtml(node) {
     // Separators are presentation only: no timeline key, reading anchor, tick, or unread content.
     const timelineHtml = timeline.map(entry => `${dateHeaders.get(entry.key) ?? ''}<div class="agent-tui-entry" data-agent-entry-key="${escapeAttr(entry.key)}">${rowHtml.get(entry.key)}</div>`).join('');
     // Expansion, selection and the global brain toggle are UI changes, not new unread content.
+    const recoveryHtml = Array.from(state.batchRecovery.values(), track => agentBatchRecoveryHtml(track, readonly)).join('');
     const timelineContent = JSON.stringify([timeline.map(entry => entry.kind === 'tools'
         ? [entry.key, entry.items.map(({ toolCallId, activity: a }) => [toolCallId, a.name, a.status, a.args, a.result, a.update, a.duration_ms])]
         : [entry.key, entry.message.text, entry.message.attachments, entry.message.presentation, entry.message.presentationDeliveryError,
-            entry.message.completion ? agentCompletionBridge()?.fingerprint(entry.message.completion) : null]), state.confirm || null]);
+            entry.message.completion ? agentCompletionBridge()?.fingerprint(entry.message.completion) : null]), state.confirm || null, recoveryHtml]);
     if (state._timelineContent != null && state._timelineContent !== timelineContent && state.scrollState && !state.scrollState.atBottom) state.scrollState.unread = true;
     state._timelineContent = timelineContent;
 
@@ -3065,13 +3363,17 @@ function agentNodeBodyHtml(node) {
         const batch = agentBatchSnapshot(c);
         if (batch) confirmHtml = agentBatchCard(nodeId, state, c, batch);
         else if (agentHasPreparedBatch(c)) confirmHtml = '<div class="agent-tui-confirm" role="status">缺少有效的批量预检快照，请重新预检。</div>';
-        else confirmHtml = `<div class="agent-tui-confirm" data-agent-confirm="${escapeAttr(nodeId)}">
-            <div class="agent-tui-confirm-message${c.tool === 'plan.apply' ? ' agent-tui-confirm-plan' : ''}">${agentIco('triangle-alert')} ${escapeHtml(c.message || '请确认操作')}</div>
-            <div class="agent-tui-confirm-buttons">
-                <button type="button" class="agent-tui-confirm-btn agent-tui-confirm-approve" data-agent-confirm-approve="${escapeAttr(nodeId)}">批准</button>
-                <button type="button" class="agent-tui-confirm-btn agent-tui-confirm-reject" data-agent-confirm-reject="${escapeAttr(nodeId)}">取消</button>
-            </div>
-        </div>`;
+        else {
+            const locked = c.tool === 'generate.retry' && (readonly || c.sending) ? ' disabled' : '';
+            confirmHtml = `<div class="agent-tui-confirm" data-agent-confirm="${escapeAttr(nodeId)}">
+                <div class="agent-tui-confirm-message${c.tool === 'plan.apply' ? ' agent-tui-confirm-plan' : ''}">${agentIco('triangle-alert')} ${escapeHtml(c.message || '请确认操作')}</div>
+                ${c.decisionIssue ? `<p class="agent-batch-notice" role="status">${escapeHtml(c.decisionIssue)}</p>` : ''}
+                <div class="agent-tui-confirm-buttons">
+                    <button type="button" class="agent-tui-confirm-btn agent-tui-confirm-approve" data-agent-confirm-approve="${escapeAttr(nodeId)}"${locked}>批准</button>
+                    <button type="button" class="agent-tui-confirm-btn agent-tui-confirm-reject" data-agent-confirm-reject="${escapeAttr(nodeId)}"${locked}>取消</button>
+                </div>
+            </div>`;
+        }
     }
 
     const setting = agentHostSetting(node, state.viewHost);
@@ -3119,7 +3421,7 @@ function agentNodeBodyHtml(node) {
         pendingHtml += `<div class="agent-tui-attach-row">${chips}</div>`;
     }
 
-    const hasTuiContent = Boolean(timeline.length || state.confirm);
+    const hasTuiContent = Boolean(timeline.length || state.confirm || recoveryHtml);
 
     return `<div class="agent-tui-card">
         ${readonlyBanner}
@@ -3134,7 +3436,8 @@ function agentNodeBodyHtml(node) {
         <div class="agent-tui-body${hasTuiContent ? '' : ' agent-tui-body-empty'}" data-agent-tui-body="${escapeAttr(nodeId)}">
             <div class="agent-tui-messages" data-agent-tui-messages="${escapeAttr(nodeId)}" aria-live="polite" aria-atomic="false">
                 ${state.historyHasMore ? `<button type="button" data-agent-events-older${state.historyLoadingOlder ? ' disabled' : ''}>${state.historyLoadingOlder ? '加载中…' : '加载更早的消息'}</button>` : ''}
-                ${timelineHtml || '<div class="agent-tui-empty">Agent TUI 已就绪：在下方输入创作指令，Enter 发送 / Shift+Enter 换行</div>'}
+                ${timelineHtml}${recoveryHtml}
+                ${hasTuiContent ? '' : '<div class="agent-tui-empty">Agent TUI 已就绪：在下方输入创作指令，Enter 发送 / Shift+Enter 换行</div>'}
                 ${confirmHtml}
             </div>
         </div>
@@ -3973,6 +4276,7 @@ function bindAgentNodeControls(el, node){
 
     const confirmation = initialState.confirm;
     bindAgentBatchControls(el, nodeId, projectId, initialState, confirmation);
+    bindAgentBatchRecovery(el, nodeId, initialState);
     const approveBtn = el.querySelector('[data-agent-confirm-approve]');
     if (approveBtn) {
         approveBtn.addEventListener('mousedown', event => event.stopPropagation());
@@ -4564,7 +4868,9 @@ function cleanupAgentTuiState(nodeId) {
         // Invalidate before closing: onclose must not schedule a reconnect for a deleted node.
         state.closing = true;
         state.batchEditor?.dialog.close();
-        for (const controller of state.batchReads.values()) controller?.abort();
+        agentStopBatchRecovery(state);
+        agentStopRetryDecisions(state);
+        agentDismissConfirmModal(state);
         if (state.reconnectTimer) {
             clearTimeout(state.reconnectTimer);
             state.reconnectTimer = null;

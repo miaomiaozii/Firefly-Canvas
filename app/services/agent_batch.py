@@ -5,6 +5,7 @@ from copy import deepcopy
 import hashlib
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -26,6 +27,7 @@ from firefly_projects import ProjectNotFound, ProjectStoreError
 
 TOOLS = frozenset(f'generate.{name}' for name in ('preflight', 'request_batch', 'batch_status', 'stop_batch'))
 TERMINAL = frozenset({'done', 'stopped', 'rejected'})
+HUMAN_RETRY_PREFIX = 'confirm-batch-retry-'
 _TTL = 3600
 _MAX_PREFLIGHTS = 256
 _MAX_ITEMS = 200
@@ -216,10 +218,21 @@ class Batch:
     rows: list = field(default_factory=list)
     cancelled: asyncio.Event = field(default_factory=asyncio.Event)
     changed: asyncio.Event = field(default_factory=asyncio.Event)
+    cautious: bool = False
+    worker_active: bool = True
+    retry_gates: dict = field(default_factory=dict)
+    retry_safe_items: set = field(default_factory=set)
 
     def status_dict(self):
+        actionable = _recovery_available(self) and not self.retry_gates
+        paused = actionable and self.status == 'paused'
         return {'batch_id': self.id, 'status': self.status, 'reason': self.reason,
-                'items': [dict(row) for row in self.rows], 'concurrency': self.concurrency,
+                'can_resume': paused and bool(_resume_items(self)),
+                'items': [{**deepcopy(row),
+                           'can_skip': paused and _row_skippable(row),
+                           'can_retry': actionable and _row_retryable(self, row),
+                           'retry_pending': row['item_id'] in self.retry_gates} for row in self.rows],
+                'concurrency': self.concurrency,
                 'preview_revision': self.preview.prepared['preview_revision'],
                 'snapshot_sha256': self.preview.prepared['snapshot_sha256'],
                 'approved_count': self.approved_count, 'spent': self.spent,
@@ -252,6 +265,27 @@ def _evict(now):
 def _settled(batch):
     return (batch.status in TERMINAL or batch.status == 'paused') and not any(
         row['status'] == 'running' for row in batch.rows)
+
+
+def _row_skippable(row):
+    return not row.get('user_skipped') and (row['status'] == 'paused'
+            or (row['status'] == 'queued' and row['task_id'] is None and row['attempts'] == 0))
+
+
+def _recovery_available(batch):
+    return (batch.status in ('paused', 'done') and not batch.worker_active and _settled(batch)
+            and not batch.cancelled.is_set() and batch.origin.valid())
+
+
+def _resume_items(batch):
+    return tuple(item for item, row in zip(batch.preview.items, batch.rows)
+                 if item.id in batch.approved_item_ids and row['status'] == 'queued'
+                 and row['task_id'] is None and row['attempts'] == 0 and not row.get('user_skipped'))
+
+
+def _row_retryable(batch, row):
+    return (row['status'] in ('paused', 'failed') and not row.get('user_skipped') and not row.get('retry_result')
+            and row['item_id'] in batch.retry_safe_items)
 
 
 def is_running(project, batch_id):
@@ -534,7 +568,7 @@ async def call(tool, caller, args):
         if batch is None:
             preview.deadline = time.monotonic() + _TTL
             batch = Batch(uuid4().hex, preview, loop, models, retries, origin, turn,
-                          rows=[{'item_id': item.id, 'node_id': item.node, 'status': 'queued', 'attempts': 0, 'model': item.plan.route.model,
+                          cautious=session.autonomy == 'cautious', rows=[{'item_id': item.id, 'node_id': item.node, 'status': 'queued', 'attempts': 0, 'model': item.plan.route.model,
                                  'result_node_id': None, 'task_id': None, 'failure': None} for item in preview.items])
             preview.prepared['snapshot_sha256'] = _snapshot_digest(preview, models, retries)
             preview.batch = _BATCHES[batch.id] = batch
@@ -574,23 +608,217 @@ def _check_actor_binding(preview):
         raise agent_error(409, 'CONFIRM_STALE', 'Batch actor binding changed') from exc
 
 
+def _human_batch_locked(store, project, actor, batch_id, *, loop=None):
+    if loop is None:
+        loop = asyncio.get_running_loop()
+    _evict(time.monotonic())
+    batch = _BATCHES.get(batch_id)
+    if (not batch or batch.preview.store is not store or batch.preview.key[0] != project
+            or batch.preview.key[2][0] != actor or batch.loop is not loop or not batch.origin.valid()):
+        raise agent_error(409, 'CONFIRM_STALE', 'Batch does not belong to this active human scope')
+    _check_actor_binding(batch.preview)
+    return batch
+
+
 def human_preview(project, actor, batch_id):
     store = _api()._app_main.FIREFLY_PROJECT_STORE
-    with store._lock:
+    with store._lock, _LOCK:
+        batch = _human_batch_locked(store, project, actor, batch_id)
+        handler = next((handler for handler in batch.origin.session.confirm_handlers
+                        if getattr(handler, 'batch_confirm_id', None) == batch.confirm_id
+                        and handler.batch_pending()), None)
+        return {'batch_id': batch.id, 'status': batch.status, 'preflight': deepcopy(batch.preview.prepared),
+                'confirm_id': batch.confirm_id if handler else None, 'actionable': bool(handler),
+                'decision_token': handler.batch_decision_token if handler else None}
+
+
+def human_batch_status(project, actor, batch_id):
+    store = _api()._app_main.FIREFLY_PROJECT_STORE
+    with store._lock, _LOCK:
+        return _human_batch_locked(store, project, actor, batch_id).status_dict()
+
+
+def _recovery_input(body, action, *, item=False):
+    required = ('item_id', 'snapshot_sha256') if item else ('snapshot_sha256',)
+    agent_refs.require_object(body, f'batch.{action}', required=required)
+    digest = body['snapshot_sha256']
+    if not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest):
+        raise agent_refs.invalid('snapshot_sha256 must be a lowercase SHA-256 hex digest')
+    return digest, agent_refs.identifier(body['item_id'], 'item_id') if item else None
+
+
+def _recovery_metadata(batch):
+    return {'batch_id': batch.id, 'project_id': batch.preview.caller.project,
+            'agent_node_id': batch.preview.key[2][0], 'turn_id': batch.turn_id,
+            'source': 'mcp' if batch.preview.caller.client else 'rest',
+            'preview_revision': batch.preview.prepared['preview_revision'],
+            'snapshot_sha256': batch.preview.prepared['snapshot_sha256']}
+
+
+def _recovery_audit(batch, kind, **details):
+    from app.services.agent_host import agent_host_manager as host
+    event = {'type': kind, **_recovery_metadata(batch), **details}
+    origin = batch.origin
+    if not host._persist_event(origin.session, event, host=origin.host, generation=origin.generation, recovery=True):
+        raise agent_error(500, 'JOURNAL_WRITE_FAILED', 'Batch recovery audit could not be saved', retryable=False)
+
+    async def deliver():
+        for listener in list(origin.session.event_handlers):
+            try:
+                await listener(origin.session, event)
+            except Exception:
+                _LOG.debug('Batch recovery audit broadcast failed', exc_info=True)
+
+    _api()._track_lifetime_task(asyncio.create_task(deliver()))
+
+
+def _recovery_batch_locked(store, project, actor, batch_id, digest, *, paused=True, loop=None):
+    batch = _human_batch_locked(store, project, actor, batch_id, loop=loop)
+    if (digest != batch.preview.prepared['snapshot_sha256'] or not _recovery_available(batch)
+            or paused and batch.status != 'paused'):
+        raise agent_error(409, 'CONFIRM_STALE', 'Batch is no longer recoverable in this snapshot')
+    return batch
+
+
+def human_skip_batch_item(project, actor, batch_id, body):
+    digest, item_id = _recovery_input(body, 'skip', item=True)
+    store = _api()._app_main.FIREFLY_PROJECT_STORE
+    with store._lock, _LOCK:
+        batch = _recovery_batch_locked(store, project, actor, batch_id, digest)
+        row = next((item for item in batch.rows if item['item_id'] == item_id), None)
+        if row and row.get('user_skipped'):
+            return batch.status_dict()
+        if row is None or batch.retry_gates or not _row_skippable(row):
+            raise agent_error(409, 'CONFIRM_STALE', 'Batch item is no longer skippable')
+        _recovery_audit(batch, 'batch_item_skipped', item_id=item_id, previous_status=row['status'])
+        # Skip cannot replace a paid failure or change approval accounting.
+        row['user_skipped'] = True
+        if row['status'] == 'queued':
+            row['status'] = 'skipped'
+        batch.signal()
+        return batch.status_dict()
+
+
+def human_resume_batch(project, actor, batch_id, body):
+    digest, _ = _recovery_input(body, 'resume')
+    api = _api()
+    store = api._app_main.FIREFLY_PROJECT_STORE
+    with store._lock, _LOCK:
+        batch = _recovery_batch_locked(store, project, actor, batch_id, digest)
+        items = _resume_items(batch)
+        if not items or batch.retry_gates:
+            raise agent_error(409, 'CONFIRM_STALE', 'Batch has no resumable queue')
+        providers = deepcopy(_fresh(batch.preview))
+        _recovery_audit(batch, 'batch_resumed', item_ids=[item.id for item in items],
+                        approval_sha256=batch.approval_sha256)
+        batch.status, batch.reason, batch.worker_active = 'running', None, True
+        batch.signal()
+        api._track_lifetime_task(contextvars.Context().run(asyncio.create_task, _run(batch, (items, providers))))
+        return batch.status_dict()
+
+
+@dataclass
+class BatchRetryGate:
+    id: str = field(default_factory=lambda: HUMAN_RETRY_PREFIX + uuid4().hex)
+    ready: asyncio.Event = field(default_factory=asyncio.Event)
+    task: asyncio.Task | None = None
+
+
+async def human_retry_batch_item(project, actor, batch_id, body):
+    from app.services import agent_generation_retry as retry
+    digest, item_id = _recovery_input(body, 'retry', item=True)
+    api = _api()
+    store = api._app_main.FIREFLY_PROJECT_STORE
+    with store._lock, _LOCK:
+        batch = _recovery_batch_locked(store, project, actor, batch_id, digest, paused=False)
+        row = next((item for item in batch.rows if item['item_id'] == item_id), None)
+        gate = batch.retry_gates.get(item_id)
+        if gate is None:
+            if row is None or batch.retry_gates or not _row_retryable(batch, row):
+                raise agent_error(409, 'RETRY_UNSAFE', 'Batch item is not eligible for a new paid retry')
+            args = {'task_id': row['task_id']}
+            prepared = retry.prepare(batch.preview.caller, args)
+            gate = batch.retry_gates[item_id] = BatchRetryGate()
+            batch.signal()
+            gate.task = api._track_lifetime_task(contextvars.Context().run(
+                asyncio.create_task, _run_paid_batch_retry(batch, row, gate, args, prepared, store)))
+
+    ready = asyncio.create_task(gate.ready.wait())
+    try:
+        await asyncio.wait((ready, gate.task), return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        ready.cancel()
+    if not gate.ready.is_set():
+        raise gate.task.result() or agent_error(409, 'CONFIRM_STALE', 'Retry confirmation could not be published')
+    return {'status': 'awaiting_confirmation', 'confirm_id': gate.id}
+
+
+async def _run_paid_batch_retry(batch, row, gate, args, prepared, store):
+    from app.services import agent_generation_retry as retry
+    api = _api()
+    caller, origin = batch.preview.caller, batch.origin
+    actor = batch.preview.key[2][0]
+    digest = batch.preview.prepared['snapshot_sha256']
+    outcome = None
+    item_id = row['item_id']
+    loop = asyncio.get_running_loop()
+
+    def guard():
+        with store._lock, _LOCK:
+            if (_recovery_batch_locked(store, caller.project, actor, batch.id, digest, paused=False, loop=loop) is not batch
+                    or batch.retry_gates.get(item_id) is not gate or not _row_retryable(batch, row)):
+                raise agent_error(409, 'CONFIRM_STALE', 'Retry does not own this batch item')
+
+    def decide(body):
+        if not isinstance(body, dict) or set(body) != {'confirm_id', 'approved'} or body.get('confirm_id') != gate.id:
+            raise agent_refs.invalid('Retry decisions require only confirm_id and approved')
+        guard()
+        if body['approved'] and retry.prepare(caller, args)[3] != prepared[3]:
+            raise agent_error(409, 'RETRY_STALE', 'Retry inputs changed before approval')
+        result = {'approved': body['approved']}
+        if not body['approved']:
+            result['reason'] = 'rejected'
+        decide.audit(result)
+        return result
+
+    decide.origin = origin
+    decide.gate_ready = gate.ready
+    decide.strict_journal = True
+    decide.waiting_guard = guard
+    decide.audit_metadata = {**_recovery_metadata(batch), 'item_id': item_id}
+    try:
+        params, message = retry.retry_confirmation_content(caller, args, prepared)
+        decision = await asyncio.wait_for(api.request_confirmation_core(
+            caller.project, actor, 'generate.retry', params, message, None,
+            allow_automatic=False, transient_session=origin.session, cancel_event=batch.cancelled,
+            confirm_id=gate.id, decision_handler=decide), api.AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS)
+        if not decision.get('approved'):
+            return
+        # Once accepted, retain the result of this separate paid attempt without rewriting the original row.
+        outcome = {'status': 'unverified'}
+        with agent_ops_scope(project_id=caller.project, agent_node_id=actor, turn_id=batch.turn_id,
+                             tool='generate.retry', args=args):
+            receipt = await retry.dispatch_confirmed_retry(caller, args, prepared, origin.session, guard=guard)
+            outcome['task_id'] = receipt['task_id']
+            terminal = await api.wait_for_task_core(caller.project, receipt['task_id'], timeout=600)
+            if 'last_status' not in terminal:
+                outcome['status'] = terminal['status']
+    except TimeoutError:
+        return
+    except HTTPException as exc:
+        if not gate.ready.is_set():
+            return exc
+        if outcome is not None and 'task_id' not in outcome and isinstance(exc.detail, dict):
+            outcome = {'status': 'blocked', 'code': exc.detail.get('code')}
+    except Exception:
+        _LOG.exception('Batch retry ended without a verified receipt')
+    finally:
         with _LOCK:
-            _evict(time.monotonic())
-            batch = _BATCHES.get(batch_id)
-            if (not batch or batch.preview.store is not store or batch.preview.key[0] != project
-                    or batch.preview.key[2][0] != actor or batch.loop is not asyncio.get_running_loop()
-                    or not batch.origin.valid()):
-                raise agent_error(409, 'CONFIRM_STALE', 'Batch does not belong to this active human scope')
-            _check_actor_binding(batch.preview)
-            handler = next((handler for handler in batch.origin.session.confirm_handlers
-                            if getattr(handler, 'batch_confirm_id', None) == batch.confirm_id
-                            and handler.batch_pending()), None)
-            return {'batch_id': batch.id, 'status': batch.status, 'preflight': deepcopy(batch.preview.prepared),
-                    'confirm_id': batch.confirm_id if handler else None, 'actionable': bool(handler),
-                    'decision_token': handler.batch_decision_token if handler else None}
+            if outcome is not None:
+                row['retry_result'] = outcome
+            if batch.retry_gates.get(item_id) is gate:
+                del batch.retry_gates[item_id]
+            batch.signal()
 
 
 def _mutation_body(body, action):
@@ -719,6 +947,8 @@ async def websocket_confirm(project, actor, command):
     token = command.get('decision_token')
     body = {key: value for key, value in command.items() if key not in ('type', 'decision_token')}
     body = _validate_decision(body)
+    if body.get('confirm_id', '').startswith(HUMAN_RETRY_PREFIX):
+        raise agent_error(409, 'CONFIRM_STALE', 'Paid batch retry decisions require scoped HTTP')
     session = host.conversation_session(project, actor)
     handler = next((handler for handler in session.confirm_handlers
                     if getattr(handler, 'batch_confirm_id', None) == body.get('confirm_id')),
@@ -806,8 +1036,7 @@ def _gate_message(batch, count):
 
 
 def _gate_params(batch, options, prepared, item=None):
-    stage = 'pay_item' if item is not None else (
-        'select' if batch.origin.session.autonomy == 'cautious' else 'pay_batch')
+    stage = 'pay_item' if item is not None else ('select' if batch.cautious else 'pay_batch')
     return {**options, 'total_images': prepared['total_images'], 'preflight': prepared, 'approval_stage': stage}
 
 
@@ -853,7 +1082,57 @@ async def _confirm(batch, project, actor, options, count, item=None):
         return {'approved': False, 'reason': 'stopped'}
 
 
-async def _run(batch):
+def _quota_pools():
+    # The operator attests disjoint billing for the exact normalized provider + routed model.
+    # Missing/malformed entries do not inherit trust from a provider ID, URL, or model name.
+    try:
+        pools = json.loads(os.environ.get('FIREFLY_AGENT_BATCH_QUOTA_POOLS', '{}'))
+    except ValueError:
+        return {}
+    return pools if isinstance(pools, dict) else {}
+
+
+def _quota_binding(pools, plan):
+    from app.core import effective_image_request_mode, effective_protocol
+    from app.services.generation import is_comfyui_provider
+    from app.services.providers import _soon_url_auto_provider, bearer_auth_value
+
+    provider, model = plan.provider, plan.route.model
+    if (not pools or not provider.get('base_url') or provider['id'] in {'modelscope', 'runninghub'}
+            or effective_protocol(provider, model) != 'openai' or is_comfyui_provider(provider)
+            or effective_image_request_mode(provider, model) != 'openai-json'
+            or _soon_url_auto_provider(provider, model) is not provider):
+        return None
+    key = _api()._app_main.provider_env_key_value(provider['id'])
+    if not key:
+        return None
+    identity = _digest((provider, model, bearer_auth_value(key)))
+    pool = pools.get(identity)
+    if isinstance(pool, str) and re.fullmatch(r'[A-Za-z0-9_-]{1,80}', pool):
+        return pool, (provider['id'], key)
+    return None
+
+
+def _proven_separate(pools, exhausted, item, batch, providers):
+    from app.services.agent_generation_retry import model_plan
+    from firefly_generation import ModelRoutingError
+
+    plans = [item.plan]
+    for model in batch.models if batch.max_retries else ():
+        try:
+            plans.append(model_plan(item.plan, providers, model))
+        except (ModelRoutingError, HTTPException):
+            continue  # Unroutable fallbacks cannot be admitted by the worker either.
+    return all((binding := _quota_binding(pools, plan)) is not None and binding[0] not in exhausted for plan in plans)
+
+
+def _definite_rejection(status, record):
+    return (status['status'] == 'failed' and record.get('status') == 'failed'
+            and (status.get('result') or {}).get('history_recorded') is True
+            and record.get('replay_safe') is True and not record.get('outputs') and not record.get('upstream_task_id'))
+
+
+async def _run(batch, resumed=None):
     api = _api()
     preview = batch.preview
     project, actor = preview.key[0], preview.key[2][0]
@@ -861,67 +1140,41 @@ async def _run(batch):
     count = sum(item.plan.request.count for item in preview.items)
     options = {'batch_id': batch.id, 'fallback_models': list(batch.models), 'max_retries': batch.max_retries}
     try:
-        cautious = batch.origin.session.autonomy == 'cautious'
-        decision = await _confirm(batch, project, actor, options, count)
-        if not decision.get('approved'):
-            with _LOCK:
-                _fail(batch, decision.get('reason'))
-            return
-
-        preview = batch.preview
-        chosen = tuple(item for item in preview.items if item.id in decision['approved_item_ids'])
-        admitted_count = sum(item.plan.request.count for item in chosen)
-
-        def approve():
-            with store._lock:
-                providers = deepcopy(_fresh(preview))
-                if not batch.origin.valid():
-                    raise agent_error(409, 'CONFIRM_STALE', 'Owning Agent turn changed',
-                                      '重新预检并请求批准，不复用旧批准。', retryable=False)
+        if resumed is not None:
+            chosen, providers = resumed
+        else:
+            decision = await _confirm(batch, project, actor, options, count)
+            if not decision.get('approved'):
                 with _LOCK:
-                    if batch.status != 'awaiting_confirmation' or _BATCHES.get(batch.id) is not batch:
-                        return None
-                    # Cautious selection reserves no paid work; each item keeps its own spending gate.
-                    if not cautious:
-                        api.enforce_generation_limit(project, actor, admitted_count)
-                        batch.approved_count = admitted_count
-                    batch.approved_item_ids = tuple(item.id for item in chosen)
-                    batch.approval_sha256 = decision['approval_sha256']
-                    for row in batch.rows:
-                        if row['item_id'] not in batch.approved_item_ids:
-                            row['status'] = 'skipped'
-                return providers
-
-        providers = await run_blocking_to_completion(approve)
-        if providers is None or batch.cancelled.is_set():
-            return
-        with _LOCK:
-            batch.status = 'running'
-            batch.signal()
+                    _fail(batch, decision.get('reason'))
+                return
+            preview = batch.preview
+            chosen = tuple(item for item in preview.items if item.id in decision['approved_item_ids'])
+            providers = await run_blocking_to_completion(_approve_queue, batch, preview, chosen, decision, store)
+            if providers is None or batch.cancelled.is_set():
+                return
+            with _LOCK:
+                batch.status = 'running'
+                batch.signal()
+        pools = _quota_pools()
+        exhausted = set()
         with agent_ops_scope(project_id=project, agent_node_id=actor, turn_id=batch.turn_id,
                              tool='generate.request_batch', args=options) as op:
             journal_batch = {'root': op.op_id, 'root_exists': False, 'ids': set(), 'tokens': {op.op_id},
                              'tasks': [], 'unregistered': {}}
             token = api._BATCH_GENERATION.set(journal_batch)
             try:
-                for item, row in zip(preview.items, batch.rows):
-                    if item not in chosen:
-                        continue
+                rows = {row['item_id']: row for row in batch.rows}
+                for index, item in enumerate(chosen):
                     if batch.cancelled.is_set() or batch.status == 'paused':
                         break
-                    if cautious:
+                    if batch.cautious:
                         decision = await _confirm(batch, project, actor, options, item.plan.request.count, item)
                         if not decision.get('approved'):
                             with _LOCK:
                                 _fail(batch, decision.get('reason'))
                             break
-                        with store._lock:
-                            _fresh(preview, item)
-                            if batch.cancelled.is_set() or not batch.origin.valid():
-                                break
-                            api.enforce_generation_limit(project, actor, item.plan.request.count)
-                            batch.approved_count += item.plan.request.count
-                    await _run_item(batch, row, item, actor, providers)
+                    await _run_item(batch, rows[item.id], item, actor, providers, pools, exhausted, chosen[index + 1:])
             finally:
                 api.release_batch_journal(store, project, op.op_id, journal_batch, journal_batch['ids'])
                 api._BATCH_GENERATION.reset(token)
@@ -945,21 +1198,46 @@ async def _run(batch):
             _fail(batch, 'BATCH_FAILED')
     finally:
         batch.gate_ready.set()
+        with _LOCK:
+            batch.worker_active = False
+            batch.signal()
         if not batch.cancelled.is_set() and batch.gate_error is None:
             await batch.origin.continue_with(batch.status_dict())
 
 
-async def _run_item(batch, row, item, actor, providers):
+def _approve_queue(batch, preview, chosen, decision, store):
+    with store._lock:
+        providers = deepcopy(_fresh(preview))
+        if not batch.origin.valid():
+            raise agent_error(409, 'CONFIRM_STALE', 'Owning Agent turn changed',
+                              '重新预检并请求批准，不复用旧批准。', retryable=False)
+        with _LOCK:
+            if batch.status != 'awaiting_confirmation' or _BATCHES.get(batch.id) is not batch:
+                return None
+            if not batch.cautious:
+                count = sum(item.plan.request.count for item in chosen)
+                _api().enforce_generation_limit(preview.caller.project, preview.key[2][0], count)
+                batch.approved_count = count
+            batch.approved_item_ids = tuple(item.id for item in chosen)
+            batch.approval_sha256 = decision['approval_sha256']
+            for row in batch.rows:
+                if row['item_id'] not in batch.approved_item_ids:
+                    row['status'] = 'skipped'
+        return providers
+
+
+async def _run_item(batch, row, item, actor, providers, pools, exhausted, remaining):
     from .image_transport import _image_upload_retry_scope
     with _image_upload_retry_scope():
-        return await _run_item_with_upload_budget(batch, row, item, actor, providers)
+        return await _run_item_with_upload_budget(batch, row, item, actor, providers, pools, exhausted, remaining)
 
 
-async def _run_item_with_upload_budget(batch, row, item, actor, providers):
+async def _run_item_with_upload_budget(batch, row, item, actor, providers, pools, exhausted, remaining):
     api = _api()
     project = batch.preview.caller.project
 
     from app.services import agent_generation_retry as retry
+    from app.services.providers import _AGENT_BATCH_QUOTA_AUTH
     from firefly_generation import ModelRoutingError
 
     store = api._app_main.FIREFLY_PROJECT_STORE
@@ -969,6 +1247,8 @@ async def _run_item_with_upload_budget(batch, row, item, actor, providers):
 
     for attempt in range(min(batch.max_retries, 2) + 1):
         submitted = None
+        binding = _quota_binding(pools, plan)
+        pool, auth = binding or (None, None)
 
         def admit(task_id, result_id):
             nonlocal submitted
@@ -981,7 +1261,13 @@ async def _run_item_with_upload_budget(batch, row, item, actor, providers):
                 if (batch.status != 'running' or _BATCHES.get(batch.id) is not batch
                         or not batch.origin.valid()):
                     raise agent_error(409, 'BATCH_STOPPED', 'Batch stopped before this item started')
+                if exhausted and (pool is None or pool in exhausted or _quota_binding(pools, plan) != binding):
+                    raise agent_error(409, 'QUOTA_ROUTE_UNVERIFIED', 'Unverified route after quota rejection')
+                if attempt == 0 and batch.cautious:
+                    api.enforce_generation_limit(project, actor, item.plan.request.count)
+                    batch.approved_count += item.plan.request.count
                 submitted = task_id
+                batch.retry_safe_items.discard(item.id)
                 row.update(status='running', attempts=attempt + 1, task_id=task_id,
                            result_node_id=result_id, model=plan.route.model)
                 if attempt == 0:
@@ -989,6 +1275,8 @@ async def _run_item_with_upload_budget(batch, row, item, actor, providers):
                 batch.signal()
 
         failure = {'code': 'GENERATION_FAILED', 'message': '生成未能启动', 'hint': '请检查任务状态。'}
+        # Bind evidence to the actual request credential, not a second lookup at settlement.
+        auth_token = _AGENT_BATCH_QUOTA_AUTH.set(auth)
         try:
             await api.trigger_generation_core(project, item.node, actor, plan=plan, validate_start=admit,
                                               approved_provider=deepcopy(plan.provider),
@@ -999,6 +1287,8 @@ async def _run_item_with_upload_budget(batch, row, item, actor, providers):
                 failure = exc.detail
         except Exception:
             _LOG.exception('Agent batch item %s admission did not return normally', item.node)
+        finally:
+            _AGENT_BATCH_QUOTA_AUTH.reset(auth_token)
 
         # A lost receipt is not a failed submission. Wait for durable settlement.
         status = None
@@ -1013,11 +1303,22 @@ async def _run_item_with_upload_budget(batch, row, item, actor, providers):
                 status = current
                 break
             await asyncio.sleep(0.1)
+        record = ((status or {}).get('result') or {}).get('history_record') or {}
         with _LOCK:
             if not status:
+                if failure.get('code') == 'BUDGET_EXCEEDED':
+                    raise agent_error(409, 'BUDGET_EXCEEDED', 'Session generation limit exceeded')
+                if failure.get('code') == 'QUOTA_ROUTE_UNVERIFIED':
+                    batch.status, batch.reason = 'paused', 'QUOTA_EXHAUSTED'
+                    if attempt == 0:
+                        batch.signal()
+                        return
                 row.update(status='stopped' if batch.cancelled.is_set() else 'failed', failure=failure)
                 batch.signal()
                 return
+            safe = _definite_rejection(status, record)
+            if safe:
+                batch.retry_safe_items.add(item.id)
             failure = status.get('failure')
             row.update(status=status['status'], failure=failure)
             if status['status'] == 'download_failed':
@@ -1028,12 +1329,15 @@ async def _run_item_with_upload_budget(batch, row, item, actor, providers):
             if batch.cancelled.is_set():
                 return
             if code == 'QUOTA_EXHAUSTED':
+                if (safe and pool is not None and remaining
+                        and all(_proven_separate(pools, exhausted | {pool}, candidate, batch, providers)
+                                for candidate in remaining)):
+                    exhausted.add(pool)
+                    return  # Do not retry the rejected item in this worker.
                 batch.status, batch.reason = 'paused', code
-                row.update(status='paused', failure={**failure, 'hint':
-                           f'已暂停剩余 {batch.approved_count - batch.spent} 张；请充值或更换服务商。'})
+                row.update(status='paused', failure={**failure, 'hint': '剩余项目已暂停；请检查服务商额度。'})
                 batch.signal()
                 return
-        record = (status.get('result') or {}).get('history_record') or {}
         if (attempt >= min(batch.max_retries, 2) or status['status'] != 'failed'
                 or not record.get('automatic_retry') or not record.get('retry_root_id')):
             return

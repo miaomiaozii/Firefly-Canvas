@@ -156,6 +156,12 @@ _SECRET = re.compile(
 
 
 def sensitive_provider_values(provider):
+    from .providers import _AGENT_BATCH_QUOTA_AUTH
+
+    pinned = _AGENT_BATCH_QUOTA_AUTH.get()
+    if pinned and pinned[0] == (provider or {}).get('id'):
+        yield pinned[1]
+
     def values(item):
         if isinstance(item, str):
             yield item

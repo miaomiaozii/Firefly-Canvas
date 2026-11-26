@@ -233,30 +233,46 @@ def prepare(caller, args):
         return node['id'], parent, approved, stamp, deepcopy(plan)
 
 
+def retry_confirmation_content(caller, args, prepared):
+    node, parent, _, _, plan = prepared
+    count = plan.request.count
+    return (
+        {'task_id': parent[1], 'node_id': node, 'n': count, 'model': plan.route.model, 'provider': plan.route.provider_id,
+         'use_snapshot': args.get('use_snapshot', True),
+         'preflight': _api().generation_confirmation_input(caller.project, node, plan)},
+        f'重新生成 {count} 张图片（重新消耗外部额度）\n模型：{plan.route.model} · {plan.route.provider_id}\n{plan.final_prompt}',
+    )
+
+
 async def execute(caller, args):
     from app.services.agent_ops_async import run_blocking_to_completion
     from app.services.agent_host import agent_host_manager as host
     api = _api()
     args = arguments(args)
-    node, parent, approved, stamp, plan = await run_blocking_to_completion(prepare, caller, args)
-    count = plan.request.count
+    prepared = await run_blocking_to_completion(prepare, caller, args)
     session = await host.get_or_create_session(caller.project, caller.actor, recover_history=False)
+    params, message = retry_confirmation_content(caller, args, prepared)
     decision = await api.request_confirmation_core(
-        caller.project, caller.actor, 'generate.retry',
-        {'task_id': parent[1], 'node_id': node, 'n': count, 'model': plan.route.model, 'provider': plan.route.provider_id,
-         'use_snapshot': args.get('use_snapshot', True),
-         'preflight': api.generation_confirmation_input(caller.project, node, plan)},
-        f'重新生成 {count} 张图片（重新消耗外部额度）\n模型：{plan.route.model} · {plan.route.provider_id}\n{plan.final_prompt}',
+        caller.project, caller.actor, 'generate.retry', params, message,
         api.AGENT_WRITE_CONFIRM_TIMEOUT_SECONDS, transient_session=session,
         cancel_event=asyncio.Event())
     if not decision.get('approved') or session._stopping or host.conversation_session(caller.project, caller.actor) is not session:
         raise agent_error(409, 'CONFIRM_REJECTED' if decision.get('reason') == 'rejected' else 'CONFIRM_PENDING',
                           'Fresh retry confirmation was not granted')
+    return await dispatch_confirmed_retry(caller, args, prepared, session)
+
+
+async def dispatch_confirmed_retry(caller, args, prepared, session, *, guard=None):
+    from app.services.agent_host import agent_host_manager as host
+    api = _api()
+    node, parent, approved, stamp, plan = prepared
 
     def admit(task_id, result_id):
         if prepare(caller, args)[3] != stamp or session._stopping or host.conversation_session(caller.project, caller.actor) is not session:
             raise _stale()
-        api.enforce_generation_limit(caller.project, caller.actor, count)
+        if guard is not None:
+            guard()
+        api.enforce_generation_limit(caller.project, caller.actor, plan.request.count)
 
     return await api.trigger_generation_core(caller.project, node, caller.actor, plan=plan,
                                              validate_start=admit, approved_provider=plan.provider,

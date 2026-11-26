@@ -4193,6 +4193,10 @@ button.prompt-flow-context-image { cursor:pointer; }
 .agent-batch-editor [role="alert"], .agent-batch-diagnosis-warning { color:var(--danger); }
 .agent-batch-diagnosis-warning, .agent-batch-diagnosis-recovered { border-inline-start:2px solid var(--muted); padding-inline-start:8px; }
 .agent-batch-diagnosis-warning { border-inline-start-color:var(--danger); }
+.agent-batch-recovery { margin-block:8px; overflow-wrap:anywhere; }
+.agent-batch-recovery .agent-batch-row-head { flex-wrap:wrap; }
+.agent-batch-recovery .agent-tui-msg-system, .agent-batch-recovery p.agent-batch-meta { margin:6px 0; }
+.agent-batch-recovery .agent-tui-confirm-buttons { flex-wrap:wrap; }
 
 /* r3：三行输入 + 参数 + 操作行；附件、运行中排队/steer/停止仍可达。 */
 .agent-tui-composer { flex:none; min-width:0; padding:0 16px 13px; background:var(--surface, var(--card)); border-radius:0 0 var(--agent-panel-radius) var(--agent-panel-radius); }

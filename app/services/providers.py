@@ -6,7 +6,10 @@ import firefly_json_io  # noqa: E402
 from . import secret_store, write_guard  # noqa: E402
 from .upstream_http import create_upstream_async_client as _create_upstream_async_client
 import logging
+from contextvars import ContextVar
+
 logger = logging.getLogger(__name__)
+_AGENT_BATCH_QUOTA_AUTH = ContextVar('agent_batch_quota_auth', default=None)
 
 def read_api_env_value(key: str) -> str:
     key = str(key or '').strip()
@@ -632,7 +635,8 @@ def api_headers(json_body=True, provider=None, model=''):
     if provider:
         if is_codex_provider(provider) or is_gemini_cli_provider(provider):
             raise HTTPException(status_code=400, detail='CLI 协议使用本机登录态，不需要 API Key。当前入口应走对应 CLI 专用通道。')
-        api_key = _svc._main('provider_env_key_value')(provider['id'])
+        pinned = _AGENT_BATCH_QUOTA_AUTH.get()
+        api_key = pinned[1] if pinned and pinned[0] == provider['id'] else _svc._main('provider_env_key_value')(provider['id'])
         provider_name = provider.get('name') or provider['id']
         if not api_key:
             raise HTTPException(status_code=400, detail=f'未配置 {provider_name} 的 API Key，请在 API 平台管理中填写。')

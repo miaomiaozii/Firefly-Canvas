@@ -772,7 +772,7 @@
         {
           "module": "app/services/agent_batch.py",
           "ordinal": 1,
-          "ast_sha256": "4c784802bea0f4ceec37656098febb7d540865e743f23327ec10bb799dfd73a1"
+          "ast_sha256": "e473631261ebc8dc16721b82fec032eb5349d9072a53927f1948b225b6da9d95"
         },
         {
           "module": "tests/test_ocr_api.py",
@@ -1224,7 +1224,7 @@
         {
           "module": "app/services/agent_batch.py",
           "ordinal": 1,
-          "ast_sha256": "f3199b25e554543a11af2503784cac4fa9c54a94274fa972606230b89456c620"
+          "ast_sha256": "5841ae86757dd3dfbd98220c0640e26a1fe6cf798773a41ecdfafc73a09e9303"
         },
         {
           "module": "tests/test_agent_ops_transform_393.py",

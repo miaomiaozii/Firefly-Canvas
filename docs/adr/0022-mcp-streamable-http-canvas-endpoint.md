@@ -321,6 +321,14 @@ ready 表示当前代次尚未提交且无待决应用；awaiting_confirmation �
 - 同一修订的旧门 resolution 与新门 pending 合为一次 JSONL append；在捕获到写入/flush 的 OSError 或短写时尝试 truncate 回原文件长度，再报告失败。**这是 handled-write rollback，不是 fsync、掉电安全、跨进程事务或 ACID**；rollback 本身也可能失败，seq 可有空洞。JSONL、RAM grant、额度和外部任务不构成跨介质 exactly-once；先审计后消费的进程崩溃可能留下未执行审计，不能据此自动重试未知副作用。
 - 批次/快照/门/token/grant 仅在本进程 RAM；读取/编辑不延寿，不新增 90 秒业务过期。重启、淘汰或真实 scope 失效后不从 JSONL 回放复活批准或执行，不承诺 RAM grant 重启续跑；真正持久任务仍按既有证据查询/结算。上述合同不代表真实模型、原生 SDK、付费服务商或完整 #412 UI 已验证。
 
+## 修订（#501）：批次暂停、跳过与付费恢复
+
+- 原 `generate.batch_status` REST/MCP 继续绑定原 Caller（含 MCP session）；同源人工 `GET /api/projects/{project}/agent-nodes/{actor}/batches/{batch}/status` 用 `X-Agent-Project` 和原 Store、节点、绑定、Origin 单独校验，不重造 Caller、不接收 SID。状态提供原任务诊断、`can_resume`、`can_skip`、`can_retry`、`retry_pending` 和独立 `retry_result`；对旧 scope 不恢复控制权。状态有意不跨进程重启恢复。
+- 额度拒绝后，只有持久历史证明该请求明确被拒、无输出/上游接受/未知副作用，且所有剩余已批准主路由及可用降级路由均有不同于已耗尽池的可信配置，才自动继续。证据缺失、一项不能证明独立，或重新准入时路由证明变化，均暂停；不凭服务商 ID、URL 或模型名推断，不自动重发被拒任务。
+- `FIREFLY_AGENT_BATCH_QUOTA_POOLS` 是**私有服务端部署配置**，默认无证明。它是 JSON 对象，键为当前服务端 `_digest((normalized_provider, routed_model, effective_bearer_header))`，值为运营确认的实际计费池 ID（1–80 位 ASCII 字母、数字、下划线或连字符）。同一共享额度的路由必须用同一 ID；配置变更或换凭证须重新证明。仅精确配置的 OpenAI 协议 `openai-json` 普通路由支持此证明；自动 profile、其他协议和缺少凭证时不自动继续。不得把真实凭证、此对象或指纹从部署环境复制到画布、API 回执、journal 或工单。
+- 同前缀的 `POST skip|resume|retry` 需要当前 `snapshot_sha256`，skip/retry 另带稳定 `item_id`。Skip 先审计再记录，已付费尝试的失败历史不变，对未准入行才标记 skipped；不启动或恢复队列。Resume 先审计、再仅准入原批准且零尝试的排队行；标准批不重复扣会话额度，谨慎批每项仍须独立花钱确认。来源、批准、授权或审计失效时不准入。
+- `retry` 复用原 Caller 的持久安全检查、输入校验和 lineage，返回独立 `awaiting_confirmation` 回执。`confirm-batch-retry-*` 仅允许同源带项目头的 HTTP 决策，即便浏览器 WS 已连接；先持久化批准，付费准入时再查有效性并独立计费。该任务的结果不覆盖原失败、不恢复批次，UI 也不把提交回执当作批准或生成成功。
+
 ## 修订（#485）：真实画布视口与应用回执
 
 显式取代上文 #243 遗留的 `VIEWPORT_STATE` 命令缓存及「投递即成功」：`viewport.focus/zoom/state` 沿原 REST/MCP 参数面，经现有项目 stats WebSocket 下发到唯一就绪的顶层画布窗口，不创建新的 Agent、会话或控制 WebSocket。普通 stats、旧页面、项目尚未加载/恢复和内嵌画布不算就绪；同项目多个就绪窗口 fail-closed，错误说明实际窗口数并提示关闭多余窗口。

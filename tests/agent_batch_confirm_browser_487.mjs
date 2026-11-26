@@ -371,11 +371,10 @@ export async function removeAllStopsBatch({ page, expect }) {
 export async function batchFailureCopy({ page, expect, capture = async () => {} }) {
     const actor = 'actor';
     const card = page.locator(`[data-agent-confirm="${actor}"]`);
-    const diagnosis = page.locator('[data-id="actor"] .agent-tui-msg-system');
     const recover = await start(page, actor, ['recover'], { fallback_models: ['fallback'] });
     try {
         await approve(card).click();
-        await expect(diagnosis.filter({ hasText: '切换至 fallback 后已生成' })).toBeVisible();
+        await expect(recoveryCard(page, actor, recover).getByText(/切换至 fallback 后已生成/)).toBeVisible();
         const recovered = (await status(page, actor, recover)).body;
         assert.equal(recovered.items[0].status, 'succeeded');
         assert.equal(recovered.items[0].attempts, 2);
@@ -384,9 +383,10 @@ export async function batchFailureCopy({ page, expect, capture = async () => {} 
     const quota = await start(page, actor, ['quota', 'b']);
     try {
         await approve(card).click();
-        const notice = diagnosis.filter({ hasText: '整个批次已暂停' });
+        const recovery = recoveryCard(page, actor, quota);
+        const notice = recovery.getByText('服务商额度用尽，整个批次已暂停。', { exact: true });
         await expect(notice).toBeVisible();
-        await expect(page.locator('[data-id="actor"]').getByRole('button', { name: /重试|跳过|恢复批次/ })).toHaveCount(0);
+        await expect(recovery.getByRole('button', { name: '恢复批次', exact: true })).toBeEnabled();
         const paused = (await status(page, actor, quota)).body;
         assert.equal(paused.status, 'paused');
         assert.equal(paused.reason, 'QUOTA_EXHAUSTED');
@@ -395,6 +395,184 @@ export async function batchFailureCopy({ page, expect, capture = async () => {} 
         await capture('diagnosis', notice);
         return { scenario: 'batchFailureCopy', paused };
     } finally { await stop(page, actor, quota); }
+}
+
+function recoveryCard(page, actor, batch) {
+    return page.locator(`[data-id="${actor}"] [data-agent-batch-status="${batch.batch_id}"]`);
+}
+
+export async function batchRecovery501({ page, expect, fixture, capture = async () => {} }) {
+    const actor = 'actor', project = new URL(page.url()).searchParams.get('project');
+    const batch = await start(page, actor, ['quota-501', 'b']);
+    const [first, second] = batch.preflight.items.map(item => item.item_id);
+    const snapshot = batch.preflight.snapshot_sha256;
+    const confirmPath = `/agent-nodes/${actor}/confirm`;
+    const batchPath = `/agent-nodes/${actor}/batches/${batch.batch_id}`;
+    const recovery = recoveryCard(page, actor, batch);
+    const heading = recovery.getByRole('heading');
+    const failed = recovery.locator(`[data-agent-batch-status-item="${first}"]`);
+    const queued = recovery.locator(`[data-agent-batch-status-item="${second}"]`);
+    const retry = failed.getByRole('button', { name: '申请付费重试', exact: true });
+    const skip = failed.getByRole('button', { name: '跳过', exact: true });
+    const resume = recovery.getByRole('button', { name: '恢复批次', exact: true });
+    const success = failed.getByText('独立付费重试已生成，原任务记录保留。', { exact: true });
+    const actorNode = page.locator(`[data-id="${actor}"]`);
+    const approvedRetry = actorNode.getByText('Agent 操作确认已批准：generate.retry', { exact: true });
+    const auditedApproval = actorNode.locator('.agent-tui-msg-system')
+        .getByText('Agent 操作确认已批准：generate.retry', { exact: true });
+    const read = async path => {
+        const result = await api(page, actor, path);
+        assert.equal(result.status, 200, JSON.stringify(result));
+        return result.body;
+    };
+    const readStatus = () => read(`${batchPath.slice(1)}/status`);
+    const audit = async () => (await read(`agent-nodes/${actor}/events`)).events.map(row => row.event)
+        .filter(event => event.batch_id === batch.batch_id);
+    const responseFor = path => page.waitForResponse(r => new URL(r.url()).pathname === `/api/projects/${project}${path}` && r.request().method() === 'POST');
+    const verifyReceipt = async (receipt, body) => {
+        assert.equal(receipt.status(), 200);
+        assert.equal(receipt.request().headers()['x-agent-project'], project);
+        assert.deepEqual(receipt.request().postDataJSON(), body);
+        return receipt.json();
+    };
+    const mutate = async (button, path, body) => {
+        const response = responseFor(path);
+        await button.click();
+        return verifyReceipt(await response, body);
+    };
+    const original = ({ status, attempts, task_id, failure }) => ({ status, attempts, task_id, failure });
+    const untouched = { status: 'queued', attempts: 0, task_id: null, failure: null };
+    const verifyPaused = data => {
+        assert.deepEqual([data.batch_id, data.snapshot_sha256, data.status, data.reason, data.spent],
+            [batch.batch_id, snapshot, 'paused', 'QUOTA_EXHAUSTED', 1]);
+        assert.deepEqual(data.approved_item_ids, [first, second]);
+        assert.deepEqual(original(data.items[1]), untouched);
+    };
+    try {
+        const confirm = page.locator(`section[data-agent-confirm="${actor}"]`);
+        await mutate(approve(confirm), confirmPath, decision(batch, true));
+        await expect(heading).toHaveText('批量生成状态 · 已暂停');
+        await expect(failed.getByText(/遇到服务商额度限制/)).toBeVisible();
+        await expect(queued.getByText('尚未启动', { exact: true })).toBeVisible();
+        await expect(queued.getByRole('button', { name: '申请付费重试', exact: true })).toHaveCount(0);
+        await expect(resume).toBeEnabled();
+        const paused = await readStatus();
+        verifyPaused(paused);
+        const failedBefore = original(paused.items[0]);
+        assert.equal(failedBefore.status, 'paused');
+        assert.equal(failedBefore.attempts, 1);
+        assert.ok(failedBefore.task_id);
+        assert.equal(failedBefore.failure.code, 'QUOTA_EXHAUSTED');
+        expect(await fixture.calls()).toEqual(['quota']);
+
+        const itemBody = { snapshot_sha256: snapshot, item_id: first };
+        const retryReceipt = await mutate(retry, `${batchPath}/retry`, itemBody);
+        assert.equal(retryReceipt.status, 'awaiting_confirmation');
+        assert.match(retryReceipt.confirm_id, /^confirm-batch-retry-/);
+        const retryEvents = async () => (await audit()).filter(event => event.confirm_id === retryReceipt.confirm_id);
+        const dialog = page.getByRole('alertdialog').filter({ hasText: '确认 Agent 操作' });
+        await expect(dialog.getByText(/重新生成 1 张图片（重新消耗外部额度）/)).toBeVisible();
+        await expect(confirm).toHaveCount(0);
+        const [opened] = await retryEvents();
+        assert.equal(opened.type, 'confirm');
+        assert.equal(opened.tool, 'generate.retry');
+        assert.equal(opened.item_id, first);
+        assert.equal(opened.params.task_id, failedBefore.task_id);
+        expect(await fixture.calls()).toEqual(['quota']);
+        await capture('retry-dialog', dialog);
+
+        // Fence the mock transport and provider independently: a decision is not an audit or a result.
+        const approved = dialog.getByRole('button', { name: '批准', exact: true });
+        await fixture.beforeRetryDecision?.();
+        const retryDecision = { confirm_id: retryReceipt.confirm_id, approved: true };
+        const decisionResponse = responseFor(confirmPath);
+        try {
+            await approved.click();
+            await expect.poll(fixture.decision).toEqual(retryDecision);
+            assert.deepEqual((await retryEvents()).map(event => event.type), ['confirm']);
+            await expect(approvedRetry).toHaveCount(0);
+            await expect(success).toHaveCount(0);
+            expect(await fixture.calls()).toEqual(['quota']);
+        } finally {
+            await fixture.releaseDecision();
+            void decisionResponse.catch(() => {});
+        }
+        const decisionReceipt = await verifyReceipt(await decisionResponse, retryDecision);
+        assert.deepEqual(decisionReceipt, { ok: true, ...retryDecision });
+        await expect.poll(async () => (await retryEvents()).map(event => event.type)).toEqual(['confirm', 'confirm_resolved']);
+        const [, accepted] = await retryEvents();
+        assert.deepEqual([accepted.tool, accepted.item_id, accepted.approved], ['generate.retry', first, true]);
+        await expect(auditedApproval).toBeVisible();
+        await expect.poll(fixture.calls).toEqual(['quota', 'retry']);
+        const pending = await readStatus();
+        verifyPaused(pending);
+        assert.equal(pending.items[0].retry_pending, true);
+        assert.equal(pending.items[0].retry_result, undefined);
+        await expect(failed.getByRole('status')).toHaveText('此项重试处理中，以付费确认和任务状态为准。');
+        await expect(success).toHaveCount(0);
+        await expect(resume).toHaveCount(0);
+        await capture('retry-pending', recovery);
+        await fixture.releaseRetry();
+
+        await expect(success).toBeVisible({ timeout: 10000 });
+        await expect(heading).toHaveText('批量生成状态 · 已暂停');
+        await expect(queued.getByText('尚未启动', { exact: true })).toBeVisible();
+        const retried = await readStatus();
+        verifyPaused(retried);
+        assert.deepEqual(original(retried.items[0]), failedBefore);
+        const newTask = retried.items[0].retry_result;
+        assert.equal(newTask.status, 'succeeded');
+        assert.ok(newTask.task_id && newTask.task_id !== failedBefore.task_id);
+        expect(await fixture.calls()).toEqual(['quota', 'retry']);
+        await expect(retry).toHaveCount(0);
+        await capture('retry-paused', recovery);
+
+        const skipped = await mutate(skip, `${batchPath}/skip`, itemBody);
+        verifyPaused(skipped);
+        assert.deepEqual(original(skipped.items[0]), failedBefore);
+        assert.deepEqual(skipped.items[0].retry_result, newTask);
+        assert.equal(skipped.items[0].user_skipped, true);
+        await expect(heading).toHaveText('批量生成状态 · 已暂停');
+        await expect(failed.getByText('已暂停 · 已手动跳过', { exact: true })).toBeVisible();
+        await expect(failed.getByText(/遇到服务商额度限制/)).toBeVisible();
+        await expect(skip).toHaveCount(0);
+        await expect(resume).toBeEnabled();
+        assert.deepEqual(await readStatus(), skipped);
+        expect(await fixture.calls()).toEqual(['quota', 'retry']);
+        await capture('skip-paused', recovery);
+
+        const resumed = await mutate(resume, `${batchPath}/resume`, { snapshot_sha256: snapshot });
+        assert.equal(resumed.status, 'running');
+        await expect(heading).toHaveText('批量生成状态 · 执行结束', { timeout: 10000 });
+        await expect(queued.getByText('已生成', { exact: true })).toBeVisible();
+        await expect(resume).toHaveCount(0);
+        const final = await readStatus();
+        assert.equal(final.status, 'done');
+        assert.equal(final.spent, 2);
+        assert.equal(final.approval_sha256, paused.approval_sha256);
+        assert.deepEqual(final.approved_item_ids, [first, second]);
+        assert.deepEqual(original(final.items[0]), failedBefore);
+        assert.equal(final.items[0].user_skipped, true);
+        assert.deepEqual(final.items[0].retry_result, newTask);
+        assert.equal(final.items[1].status, 'succeeded');
+        assert.equal(final.items[1].attempts, 1);
+        const taskIds = [failedBefore.task_id, newTask.task_id, final.items[1].task_id];
+        assert.ok(taskIds.every(Boolean));
+        assert.equal(new Set(taskIds).size, 3);
+        const tasks = await Promise.all(taskIds.map(id => read(`generate/tasks/${id}`)));
+        assert.equal(tasks[0].failure.code, 'QUOTA_EXHAUSTED');
+        assert.deepEqual(tasks.map(task => task.status), ['failed', 'succeeded', 'succeeded']);
+        expect(await fixture.calls()).toEqual(['quota', 'retry', 'queued']);
+        const recoveryAudit = (await audit()).filter(event => ['batch_item_skipped', 'batch_resumed'].includes(event.type));
+        assert.deepEqual(recoveryAudit.map(event => [event.type, event.item_id ?? event.item_ids]),
+            [['batch_item_skipped', first], ['batch_resumed', [second]]]);
+        await capture('resume-done', recovery);
+        return { scenario: 'batchRecovery501', retryReceipt, decisionReceipt, accepted, paused, pending, retried, skipped, resumed, final, recoveryAudit };
+    } finally {
+        await fixture.releaseDecision();
+        await fixture.releaseRetry();
+        await stop(page, actor, batch);
+    }
 }
 
 export async function pendingApprove({ page, expect, disconnect = false }) {
