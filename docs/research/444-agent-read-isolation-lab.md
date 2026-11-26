@@ -1,6 +1,6 @@
 # #444：Windows 合成读取隔离验证记录
 
-**结论：本轮没有候选通过严格读取隔离验收。** AppContainer、LPAC 均在启动阶段受阻；无共享 Windows VM 未运行。保留 [#423 写入合同](../design/agent-external-access-423.md)，不改产品、不开放严格模式。本文记录[桌面研究](444-agent-read-isolation.md)后的独立实测，不把研究中的候选判断当作运行结果。
+**结论：本轮没有候选通过严格读取隔离验收。** AppContainer、LPAC 均在启动阶段受阻；无共享 Windows VM 未运行。保留 [#423 写入合同](../design/agent-external-access-423.md)，不改产品、不开放严格模式。本文记录[桌面研究](444-agent-read-isolation.md)后的独立实测，不把研究中的候选判断当作运行结果。后续 [启动失败排查](444-appcontainer-start-diagnosis.md)复现了该错误，并记录了包组 ACL 与工作目录对照。
 
 ## 环境与范围
 
