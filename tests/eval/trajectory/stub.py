@@ -1,20 +1,23 @@
 """Inject at HTTP send, not at tools/jobs/adapters; no real provider can escape."""
 from __future__ import annotations
 
+import asyncio
 import base64
-from contextlib import ExitStack
+from contextlib import ExitStack, closing
 from email.parser import BytesParser
 from email.policy import default
 import hashlib
 import json
+from pathlib import Path
 import socket
+import sqlite3
 import struct
 import threading
 import time
 from unittest.mock import patch
 import zlib
 
-from tests.eval.trajectory.safety import redact
+from tests.eval.trajectory.safety import external_new, redact, safe_path
 
 ORIGIN = 'https://trajectory.invalid'
 MODELS = ('trajectory-image', 'trajectory-fallback')
@@ -23,6 +26,49 @@ FAULTS = {'normal', 'no_channel', 'transient', 'rate_limit', 'quota_exhausted', 
 
 class SafetyViolation(RuntimeError):
     pass
+
+
+class ImageBudget:
+    """One durable reservation per possible real image, shared by both E0 scenarios."""
+
+    COLUMNS = {'normal': 'normal_images', 'campaign': 'campaign_images'}
+    PER_SCENARIO = 10
+    TOTAL = 20
+
+    def __init__(self, path):
+        self.uri = safe_path(Path(path)).as_uri() + '?mode=rw'
+
+    @classmethod
+    def create(cls, path):
+        path = external_new(Path(path))
+        with path.open('xb'):
+            pass
+        budget = cls(path)
+        with closing(sqlite3.connect(budget.uri, uri=True)) as db, db:
+            db.execute('''CREATE TABLE image_budget (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                normal_images INTEGER NOT NULL CHECK (normal_images BETWEEN 0 AND 10),
+                campaign_images INTEGER NOT NULL CHECK (campaign_images BETWEEN 0 AND 10),
+                CHECK (normal_images + campaign_images <= 20))''')
+            db.execute('INSERT INTO image_budget VALUES (1, 0, 0)')
+        return budget
+
+    def reserve(self, scenario):
+        try:
+            column = self.COLUMNS[scenario]
+        except KeyError as exc:
+            raise SafetyViolation('Real image budget only supports E0 normal and campaign') from exc
+        # Commit before dispatch. A timeout may already have generated an image, so never refund it.
+        try:
+            with closing(sqlite3.connect(self.uri, uri=True, timeout=5)) as db, db:
+                updated = db.execute(f'''UPDATE image_budget SET {column} = {column} + 1
+                    WHERE id = 1 AND {column} < ? AND normal_images + campaign_images < ?''',
+                                     (self.PER_SCENARIO, self.TOTAL))
+                if not updated.rowcount and not db.execute('SELECT 1 FROM image_budget WHERE id = 1').fetchone():
+                    raise SafetyViolation('E0 image budget is missing its run record')
+                return updated.rowcount == 1
+        except sqlite3.Error as exc:
+            raise SafetyViolation('E0 image budget unavailable; no image dispatched') from exc
 
 
 def tiny_png():
@@ -86,10 +132,16 @@ class Journal:
             return row
 
 
-def request_fields(request):
+def request_fields(request, *, budgeted=False):
+    def unique_fields(pairs):
+        body = dict(pairs)
+        if len(body) != len(pairs):
+            raise SafetyViolation('Ambiguous image request fields')
+        return body
+
     content = request.content
     if request.headers.get('content-type', '').startswith('application/json'):
-        body = json.loads(content)
+        body = json.loads(content, object_pairs_hook=unique_fields if budgeted else None)
         refs = body.get('image', body.get('images', []))
         refs = refs if isinstance(refs, list) else [refs]
     elif request.headers.get('content-type', '').startswith('multipart/form-data'):
@@ -100,18 +152,32 @@ def request_fields(request):
             name = part.get_param('name', header='content-disposition')
             if part.get_filename():
                 refs.append(hashlib.sha256(part.get_payload(decode=True)).hexdigest())
+                if budgeted and name not in {'image', 'image[]', 'mask'}:
+                    body[name] = None
             else:
+                if budgeted and name in body:
+                    raise SafetyViolation('Ambiguous image request fields')
                 body[name] = part.get_payload(decode=True).decode('utf-8')
     else:
         raise SafetyViolation('Unexpected generation payload format')
-    return {key: body[key] for key in ('model', 'prompt', 'size', 'quality', 'aspect_ratio', 'n') if key in body} | {
+    fields = {key: body[key] for key in ('model', 'prompt', 'size', 'quality', 'aspect_ratio', 'n') if key in body} | {
         'reference_count': len(refs), 'body_sha256': hashlib.sha256(content).hexdigest(), 'body_bytes': len(content)}
+    if budgeted:
+        count = body.get('n', 1)
+        supported = {'model', 'prompt', 'size', 'quality', 'aspect_ratio', 'n', 'image', 'images', 'response_format'}
+        fields['single_image_payload'] = (type(count) in (int, str) and count in (1, '1') and body.keys() <= supported)
+    return fields
 
 
 class ProviderFence:
     """Installed only within a context; HTTP plus socket guards also cover unexpected generators."""
-    def __init__(self, scenario='normal', *, port=3194, limit=60, journal=None):
+    def __init__(self, scenario='normal', *, port=3194, limit=60, journal=None, image_budget=None, image_transport=None):
+        if (image_budget is None) != (image_transport is None) or (image_transport is not None and not callable(image_transport)):
+            raise ValueError('Image budget and one-shot transport must be supplied together')
+        if image_budget is not None and scenario not in ImageBudget.COLUMNS:
+            raise ValueError('Budgeted images only support E0 normal and campaign')
         self.faults, self.port = Faults(scenario, limit), port
+        self.image_budget, self.image_transport = image_budget, image_transport
         self.journal = journal or Journal()
         self.stack = ExitStack()
         self.installed = False
@@ -125,11 +191,26 @@ class ProviderFence:
         if request.url.host != 'trajectory.invalid' or request.method != 'POST' or request.url.path not in (
                 '/v1/images/generations', '/v1/images/edits'):
             return self.deny('Unexpected provider URL/method; zero real image/video network')
-        fields = request_fields(request)
+        if self.image_budget is not None and (request.url.scheme != 'https' or request.url.port is not None
+                or request.url.query or request.url.fragment or request.url.userinfo):
+            return self.deny('Unexpected budgeted image origin or URL parameters')
+        fields = request_fields(request, budgeted=self.image_budget is not None)
         if fields.get('model') not in MODELS or not fields.get('prompt'):
             return self.deny('Unexpected generator model or empty prompt')
         outcome = self.faults.next(fields['prompt'], fields['model'])
-        self.journal.emit('stub_request', method=request.method, path=request.url.path, request=fields, **outcome)
+        route = {}
+        if self.image_budget is not None:
+            if outcome['configured'] != 'normal':
+                route['image_route'] = 'fault_scenario'
+            elif not fields['single_image_payload']:
+                route['image_route'] = 'unsupported_image_payload'
+            elif not self.image_budget.reserve(self.faults.scenario):
+                route['image_route'] = 'budget_exhausted'
+            else:
+                self.journal.emit('image_dispatch', scenario=self.faults.scenario, images=1,
+                                  method=request.method, path=request.url.path, request=fields, **outcome)
+                return self.image_transport(request)
+        self.journal.emit('stub_request', method=request.method, path=request.url.path, request=fields, **outcome, **route)
         fault = outcome['injected']
         errors = {'no_channel': (503, 'model_not_found', '无可用渠道'),
                   'rate_limit': (429, 'rate_limit_exceeded', 'busy'),
@@ -160,6 +241,8 @@ class ProviderFence:
         async def async_send(client, request, **kwargs):
             if request.url.host == 'trajectory.invalid':
                 await request.aread()
+                if fence.image_budget is not None:
+                    return await asyncio.to_thread(fence.response, request)
                 return fence.response(request)
             if not fence.local(request.url.host, request.url.port):
                 return fence.deny('Non-owned HTTP network blocked')

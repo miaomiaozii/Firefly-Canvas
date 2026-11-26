@@ -50,6 +50,23 @@ and subprocess fences cover imports and TestClient startup too. Scoped patches, 
 loop policies are restored even on import failure. Synthetic inherited-directory sentinels
 must remain unchanged after the full pipeline. It does not assert real-model behavior.
 
+### E0 mixed-image budget preparation (offline only)
+
+`ProviderFence` can exercise an injected one-shot image transport under an `ImageBudget`.
+Create the ledger once at a new external path and reopen **the same file** for both
+`normal` and `campaign` workers. A durable reservation is committed before each
+single-image dispatch: maximum 10 per scenario and 20 total, including failed or
+indeterminate attempts. Do not recreate the ledger on restart. Exhaustion routes
+remaining requests to the existing stub, as do injected fault slots (including their
+retries) and payloads that cannot be proven to request a single image. A missing or
+unusable ledger blocks dispatch. `image_dispatch` records a reserved attempt, not a
+confirmed image. A future real transport must enforce one upstream request and one
+image per invocation, with no internal retries or redirects; it is not implemented here.
+
+The budget tests inject only an in-memory transport. No endpoint or credential is
+added, the network fence remains unchanged, and the current live CLI still uses only
+stubbed generation.
+
 ## Parent-only live run
 
 Do not run against an existing application or use a user's original authentication
