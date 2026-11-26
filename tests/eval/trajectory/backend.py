@@ -8,9 +8,9 @@ from pathlib import Path
 import subprocess
 import sys
 from unittest.mock import patch
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlsplit
 
-from tests.eval.trajectory.safety import digest, register_owned_secrets, save
+from tests.eval.trajectory.safety import SECRET_KEY, digest, register_owned_secrets, save
 from tests.eval.trajectory.stub import Journal, ProviderFence, SafetyViolation, providers
 
 
@@ -117,7 +117,16 @@ def serve(config):
     assert_isolated(root)
     journal = Journal(root / 'backend.jsonl')
     auth = root / 'private-codex/auth.json'
-    if auth.exists():
+    strata = config.get('strata') is True
+    if strata:
+        from tests.eval.trajectory.strata import ENDPOINT, MODEL, native_config
+
+        relay_url = config['strata_relay_url']
+        relay = urlsplit(relay_url)
+        if (config['model'] != MODEL or config['llm_base_url'] != ENDPOINT or auth.exists()
+                or not relay.port or relay_url != f'http://127.0.0.1:{relay.port}/v1'):
+            raise SafetyViolation('Strata requires credential-free, loopback-only native configuration')
+    elif auth.exists():
         register_owned_secrets(json.loads(auth.read_text(encoding='utf-8')))
     children = []
     with ExitStack() as stack:
@@ -160,7 +169,17 @@ def serve(config):
                 env = dict(kwargs.get('env') or os.environ)
                 if Path(env.get('CODEX_HOME', '')).resolve() != root / 'private-codex':
                     raise SafetyViolation('Native auth-home mismatch')
-                env['OPENAI_BASE_URL'] = config['llm_base_url']
+                if strata:
+                    if auth.exists():
+                        raise SafetyViolation('Credential file appeared in Strata native home')
+                    argv[insert:insert] = [part for item in native_config(relay_url) for part in ('-c', item)]
+                    env = {key: value for key, value in env.items()
+                           if not SECRET_KEY.search(key) and not key.upper().endswith('_PROXY')}
+                    # Non-loopback HTTP(S) cannot use the relay as a general or CONNECT proxy.
+                    proxy = relay_url.removesuffix('/v1')
+                    env.update(HTTP_PROXY=proxy, HTTPS_PROXY=proxy, ALL_PROXY=proxy, NO_PROXY='127.0.0.1,localhost')
+                else:
+                    env['OPENAI_BASE_URL'] = config['llm_base_url']
                 kwargs['env'] = env
                 super().__init__(argv, *args, **kwargs)
                 children.append(self)

@@ -70,23 +70,35 @@ def validate(args):
         raise ValueError('Only dedicated 3194/32xx ports are permitted; never user port 3000')
     if not args.model.strip() or not 30 <= args.timeout <= 3600 or not 1 <= args.max_provider_calls <= 100:
         raise ValueError('Explicit model and bounded timeout/provider attempts required')
-    endpoint = urlparse(args.llm_base_url)
-    if endpoint.scheme != 'https' or not endpoint.hostname or endpoint.username or endpoint.query or endpoint.fragment:
-        raise ValueError('Explicit HTTPS LLM endpoint without inline credentials required')
-    source = safe_path(args.auth_home_source)
     manifest = safe_path(args.fixtures_manifest)
     fixture_root = manifest.parent
-    if in_repository(source) or in_repository(fixture_root) or any(overlaps(source, item) for item in (REPO, Path('D:/Firefly-Canvas'), fixture_root)):
-        raise ValueError('Auth copy must be external and disjoint from source/fixtures')
-    if not args.ack_owned_auth_copy or (source / MARKER).read_text(encoding='utf-8').strip() != 'owned-readonly-auth-copy':
-        raise ValueError('Owned readonly auth-copy marker/acknowledgement required')
-    auth = safe_path(source / 'auth.json')
-    if not auth.is_file() or auth.stat().st_size == 0:
-        raise ValueError('Owned auth copy is unavailable; no fallback')
+    source = None
+    if getattr(args, 'strata', False):
+        from tests.eval.trajectory.strata import ENDPOINT, MODEL
+
+        if (args.llm_base_url != ENDPOINT or args.model != MODEL or args.auth_home_source is not None
+                or args.ack_owned_auth_copy or args.ack_paid_model_approval or args.host != 'codex'
+                or args.autonomy != 'standard' or args.scenario not in ('normal', 'campaign')):
+            raise ValueError('Strata evaluation requires the exact approved endpoint/model, standard E0 and no auth')
+        if in_repository(fixture_root):
+            raise ValueError('Strata fixtures must be external')
+    else:
+        endpoint = urlparse(args.llm_base_url)
+        if endpoint.scheme != 'https' or not endpoint.hostname or endpoint.username or endpoint.query or endpoint.fragment:
+            raise ValueError('Explicit HTTPS LLM endpoint without inline credentials required')
+        source = safe_path(args.auth_home_source)
+        if in_repository(source) or in_repository(fixture_root) or any(overlaps(source, item) for item in (REPO, Path('D:/Firefly-Canvas'), fixture_root)):
+            raise ValueError('Auth copy must be external and disjoint from source/fixtures')
+        if not args.ack_owned_auth_copy or (source / MARKER).read_text(encoding='utf-8').strip() != 'owned-readonly-auth-copy':
+            raise ValueError('Owned readonly auth-copy marker/acknowledgement required')
+        auth = safe_path(source / 'auth.json')
+        if not auth.is_file() or auth.stat().st_size == 0:
+            raise ValueError('Owned auth copy is unavailable; no fallback')
     native = Path(args.native_cli)
     if not native.is_absolute() or not native.is_file():
         raise ValueError('Explicit native CLI is unavailable; no PATH fallback')
-    output = external_new(args.output_root, (source, fixture_root, native.parent))
+    forbidden = (fixture_root, native.parent) + ((source,) if source is not None else ())
+    output = external_new(args.output_root, forbidden)
     return output, source, manifest
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
+from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
@@ -50,7 +51,7 @@ def prompt(attachment, product):
         '用 batch_status 等待真实结果，最后汇报成功/失败/暂停数量和原因，不把桩图质量当真实生图质量。')
 
 
-async def drive(config, root):
+async def drive(config, root, relay=None):
     import httpx
     from tests.eval.trajectory.stub import Journal
     journal = Journal(root / 'driver.jsonl')
@@ -92,6 +93,8 @@ async def drive(config, root):
             save(root / 'prompt-receipt.json', await request('POST', prefix + '/prompt',
                  json={'message': text, 'attachments': [attachment['id']]}))
             while time.monotonic() < deadline:
+                if relay is not None and relay.failure:
+                    raise RuntimeError(relay.failure)
                 data = await request('GET', prefix + f'/events?since={cursor}')
                 cursor = data['last_seq']
                 for record in data['events']:
@@ -227,12 +230,20 @@ def stop_tree(child, receipts=()):
 
 
 def run(args):
-    # Stubbed media generation does not make native LLM inference free.
-    if not getattr(args, 'ack_paid_model_approval', False):
+    strata = getattr(args, 'strata', False)
+    if strata:
+        from tests.eval.trajectory.strata import ENDPOINT, MODEL, ResponsesRelay, require_strata_fixture
+
+        args.model = getattr(args, 'model', MODEL)
+        args.llm_base_url = getattr(args, 'llm_base_url', ENDPOINT)
+    elif not getattr(args, 'ack_paid_model_approval', False):
+        # Stubbed media generation does not make native LLM inference free.
         raise ValueError('Separate explicit user paid-model approval is required; this batch is offline only')
     # Validate all inputs, including manifest hashes, before creating any runtime directories.
     import psutil  # noqa: F401 -- cleanup is a mandatory precondition, not a best-effort fallback.
     root, source, manifest = validate(args)
+    if strata:
+        require_strata_fixture(manifest, args.product_render)
     book, render = e0_inputs(manifest, args.product_render)
     with socket.socket() as probe:
         probe.bind(('127.0.0.1', args.port))
@@ -244,7 +255,8 @@ def run(args):
               'port': args.port, 'timeout': args.timeout, 'max_provider_calls': args.max_provider_calls,
               'workbook_path': str(manifest.parent / book['relative_path']),
               'render_path': str(manifest.parent / render['relative_path'])}
-    save(root / 'config.json', config)
+    if strata:
+        config['strata'] = True
     save(root / 'provenance.json', {'schema': 1, 'kind': 'live-native-model', 'execution_requested': True,
          'host': args.host, 'requested_model': args.model, 'scenario': args.scenario,
          'native_cli': str(args.native_cli.resolve()), 'native_cli_sha256': digest(args.native_cli),
@@ -257,15 +269,24 @@ def run(args):
          'isolation': {key: str(root / relative) for key, relative in folders.items()},
          'policy': 'One literal 15-task plan and one 15-image batch approval; one post-settlement report continuation; reject all others',
          'question_coverage': 'structured-only; natural-language questions need human adjudication',
-         'auth': 'explicit owned copy; only auth.json copied; no config/env credential fallback'})
+         'auth': ('none; fixed unsigned Strata Responses relay, no credential files' if strata else
+                  'explicit owned copy; only auth.json copied; no config/env credential fallback'),
+         'real_generated_images': 0})
     shutil.copyfile(GOLD, root / 'E0-gold.json')
     shutil.copyfile(manifest, root / 'fixture-manifest.json')
     env.update(FIREFLY_PORT=str(args.port), FIREFLY_AGENT_API_BASE=f'http://127.0.0.1:{args.port}')
     child = None
+    relay = None
     result = 1
+    contexts = ExitStack()
     try:
-        register_owned_secrets(json.loads((source / 'auth.json').read_text(encoding='utf-8')))
-        shutil.copyfile(source / 'auth.json', root / 'private-codex/auth.json')
+        if strata:
+            relay = contexts.enter_context(ResponsesRelay(root, limit=args.max_provider_calls, timeout=min(120, args.timeout)))
+            config['strata_relay_url'] = relay.base_url
+        else:
+            register_owned_secrets(json.loads((source / 'auth.json').read_text(encoding='utf-8')))
+            shutil.copyfile(source / 'auth.json', root / 'private-codex/auth.json')
+        save(root / 'config.json', config)
         child = subprocess.Popen([sys.executable, '-B', '-m', 'tests.eval.trajectory.backend', str(root / 'config.json')],
                                  cwd=REPO, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  text=True, encoding='utf-8', errors='replace')
@@ -278,7 +299,7 @@ def run(args):
                     log.flush()
         reader = threading.Thread(target=drain, daemon=True)
         reader.start()
-        asyncio.run(drive(config, root))
+        asyncio.run(drive(config, root, relay))
         result = 0
     except Exception as exc:
         save(root / 'unavailable.json', {'available': False, 'reason': str(exc), 'type': type(exc).__name__})
@@ -289,7 +310,10 @@ def run(args):
             receipts = [row for row in read_jsonl(root / 'backend.jsonl', allow_partial_final_line=True)
                         if row['kind'] == 'native_spawn']
         finally:
-            cleanup = stop_tree(child, receipts) if child else {'server_exit': None, 'remaining_owned_pids': []}
+            try:
+                cleanup = stop_tree(child, receipts) if child else {'server_exit': None, 'remaining_owned_pids': []}
+            finally:
+                contexts.close()
         if child:
             reader.join(timeout=10)
             child.stdout.close()

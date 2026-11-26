@@ -130,6 +130,24 @@ image/video generation is always local, never a real paid call.
   redacted raw host/native/tool/stub events, final snapshots/jobs, diagnostics, manifests,
   gold, hashes and receipts. Auth content is never copied into evidence/logs.
 
+### `live-strata`: approved credential-free E0 only
+
+Use this separate entry only for the approved nonpaid Strata evaluation. It fixes Codex,
+standard autonomy, the reviewed #404 manifest SHA256 and named E0 render, and permits
+only `normal` or `campaign`. Keep one fresh evidence root and run each at most once
+under this approval. Do not retry or run the other scenario after a 401/403.
+
+```powershell
+python tools/run_agent_eval.py live-strata --native-cli $codexExe --scenario normal --port 3232 --output-root D:/ff-qa/405-strata-normal-NEW --fixtures-manifest D:/ff-qa/404-405-326/fixtures-v1/manifest.json --product-render 'E0/renders/右侧.png'
+```
+
+Codex starts with a fresh credential-free home and uses a loopback relay. The relay
+forwards only unsigned `POST /v1/responses` for `flash-next-turbo-iq3s` to the fixed
+`http://192.168.10.147:8080/v1`, and refuses redirects, auth headers, and exhausted
+request budgets. `--max-provider-calls` caps both the real Responses requests and
+stub dispatches independently. The usual `live` mode keeps its HTTPS and owned-auth
+requirements. Neither mode sends media generation to a real image/video provider.
+
 ## Evidence and honest metrics
 
 `report.json` includes live-vs-simulation provenance, actual native spawn/argv/model

@@ -4752,7 +4752,7 @@
         {
           "module": "tests/eval/trajectory/live.py",
           "ordinal": 1,
-          "ast_sha256": "97a93f6897ced75042541db870332a2ff834847da3f839392bacbb4bd2e545b0"
+          "ast_sha256": "017a387d37c7b097cf2c322edcf698c22887049f89c3488fc946d46b4b51c6ed"
         },
         {
           "module": "tests/long_content_native_browser.py",
@@ -5497,7 +5497,7 @@
         {
           "module": "tests/eval/trajectory/backend.py",
           "ordinal": 1,
-          "ast_sha256": "ef865da7810f994d1c15221e58f16cbda01c3fd7e36600df7468ef6138ee658c"
+          "ast_sha256": "32b66e51710a9ebe823121b26d0383c930585911bf13bc19274d5b7d69068dff"
         },
         {
           "module": "tests/tabbit_e2e_evidence.py",
@@ -6238,7 +6238,7 @@
         {
           "module": "tests/eval/trajectory/safety.py",
           "ordinal": 1,
-          "ast_sha256": "07d5944b656f3d13fd5622245a934faea8e186191bfea362f0321c39c3ba27cf"
+          "ast_sha256": "ef6acf219655a123e98fffbae8240bef073c74f3074358b63015927e5e53e612"
         },
         {
           "module": "tools/composer_flow_evidence.py",
