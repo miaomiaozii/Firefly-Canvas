@@ -2845,18 +2845,25 @@ body.prompt-flow-active #world > :not(#composer) { visibility:hidden; pointer-ev
 .smart-settings-panel,
 .image-edit-panel { border-radius:14px; border-color:var(--line); box-shadow:var(--shadow-overlay); }
 
+/* #505: collapse text, not the controls or their popovers. Only the control minima can trigger a second row. */
+.composer.image-params-composer .dynamic-params { width:100%; flex-flow:column nowrap; align-items:stretch; }
+.image-param-controls { display:flex; align-items:center; gap:6px; }
+.image-param-group { display:contents; }
+.composer.image-params-composer .image-param-group > .smart-control { flex:0 100 auto; min-width:44px; }
+.composer.image-params-composer .image-param-group > .model-control { flex-shrink:1; }
+.composer.image-params-composer .image-param-group > :is(.count-control,.size-picker-control) { flex-shrink:0; min-width:max-content; }
+.composer.image-params-composer .image-param-group > .smart-control > .smart-pill { max-width:100%; min-width:100%; overflow:visible; }
+.composer.image-params-composer .image-param-group > .smart-control > .smart-pill > svg { flex:none; }
+.composer.image-params-composer .image-param-group > :not(.size-picker-control) > .smart-pill > span { min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.composer.image-params-composer .size-picker-value { overflow:visible; }
+.composer.image-params-composer .provider-control > .smart-popover,
+.image-param-two-lines .size-picker-control > .smart-popover { left:0; translate:50% 0; }
+.image-param-controls.image-param-two-lines { flex-direction:column; align-items:stretch; }
+.image-param-two-lines > .image-param-group { display:flex; align-items:center; gap:inherit; }
 @media (min-width:760px) {
-    .composer:has(#apiKindToggle [data-kind="image"].active) { width:min(720px, calc(100vw - 36px)); min-width:min(720px, calc(100vw - 36px)); max-width:min(720px, calc(100vw - 36px)); }
-    .composer:has(#apiKindToggle [data-kind="image"].active) .param-row,
-    .composer:has(#apiKindToggle [data-kind="image"].active) .dynamic-params { flex-wrap:wrap; }
-    .composer:has(#apiKindToggle [data-kind="image"].active) .dynamic-params { gap:6px; overflow:visible; }
-    .composer:has(#apiKindToggle [data-kind="image"].active) .dynamic-params > * { flex:0 0 auto; width:auto; min-width:max-content; }
-    .composer:has(#apiKindToggle [data-kind="image"].active) .dynamic-params > .smart-control > .smart-pill { width:auto; max-width:none; overflow:visible; text-overflow:clip; }
-    .composer:has(#apiKindToggle [data-kind="image"].active) .size-picker-label,
-    .composer:has(#apiKindToggle [data-kind="image"].active) .size-picker-type,
-    .composer:has(#apiKindToggle [data-kind="image"].active) .size-picker-value { overflow:visible; max-width:none; text-overflow:clip; }
-    .composer:has(#apiKindToggle [data-kind="image"].active) .composer-actions { gap:4px; }
-    .composer:has(#apiKindToggle [data-kind="image"].active) .composer-actions .run-btn { padding:0 8px; white-space:nowrap; }
+    .composer.image-params-composer { width:min(720px, calc(100vw - 36px)); min-width:min(720px, calc(100vw - 36px)); max-width:min(720px, calc(100vw - 36px)); }
+    .composer.image-params-composer .composer-actions { gap:4px; }
+    .composer.image-params-composer .composer-actions .run-btn { padding:0 8px; white-space:nowrap; }
 }
 
 @media (max-width:1099px) {
@@ -2871,7 +2878,7 @@ body.prompt-flow-active #world > :not(#composer) { visibility:hidden; pointer-ev
 }
 @media (min-width:760px) and (max-width:900px) {
     .composer,
-    .composer:has(#apiKindToggle [data-kind="image"].active) { width:580px; min-width:580px; max-width:580px; }
+    .composer.image-params-composer { width:580px; min-width:580px; max-width:580px; }
 }
 @media (max-width:759px) {
     .composer { width:calc(100vw - 24px); min-width:0; max-width:calc(100vw - 24px); }

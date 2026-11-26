@@ -2976,6 +2976,8 @@ function renderDynamicParams(){
     clearVolcengineSelectionOutsideVolcengine(settings);
     engineSelect.value = settings.engine;
     syncApiKindToggleVisibility();
+    const imageParams = isApiLikeEngine(settings.engine) && settings.apiKind === 'image';
+    composer?.classList.toggle('image-params-composer', imageParams);
     if(settings.engine === 'api'){
         if(settings.apiKind === 'video') renderApiVideoParams();
         else renderApiParams();
@@ -2990,9 +2992,29 @@ function renderDynamicParams(){
     bindDynamicParams();
     restoreOpenControl(keepOpen);
     restoreDynamicParamsScroll(scrollState);
+    if(imageParams) syncImageParamRows();
     updatePromptPlaceholder();
     if(!isApiLikeEngine(settings.engine) || settings.apiKind === 'video') persistActiveSmartSettings();
     if(activeComposerNode()?.id) requestAnimationFrame(() => positionComposerForNode(activeComposerNode()));
+}
+let imageParamResizeObserver;
+function syncImageParamRows(){
+    const rows = dynamicParams.querySelector('.image-param-controls');
+    if(!rows?.clientWidth) return;
+    const controls = [...rows.querySelectorAll('.image-param-group > .smart-control')];
+    const minima = controls.map(control => {
+        const style = getComputedStyle(control);
+        return parseFloat(style.minWidth) || control.offsetWidth;
+    });
+    const gap = parseFloat(getComputedStyle(rows).columnGap) || 0;
+    const minimum = minima.reduce((sum, width) => sum + width, 0) + gap * Math.max(0, minima.length - 1);
+    rows.classList.toggle('image-param-two-lines', minimum > rows.clientWidth);
+    if(!imageParamResizeObserver && typeof ResizeObserver !== 'undefined'){
+        imageParamResizeObserver = new ResizeObserver(() => {
+            if(composer?.classList.contains('image-params-composer')) syncImageParamRows();
+        });
+        imageParamResizeObserver.observe(dynamicParams);
+    }
 }
 function renderApiParams(){
     const selection = imageProviderSelection();
@@ -3008,13 +3030,19 @@ function renderApiParams(){
         normalizeApiSizeSettings('');
         dynamicParams.innerHTML = `
             ${renderImageRoutingControl()}
-            ${renderProviderControl(providers, selection.providerName)}
-            ${renderModelControl(models)}
-            ${renderCountVisualControl()}
-            ${renderSizePickerControl('', true)}
-            ${renderAnglePresetControl()}
-            ${renderQualityControl()}
-            ${volcengine ? '' : renderOutputFormatControl()}
+            <div class="image-param-controls">
+                <div class="image-param-group">
+                    ${renderProviderControl(providers, selection.providerName)}
+                    ${renderModelControl(models)}
+                    ${renderCountVisualControl()}
+                </div>
+                <div class="image-param-group">
+                    ${renderSizePickerControl('', true)}
+                    ${renderAnglePresetControl()}
+                    ${renderQualityControl()}
+                    ${volcengine ? '' : renderOutputFormatControl()}
+                </div>
+            </div>
             ${notices.length ? `<div class="image-provider-notice" role="status">${notices.map(text => `<div>${escapeHtml(text)}</div>`).join('')}</div>` : ''}
         `;
     } finally {
@@ -3231,9 +3259,14 @@ function videoAspectIconClass(value){
     if(value === 'keep_ratio' || value === 'adaptive') return 'r-source';
     return '';
 }
+function imageParamNameAttributes(label){
+    const text = escapeHtml(label);
+    return `title="${text}" aria-label="${text}"`;
+}
 function renderProviderControl(providers, providerName){
+    const label = providerName || tr('smart.platform');
     return `<div class="smart-control provider-control">
-        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-plug-zap"/></svg><span class="sub">${escapeHtml(providerName || tr('smart.platform'))}</span></button>
+        <button class="smart-pill" type="button" ${imageParamNameAttributes(label)}><svg class="ico" aria-hidden="true"><use href="#i-plug-zap"/></svg><span class="sub">${escapeHtml(label)}</span></button>
         <div class="smart-popover compact-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.apiPlatform'))}</div>
             <div class="model-list">
@@ -3255,7 +3288,7 @@ function renderAnglePresetControl(){
     const value = options.some(([key]) => key === settings.anglePreset) ? settings.anglePreset : 'none';
     const label = Object.fromEntries(options)[value];
     return `<div class="smart-control angle-preset-control">
-        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-boxes"/></svg><span>${escapeHtml(label)}</span><svg class="ico pill-caret" aria-hidden="true"><use href="#i-chevron-down"/></svg></button>
+        <button class="smart-pill" type="button" ${imageParamNameAttributes(label)}><svg class="ico" aria-hidden="true"><use href="#i-boxes"/></svg><span>${escapeHtml(label)}</span><svg class="ico pill-caret" aria-hidden="true"><use href="#i-chevron-down"/></svg></button>
         <div class="smart-popover compact-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.angleTitle'))}</div>
             <div class="model-list">
@@ -3266,8 +3299,9 @@ function renderAnglePresetControl(){
 }
 function renderModelControl(models){
     const labelFor = providerModelNameLookup(apiProviderById(settings.provider_id));
+    const label = labelFor(settings.model) || tr('smart.model');
     return `<div class="smart-control model-control">
-        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-generate"/></svg><span class="sub">${escapeHtml(labelFor(settings.model) || tr('smart.model'))}</span></button>
+        <button class="smart-pill" type="button" ${imageParamNameAttributes(label)}><svg class="ico" aria-hidden="true"><use href="#i-generate"/></svg><span class="sub">${escapeHtml(label)}</span></button>
         <div class="smart-popover compact-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.imageModel'))}</div>
             ${searchableModelOptions(models, 'model', settings.model, tr('smart.noImageModel'), labelFor)}
@@ -3400,7 +3434,7 @@ function renderOutputFormatControl(){
     if(!param || !Array.isArray(param.options)) return '';
     const value = apiImageOutputFormat(settings);
     return `<div class="smart-control output-format-control">
-        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-sliders-horizontal"/></svg><span>${escapeHtml(value.toUpperCase())}</span></button>
+        <button class="smart-pill" type="button" ${imageParamNameAttributes(value.toUpperCase())}><svg class="ico" aria-hidden="true"><use href="#i-sliders-horizontal"/></svg><span>${escapeHtml(value.toUpperCase())}</span></button>
         <div class="smart-popover compact-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.outputFormat'))}</div>
             <div class="seg-row">
@@ -3414,7 +3448,7 @@ function renderQualityControl(){
     const value = settings.quality || 'auto';
     const labels = {auto:tr('smart.qualityAuto'), low:tr('smart.qualityLow'), medium:tr('smart.qualityMid'), high:tr('smart.qualityHigh')};
     return `<div class="smart-control quality-control">
-        <button class="smart-pill" type="button"><svg class="ico" aria-hidden="true"><use href="#i-sliders-horizontal"/></svg><span>${escapeHtml(labels[value] || value)}</span></button>
+        <button class="smart-pill" type="button" ${imageParamNameAttributes(labels[value] || value)}><svg class="ico" aria-hidden="true"><use href="#i-sliders-horizontal"/></svg><span>${escapeHtml(labels[value] || value)}</span></button>
         <div class="smart-popover compact-popover">
             <div class="smart-popover-title">${escapeHtml(tr('smart.quality'))}</div>
             <div class="seg-row">
@@ -13168,9 +13202,21 @@ function positionComposerForNode(node){
     composer.style.removeProperty('width');
     composer.style.removeProperty('max-width');
     const composerWidth = Math.max(1, Number(composer.offsetWidth || modelRect.width || 1));
-    // Keep the ordinary Composer in world coordinates so node and editor share
-    // one transform. Viewport zoom/pan must never flip or clamp it elsewhere.
-    composer.style.left = `${modelRect.x + (modelRect.width - composerWidth) / 2}px`;
+    let left = modelRect.x + (modelRect.width - composerWidth) / 2;
+    if(composer.classList.contains('image-params-composer')){
+        const bounds = shell.getBoundingClientRect();
+        const worldBox = world.getBoundingClientRect();
+        const scale = worldBox.width / world.offsetWidth;
+        if(scale > 0){
+            const viewLeft = (bounds.left - worldBox.left) / scale;
+            const viewRight = (bounds.right - worldBox.left) / scale;
+            // Keep following the node in world coordinates; only fit a composer that can fully fit beside a visible node.
+            if(composerWidth <= viewRight - viewLeft && modelRect.x + modelRect.width > viewLeft && modelRect.x < viewRight){
+                left = Math.max(viewLeft, Math.min(left, viewRight - composerWidth));
+            }
+        }
+    }
+    composer.style.left = `${left}px`;
     composer.style.top = `${modelRect.y + modelRect.height + 14}px`;
 }
 let composerUpdateTimer = 0;
@@ -16422,9 +16468,9 @@ window.addEventListener('keydown', e => {
         void manualSaveCanvas();
         return;
     }
-    // #253：Tab = 单个选中节点就地快速重命名（仅恰好选中 1 个节点时拦截 Tab，
-    // 否则保持正常焦点移动；模态框打开/可编辑目标内不触发）。
-    if(e.key === 'Tab' && !e.shiftKey && !isEditableTarget(e.target)){
+    // #253 keeps Tab-to-rename on the canvas, but the image composer needs native focus traversal (#505).
+    if(e.key === 'Tab' && !e.shiftKey && !isEditableTarget(e.target)
+        && !(e.target instanceof Element && e.target.closest('.image-params-composer'))){
         const tabIds = selectedNodeIds();
         if(tabIds.length !== 1) return;
         if(document.getElementById('imageEditModal')?.classList.contains('open')) return;
