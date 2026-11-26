@@ -3,6 +3,7 @@ import ast
 import asyncio
 import base64
 import copy
+from contextvars import ContextVar
 import gzip
 import hashlib
 import importlib.util
@@ -514,7 +515,8 @@ def test_unknown_cap_413_ladder_max_four_resubmits_no_writeback(runtime, monkeyp
 
 
 def test_ordinary_accepted_task_keeps_runtime_profile_for_get_only_poll(runtime, monkeypatch):
-    load_soon_runtime_ast(BASE / 'app/services/providers.py', {'api_headers'}, runtime)
+    runtime['ContextVar'] = ContextVar
+    load_soon_runtime_ast(BASE / 'app/services/providers.py', {'_AGENT_BATCH_QUOTA_AUTH', 'api_headers'}, runtime)
     load_soon_runtime_ast(BASE / 'app/services/generation.py', {'image_task_url_for_provider', 'fetch_image_task_payload',
          'wait_for_image_task'}, runtime)
     load_soon_runtime_ast(BASE / 'app/core.py', {'image_task_data', 'image_task_status', 'httpx_request_with_transient_retries',
