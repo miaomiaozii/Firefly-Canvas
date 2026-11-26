@@ -3,6 +3,7 @@ from collections import Counter, OrderedDict
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
+import json
 import os
 from pathlib import Path
 import re
@@ -32,6 +33,11 @@ ARCHIVE_TYPE = "confirmed_agent_attachment"
 _TTL = 1800
 _CACHE = WeakKeyDictionary()
 _LOCK = Lock()
+
+# Leave space for the host envelope under Codex's 10,000-byte fallback policy (#405).
+MCP_PREVIEW_BUDGET = 8_192
+_MCP_PAGE_SIZE = 15
+_MCP_TASK_CHUNK_SIZE = 1_000
 
 
 def file_not_allowed():
@@ -202,6 +208,71 @@ class Preview:
             "suggested_refs": [], "source": {"attachment_id": self.attachment_id, "name": self.name,
                                                       "sheet": self.sheet, "sha256": self.digest},
         }}
+
+
+def _preview_json(value):
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _preview_label(label, budget):
+    prefix = label[:budget]
+    while len(_preview_json(prefix).encode("utf-8")) > budget + 2:
+        prefix = prefix[:-1]
+    return prefix
+
+
+def compact_preview(response, offset=0):
+    tasks = response["preview"]["tasks"]
+    page = tasks[offset:offset + _MCP_PAGE_SIZE]
+    items = []
+    for task in page:
+        sheet, _, row = task["source_row"].rpartition("!")
+        items.append({
+            "task_id": task["task_id"], "selected": task["selected"],
+            "name": _preview_label(task["name"], 128), "section": _preview_label(task["section"], 96),
+            "source_row": f"{_preview_label(sheet, 96)}!{_preview_label(row, 16)}",
+        })
+    application = response["application"]
+    summary = {key: application[key] for key in ("state", "generation", "confirm_id") if key in application}
+    receipt = application["receipt"]
+    summary["receipt"] = None if receipt is None else {
+        "generation": receipt["generation"], "applied_by": receipt["applied_by"],
+        "result": {"op_id": receipt["result"]["op_id"]},
+    }
+    if "error" in application:
+        summary["error"] = {"code": application["error"]["code"]}
+    return {"plan_id": response["plan_id"], "generation": response["generation"],
+            "apply_via": response["apply_via"], "application": summary, "preview": {
+                "view": "compact", "read_tool": "plan.read_preview", "task_count": len(tasks),
+                "offset": offset, "tasks": items,
+                "next_offset": offset + len(page) if offset + len(page) < len(tasks) else None,
+            }}
+
+
+def bounded_preview_read(preview, args, records):
+    tasks = preview.data["tasks"]
+    offset = args.get("offset", 0)
+    if type(offset) is not int or offset < 0:
+        raise invalid("offset must be a nonnegative integer")
+    if "task_id" not in args:
+        if offset >= len(tasks):
+            raise invalid("offset is outside this preview")
+        return compact_preview(preview.response(records), offset)
+
+    task = _task(tasks, text(args["task_id"], "task_id", 128))
+    serialized = _preview_json(task)
+    result = {"plan_id": preview.plan_id, "generation": preview.generation}
+    if len(serialized.encode("utf-8")) <= MCP_PREVIEW_BUDGET - 512:
+        if offset:
+            raise invalid("offset is outside this task")
+        return {**result, "preview": {"view": "task", "task": task, "next_offset": None}}
+    if offset >= len(serialized):
+        raise invalid("offset is outside this task")
+    # A page of serialized JSON stays bounded even after escaping it into the outer JSON string.
+    chunk = serialized[offset:offset + _MCP_TASK_CHUNK_SIZE]
+    end = offset + len(chunk)
+    return {**result, "preview": {"view": "task_json", "task_id": task["task_id"], "offset": offset,
+                                  "task_json": chunk, "next_offset": end if end < len(serialized) else None}}
 
 
 def parse_workbook(content, sheet):

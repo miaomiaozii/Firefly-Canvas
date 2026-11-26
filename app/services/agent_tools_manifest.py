@@ -104,7 +104,7 @@ UPDATABLE_NODE_FIELDS = frozenset({
     "title", "text", "prompt", "x", "y", "w", "h", "status", "runSettings",
 })
 
-PLAN_TOOLS = frozenset({"plan.import_excel", "plan.edit_preview", "plan.apply"})
+PLAN_TOOLS = frozenset({"plan.import_excel", "plan.edit_preview", "plan.read_preview", "plan.apply"})
 _PLAN_ID = {"type": "string", "minLength": 1, "maxLength": 128}
 _PLAN_GENERATION = {"type": "integer", "minimum": 1, "description": "最近预览的 generation；传入时旧版本会被拒绝"}
 _ATTACHMENT_ID = {"type": "string", "minLength": 32, "maxLength": 32, "description": "已发送到当前 Agent 会话的附件 ID，不是文件路径或 asset_id"}
@@ -131,6 +131,9 @@ TOOLS = [
         ops={"type": "array", "minItems": 1, "maxItems": 200, "items": _layout_schema(
             ["task_id"], task_id=_PLAN_ID, select={"type": "boolean"}, rename={"type": "string", "maxLength": 200},
             merge_into=_PLAN_ID, set_section={"type": "string", "maxLength": 200})})},
+    {"name": "plan.read_preview", "description": "只读当前会话及原附件仍有效的方案版本。默认最多返回 15 个任务摘要；用 next_offset 续读。传 task_id 读取完整单项；超长单项按 next_offset 拼接 task_json 后解析。next_offset 为 null 表示结束。", "inputSchema": _layout_schema(
+        ["plan_id", "generation"], plan_id=_PLAN_ID, generation=_PLAN_GENERATION, task_id=_PLAN_ID,
+        offset={"type": "integer", "minimum": 0})},
     {"name": "plan.apply", "description": "浏览器批准确切任务（三档均须确认）后，按板块一次提交缺失任务。提示词通过 input 边连入空生图槽，不生成、不导入或连接任何参考图。缺产品图是待用户补齐的状态。只撤销本批可用返回的 op_id；task_ids 省略时使用已勾选任务。超同步窗口返回 CONFIRM_PENDING / awaiting_confirmation 及 confirm_id，原执行保留，批准后仍复核输入、归属与 CAS。真正拒绝为 PLAN_NOT_CONFIRMED，陈旧或失效按 PLAN_STALE 等真实错误暂停，不保证无条件续跑。已回待决的有效 hosted 原用户逻辑轮接收真实终态；外部 MCP 不注入宿主，通过原通道查询预览应用回执。不承诺重启续跑。", "inputSchema": _layout_schema(
         ["plan_id"], plan_id=_PLAN_ID, generation=_PLAN_GENERATION, layout=_layout_enum("by_section"),
         task_ids={"type": "array", "items": _PLAN_ID, "maxItems": 200, "uniqueItems": True})},

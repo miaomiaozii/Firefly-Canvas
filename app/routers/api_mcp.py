@@ -79,7 +79,7 @@ from app.routers.api_agent_tools import (
     view_media_core,
     wait_for_task_core,
 )
-from app.services import agent_batch
+from app.services import agent_batch, agent_plan
 from app.services.agent_node_state import ownership_fields
 from app.services.agent_ops_context import agent_ops_scope
 from app.services.canvas_view import VIEW_SLOW_TIMEOUT_S
@@ -887,10 +887,12 @@ async def _tools_call(payload: dict, msg_id, sid: str, request: Request) -> Resp
         "ok": True,
         "duration_ms": int((time.time() - started) * 1000),
     })
-    return _rpc_response(
-        200, msg_id, sid,
-        result={"content": _tool_result_content_blocks(result), "isError": False},
-    )
+    content = _tool_result_content_blocks(result)
+    envelope = {"content": content, "isError": False}
+    if name in ("plan.import_excel", "plan.edit_preview") and len(content[0]["text"].encode("utf-8")) > agent_plan.MCP_PREVIEW_BUDGET:
+        # Codex consumes structuredContent first; existing text clients still receive the literal preview (#405).
+        envelope["structuredContent"] = agent_plan.compact_preview(result)
+    return _rpc_response(200, msg_id, sid, result=envelope)
 
 
 @router.post("/api/mcp")

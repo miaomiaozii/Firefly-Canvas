@@ -252,7 +252,13 @@ Pi/Codex 的首次与恢复提交共用一份默认策略；三档 suffix 仅保
 
 ready 表示当前代次尚未提交且无待决应用；awaiting_confirmation 不是成功；applied 必须有当前代次提交证据；unknown 表示证据不足，须核对而非自动重试。只保留最近一次真实成功回执；编辑到新代次可以回到 ready，同时 receipt 保留实际上一已提交 generation，不能称新代次已应用。更早操作按既有 ops 合同查询。回执给出真实框、prompt_node/gen_node、已有项和操作 ID，不伪造生成 task_id 或「已生成」状态；空槽通过返回节点及画布读口查看，真实生成后才用既有 generate 查询。
 
-原 Agent 后续用同附件、摘要、sheet 和原 binding/scope 再次 `plan.import_excel`，读取同一 plan_id 的最新人工编辑与应用回执；正常同分支下一轮不因运行代次变化失去查询资格，新 SID/宿主/分支或已 abort 上下文不获此权限。该查询仍须原附件存在且有效。预览及回执仅 RAM，每 Store 最多 64 项、1800 秒，读、编辑、应用均不刷新 TTL；淘汰、过期或重启后不承诺恢复，也不承诺跨重启 exactly-once。已知 op_id 可按既有 ops 合同查询，不新增 `plan.get`、共享工具或 manifest 改动，不提供附件消失后的按 plan_id Agent 查询。
+原 Agent 后续用同附件、摘要、sheet 和原 binding/scope 再次 `plan.import_excel`，读取同一 plan_id 的最新人工编辑与应用回执；正常同分支下一轮不因运行代次变化失去查询资格，新 SID/宿主/分支或已 abort 上下文不获此权限。该查询仍须原附件存在且有效。预览及回执仅 RAM，每 Store 最多 64 项、1800 秒，读、编辑、应用均不刷新 TTL；淘汰、过期或重启后不承诺恢复，也不承诺跨重启 exactly-once。已知 op_id 可按既有 ops 合同查询；附件消失后不提供按 plan_id 的 Agent 查询。
+
+### #405：有界 Agent 预览读取
+
+`plan.import_excel`、`plan.edit_preview` 的 MCP 成功回包保留原完整 `content[0].text`（Pi REST、人工 UI 及按原合同消费的客户端不变）。单段完整 JSON 超过 8,192 UTF-8 字节时，另给模型优先消费的 `structuredContent`：最多 15 项的紧凑列表、完整 `task_id`、勾选和行号，及 `plan_id/generation`、应用状态和最近实际操作的 `op_id`；展示用名称、板块、工作表名可能缩短。选择 8,192 是为了给 [Codex 0.162.0 的 10,000 字节后备预算及其封装](../research/405-codex-mcp-output-budget.md) 留余量，不修改宿主配置，也不保证适配人为设得更低的预算。
+
+同一绑定可调用 `plan.read_preview`（Pi REST 为 `POST /api/projects/{project}/plan/read_preview?agent_node_id=…`），必填 `plan_id/generation`，可选 `task_id`、`offset`。不带 `task_id` 时偏移以任务计，默认从 0 开始；带 `task_id` 时返回完整 `preview.task`，单项过大则返回 `preview.task_json` 分段，偏移以序列化 Unicode 字符计。两种分页均沿 `preview.next_offset` 读取；为 null 即结束，分段原样拼接后解析。读取只认当前 Store、同一 Agent/宿主/分支/绑定及确切预览版本，复核已提交原附件及摘要；不延长 TTL，不写画布、不批准、不读取其他 SID，也不替代人工预览或 ops 查询。
 
 ### 人工执行、确认与代次消费（迁移 #399）
 

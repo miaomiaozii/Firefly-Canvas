@@ -29,8 +29,8 @@ def png(color='red'):
     return buffer.getvalue()
 
 
-def workbook(path):
-    rows = {
+def workbook(path, *, rows=None):
+    rows = rows if rows is not None else {
         1: ['名称', '设计需求', '文案', '参考图', '提示词'],
         3: ['主图1', '白底拍摄', 'Overlay only', path, '=FORMULA'],
         5: ['主图2', '场景共4张图', '', ''],
@@ -45,8 +45,8 @@ def workbook(path):
     for row, cells in rows.items():
         xml = ''.join(f'<c r="{chr(65+i)}{row}" t="inlineStr"><is><t>{escape(cell)}</t></is></c>'
                       for i, cell in enumerate(cells) if cell != '=FORMULA')
-        if row == 3:
-            xml += '<c r="E3" t="str"><f>[external.xlsx]Sheet!A1</f><v>CACHED_FORMULA</v></c>'
+        if '=FORMULA' in cells:
+            xml += f'<c r="E{row}" t="str"><f>[external.xlsx]Sheet!A1</f><v>CACHED_FORMULA</v></c>'
         data.append(f'<row r="{row}">{xml}</row>')
     buffer = BytesIO()
     with ZipFile(buffer, 'w') as zipfile:

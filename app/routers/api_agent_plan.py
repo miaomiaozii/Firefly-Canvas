@@ -36,6 +36,9 @@ async def plan_core(project, actor, args, *, tool, binding="rest"):
             raise plan.file_not_allowed()
         source = plan.attachment_id(args.get("attachment_id"))
         sheet = plan.text(args["sheet"], "sheet") if "sheet" in args else None
+    elif tool == "plan.read_preview":
+        require_object(args, tool, required=("plan_id", "generation"), optional=("offset", "task_id"))
+        plan_id = plan.text(args["plan_id"], "plan_id", 128)
     else:
         edit = tool == "plan.edit_preview"
         require_object(args, tool, required=("plan_id", "ops") if edit else ("plan_id",),
@@ -83,6 +86,22 @@ async def plan_core(project, actor, args, *, tool, binding="rest"):
                 raise plan.stale()
             records = submitted()
             return plan.edit(store, project, actor, preview, args["ops"], records).response(records)
+
+    if tool == "plan.read_preview":
+        with store._lock:
+            try:
+                if (_app_main.FIREFLY_PROJECT_STORE is not store
+                        or _scope(store, manager, project, actor, binding) != scope
+                        or (preview.session is not None and manager.conversation_session(project, actor) is not preview.session)
+                        or plan.get(store, scope, plan_id, args) is not preview):
+                    raise plan.stale()
+                records = submitted()
+                digest = plan.read_attachment(plan.attachment(store, project, actor, records, preview.attachment_id))
+            except HTTPException:
+                raise plan.stale() from None
+            if digest != preview.digest:
+                raise plan.stale()
+            return plan.bounded_preview_read(preview, args, records)
 
     return await _apply_agent_preview(project, actor, store, manager, preview, args)
 
@@ -422,7 +441,7 @@ async def apply_human_preview(project_id: str, plan_id: str, request: Request):
 
 @router.post("/{operation}")
 async def call_plan(project_id: str, operation: str, request: Request):
-    if operation not in ("import_excel", "edit_preview", "apply"):
+    if operation not in ("import_excel", "edit_preview", "read_preview", "apply"):
         raise HTTPException(404)
     name = f"plan.{operation}"
     if request.headers["X-Agent-Project"] != project_id:

@@ -337,6 +337,9 @@ const EXECUTORS: Record<string, (toolCallId: string, params: any) => Promise<any
     "plan.edit_preview": async (_toolCallId, params) =>
         textResult(await callApi(`/api/projects/${PROJECT_ID}/plan/edit_preview${gateQuery()}`, "POST", params)),
 
+    "plan.read_preview": async (_toolCallId, params) =>
+        textResult(await callApi(`/api/projects/${PROJECT_ID}/plan/read_preview${gateQuery()}`, "POST", params)),
+
     "plan.apply": async (_toolCallId, params) =>
         textResult(await callApi(`/api/projects/${PROJECT_ID}/plan/apply${gateQuery()}`, "POST", params)),
 

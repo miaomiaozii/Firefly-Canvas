@@ -60,6 +60,7 @@ CASES = [
     ("canvas.batch_prompt_edit", {"apply": True, "diff_id": "preview"}),
     ("plan.import_excel", {"attachment_id": "a" * 32}),
     ("plan.edit_preview", {"plan_id": "preview", "ops": [{"task_id": "t", "select": True}]}),
+    ("plan.read_preview", {"plan_id": "preview", "generation": 2, "offset": 15}),
     ("plan.apply", {"plan_id": "preview", "generation": 2}),
     ("canvas.edit_rotate", {"node_id": "n1", "angle": 90}),
     ("canvas.edit_flip", {"node_id": "n1", "direction": "horizontal"}),
@@ -88,7 +89,7 @@ class PiIdentityTests(unittest.TestCase):
     def setUpClass(cls):
         cls.calls = requests_from_extension()
 
-    def test_exact_write_requests(self):
+    def test_exact_canvas_requests(self):
         base = f"http://127.0.0.1:3000/api/projects/{PROJECT}"
         q = "?agent_node_id=agent%20%2F%3F%26%E4%B8%AD"
         expected = {
@@ -102,6 +103,7 @@ class PiIdentityTests(unittest.TestCase):
             "canvas.batch_prompt_edit": ("POST", "/canvas/batch_prompt_edit" + q, {"apply": True, "diff_id": "preview"}),
             "plan.import_excel": ("POST", "/plan/import_excel" + q, {"attachment_id": "a" * 32}),
             "plan.edit_preview": ("POST", "/plan/edit_preview" + q, {"plan_id": "preview", "ops": [{"task_id": "t", "select": True}]}),
+            "plan.read_preview": ("POST", "/plan/read_preview" + q, {"plan_id": "preview", "generation": 2, "offset": 15}),
             "plan.apply": ("POST", "/plan/apply" + q, {"plan_id": "preview", "generation": 2}),
             "canvas.edit_rotate": ("POST", "/canvas/edit_rotate" + q, {"node_id": "n1", "angle": 90}),
             "canvas.edit_flip": ("POST", "/canvas/edit_flip" + q, {"node_id": "n1", "direction": "horizontal"}),

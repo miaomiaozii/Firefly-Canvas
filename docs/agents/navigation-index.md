@@ -85,6 +85,7 @@
 - 入口：`app/routers/api_agent_plan.py` 的 `plan_core` 在原 scope 核验后交给 `_apply_agent_preview`；后者复用 `app/services/agent_confirmation.py` 的 `resumable`，只让 apply 跨越同步回包窗口。
 - 确认与日志：`app/routers/api_agent_tools.py` 的 `request_confirmation_core` 可转交 `waiting_guard`；`app/services/agent_ops_store.py` 的 `retain_turn` / `release_turn` 让待决执行保留已准入的外部显式轮次，不为省略轮次的请求创建身份。
 - 测试：`tests/test_agent_plan_resumable*_475.py`；权威合同见 ADR 0022「#475」，人工应用仍遵循「#482 / #484」。
+- #405 有界预览：`app/routers/api_mcp.py` `_tools_call` 的模型视图与原文本分流；`app/services/agent_plan.py` `compact_preview` / `bounded_preview_read`；真实 MCP/REST 回归 `tests/test_agent_plan_compact_405.py`，契约见 ADR 0022「#405」。
 
 ### 结构化诊断日志（T17 #37）
 
