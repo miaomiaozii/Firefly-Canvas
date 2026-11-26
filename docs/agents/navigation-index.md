@@ -78,6 +78,7 @@
 - 最相关测试（#370）：`tests/test_quality_gate.py::test_fast_mode_keeps_running_later_steps_after_an_early_failure`、`::test_fast_mode_reports_every_failing_step_not_just_the_first`、`ContinueOnFailureExitCodeTests`；`tests/test_pre_commit_hook.py`（真 `git commit` 被红门拦住 / 绿门放行 / 幂等安装 / 缺 hook 文件时拒绝安装）。
 - Windows 进程回收（#361）：`tools/process_tree.py` 的 `ProcessJob` 负责门级兜底；`kill_process_tree` 在启动器先退出时从原始进程句柄取得生存窗口，`select_orphan_children(children, root_started_at, root_exited_at)` 筛选该窗口内创建的候选。回收证据不足的进程会有误杀风险，因此不做猜测。
 - 不变量：证据目录必须在仓库外；任何 guard 阻断事件或 retry 证据事件即判失败；首次失败永久保留不被重试覆盖；预算超限 exit 124 且不能靠超时/跳过/重试制造绿色；dirty worktree 保留并在报告记录。
+- #497：共享拒绝代理无法识别调用者，不能按发生时间归给正在运行的步骤。共享阻断仍是门级 S0（没有失败步骤时显示 `boundary-events`）；既有可忽略的控制面噪声分类不变。
 
 ### Agent 方案应用（#475）
 

@@ -1472,28 +1472,26 @@ def merge_event_lines(source: Path, target: Path) -> None:
         os.close(descriptor)
 
 
-def attribute_blocking_guard_events(steps: list[dict]) -> list[dict]:
-    """Blocking guard events paired with the step that produced them (issue #174).
+def blocking_guard_attribution(events: list[dict], step: str | None) -> list[dict]:
+    return [
+        {
+            "kind": event.get("kind"),
+            "target": event.get("target"),
+            "pid": event.get("pid"),
+            "step": step,
+            "attributed_by": event["attributed_by"],
+        }
+        for event in blocking_guard_events(events)
+    ]
 
-    #230：判定要拿到该步的完整事件集才能做进程树升级（proxy-egress 与
-    host-tool-network 是不用的事件），所以这里改成按步整体过一次
-    blocking_guard_events，不再逐事件单判。
-    """
-    attributed: list[dict] = []
-    for step in steps:
-        for event in blocking_guard_events(list(step.get("guard_events") or [])):
-            entry = {
-                "kind": event.get("kind"),
-                "target": event.get("target"),
-                "pid": event.get("pid"),
-                "step": step.get("name"),
-            }
-            # #230：「这条违规是按进程树归属出来的」本身要进证据，不能只停在
-            # blocking_guard_events 里——否则排查时看不出是谁发的。
-            if event.get("attributed_by"):
-                entry["attributed_by"] = event["attributed_by"]
-            attributed.append(entry)
-    return attributed
+
+def attribute_blocking_guard_events(steps: list[dict]) -> list[dict]:
+    """Classify each step as a batch so probe exemptions stay scoped to its evidence (#232)."""
+    return [
+        entry
+        for step in steps
+        for entry in blocking_guard_attribution(step.get("guard_events") or [], step.get("name"))
+    ]
 
 
 class BrowserDenyProxy:
@@ -2838,43 +2836,34 @@ def build_severity_findings(
     steps: list[dict],
     guard_events: list[dict],
     retry_events: list[dict],
+    *,
+    shared_proxy_events: list[dict] | None = None,
 ) -> list[dict]:
     """Classify everything the run observed into S0/S1/S2/S3 findings.  Findings
     never change an exit code that honest step execution already produced; they
     make the auditable severity record explicit."""
     findings: list[dict] = []
+    def event_key(event: dict) -> tuple:
+        # Two steps may record the same target from different processes.
+        return (str(event.get("kind") or ""), str(event.get("target") or ""), event.get("pid"))
+
     attributed_steps = {
-        # key 要带 pid：不带的话，两个 step 各自违规同一个 (kind, target) 时
-        # dict 推导后写胜出，两条 S0 会被归到同一个 step。
-        (event.get("kind"), str(event.get("target")), event.get("pid")): step.get("name")
+        event_key(event): step.get("name")
         for step in steps
         for event in step.get("guard_events") or []
     }
-    # 这里不能用 id() 比对：blocking_guard_events 会给每条事件贴判据标签，
-    # 返回的是新字典，拿对象身份比就再也对不上了（S0 记录会默默消失）。
-    # 分类现在只看事件自身，所以逐 step 筛与全量筛结果一致，这里取全量。
-    def event_key(event: dict) -> tuple:
-        return (
-            str(event.get("kind") or ""),
-            str(event.get("target") or ""),
-            event.get("pid"),
-        )
-
-    blocking_ids = {event_key(event) for event in blocking_guard_events(guard_events)}
-    for event in guard_events:
+    shared_proxy_events = shared_proxy_events or []
+    blocking_ids = {event_key(event) for event in blocking_guard_events(guard_events + shared_proxy_events)}
+    events_with_step = [(event, attributed_steps.get(event_key(event), "unattributed")) for event in guard_events]
+    # A shared denial may match a step's redacted record without having the same owner (#497).
+    events_with_step.extend((event, "unattributed") for event in shared_proxy_events)
+    for event, step_name in events_with_step:
         if event_key(event) in blocking_ids:
             findings.append(
                 {
                     "severity": "S0",
                     "source": "guard",
-                    "step": attributed_steps.get(
-                        (
-                            event.get("kind"),
-                            str(event.get("target")),
-                            event.get("pid"),
-                        ),
-                        "unattributed",
-                    ),
+                    "step": step_name,
                     "frequency": "FU",
                     "observations": 1,
                     "message": (
@@ -2959,7 +2948,7 @@ def final_failure_verdict(
                 "name": "boundary-events",
                 "status": "failed",
                 "exit_code": 1,
-                "message": "guard or retry evidence arrived after step evaluation",
+                "message": "blocking guard or retry evidence without a failing step",
             }
     # #204: a shard can get too close to the deadline without actually timing out.
     shard_budget_limit = run_budget * UNIT_CONTRACT_SHARD_BUDGET_RATIO
@@ -3998,7 +3987,9 @@ def main(argv: list[str] | None = None) -> int:
             final_exit_code = 2
         else:
             guard_events_file = run_root / "guard-events.jsonl"
-            with BrowserDenyProxy(guard_events_file) as browser_proxy:
+            # The proxy cannot identify callers. A step's time window is not evidence of ownership (#497).
+            proxy_events_file = run_root / "shared-proxy-events.jsonl"
+            with BrowserDenyProxy(proxy_events_file) as browser_proxy:
                 environment = isolated_environment(
                     run_root,
                     workspace_root,
@@ -4175,11 +4166,7 @@ def main(argv: list[str] | None = None) -> int:
                             name: collect_group_step(name, future)
                             for name, future in futures.items()
                         }
-                    # Events the orchestrator itself recorded while the group ran
-                    # (the browser deny-proxy is process-wide, so its records cannot
-                    # be attributed to one member) stay run-level: they still fail the
-                    # gate through the final boundary check, but they no longer turn
-                    # passing siblings red.
+                    # Delayed writes to the main step log have no known owner in this group.
                     unattributed_blocking_events.extend(
                         blocking_guard_events(
                             read_guard_events(guard_events_file, sensitive_values)[
@@ -4205,21 +4192,20 @@ def main(argv: list[str] | None = None) -> int:
                         steps.append(step)
                         final_exit_code = merge_gate_exit_code(final_exit_code, step_exit_code(step))
 
-            # #230：报告、S0 记录和归属计数共用合并后的全量事件。
-            guard_events = classify_guard_events(read_guard_events(guard_events_file, sensitive_values))
+            step_guard_stream = classify_guard_events(read_guard_events(guard_events_file, sensitive_values))
+            shared_proxy_stream = classify_guard_events(read_guard_events(proxy_events_file, sensitive_values))
+            guard_events = step_guard_stream + shared_proxy_stream
             retry_events = read_retry_events(retry_events_file, sensitive_values)
             child_events = read_child_events(child_events_file, sensitive_values)
-            findings = build_severity_findings(steps, guard_events, retry_events)
+            findings = build_severity_findings(
+                steps, step_guard_stream, retry_events, shared_proxy_events=shared_proxy_stream,
+            )
             accept_s2 = os.environ.get("FIREFLY_QUALITY_GATE_ACCEPT_S2") == "1"
             s2_findings = [finding for finding in findings if finding["severity"] == "S2"]
-            blocking_event_attribution = attribute_blocking_guard_events(steps)
-            blocking_event_attribution.extend(
-                {
-                    "kind": event.get("kind"),
-                    "target": event.get("target"),
-                    "step": None,
-                }
-                for event in unattributed_blocking_events
+            blocking_event_attribution = (
+                attribute_blocking_guard_events(steps)
+                + blocking_guard_attribution(unattributed_blocking_events, None)
+                + blocking_guard_attribution(shared_proxy_stream, None)
             )
 
     after = git_state(repo_root)
@@ -4282,15 +4268,9 @@ def main(argv: list[str] | None = None) -> int:
         ),
         "guard_events": guard_events,
         "guard_event_counts": summarize_guard_events(guard_events),
-        # #230：证据要能回答「这条连接是谁发的」。blocking 里每条带 pid、
-        # 所在 step 和 attributed_by（= 目标被门进程树里的进程请求过）。
-        # 对不上的目标就是无法归属（真实宿主工具不跑我们的钩子），
-        # 域名白名单只在这种情况下用。
         "guard_attribution": {
-            # #230/#232：计数基于全量合并事件流，blocking 基于逐步结果。
-            # 对账时先比口径再比数。
             **guard_attribution_evidence(guard_events),
-            "blocking": attribute_blocking_guard_events(steps),
+            "blocking": blocking_event_attribution,
         },
         "retry_events": retry_events,
         "child_events": child_events,

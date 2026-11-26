@@ -664,7 +664,8 @@ class InProcessGateFixture(GateFixture):
         with self.browser_fixture_lock, mock.patch.object(sys, "argv", [str(fixture), *command[2:]]):
             runpy.run_path(str(fixture), run_name="__main__")
 
-    def run_gate(self, mode="fast", evidence_dir=None, *, spawn=None, verify_git=False, **environment):
+    def run_gate(self, mode="fast", evidence_dir=None, *, spawn=None, verify_git=False,
+                 proxy_factory=None, **environment):
         if mode in {"trial", "release"}:
             self.prepare_ui_integrity_baseline()
             environment.setdefault("FIREFLY_UI_INTEGRITY_BASELINES", str(self.ui_integrity_baselines))
@@ -692,9 +693,9 @@ class InProcessGateFixture(GateFixture):
             stack.enter_context(mock.patch.object(quality_gate, "_spawn_step", spawn_step))
             stack.enter_context(mock.patch.object(quality_gate, "stop_process_tree", FixtureProcess.stop))
             stack.enter_context(mock.patch.object(quality_gate, "gate_leftover_processes", return_value=[]))
-            stack.enter_context(mock.patch.object(quality_gate, "BrowserDenyProxy", side_effect=lambda _: nullcontext(
-                SimpleNamespace(url="http://127.0.0.1:41080")
-            )))
+            if proxy_factory is None:
+                proxy_factory = lambda _: nullcontext(SimpleNamespace(url="http://127.0.0.1:41080"))
+            stack.enter_context(mock.patch.object(quality_gate, "BrowserDenyProxy", side_effect=proxy_factory))
             stack.enter_context(redirect_stdout(stdout))
             stack.enter_context(redirect_stderr(stderr))
             returncode = quality_gate.main(argv)
@@ -1836,6 +1837,65 @@ class GuardRuleTests(InProcessGateFixture):
             if event["kind"] == "network"
         }
         self.assertEqual(network_targets, {"<redacted>"})
+
+    def _run_with_shared_proxy_denial_during_doc_check(self, step_response, *, step_event=False):
+        proxy_environment = {}
+        seen = []
+
+        def proxy_factory(sink):
+            proxy_environment[_GUARD_SINK] = str(sink)
+            return nullcontext(SimpleNamespace(url="http://127.0.0.1:41080"))
+
+        def spawn(command, repo_root, step_environment):
+            if "tools/doc_link_check.py" not in command:
+                return None
+            seen.append("doc-link-check")
+            authority = "anonymous-connect.invalid:443"
+            _deny_synthetic_proxy_request(proxy_environment, "CONNECT", authority, authority)
+            if step_event:
+                quality_gate.append_event(Path(step_environment[_GUARD_SINK]), "network", "<redacted>")
+            return step_response
+
+        result = self.run_gate(spawn=spawn, proxy_factory=proxy_factory)
+        self.assertEqual(seen, ["doc-link-check"])
+        return result, self.report()
+
+    def test_anonymous_proxy_denial_is_a_gate_failure_not_a_sequential_step_failure(self):
+        result, report = self._run_with_shared_proxy_denial_during_doc_check(
+            StepResponse(stdout="local links checked"),
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        step = next(step for step in report["steps"] if step["name"] == "doc-link-check")
+        self.assertEqual((step["status"], step["exit_code"]), ("passed", 0))
+        self.assertIn("local links checked", step["stdout_tail"])
+        self.assertEqual(step["guard_events"], [])
+        self.assertEqual(report["first_failure"]["name"], "boundary-events")
+        self.assertIn(
+            {"kind": "network", "target": "<redacted>", "pid": None,
+             "step": None, "attributed_by": "unattributed"},
+            report["guard_attribution"]["blocking"],
+        )
+        self.assertTrue(any(
+            finding["severity"] == "S0" and finding["step"] == "unattributed"
+            for finding in report["severity_frequency_findings"]
+        ))
+
+    def test_shared_proxy_denial_keeps_its_own_attribution_next_to_identical_step_evidence(self):
+        result, report = self._run_with_shared_proxy_denial_during_doc_check(
+            StepResponse(returncode=7, stderr="local check failed"), step_event=True,
+        )
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        failure = report["first_failure"]
+        self.assertEqual((failure["name"], failure["exit_code"]), ("doc-link-check", 7))
+        self.assertEqual(len(failure["guard_events"]), 1)
+        self.assertCountEqual(
+            [event["step"] for event in report["guard_attribution"]["blocking"]],
+            ["doc-link-check", None],
+        )
+        self.assertCountEqual(
+            [finding["step"] for finding in report["severity_frequency_findings"] if finding["severity"] == "S0"],
+            ["doc-link-check", "unattributed"],
+        )
 
     def test_blocked_browser_control_plane_noise_is_reported_without_failing_product_gate(self):
         result = self._run_background_targets("clients2.google.com")
