@@ -29,9 +29,9 @@ class SafetyViolation(RuntimeError):
 
 
 class ImageBudget:
-    """One durable reservation per possible real image, shared by both E0 scenarios."""
+    """One durable reservation per potentially billable POST, including the smoke."""
 
-    COLUMNS = {'normal': 'normal_images', 'campaign': 'campaign_images'}
+    COLUMNS = {'normal': 'normal_images', 'campaign': 'campaign_images', 'smoke': 'smoke_images'}
     PER_SCENARIO = 10
     TOTAL = 20
 
@@ -49,26 +49,37 @@ class ImageBudget:
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 normal_images INTEGER NOT NULL CHECK (normal_images BETWEEN 0 AND 10),
                 campaign_images INTEGER NOT NULL CHECK (campaign_images BETWEEN 0 AND 10),
-                CHECK (normal_images + campaign_images <= 20))''')
-            db.execute('INSERT INTO image_budget VALUES (1, 0, 0)')
+                smoke_images INTEGER NOT NULL CHECK (smoke_images BETWEEN 0 AND 1),
+                CHECK (normal_images + campaign_images + smoke_images <= 20))''')
+            db.execute('INSERT INTO image_budget VALUES (1, 0, 0, 0)')
         return budget
 
     def reserve(self, scenario):
         try:
             column = self.COLUMNS[scenario]
         except KeyError as exc:
-            raise SafetyViolation('Real image budget only supports E0 normal and campaign') from exc
+            raise SafetyViolation('Unknown real image budget scope') from exc
         # Commit before dispatch. A timeout may already have generated an image, so never refund it.
         try:
             with closing(sqlite3.connect(self.uri, uri=True, timeout=5)) as db, db:
                 updated = db.execute(f'''UPDATE image_budget SET {column} = {column} + 1
-                    WHERE id = 1 AND {column} < ? AND normal_images + campaign_images < ?''',
-                                     (self.PER_SCENARIO, self.TOTAL))
+                    WHERE id = 1 AND {column} < ? AND normal_images + campaign_images + smoke_images < ?''',
+                                     (1 if scenario == 'smoke' else self.PER_SCENARIO, self.TOTAL))
                 if not updated.rowcount and not db.execute('SELECT 1 FROM image_budget WHERE id = 1').fetchone():
                     raise SafetyViolation('E0 image budget is missing its run record')
                 return updated.rowcount == 1
         except sqlite3.Error as exc:
             raise SafetyViolation('E0 image budget unavailable; no image dispatched') from exc
+
+    def snapshot(self):
+        try:
+            with closing(sqlite3.connect(self.uri, uri=True, timeout=5)) as db:
+                counts = db.execute('SELECT normal_images, campaign_images, smoke_images FROM image_budget WHERE id = 1').fetchone()
+        except sqlite3.Error as exc:
+            raise SafetyViolation('E0 image budget unavailable') from exc
+        if counts is None:
+            raise SafetyViolation('E0 image budget is missing its run record')
+        return dict(zip(('normal', 'campaign', 'smoke'), counts, strict=True), total=sum(counts))
 
 
 def tiny_png():
@@ -174,7 +185,7 @@ class ProviderFence:
     def __init__(self, scenario='normal', *, port=3194, limit=60, journal=None, image_budget=None, image_transport=None):
         if (image_budget is None) != (image_transport is None) or (image_transport is not None and not callable(image_transport)):
             raise ValueError('Image budget and one-shot transport must be supplied together')
-        if image_budget is not None and scenario not in ImageBudget.COLUMNS:
+        if image_budget is not None and scenario not in ('normal', 'campaign'):
             raise ValueError('Budgeted images only support E0 normal and campaign')
         self.faults, self.port = Faults(scenario, limit), port
         self.image_budget, self.image_transport = image_budget, image_transport
