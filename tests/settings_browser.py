@@ -96,8 +96,8 @@ def load_app(root: Path, store: ProjectStore):
     async def cli_unavailable():
         return {"installed": False, "logged_in": False, "message": "隔离浏览器测试未启用 CLI"}
 
-    module.codex_status = cli_unavailable
-    module.gemini_cli_status = cli_unavailable
+    module.codex_status_core = cli_unavailable
+    module.gemini_cli_status_core = cli_unavailable
     module.httpx.AsyncClient = _FakeModelClient
 
     Path(module.API_ENV_FILE).parent.mkdir(parents=True, exist_ok=True)

@@ -9,6 +9,7 @@ import sys
 import tempfile
 import pathlib
 import shutil
+from unittest.mock import AsyncMock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -57,6 +58,9 @@ def main():
             store = ProjectStore(pathlib.Path(root) / 'projects', snapshot_delay=0)
             seed_store(store)
             app = harness.load_production_app(pathlib.Path(root) / 'runtime', store)
+            module = app.state.issue13_module
+            module.codex_status_core = AsyncMock(return_value={'installed': False, 'message': '未找到 OpenAI Codex CLI，请先安装。'})
+            module.gemini_cli_status_core = AsyncMock(return_value={})
             server = harness.ConversationBrowserServer(store, app, client_script=CLIENT_SCRIPT)
             harness.CLIENT_SCRIPT = CLIENT_SCRIPT
             harness.INJECT_PATHS = {'/static/global-settings.html'}

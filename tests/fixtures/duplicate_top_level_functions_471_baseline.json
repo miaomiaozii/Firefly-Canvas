@@ -2680,7 +2680,7 @@
         {
           "module": "tests/settings_browser.py",
           "ordinal": 1,
-          "ast_sha256": "3f60af6e787398955155b8d27b465e21dcb98bd1a45241e34ff426ec604cdf8e"
+          "ast_sha256": "5228cafcb7731e2dc94b74ffc6294bc1834312d07942aaf5a3e194c9bea64c5d"
         },
         {
           "module": "tests/undo_redo_browser.py",
@@ -3051,7 +3051,7 @@
         {
           "module": "tests/global_settings_browser.py",
           "ordinal": 1,
-          "ast_sha256": "b9c234fb470ef93475f1c6e7154bd8be3183badabe8962f82a7a14ca1a603361"
+          "ast_sha256": "e43110ec5b68306f53d72cfc52e9ef240ce75ee21728ffbac7cd8861dcd16152"
         },
         {
           "module": "tests/group_drag_merge_browser.py",

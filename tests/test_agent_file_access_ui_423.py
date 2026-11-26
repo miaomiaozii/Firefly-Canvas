@@ -44,7 +44,7 @@ class AgentFileAccessUiTests(unittest.TestCase):
         self.assertEqual(parser.sections, 1)
         self.assertEqual(parser.depth, 0)
         self.assertEqual(parser.text, [
-            "04", "Agent 文件访问", "Codex",
+            "Agent 文件访问", "Codex",
             "当前：只读，Agent 不能修改文件（包括自己的工作目录）。写入工作目录：未验证，暂不开放。",
             "Pi",
             "工作目录固定为当前节点的 agent_nodes/{node_id}/sessions；受限 read/write/edit 仅可访问该目录，目录外访问被拒绝。模型不能写入 system-prompt.txt 或该目录根层的原生会话 .jsonl；未开放 bash、PowerShell 或 codemode。",
@@ -53,7 +53,10 @@ class AgentFileAccessUiTests(unittest.TestCase):
         for tag, attrs in parser.elements:
             self.assertNotIn(tag, {"button", "input", "select", "textarea", "a", "form"})
             self.assertFalse(any(key.startswith("on") for key in attrs))
-            self.assertNotIn("tabindex", attrs)
+            if tag == "h2":
+                self.assertEqual(attrs.get("tabindex"), "-1")
+            else:
+                self.assertNotIn("tabindex", attrs)
             self.assertNotIn(attrs.get("role"), {"button", "switch", "checkbox", "radio"})
         keys = [attrs["data-i18n"] for _, attrs in parser.elements if "data-i18n" in attrs]
         self.assertEqual(keys, ["globalSettings.agentFileAccess", "globalSettings.codexFileAccess", "globalSettings.piFileAccess", "globalSettings.piFileAccessBoundary"])

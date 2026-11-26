@@ -37,6 +37,7 @@
     function settingsFrame(){ return document.querySelector('#smartSettingsFrame'); }
     function settingsDocument(){ return settingsFrame()?.contentDocument || null; }
     function setting(selector){ return settingsDocument()?.querySelector(selector) || null; }
+    function selectCategory(panel){ setting(`#settingsNav [aria-controls="${panel}"]`)?.click(); }
     function setValue(element, value, eventName='input'){
         element.value = value;
         element.dispatchEvent(new Event(eventName, {bubbles:true}));
@@ -69,16 +70,22 @@
             providers:frameDoc?.querySelectorAll('#providerList .provider-card').length || 0,
             cli:frameDoc?.querySelectorAll('#cliGrid .status-card').length || 0
         });
-        assertion('provider key is masked in the browser', Boolean(setting('[data-field="api_key"]')?.placeholder) && !setting('[data-field="api_key"]')?.placeholder.includes('super-secret-value'), setting('[data-field="api_key"]')?.placeholder || '');
-        assertion('CLI status renders all supported CLI cards', (frameDoc?.querySelectorAll('#cliGrid .status-card').length || 0) === 3, frameDoc?.querySelectorAll('#cliGrid .status-card').length || 0);
+        const initialKey = setting('[data-field="api_key"]');
+        assertion('provider key is write-only in the browser', !!initialKey?.placeholder && initialKey.value === '' && !initialKey.placeholder.includes('super-secret-value'), initialKey?.placeholder || '');
+        assertion('CLI status renders both supported CLI cards', frameDoc?.querySelectorAll('#cliGrid .status-card').length === 2, frameDoc?.querySelectorAll('#cliGrid .status-card').length || 0);
         if(!frameReady) return postResult();
 
-        const savePreferences = setting('#savePreferences');
-
+        selectCategory('providersPanel');
+        const card = setting('#providerList .provider-card');
+        card?.querySelector('.provider-toggle').click();
+        const key = card?.querySelector('[data-field="api_key"]');
+        setValue(key, 'browser-key-rotated');
+        selectCategory('libraryPanel');
+        setValue(setting('#libraryPath'), switchPath);
+        selectCategory('preferencesPanel');
         setValue(setting('#themeSelect'), 'light', 'change');
-        // #365：语言下拉已经没了（英文选项实际用不到）；存出来的 language 固定 zh。
-        savePreferences.click();
-        const preferencesSaved = await waitFor(() => setting('#pageStatus')?.dataset.kind === 'success' && setting('#themeSelect')?.value === 'light');
+        setting('#savePreferences').click();
+        const preferencesSaved = await waitFor(() => setting('#pageStatus')?.dataset.kind === 'success' && setting('#pageStatus')?.dataset.resting === 'false');
         const savedSettings = await fetchSettings();
         assertion('valid theme preference saves from the iframe with Chinese as the only language', preferencesSaved && savedSettings.preferences?.theme === 'light' && savedSettings.preferences?.language === 'zh', {
             status:setting('#pageStatus')?.textContent || '',
@@ -87,13 +94,12 @@
         });
         assertion('preference change reaches the hosting canvas', document.documentElement.classList.contains('studio-theme-dark') === false, document.documentElement.className);
 
-        const card = setting('#providerList .provider-card');
+        selectCategory('providersPanel');
+        assertion('section switches and preference save preserve hidden provider and library drafts', setting('#providerList .provider-card') === card && key.value === 'browser-key-rotated' && setting('#libraryPath').value === switchPath && !card.querySelector('.provider-editor').hidden, frameDoc.activeElement?.id);
         const name = card?.querySelector('[data-field="name"]');
-        const key = card?.querySelector('[data-field="api_key"]');
         const imageModels = card?.querySelector('[data-models="image_models"]');
         const testProvider = card?.querySelector('[data-provider-action="test"]');
         const fetchModels = card?.querySelector('[data-provider-action="fetch"]');
-        setValue(key, 'browser-key-rotated');
         testProvider?.click();
         const tested = await waitFor(() => card?.querySelector('.provider-fetch-status')?.dataset.kind === 'success' && card?.querySelector('.model-option input[value="nano-banana-pro"]'));
         assertion('provider test action fetches and groups models through the UI', tested, {
@@ -123,13 +129,14 @@
             leaked:serializedProviderResponse.includes('browser-key-rotated')
         });
 
+        selectCategory('libraryPanel');
         const pathInput = setting('#libraryPath');
         const moveExisting = setting('#moveExisting');
         const libraryForm = setting('#libraryForm');
         setValue(pathInput, switchPath);
         libraryForm.dispatchEvent(new Event('submit', {bubbles:true, cancelable:true}));
         const blockedSwitch = await waitFor(() => setting('#pageStatus')?.dataset.kind === 'error');
-        assertion('non-empty project library switch requires explicit confirmation', blockedSwitch && (setting('#pageStatus')?.textContent || '').toLowerCase().includes('confirm'), setting('#pageStatus')?.textContent || '');
+        assertion('non-empty project library switch requires explicit confirmation', blockedSwitch && /confirm|确认/i.test(setting('#pageStatus')?.textContent || ''), setting('#pageStatus')?.textContent || '');
         moveExisting.checked = true;
         libraryForm.dispatchEvent(new Event('submit', {bubbles:true, cancelable:true}));
         const switched = await waitFor(() => setting('#pageStatus')?.dataset.kind === 'success' && (setting('#librarySummary')?.textContent || '').includes(switchPath), 20000);
@@ -140,6 +147,12 @@
             path:afterSwitch.project_library?.path
         });
 
+        frameDoc.dispatchEvent(new KeyboardEvent('keydown', {key:'Escape', bubbles:true, cancelable:true}));
+        const escaped = await waitFor(() => !document.querySelector('#smartSettingsModal')?.classList.contains('open'));
+        assertion('Escape inside settings closes the overlay', escaped && document.activeElement === link, document.activeElement?.id);
+        link.focus();
+        link.click();
+        await waitFor(() => document.querySelector('#smartSettingsModal')?.classList.contains('open'));
         setting('#backButton')?.click();
         const closed = await waitFor(() => !document.querySelector('#smartSettingsModal')?.classList.contains('open'));
         await sleep(150);

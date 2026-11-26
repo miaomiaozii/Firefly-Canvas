@@ -5,23 +5,131 @@
   const libraryPath = document.getElementById('libraryPath');
   const moveExisting = document.getElementById('moveExisting');
   const embedded = window.self !== window.top;
+  const settingsNav = document.getElementById('settingsNav');
+  const navButtons = [...settingsNav.querySelectorAll('button')];
+  const issueBanner = document.getElementById('settingsIssues');
+  const issueSummary = document.getElementById('settingsIssueSummary');
+  const issueActions = document.getElementById('settingsIssueActions');
+  const refreshAll = document.getElementById('refreshAll');
+  const themeSelect = document.getElementById('themeSelect');
+  const upstreamDirect = document.getElementById('upstreamDirect');
+  const addProvider = document.getElementById('addProvider');
+  const saveProviders = document.getElementById('saveProviders');
+  const savePreferences = document.getElementById('savePreferences');
+  const libraryForm = document.getElementById('libraryForm');
+  const switchLibrary = libraryForm.querySelector('button');
+  const writeButtons = [saveProviders, savePreferences, switchLibrary];
+  const pendingWrites = new Map();
   let state = null;
+  let providerBaseline = '';
+  let lockSettings = false;
+  let lockedControls = [];
+  let loading = false;
+  let currentIssuePanels = '';
+  let cliNeedsAttention = false;
+  let photoshopDisconnected = false;
   let studioApiChannel = null;
-  // #348: BroadcastChannel 不可用（旧浏览器/被禁用）时 studioApiChannel 保持 null，notifyCanvas 自动降级到 parent/opener postMessage 路径。
-  try { studioApiChannel = new BroadcastChannel('studio-api'); } catch(error) { /* #348: 见上方注释 */ }
+  if(typeof BroadcastChannel === 'function'){
+    try { studioApiChannel = new BroadcastChannel('studio-api'); } catch(error) {
+      // #348: If the API is restricted, standalone settings can still use the opener.
+      console.warn('[global-settings] 无法开启画布通知通道', error);
+    }
+  }
   const tr = key => window.StudioI18n?.t?.(key) || key;
   const localText = (zh, en) => window.StudioI18n?.lang?.() === 'en' ? en : zh;
   const librarySummaryText = library => window.StudioI18n?.lang?.() === 'en'
     ? `Current: ${library?.path || ''} · ${library?.project_count || 0} project(s)`
     : `当前：${library?.path || ''} · ${library?.project_count || 0} 个项目`;
 
-  const setStatus = (message, kind = '') => {
+  const setStatus = (message, kind = '', resting = false) => {
     pageStatus.textContent = message || '';
     pageStatus.dataset.kind = kind;
+    pageStatus.dataset.resting = String(resting);
   };
+
+  function selectPanel(panelId){
+    // Keep form elements mounted so even unsaved secrets and model picks survive navigation.
+    for(const button of navButtons){
+      const id = button.getAttribute('aria-controls');
+      const selected = id === panelId;
+      document.getElementById(id).hidden = !selected;
+      if(selected){
+        button.setAttribute('aria-current', 'true');
+        if(settingsNav.scrollWidth > settingsNav.clientWidth){
+          const rail = settingsNav.getBoundingClientRect();
+          const item = button.getBoundingClientRect();
+          if(item.left < rail.left) settingsNav.scrollLeft += item.left - rail.left;
+          else if(item.right > rail.right) settingsNav.scrollLeft += item.right - rail.right;
+        }
+      } else button.removeAttribute('aria-current');
+    }
+    document.getElementById(panelId).querySelector('h2').focus({preventScroll:true});
+    window.scrollTo(0, 0);
+  }
+
+  for(const button of navButtons){
+    button.addEventListener('click', () => selectPanel(button.getAttribute('aria-controls')));
+    button.addEventListener('keydown', event => {
+      const index = navButtons.indexOf(button);
+      const step = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1
+        : event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : 0;
+      const next = event.key === 'Home' ? 0 : event.key === 'End' ? navButtons.length - 1
+        : step ? (index + step + navButtons.length) % navButtons.length : -1;
+      if(next < 0) return;
+      event.preventDefault();
+      navButtons[next].focus();
+    });
+  }
+
+  function setNavDot(panel, tone, description = ''){
+    const button = navButtons.find(item => item.getAttribute('aria-controls') === panel);
+    const dot = button?.querySelector('.settings-nav-dot');
+    if(!dot) return;
+    dot.hidden = !tone;
+    dot.dataset.tone = tone;
+    dot.id = `${panel}-status`;
+    if(tone) button.setAttribute('aria-describedby', dot.id);
+    else button.removeAttribute('aria-describedby');
+    if(dot.textContent === description) return;
+    const label = document.createElement('span');
+    label.className = 'visually-hidden';
+    label.textContent = description;
+    dot.replaceChildren(label);
+  }
+
+  function renderIssues(){
+    const providerFailed = !lockSettings && [...providerList.querySelectorAll('.provider-card')].some(card => card._testFailed);
+    const issues = [
+      ['providersPanel', providerFailed, 'problem', 'providerIssue'],
+      ['cliPanel', cliNeedsAttention, 'warning', 'cliIssue'],
+      ['photoshopPanel', photoshopDisconnected, 'problem', 'photoshopDisconnected'],
+    ];
+    for(const [panel, present, tone, key] of issues) setNavDot(panel, present ? tone : '', present ? tr(`globalSettings.${key}`) : '');
+    const visible = issues.filter(([, present]) => present);
+    const issuePanels = visible.map(([panel]) => panel).join(' ');
+    if(currentIssuePanels === issuePanels) return;
+    const previousFocus = document.activeElement?.dataset.issuePanel;
+    currentIssuePanels = issuePanels;
+    issueBanner.hidden = !visible.length;
+    issueSummary.textContent = visible.map(([, , , key]) => tr(`globalSettings.${key}`)).join(' ');
+    const actions = visible.map(([panel]) => {
+      const label = navButtons.find(button => button.getAttribute('aria-controls') === panel).querySelector('span').textContent;
+      const action = document.createElement('button');
+      action.className = 'quiet-button';
+      action.type = 'button';
+      action.dataset.issuePanel = panel;
+      action.textContent = visible.length > 1 ? `${tr('globalSettings.viewIssue')} ${label}` : tr('globalSettings.viewIssue');
+      action.setAttribute('aria-label', `${tr('globalSettings.viewIssue')} ${label}`);
+      action.addEventListener('click', () => selectPanel(panel));
+      return action;
+    });
+    issueActions.replaceChildren(...actions);
+    if(previousFocus) (actions.find(action => action.dataset.issuePanel === previousFocus) || actions[0] || refreshAll).focus();
+  }
   const splitModels = value => String(value || '').split(/[\n,]+/).map(item => item.trim()).filter(Boolean);
   const uniqueModels = value => [...new Set((Array.isArray(value) ? value : splitModels(value)).map(item => String(item || '').trim()).filter(Boolean))];
   const joinModels = value => uniqueModels(value).join('\n');
+  const providerSecretFields = ['api_key', 'wallet_api_key', 'volcengine_access_key_id', 'volcengine_secret_access_key'];
   const modelFields = ['image_models', 'chat_models', 'video_models'];
   const modelKinds = {image_models:'image', chat_models:'chat', video_models:'video'};
   const makeId = () => `provider-${Date.now().toString(36)}`;
@@ -127,24 +235,23 @@
 
   function notifyCanvas(type, payload={}){
     const message = {type, ...payload, source:'global-settings'};
-    // Embedded settings already has a direct parent channel. Do not also send
-    // the same event through BroadcastChannel: the canvas would refresh twice.
+    // An embedded page has one channel: also broadcasting would refresh the canvas twice.
     if(embedded && window.parent && window.parent !== window){
       try { window.parent.postMessage(message, window.location.origin); } catch(error) {
-        // #348: 父窗口不可用（已关闭/跨源受限）；下方还有 BroadcastChannel/opener 两条兜底通道。
+        // #348: The canvas may be closing; a notification failure does not undo a saved setting.
         console.warn('[global-settings] 通知画布失败（parent 通道）', error);
       }
       return;
     }
     if(studioApiChannel){
       try { studioApiChannel.postMessage(message); return; } catch(error) {
-        // #348: BroadcastChannel 已关闭/损坏；继续走 opener 兜底通道。
+        // #348: A failed broadcast can still fall back to the opener.
         console.warn('[global-settings] 通知画布失败（BroadcastChannel 通道）', error);
       }
     }
     try { if(window.opener && !window.opener.closed) window.opener.postMessage(message, window.location.origin); } catch(error) {
-      // #348: 最后一条兜底通道也失败；设置本身已保存成功，画布刷新/重开时会拿到最新值。
-      console.warn('[global-settings] 通知画布失败（opener 通道，无更多兜底）', error);
+      // #348: The opener may close between the check and delivery; the save receipt still stands.
+      console.warn('[global-settings] 通知画布失败（opener 通道）', error);
     }
   }
   function waitForCanvasReadyForLibrarySwitch(){
@@ -178,9 +285,12 @@
     card.dataset.providerId = provider.id || makeId();
     card.innerHTML = `
       <div class="provider-head">
+        <span class="provider-mark" aria-hidden="true"></span>
         <div><h3 class="provider-name"></h3><span class="provider-meta"></span></div>
-        <button class="remove-provider" type="button">${tr('globalSettings.remove')}</button>
+        <span class="settings-chip" hidden></span>
+        <button class="quiet-button provider-toggle" type="button" aria-expanded="false"></button>
       </div>
+      <div class="provider-editor" hidden>
       <div class="provider-fields">
         <label>${tr('globalSettings.providerName')}<input data-field="name" maxlength="80"></label>
         <label>${tr('globalSettings.endpoint')}<input data-field="base_url" autocomplete="off"></label>
@@ -203,12 +313,18 @@
       <div class="provider-checks">
         <label class="inline-check"><input data-field="enabled" type="checkbox"> ${tr('globalSettings.enabled')}</label>
         <label class="inline-check"><input data-field="primary" type="checkbox"> ${tr('globalSettings.primary')}</label>
+        <button class="quiet-button danger-button remove-provider" type="button">${tr('globalSettings.remove')}</button>
+      </div>
       </div>`;
     card._provider = {...provider, id: card.dataset.providerId};
     card._availableModels = {...(provider.available_models || {})};
     card._modelSelectionTouched = {};
-    card.querySelector('.provider-name').textContent = provider.name || tr('globalSettings.newProvider');
-    card.querySelector('.provider-meta').textContent = provider.id || card.dataset.providerId;
+    card._testRevision = 0;
+    const editor = card.querySelector('.provider-editor');
+    const toggle = card.querySelector('.provider-toggle');
+    editor.id = `provider-editor-${card.dataset.providerId}`;
+    toggle.setAttribute('aria-controls', editor.id);
+    toggle.addEventListener('click', () => setProviderExpanded(card, editor.hidden));
     ['name', 'base_url', 'protocol'].forEach(field => {
       card.querySelector(`[data-field="${field}"]`).value = provider[field] || (field === 'protocol' ? 'openai' : '');
     });
@@ -236,17 +352,89 @@
       renderModelPicker(card, field);
     });
     renderRecommendations(card, provider.recommended_models);
-    card.querySelector('[data-field="name"]').addEventListener('input', event => {
-      card.querySelector('.provider-name').textContent = event.target.value || tr('globalSettings.newProvider');
+    for(const field of ['base_url', 'protocol', 'enabled', ...providerSecretFields]){
+      const input = card.querySelector(`[data-field="${field}"]`);
+      input?.addEventListener(input.type === 'checkbox' || field === 'protocol' ? 'change' : 'input', () => invalidateProviderTest(card));
+    }
+    card.querySelector('[data-field="name"]').addEventListener('input', () => updateProviderHead(card));
+    card.querySelector('.remove-provider').addEventListener('click', () => {
+      const next = card.nextElementSibling || card.previousElementSibling;
+      card.remove();
+      renderIssues();
+      (next?.querySelector('.provider-toggle') || document.getElementById('addProvider')).focus();
     });
-    card.querySelector('.remove-provider').addEventListener('click', () => card.remove());
     card.querySelector('[data-provider-action="test"]').addEventListener('click', () => testProvider(card));
     card.querySelector('[data-provider-action="fetch"]').addEventListener('click', () => fetchProviderModels(card));
+    updateProviderHead(card);
     return card;
   }
 
+  function updateProviderHead(card){
+    const provider = card._provider;
+    const name = card.querySelector('[data-field="name"]').value.trim() || tr('globalSettings.newProvider');
+    const protocol = card.querySelector('[data-field="protocol"]').value;
+    const enabled = card.querySelector('[data-field="enabled"]').checked;
+    const editor = card.querySelector('.provider-editor');
+    const toggle = card.querySelector('.provider-toggle');
+    const baseUrl = card.querySelector('[data-field="base_url"]').value;
+    const host = URL.canParse(baseUrl) ? new URL(baseUrl).hostname : '';
+    card.querySelector('.provider-name').textContent = name;
+    card.querySelector('.provider-mark').textContent = Array.from(name)[0].toLocaleUpperCase();
+    card.querySelector('.provider-meta').textContent = host || provider.id;
+
+    const usesKey = ['openai', 'apimart', 'gemini', 'volcengine', 'minimax'].includes(protocol);
+    const chip = card.querySelector('.settings-chip');
+    const keyMissing = usesKey && provider.has_key === false;
+    const statusKey = !enabled ? 'providerDisabled' : card._testFailed ? 'providerTestFailed'
+      : usesKey && provider.has_key === true ? 'keyConfigured' : keyMissing ? 'keyNotConfigured' : '';
+    chip.hidden = !statusKey;
+    chip.textContent = statusKey ? tr(`globalSettings.${statusKey}`) : '';
+    if(card._testFailed){
+      if(card._testFailureStatus) chip.textContent += ` · HTTP ${card._testFailureStatus}`;
+      chip.dataset.tone = 'problem';
+    }
+    else if(statusKey === 'keyConfigured') chip.dataset.tone = 'ok';
+    else delete chip.dataset.tone;
+    const action = tr(editor.hidden ? keyMissing ? 'globalSettings.addKey' : 'globalSettings.editProvider' : 'globalSettings.collapseProvider');
+    toggle.textContent = action;
+    toggle.setAttribute('aria-label', `${action} · ${name}`);
+  }
+
+  function setProviderExpanded(card, expanded){
+    card.querySelector('.provider-editor').hidden = !expanded;
+    card.querySelector('.provider-toggle').setAttribute('aria-expanded', String(expanded));
+    updateProviderHead(card);
+  }
+
+  function invalidateProviderTest(card, updateIssues = true){
+    card._testRevision += 1;
+    card._testFailed = false;
+    card._testFailureStatus = null;
+    const status = card.querySelector('.provider-fetch-status');
+    status.textContent = '';
+    status.dataset.kind = '';
+    updateProviderHead(card);
+    if(updateIssues) renderIssues();
+  }
+
   function renderProviders(providers){
-    providerList.replaceChildren(...providers.map(providerCard));
+    const expandedIds = new Set([...providerList.querySelectorAll('.provider-card')]
+      .filter(card => !card.querySelector('.provider-editor').hidden).map(card => card.dataset.providerId));
+    providerList.replaceChildren(...providers.map(provider => {
+      const card = providerCard(provider);
+      if(expandedIds.has(card.dataset.providerId)) setProviderExpanded(card, true);
+      return card;
+    }));
+    providerBaseline = providerDraft();
+  }
+
+  function readProviders(){
+    return [...providerList.querySelectorAll('.provider-card')].map(providerPayload);
+  }
+
+  function providerDraft(){
+    const fields = [...providerList.querySelectorAll('input, select, textarea')];
+    return JSON.stringify([readProviders(), fields.map(input => [input.value, input.checked])]);
   }
 
   function providerPayload(card, index){
@@ -269,14 +457,13 @@
     };
     // #493：代理开关延期，旧页面数据中的实验字段不能随 original 展开重新保存。
     delete payload.image_bypass_system_proxy;
-    const key = value('api_key');
-    if(key) payload.api_key = key;
-    const walletKey = card.querySelector('[data-field="wallet_api_key"]')?.value.trim();
-    const accessKey = card.querySelector('[data-field="volcengine_access_key_id"]')?.value.trim();
-    const secretKey = card.querySelector('[data-field="volcengine_secret_access_key"]')?.value.trim();
-    if(walletKey) payload.wallet_api_key = walletKey;
-    if(accessKey) payload.volcengine_access_key_id = accessKey;
-    if(secretKey) payload.volcengine_secret_access_key = secretKey;
+    for(const field of providerSecretFields){
+      // An empty field preserves the saved key; neither a preview nor a receipt is an input value.
+      delete payload[field];
+      delete payload[`clear_${field === 'api_key' ? 'key' : field === 'wallet_api_key' ? 'wallet_key' : field}`];
+      const value = card.querySelector(`[data-field="${field}"]`)?.value.trim();
+      if(value) payload[field] = value;
+    }
     ['key_preview', 'key_env', 'has_key', 'wallet_key_preview', 'wallet_key_env', 'has_wallet_key', 'volcengine_access_key_preview', 'volcengine_access_key_env', 'volcengine_secret_key_preview', 'volcengine_secret_key_env', 'has_volcengine_access_key', 'has_volcengine_secret_key'].forEach(keyName => delete payload[keyName]);
     return payload;
   }
@@ -329,17 +516,38 @@
   async function runProviderAction(card, action, url){
     const status = card.querySelector('.provider-fetch-status');
     const button = card.querySelector(`[data-provider-action="${action}"]`);
-    if(button) button.disabled = true;
-    if(status){ status.textContent = action === 'test' ? tr('globalSettings.testingConnection') : tr('globalSettings.fetchingModels'); status.dataset.kind = ''; }
+    if(lockSettings || !state || pendingWrites.has(saveProviders)) return;
+    if(action === 'test') invalidateProviderTest(card);
+    const revision = card._testRevision;
+    const payload = providerRequestPayload(card);
+    const hideKey = text => payload.api_key ? String(text).split(payload.api_key).join('••••••••') : text;
+    button.disabled = true;
+    card._pendingActions = (card._pendingActions || 0) + 1;
+    status.textContent = action === 'test' ? tr('globalSettings.testingConnection') : tr('globalSettings.fetchingModels');
+    status.dataset.kind = '';
     try {
-      const data = await requestJson(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(providerRequestPayload(card))});
+      const data = await requestJson(url, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+      if(lockSettings || !providerList.contains(card) || revision !== card._testRevision) return;
       if(data.ok !== false) applyFetchedModels(card, data);
-      if(status){ status.textContent = data.message || tr('globalSettings.modelsReady'); status.dataset.kind = data.ok === false ? 'error' : 'success'; }
-      return data;
+      if(action === 'test' && data.ok === false && card.querySelector('[data-field="enabled"]').checked){
+        // Only an explicit test receipt describes this endpoint draft, not provider health.
+        card._testFailed = true;
+        card._testFailureStatus = Number.isInteger(data.status) && data.status >= 400 && data.status <= 599 ? data.status : null;
+        updateProviderHead(card);
+        renderIssues();
+      }
+      const fallback = data.ok === false ? tr(action === 'test' ? 'globalSettings.providerTestFailed' : 'globalSettings.fetchFailed') : tr('globalSettings.modelsReady');
+      status.textContent = hideKey(data.message || fallback);
+      status.dataset.kind = data.ok === false ? 'error' : 'success';
     } catch(error){
-      if(status){ status.textContent = error.message || tr('globalSettings.fetchFailed'); status.dataset.kind = 'error'; }
-      return null;
-    } finally { if(button) button.disabled = false; }
+      if(lockSettings || !providerList.contains(card) || revision !== card._testRevision) return;
+      status.textContent = hideKey(error.message || tr('globalSettings.fetchFailed'));
+      status.dataset.kind = 'error';
+    } finally {
+      if(lockSettings) lockedControls.push(button);
+      else button.disabled = false;
+      card._pendingActions -= 1;
+    }
   }
 
   function testProvider(card){ return runProviderAction(card, 'test', '/api/providers/test-connection'); }
@@ -347,36 +555,60 @@
 
   function renderCli(cli){
     const labels = {codex:'OpenAI Codex', gemini:'Antigravity'};
+    cliNeedsAttention = false;
     cliGrid.replaceChildren(...Object.entries(labels).map(([key, label]) => {
       const status = cli?.[key] || {};
       const card = document.createElement('article');
       card.className = 'status-card';
       const installed = status.installed === true;
-      const loginText = status.logged_in === true ? tr('globalSettings.loggedIn') : status.logged_in === false ? tr('globalSettings.loggedOut') : tr('globalSettings.loginUnknown');
-      card.innerHTML = `<h3></h3><span class="status-pill"></span><p class="status-detail"></p>`;
+      // The API also uses installed:false on crashes. Only its explicit not-found receipt confirms absence.
+      const notFound = status.installed === false && !status.path && status.message === `未找到 ${label} CLI，请先安装。`;
+      const signedOut = installed && status.raw?.login_status_checked === true && status.logged_in === false;
+      const signedIn = installed && status.raw?.login_status_checked !== false && status.logged_in === true;
+      cliNeedsAttention ||= notFound || signedOut;
+      const login = signedIn ? 'loggedIn' : signedOut ? 'loggedOut' : 'loginUnknown';
+      card.innerHTML = `<h3></h3><span class="settings-chip status-pill"></span><p class="status-detail"></p>`;
       card.querySelector('h3').textContent = label;
       const pill = card.querySelector('.status-pill');
-      pill.textContent = installed ? `${tr('globalSettings.installed')} · ${loginText}` : tr('globalSettings.notInstalled');
-      pill.classList.toggle('ok', installed && status.logged_in !== false);
-      card.querySelector('.status-detail').textContent = status.version || status.message || tr('globalSettings.noStatus');
+      pill.textContent = installed ? `${tr('globalSettings.installed')} · ${tr(`globalSettings.${login}`)}`
+        : tr(notFound ? 'globalSettings.notInstalled' : 'globalSettings.statusUnknown');
+      if(notFound || signedOut) pill.dataset.tone = 'warning';
+      else if(signedIn) pill.dataset.tone = 'ok';
+      card.querySelector('.status-detail').textContent = status.message || status.version || tr('globalSettings.noStatus');
+      if(status.version && status.message) card.querySelector('.status-detail').textContent += ` · ${status.version}`;
       return card;
     }));
   }
 
-  function render(data){
+  const savedTheme = preferences => preferences?.theme || 'dark';
+  const savedDirect = preferences => preferences?.upstream_direct !== false;
+  const savedLibraryPath = library => library?.path || '';
+
+  function applySettings(data){
+    const previous = state;
     state = data;
-    renderProviders(data.providers || []);
-    renderCli(data.cli || {});
-    document.getElementById('themeSelect').value = data.preferences?.theme || 'dark';
-    // #493：直连开关只认严格 false；缺失/其它值按默认开。
-    document.getElementById('upstreamDirect').checked = data.preferences?.upstream_direct !== false;
-    // #365：偏好里没有语言选项了（界面固定中文），这里不再读那个下拉。
-    libraryPath.value = data.project_library?.path || '';
+    const cards = [...providerList.querySelectorAll('.provider-card')];
+    if(!previous || (!cards.some(card => card._pendingActions) && providerDraft() === providerBaseline)){
+      renderProviders(data.providers || []);
+    } else if(savedDirect(previous.preferences) !== savedDirect(data.preferences)){
+      cards.forEach(card => invalidateProviderTest(card, false));
+    }
+    renderCli(data.cli);
+    if(!previous || themeSelect.value === savedTheme(previous.preferences)) themeSelect.value = savedTheme(data.preferences);
+    if(!previous || upstreamDirect.checked === savedDirect(previous.preferences)) upstreamDirect.checked = savedDirect(data.preferences);
+    if(!previous || libraryPath.value === savedLibraryPath(previous.project_library)) libraryPath.value = savedLibraryPath(data.project_library);
     document.getElementById('librarySummary').textContent = librarySummaryText(data.project_library);
-    const ps = data.photoshop || {};
-    const psCard = document.getElementById('photoshopStatus');
-    psCard.dataset.connected = String(Boolean(ps.connected));
-    psCard.textContent = ps.connected ? localText('Photoshop 连接器已连接', 'Photoshop connector connected') : localText('Photoshop 连接器未连接', 'Photoshop connector not connected');
+    renderPhotoshop(data.photoshop);
+    renderIssues();
+  }
+
+  function renderPhotoshop(status){
+    const connected = status?.connected === true;
+    photoshopDisconnected = status?.connected === false;
+    const card = document.getElementById('photoshopStatus');
+    card.dataset.connected = connected ? 'true' : photoshopDisconnected ? 'false' : '';
+    card.textContent = tr(connected ? 'globalSettings.photoshopConnected'
+      : photoshopDisconnected ? 'globalSettings.photoshopDisconnected' : 'globalSettings.statusUnknown');
   }
 
   async function requestJson(url, options){
@@ -397,34 +629,101 @@
       `Could not read configuration: ${names.join(', ')}. Original data was preserved; restore a valid configuration before saving.`);
   }
 
+  function updateWriteControls(){
+    refreshAll.disabled = loading || pendingWrites.size > 0;
+    const blocked = lockSettings || !state || loading;
+    for(const button of writeButtons) button.disabled = blocked || pendingWrites.has(button);
+    addProvider.disabled = lockSettings || !state || pendingWrites.has(saveProviders);
+  }
+
+  function startWrite(button){
+    if(button.disabled) return false;
+    pendingWrites.set(button, document.activeElement === button);
+    updateWriteControls();
+    return true;
+  }
+
+  function finishWrite(button){
+    const restoreFocus = pendingWrites.get(button);
+    pendingWrites.delete(button);
+    updateWriteControls();
+    if(restoreFocus && document.activeElement === document.body && !button.closest('[data-settings-panel]').hidden){
+      button.focus({preventScroll:true});
+    }
+  }
+
   async function load(){
-    setStatus(localText('正在读取设置…', 'Loading settings…'));
+    if(loading || pendingWrites.size) return;
+    const restoreFocus = document.activeElement === refreshAll;
+    loading = true;
+    updateWriteControls();
+    setStatus(tr('globalSettings.loading'));
     try {
       const data = await requestJson('/api/global-settings');
       if(data.storage_recovery){
-        for(const control of document.querySelectorAll('button, input, select, textarea')){
-          if(control.id !== 'backButton' && control.id !== 'refreshAll') control.disabled = true;
+        lockSettings = true;
+        for(const control of document.querySelectorAll('[data-settings-panel] :is(button, input, select, textarea)')){
+          if(!control.disabled){
+            lockedControls.push(control);
+            control.disabled = true;
+          }
         }
+        renderCli();
+        renderPhotoshop();
+        renderIssues();
+        updateTaskDot();
         setStatus(data.storage_recovery.message, 'error');
         return;
       }
-      render(data);
+      lockSettings = false;
+      lockedControls.forEach(control => { control.disabled = false; });
+      lockedControls = [];
+      applySettings(data);
       const faults = await dataFaultText().catch(() => '');
       if(faults){ setStatus(faults, 'error'); return; }
-      setStatus(localText('设置已就绪', 'Settings ready'), 'success');
-    } catch(error) { setStatus(error.message || localText('设置读取失败', 'Failed to load settings'), 'error'); }
+      setStatus(localText('设置已就绪', 'Settings ready'), 'success', true);
+    } catch(error) {
+      renderCli();
+      renderPhotoshop();
+      renderIssues();
+      setStatus(error.message || localText('设置读取失败', 'Failed to load settings'), 'error');
+    } finally {
+      loading = false;
+      updateWriteControls();
+      if(restoreFocus && document.activeElement === document.body) refreshAll.focus({preventScroll:true});
+    }
   }
 
-  document.getElementById('backButton').addEventListener('click', () => {
+  const backButton = document.getElementById('backButton');
+  function returnToCanvas(){
     if(embedded){ notifyCanvas('close-settings'); return; }
     if(window.opener && !window.opener.closed){ window.close(); return; }
     history.length > 1 ? history.back() : location.assign('/');
+  }
+  backButton.addEventListener('click', returnToCanvas);
+  if(embedded) document.addEventListener('keydown', event => {
+    if(event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return;
+    event.preventDefault();
+    returnToCanvas();
   });
-  document.getElementById('refreshAll').addEventListener('click', load);
-  document.getElementById('addProvider').addEventListener('click', () => providerList.appendChild(providerCard({id:makeId(), name:'新服务商', enabled:true, protocol:'openai'})));
-  document.getElementById('saveProviders').addEventListener('click', async () => {
-    const providers = [...providerList.querySelectorAll('.provider-card')].map(providerPayload);
+  refreshAll.addEventListener('click', async () => {
+    await load();
+    void refreshConsoleTasks();
+    startConsoleTimer();
+  });
+  addProvider.addEventListener('click', () => {
+    const card = providerCard({id:makeId(), enabled:true, protocol:'openai', has_key:false});
+    providerList.append(card);
+    setProviderExpanded(card, true);
+    card.querySelector('[data-field="name"]').focus();
+  });
+  saveProviders.addEventListener('click', async () => {
+    const providers = readProviders();
     if(!providers.length){ setStatus(localText('至少保留一个在线服务商', 'Keep at least one online provider'), 'error'); return; }
+    if(!startWrite(saveProviders)) return;
+    providerList.inert = true;
+    [...providerList.querySelectorAll('.provider-card')].forEach(card => invalidateProviderTest(card, false));
+    renderIssues();
     setStatus(localText('正在保存在线服务商…', 'Saving online providers…'));
     try {
       const data = await requestJson('/api/providers', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify(providers)});
@@ -433,54 +732,63 @@
       notifyCanvas('providers-changed');
       setStatus(localText('在线服务商与模型已保存；Key 已写入 API/.env', 'Providers and models saved; keys were written to API/.env'), 'success');
     } catch(error) { setStatus(error.message || localText('服务商保存失败', 'Failed to save providers'), 'error'); }
+    finally { providerList.inert = false; finishWrite(saveProviders); }
   });
-  document.getElementById('savePreferences').addEventListener('click', async () => {
-    const theme = document.getElementById('themeSelect').value;
+  savePreferences.addEventListener('click', async () => {
+    if(!startWrite(savePreferences)) return;
     setStatus(localText('正在保存偏好…', 'Saving preferences…'));
     try {
-      // #365：只存主题。payload 里的 language 不发了（模型默认就是 'zh'）。
-      // #493：直连开关随同提交（严格 bool，后端缺省会保留已存值）。
-      const body = {theme, upstream_direct: document.getElementById('upstreamDirect').checked === true};
+      const theme = themeSelect.value;
+      const body = {theme, upstream_direct: upstreamDirect.checked === true};
       const saved = await requestJson('/api/global-settings/preferences', {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+      if(savedDirect(state.preferences) !== savedDirect(saved.preferences)){
+        [...providerList.querySelectorAll('.provider-card')].forEach(card => invalidateProviderTest(card, false));
+        renderIssues();
+      }
       window.StudioTheme?.set(theme);
       state.preferences = saved.preferences;
-      render(state);
       notifyCanvas('preferences-changed', {preferences:state.preferences});
       setStatus(localText('外观已保存', 'Appearance saved'), 'success');
     } catch(error) { setStatus(error.message || localText('偏好保存失败', 'Failed to save preferences'), 'error'); }
+    finally { finishWrite(savePreferences); }
   });
-  document.getElementById('libraryForm').addEventListener('submit', async event => {
+  libraryForm.addEventListener('submit', async event => {
     event.preventDefault();
-    const path = libraryPath.value.trim();
+    const draft = libraryPath.value;
+    const path = draft.trim();
+    const move = moveExisting.checked;
     const projectCount = Number(state?.project_library?.project_count || 0);
-    if(projectCount && !moveExisting.checked){ setStatus(localText('当前库有项目，请勾选显式移动确认', 'The current library has projects; confirm the explicit move'), 'error'); return; }
+    if(projectCount && !move){ setStatus(localText('当前库有项目，请勾选显式移动确认', 'The current library has projects; confirm the explicit move'), 'error'); return; }
+    if(!startWrite(switchLibrary)) return;
     setStatus(localText('正在复制并完整校验项目库，请勿关闭应用…', 'Copying and fully verifying the project library; keep the app open…'));
     try {
       if(!(await waitForCanvasReadyForLibrarySwitch())) throw new Error(localText('画布尚有未保存修改，项目库切换已取消', 'The canvas still has unsaved changes; the library switch was cancelled'));
-      const result = await requestJson('/api/global-settings/project-library', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path, move_existing:moveExisting.checked})});
+      const result = await requestJson('/api/global-settings/project-library', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({path, move_existing:move})});
       state.project_library = result.project_library;
-      libraryPath.value = result.project_library.path;
-      moveExisting.checked = false;
+      if(libraryPath.value === draft && moveExisting.checked === move){
+        libraryPath.value = result.project_library.path;
+        moveExisting.checked = false;
+      }
       document.getElementById('librarySummary').textContent = librarySummaryText(result.project_library);
       const files = result.migration?.file_count ?? 0;
       setStatus(localText(`项目库已切换，完整校验 ${files} 个文件；原库已保留`, `Project library switched after verifying ${files} file(s); the original library was retained`), 'success');
     } catch(error) { setStatus(`${error.message || localText('项目库迁移失败', 'Project library migration failed')}${localText('；仍使用原项目库', '; the original library remains active')}`, 'error'); }
+    finally { finishWrite(switchLibrary); }
   });
 
-  // ── 全局任务总控台（#262）───────────────────────────────────────────────────────────
-  // 数据：GET /api/global-tasks（内存内飞 + canvas.history 持久化 + usage 租户成本归因）；
-  // 取消复用项目级取消端点（与画布侧 controlProjectImageTask 同一端点）；
-  // 「查看」以 URL 参数跳产物所在画布，focus_node 定位节点（见 smart-canvas.js）。
   const taskConsoleList = document.getElementById('taskConsoleList');
+  const consoleStatus = document.getElementById('consoleStatus');
+  const consoleRefresh = document.getElementById('consoleRefresh');
   const consoleStatusFilter = document.getElementById('consoleStatusFilter');
   const consoleProviderFilter = document.getElementById('consoleProviderFilter');
   const consoleProjectFilter = document.getElementById('consoleProjectFilter');
   const consoleAutoRefresh = document.getElementById('consoleAutoRefresh');
-  const consoleReady = Boolean(taskConsoleList && consoleStatusFilter && consoleProviderFilter && consoleProjectFilter && consoleAutoRefresh);
   let consoleProjects = [];
   let consoleRows = [];
   let consoleTimer = null;
   let consoleBusy = false;
+  let consoleRefreshQueued = false;
+  let consoleUnfiltered = false;
 
   const consoleStatusText = status => ({
     queued: localText('排队', 'Queued'),
@@ -516,7 +824,7 @@
     row.setAttribute('role', 'listitem');
     const statusClass = task.status === 'succeeded' ? 'ok' : (task.status === 'failed' || task.status === 'uncertain') ? 'err' : ((task.status === 'running' || task.status === 'queued') ? 'busy' : '');
     row.innerHTML = `
-      <span class="task-console-status ${statusClass}"></span>
+      <span class="settings-chip task-console-status ${statusClass}"></span>
       <div class="task-console-main">
         <p class="task-console-title"></p>
         <p class="task-console-meta"></p>
@@ -530,6 +838,7 @@
     const actions = row.querySelector('.task-console-actions');
     const reveal = document.createElement('a');
     reveal.href = consoleRevealHref(task);
+    reveal.className = 'quiet-button';
     reveal.textContent = localText('查看', 'View');
     reveal.title = localText('跳转到产物所在画布并定位节点', 'Open the canvas that owns this result and locate its node');
     actions.append(reveal);
@@ -545,10 +854,18 @@
   };
 
   const renderConsoleRows = () => {
-    if(!taskConsoleList) return;
-    const providerFilter = consoleProviderFilter ? consoleProviderFilter.value : '';
+    const providerFilter = consoleProviderFilter.value;
     const visible = consoleRows.filter(task => !providerFilter || task.provider === providerFilter);
-    taskConsoleList.replaceChildren(...visible.map(makeConsoleRow));
+    const focused = document.activeElement;
+    const taskId = focused?.closest('.task-console-row')?.dataset.taskId;
+    const rows = visible.map(makeConsoleRow);
+    taskConsoleList.replaceChildren(...rows);
+    if(taskId){
+      // Polling must not send keyboard focus back to the top of the page.
+      const row = rows.find(item => item.dataset.taskId === taskId);
+      const target = row?.querySelector(focused.tagName.toLowerCase()) || row?.querySelector('a') || consoleRefresh;
+      target.focus({preventScroll:true});
+    }
     if(!visible.length){
       const empty = document.createElement('p');
       empty.className = 'task-console-empty';
@@ -575,6 +892,18 @@
     fill(consoleProjectFilter, consoleProjects.map(project => [project.id, project.name || project.id]), localText('全部', 'All'));
   };
 
+  function setConsoleError(message = ''){
+    consoleStatus.hidden = !message;
+    consoleStatus.textContent = message;
+    consoleStatus.dataset.kind = message ? 'error' : '';
+  }
+
+  function updateTaskDot(){
+    // The API caps the list at 200 and has no total; a dot asserts presence only.
+    const hasActive = !lockSettings && consoleUnfiltered && consoleRows.some(task => task.status === 'queued' || task.status === 'running');
+    setNavDot('tasksPanel', hasActive ? 'activity' : '', hasActive ? tr('globalSettings.tasksActive') : '');
+  }
+
   async function cancelConsoleTask(task, button){
     button.disabled = true;
     try {
@@ -583,45 +912,59 @@
       task.cancellable = false;
       task.error = localText('任务已取消', 'Task cancelled');
       renderConsoleRows();
+      updateTaskDot();
     } catch(error) {
       button.disabled = false;
-      setStatus(error.message || localText('任务取消失败', 'Failed to cancel task'), 'error');
+      setConsoleError(error.message || localText('任务取消失败', 'Failed to cancel task'));
     }
   }
 
-  async function refreshConsoleTasks(){
-    if(!consoleReady || !state || consoleBusy) return;
+  async function refreshConsoleTasks(queue = false){
+    if(!state || lockSettings) return;
+    if(consoleBusy){ consoleRefreshQueued ||= queue; return; }
     consoleBusy = true;
+    const status = consoleStatusFilter.value;
+    const project = consoleProjectFilter.value;
     try {
       const query = new URLSearchParams({limit: '200'});
-      if(consoleStatusFilter.value) query.set('status', consoleStatusFilter.value);
-      if(consoleProjectFilter.value) query.set('project_id', consoleProjectFilter.value);
+      if(status) query.set('status', status);
+      if(project) query.set('project_id', project);
       const data = await requestJson(`/api/global-tasks?${query.toString()}`);
+      if(lockSettings || status !== consoleStatusFilter.value || project !== consoleProjectFilter.value) return;
       consoleProjects = data.projects || [];
       consoleRows = data.tasks || [];
+      consoleUnfiltered = !status && !project;
+      setConsoleError();
       syncConsoleFilters();
       renderConsoleRows();
     } catch(error) {
+      if(lockSettings || status !== consoleStatusFilter.value || project !== consoleProjectFilter.value) return;
+      consoleUnfiltered = false;
       consoleRows = [];
       renderConsoleRows();
-      setStatus(error.message || localText('任务总控台读取失败', 'Failed to load global tasks'), 'error');
-    } finally { consoleBusy = false; }
+      setConsoleError(error.message || localText('任务总控台读取失败', 'Failed to load global tasks'));
+    } finally {
+      consoleBusy = false;
+      updateTaskDot();
+      if(consoleRefreshQueued){ consoleRefreshQueued = false; void refreshConsoleTasks(); }
+    }
   }
 
   const startConsoleTimer = () => {
-    if(!consoleReady) return;
     if(consoleTimer){ clearInterval(consoleTimer); consoleTimer = null; }
-    if(state && consoleAutoRefresh.checked) consoleTimer = setInterval(() => { void refreshConsoleTasks(); }, 2000);
+    if(state && !lockSettings && consoleAutoRefresh.checked) consoleTimer = setInterval(() => { void refreshConsoleTasks(); }, 2000);
   };
 
-  if(consoleReady){
-    document.getElementById('consoleRefresh').addEventListener('click', () => { void refreshConsoleTasks(); });
-    consoleStatusFilter.addEventListener('change', () => { void refreshConsoleTasks(); });
-    consoleProjectFilter.addEventListener('change', () => { void refreshConsoleTasks(); });
-    consoleProviderFilter.addEventListener('change', renderConsoleRows);
-    consoleAutoRefresh.addEventListener('change', startConsoleTimer);
-  }
-  // 恢复页不能让任务查询覆盖存储错误，也不启动轮询。
+  const changeConsoleFilter = () => {
+    consoleUnfiltered = false;
+    updateTaskDot();
+    void refreshConsoleTasks(true);
+  };
+  consoleRefresh.addEventListener('click', () => { void refreshConsoleTasks(true); });
+  consoleStatusFilter.addEventListener('change', changeConsoleFilter);
+  consoleProjectFilter.addEventListener('change', changeConsoleFilter);
+  consoleProviderFilter.addEventListener('change', renderConsoleRows);
+  consoleAutoRefresh.addEventListener('change', startConsoleTimer);
   void load().then(() => {
     void refreshConsoleTasks();
     startConsoleTimer();

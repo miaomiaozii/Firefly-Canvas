@@ -1,5 +1,6 @@
 <!doctype html>
-<html lang="zh-CN">
+<!-- The responsive grid owns its width in both hosts; desktop zoom would shrink the mobile controls twice. -->
+<html lang="zh-CN" data-studio-scale="off">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -7,14 +8,7 @@
   <link rel="icon" href="/static/img/firefly-logo.ico" type="image/x-icon" sizes="16x16 32x32 48x48 256x256">
   <link rel="icon" href="/static/img/firefly-logo.svg" type="image/svg+xml" sizes="any">
   <link rel="apple-touch-icon" href="/static/img/apple-touch-icon.png" sizes="180x180">
-  <script>
-    // The Smart Canvas settings panel owns its responsive width.  Opt out of
-    // the standalone page's desktop UI scale before theme.js initializes so
-    // embedded controls keep their intended readable size.
-    if (window.self !== window.top) document.documentElement.dataset.studioScale = 'off';
-  </script>
   <script src="/static/js/theme.js?v=20261119.001800"></script>
-  <!-- #348：统一 toast，所有后续脚本可用 window.ffToast -->
   <script src="/static/js/ui-toast.js?v=20261119.001800"></script>
   <script src="/static/js/i18n.js?v=20261119.001800"></script>
   <script src="/static/js/global-preferences.js?v=20261119.001800"></script>
@@ -23,106 +17,133 @@
   <link rel="stylesheet" href="/static/css/global-settings.css?v=20261119.001800">
 </head>
 <body>
-  <main class="settings-shell">
-    <header class="settings-header">
-      <button id="backButton" class="quiet-button" type="button" data-i18n="globalSettings.back">← 返回</button>
-      <div>
-        <p class="eyebrow" data-i18n="common.productName">萤火画布</p>
-        <h1 data-i18n="globalSettings.heading">全局设置</h1>
-        <p class="subtitle" data-i18n="globalSettings.subtitle">跨项目共享的在线服务、项目库与应用偏好。</p>
+  <div class="settings-shell">
+    <aside class="settings-sidebar">
+      <div class="settings-brand"><span class="settings-brand-mark" aria-hidden="true"></span><span data-i18n="common.productName">萤火画布</span></div>
+      <div class="settings-sidebar-actions">
+        <button id="backButton" class="quiet-button" type="button" data-i18n="globalSettings.back">← 返回</button>
+        <button id="refreshAll" class="quiet-button" type="button" data-i18n="globalSettings.refresh">刷新状态</button>
       </div>
-      <button id="refreshAll" class="quiet-button" type="button" data-i18n="globalSettings.refresh">刷新状态</button>
-    </header>
-
-    <p id="pageStatus" class="page-status" role="status" aria-live="polite" data-i18n="globalSettings.loading">正在读取设置…</p>
-
-    <section class="settings-section" aria-labelledby="preferencesTitle">
-      <div class="section-heading">
-        <div><p class="section-index">01</p><h2 id="preferencesTitle" data-i18n="globalSettings.preferences">外观与保存</h2></div>
-        <button id="savePreferences" class="primary-button" type="button" data-i18n="globalSettings.savePreferences">保存偏好</button>
-      </div>
-      <div class="preference-grid">
-        <label><span data-i18n="globalSettings.theme">主题</span><select id="themeSelect"><option value="dark" data-i18n="globalSettings.dark">深色</option><option value="light" data-i18n="globalSettings.light">浅色</option></select></label>
-        <!-- #493：全局上游直连开关，默认开；只影响上游服务商的 HTTPX 请求，
-             不动系统代理/NO_PROXY/局域网与本地服务。 -->
-        <label><input id="upstreamDirect" type="checkbox" checked><span data-i18n="globalSettings.upstreamDirect">上游请求直连（不走系统代理）</span></label>
-        <!-- #365：语言下拉已移除（英文选项实际用不到），界面固定中文。 -->
-      </div>
-    </section>
-
-    <section class="settings-section" aria-labelledby="providersTitle">
-      <div class="section-heading">
-        <div><p class="section-index">02</p><h2 id="providersTitle" data-i18n="globalSettings.providers">在线服务商与模型</h2></div>
-        <div class="heading-actions">
-          <button id="addProvider" class="quiet-button" type="button" data-i18n="globalSettings.addProvider">添加服务商</button>
-          <button id="saveProviders" class="primary-button" type="button" data-i18n="globalSettings.saveProviders">保存服务商</button>
+      <nav id="settingsNav" class="settings-nav" aria-labelledby="settingsTitle">
+        <div class="settings-nav-group" role="group" aria-labelledby="settingsCommon">
+          <p id="settingsCommon" class="eyebrow" data-i18n="globalSettings.groupCommon">常用</p>
+          <button class="quiet-button" type="button" aria-controls="preferencesPanel" aria-current="true"><span data-i18n="globalSettings.preferences">外观与保存</span></button>
+          <button class="quiet-button" type="button" aria-controls="providersPanel" aria-labelledby="navProviders"><span id="navProviders" data-i18n="globalSettings.navProviders">服务商与模型</span><span class="settings-nav-dot" hidden></span></button>
+          <button class="quiet-button" type="button" aria-controls="libraryPanel"><span data-i18n="globalSettings.library">项目库</span></button>
         </div>
-      </div>
-      <p class="section-note" data-i18n="globalSettings.keyNote">Key 写入本机全局 API/.env；页面只显示脱敏尾号，留空不会覆盖已有 Key。</p>
-      <div id="providerList" class="provider-list"></div>
-    </section>
-
-    <section class="settings-section" aria-labelledby="cliTitle">
-      <div class="section-heading">
-        <div><p class="section-index">03</p><h2 id="cliTitle" data-i18n="globalSettings.cli">CLI 状态</h2></div>
-      </div>
-      <div id="cliGrid" class="status-grid" aria-live="polite"></div>
-    </section>
-
-    <section class="settings-section" aria-labelledby="agentFileAccessTitle">
-      <div class="section-heading">
-        <div><p class="section-index">04</p><h2 id="agentFileAccessTitle" data-i18n="globalSettings.agentFileAccess">Agent 文件访问</h2></div>
-      </div>
-      <div class="preference-grid">
-        <div class="status-card">
-          <h3>Codex</h3>
-          <p class="status-detail" data-i18n="globalSettings.codexFileAccess">当前：只读，Agent 不能修改文件（包括自己的工作目录）。写入工作目录：未验证，暂不开放。</p>
+        <div class="settings-nav-group" role="group" aria-labelledby="settingsAgent">
+          <p id="settingsAgent" class="eyebrow" data-i18n="globalSettings.groupAgent">Agent</p>
+          <button class="quiet-button" type="button" aria-controls="agentFileAccessPanel"><span data-i18n="globalSettings.navFileAccess">文件访问</span></button>
+          <button class="quiet-button" type="button" aria-controls="cliPanel" aria-labelledby="navCli"><span id="navCli" data-i18n="globalSettings.cli">CLI 状态</span><span class="settings-nav-dot" hidden></span></button>
         </div>
-        <div class="status-card">
-          <h3>Pi</h3>
-          <p class="status-detail" data-i18n="globalSettings.piFileAccess">工作目录固定为当前节点的 agent_nodes/{node_id}/sessions；受限 read/write/edit 仅可访问该目录，目录外访问被拒绝。模型不能写入 system-prompt.txt 或该目录根层的原生会话 .jsonl；未开放 bash、PowerShell 或 codemode。</p>
-          <p class="status-detail" data-i18n="globalSettings.piFileAccessBoundary">这是工具 I/O 守卫，不是操作系统沙盒，不能防止其他进程并发替换重解析点（reparse points）。</p>
+        <div class="settings-nav-group" role="group" aria-labelledby="settingsConnections">
+          <p id="settingsConnections" class="eyebrow" data-i18n="globalSettings.groupConnections">连接与运行</p>
+          <button class="quiet-button" type="button" aria-controls="photoshopPanel" aria-labelledby="navPhotoshop"><span id="navPhotoshop">Photoshop</span><span class="settings-nav-dot" hidden></span></button>
+          <button class="quiet-button" type="button" aria-controls="tasksPanel" aria-labelledby="navTasks"><span id="navTasks" data-i18n="globalSettings.navTasks">任务总控台</span><span class="settings-nav-dot" hidden></span></button>
         </div>
-      </div>
-    </section>
+      </nav>
+    </aside>
 
-    <section class="settings-section" aria-labelledby="libraryTitle">
-      <div class="section-heading">
-        <div><p class="section-index">05</p><h2 id="libraryTitle" data-i18n="globalSettings.library">项目库</h2></div>
+    <main class="settings-main">
+      <h1 id="settingsTitle" class="visually-hidden" data-i18n="globalSettings.heading">全局设置</h1>
+      <div id="settingsIssues" class="settings-issues" hidden>
+        <p class="settings-issues-copy" role="status"><span class="settings-chip" data-tone="problem" data-i18n="globalSettings.needsAttention">需处理</span><span id="settingsIssueSummary"></span></p>
+        <div id="settingsIssueActions" class="settings-issue-actions"></div>
       </div>
-      <p id="librarySummary" class="section-note"></p>
-      <form id="libraryForm" class="library-form">
-        <label><span data-i18n="globalSettings.libraryPath">新的项目库绝对路径</span><input id="libraryPath" name="path" autocomplete="off" required></label>
-        <label class="confirmation"><input id="moveExisting" type="checkbox"><span data-i18n="globalSettings.moveExisting">显式移动当前项目；复制并完整校验成功后才切换</span></label>
-        <button class="danger-button" type="submit" data-i18n="globalSettings.switchLibrary">校验并切换项目库</button>
-      </form>
-      <p class="safety-note" data-i18n="globalSettings.safety">为保护作品，切换成功后原项目库会保留为安全副本；确认新库无误后再由你自行清理。</p>
-    </section>
+      <p id="pageStatus" class="page-status" role="status" data-i18n="globalSettings.loading">正在读取设置…</p>
 
-    <section class="settings-section" aria-labelledby="psTitle">
-      <div class="section-heading">
-        <div><p class="section-index">06</p><h2 id="psTitle" data-i18n="globalSettings.photoshop">Photoshop 连接状态</h2></div>
-      </div>
-      <div id="photoshopStatus" class="connection-card"></div>
-    </section>
-
-    <section class="settings-section" aria-labelledby="tasksTitle">
-      <div class="section-heading">
-        <div><p class="section-index">07</p><h2 id="tasksTitle" data-i18n="globalSettings.tasksConsole">全局任务总控台</h2></div>
-        <div class="heading-actions">
-          <label class="console-autorefresh"><input id="consoleAutoRefresh" type="checkbox" checked> <span data-i18n="globalSettings.tasksAutoRefresh">自动刷新（2s）</span></label>
-          <button id="consoleRefresh" class="quiet-button" type="button" data-i18n="globalSettings.tasksRefresh">刷新任务</button>
+      <section id="preferencesPanel" class="settings-section" data-settings-panel aria-labelledby="preferencesTitle">
+        <div class="section-heading">
+          <h2 id="preferencesTitle" tabindex="-1" data-i18n="globalSettings.preferences">外观与保存</h2>
+          <button id="savePreferences" class="primary-button" type="button" data-i18n="globalSettings.savePreferences">保存偏好</button>
         </div>
-      </div>
-      <p class="section-note" data-i18n="globalSettings.tasksNote">跨项目的在飞与近期任务；点「查看」跳转到产物所在画布并定位节点，点「取消」复用项目任务取消通道。</p>
-      <div class="console-filters">
-        <label><span data-i18n="globalSettings.tasksFilterStatus">状态</span><select id="consoleStatusFilter"><option value="">全部</option><option value="active" data-i18n="globalSettings.tasksFilterActive">在飞（排队/运行）</option><option value="queued" data-i18n="globalSettings.tasksStatusQueued">排队</option><option value="running" data-i18n="globalSettings.tasksStatusRunning">运行中</option><option value="succeeded" data-i18n="globalSettings.tasksStatusSucceeded">成功</option><option value="failed" data-i18n="globalSettings.tasksStatusFailed">失败</option><option value="cancelled" data-i18n="globalSettings.tasksStatusCancelled">已取消</option></select></label>
-        <label><span data-i18n="globalSettings.tasksFilterProvider">服务商</span><select id="consoleProviderFilter"><option value="">全部</option></select></label>
-        <label><span data-i18n="globalSettings.tasksFilterProject">项目</span><select id="consoleProjectFilter"><option value="">全部</option></select></label>
-      </div>
-      <div id="taskConsoleList" class="task-console-list" role="list"></div>
-    </section>
-  </main>
-  <script src="/static/js/global-settings.js?v=20261119.001800&amp;agent=423"></script>
+        <p class="section-note subtitle" data-i18n="globalSettings.subtitle">跨项目共享的在线服务、项目库与应用偏好。</p>
+        <div class="settings-card preference-list">
+          <label class="preference-item"><span data-i18n="globalSettings.theme">主题</span><select id="themeSelect"><option value="light" data-i18n="globalSettings.light">浅色</option><option value="dark" data-i18n="globalSettings.dark">深色</option></select></label>
+          <!-- #493：只改变上游服务商的 HTTPX 请求，不动系统代理、局域网与本地服务。 -->
+          <label class="preference-item"><span data-i18n="globalSettings.upstreamDirect">上游请求直连（不走系统代理）</span><input id="upstreamDirect" class="settings-switch" type="checkbox" role="switch" checked></label>
+        </div>
+      </section>
+
+      <section id="providersPanel" class="settings-section" data-settings-panel aria-labelledby="providersTitle" hidden>
+        <div class="section-heading">
+          <h2 id="providersTitle" tabindex="-1" data-i18n="globalSettings.providers">在线服务商与模型</h2>
+          <div class="heading-actions">
+            <button id="addProvider" class="quiet-button" type="button" data-i18n="globalSettings.addProvider">添加服务商</button>
+            <button id="saveProviders" class="primary-button" type="button" data-i18n="globalSettings.saveProviders">保存服务商</button>
+          </div>
+        </div>
+        <p class="section-note" data-i18n="globalSettings.keyNote">Key 写入本机全局 API/.env；页面只显示脱敏尾号，留空不会覆盖已有 Key。</p>
+        <div id="providerList" class="settings-card provider-list"></div>
+      </section>
+
+      <section id="libraryPanel" class="settings-section" data-settings-panel aria-labelledby="libraryTitle" hidden>
+        <div class="section-heading">
+          <h2 id="libraryTitle" tabindex="-1" data-i18n="globalSettings.library">项目库</h2>
+        </div>
+        <p id="librarySummary" class="section-note"></p>
+        <div class="settings-card">
+          <form id="libraryForm" class="library-form">
+            <label><span data-i18n="globalSettings.libraryPath">新的项目库绝对路径</span><input id="libraryPath" name="path" autocomplete="off" required></label>
+            <label class="inline-check"><input id="moveExisting" type="checkbox"><span data-i18n="globalSettings.moveExisting">显式移动当前项目；复制并完整校验成功后才切换</span></label>
+            <button class="danger-button" type="submit" data-i18n="globalSettings.switchLibrary">校验并切换项目库</button>
+          </form>
+          <p class="safety-note" data-i18n="globalSettings.safety">为保护作品，切换成功后原项目库会保留为安全副本；确认新库无误后再由你自行清理。</p>
+        </div>
+      </section>
+
+      <section id="agentFileAccessPanel" class="settings-section" data-settings-panel aria-labelledby="agentFileAccessTitle" hidden>
+        <div class="section-heading">
+          <h2 id="agentFileAccessTitle" tabindex="-1" data-i18n="globalSettings.agentFileAccess">Agent 文件访问</h2>
+        </div>
+        <div class="settings-card status-grid">
+          <div class="status-card">
+            <h3>Codex</h3>
+            <p class="status-detail" data-i18n="globalSettings.codexFileAccess">当前：只读，Agent 不能修改文件（包括自己的工作目录）。写入工作目录：未验证，暂不开放。</p>
+          </div>
+          <div class="status-card">
+            <h3>Pi</h3>
+            <p class="status-detail" data-i18n="globalSettings.piFileAccess">工作目录固定为当前节点的 agent_nodes/{node_id}/sessions；受限 read/write/edit 仅可访问该目录，目录外访问被拒绝。模型不能写入 system-prompt.txt 或该目录根层的原生会话 .jsonl；未开放 bash、PowerShell 或 codemode。</p>
+            <p class="status-detail" data-i18n="globalSettings.piFileAccessBoundary">这是工具 I/O 守卫，不是操作系统沙盒，不能防止其他进程并发替换重解析点（reparse points）。</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="cliPanel" class="settings-section" data-settings-panel aria-labelledby="cliTitle" hidden>
+        <div class="section-heading">
+          <h2 id="cliTitle" tabindex="-1" data-i18n="globalSettings.cli">CLI 状态</h2>
+        </div>
+        <div id="cliGrid" class="settings-card status-grid" aria-live="polite"></div>
+      </section>
+
+      <section id="photoshopPanel" class="settings-section" data-settings-panel aria-labelledby="psTitle" hidden>
+        <div class="section-heading">
+          <h2 id="psTitle" tabindex="-1" data-i18n="globalSettings.photoshop">Photoshop 连接状态</h2>
+        </div>
+        <div id="photoshopStatus" class="settings-card connection-card"></div>
+      </section>
+
+      <section id="tasksPanel" class="settings-section" data-settings-panel aria-labelledby="tasksTitle" hidden>
+        <div class="section-heading">
+          <h2 id="tasksTitle" tabindex="-1" data-i18n="globalSettings.tasksConsole">全局任务总控台</h2>
+          <div class="heading-actions">
+            <label class="inline-check console-autorefresh"><input id="consoleAutoRefresh" type="checkbox" checked> <span data-i18n="globalSettings.tasksAutoRefresh">自动刷新（2s）</span></label>
+            <button id="consoleRefresh" class="quiet-button" type="button" data-i18n="globalSettings.tasksRefresh">刷新任务</button>
+          </div>
+        </div>
+        <p class="section-note" data-i18n="globalSettings.tasksNote">跨项目的在飞与近期任务；点「查看」跳转到产物所在画布并定位节点，点「取消」复用项目任务取消通道。</p>
+        <div class="settings-card">
+          <div class="console-filters">
+            <label><span data-i18n="globalSettings.tasksFilterStatus">状态</span><select id="consoleStatusFilter"><option value="">全部</option><option value="active" data-i18n="globalSettings.tasksFilterActive">在飞（排队/运行）</option><option value="queued" data-i18n="globalSettings.tasksStatusQueued">排队</option><option value="running" data-i18n="globalSettings.tasksStatusRunning">运行中</option><option value="succeeded" data-i18n="globalSettings.tasksStatusSucceeded">成功</option><option value="failed" data-i18n="globalSettings.tasksStatusFailed">失败</option><option value="cancelled" data-i18n="globalSettings.tasksStatusCancelled">已取消</option></select></label>
+            <label><span data-i18n="globalSettings.tasksFilterProvider">服务商</span><select id="consoleProviderFilter"><option value="">全部</option></select></label>
+            <label><span data-i18n="globalSettings.tasksFilterProject">项目</span><select id="consoleProjectFilter"><option value="">全部</option></select></label>
+          </div>
+          <p id="consoleStatus" class="page-status console-status" role="status" hidden></p>
+          <div id="taskConsoleList" class="task-console-list" role="list"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/static/js/global-settings.js?v=20261119.001800"></script>
 </body>
 </html>

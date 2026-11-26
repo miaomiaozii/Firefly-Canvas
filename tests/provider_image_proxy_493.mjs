@@ -15,11 +15,11 @@ class Element {
         this.children = [];
         this.dataset = {};
         this.listeners = {};
+        this.attributes = {};
         this.value = '';
         this.className = '';
         this.checked = this.disabled = this.hidden = false;
         this._text = '';
-        this.classList = {toggle() {}};
     }
     set textContent(value) { this._text = String(value); this.children = []; }
     get textContent() { return this._text + this.children.map(child => child.textContent).join(''); }
@@ -38,19 +38,38 @@ class Element {
                 if (name === tag) continue;
                 if (name.startsWith('data-')) node.dataset[name.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = raw;
                 else if (name === 'class') node.className = raw;
+                else if (name.startsWith('aria-')) node.setAttribute(name, raw);
                 else node[name] = ['hidden', 'checked', 'disabled'].includes(name) ? true : raw;
             }
             stack.at(-1).appendChild(node);
-            if (!['input', 'br', 'hr', 'img'].includes(tag)) stack.push(node);
+            if (!['input', 'br', 'hr', 'img', 'meta', 'link'].includes(tag)) stack.push(node);
         }
     }
     appendChild(child) { this.children.push(child); child.parentNode = this; return child; }
     append(...children) { children.forEach(child => this.appendChild(child)); }
-    replaceChildren(...children) { this.children = []; this.append(...children); }
+    replaceChildren(...children) { for (const child of [...this.children]) child.remove(); this.append(...children); }
+    get options() { return this.children; }
+    get root() { return this.parentNode?.root || this; }
+    get nextElementSibling() { return this.parentNode?.children[this.parentNode.children.indexOf(this) + 1]; }
+    get previousElementSibling() { return this.parentNode?.children[this.parentNode.children.indexOf(this) - 1]; }
+    getElementById(id) { return this.querySelector(`#${id}`); }
+    focus() { this.root.activeElement = this; }
+    closest(selector) { return this.matches(selector) ? this : this.parentNode?.closest(selector); }
+    contains(el) { return this === el || this.children.some(child => child.contains(el)); }
+    setAttribute(name, value) { this.attributes[name] = String(value); }
+    getAttribute(name) { return this.attributes[name] ?? null; }
+    removeAttribute(name) { delete this.attributes[name]; }
     addEventListener(name, fn) { (this.listeners[name] ||= []).push(fn); }
-    async fire(name) { for (const fn of this.listeners[name] || []) await fn({target: this, preventDefault() {}}); }
-    remove() { this.parentNode.children = this.parentNode.children.filter(child => child !== this); }
+    async fire(name, event = {}) {
+        if (this.disabled && name === 'click') return;
+        for (const fn of this.listeners[name] || []) await fn({target: this, preventDefault() {}, ...event});
+    }
+    remove() {
+        this.parentNode.children = this.parentNode.children.filter(child => child !== this);
+        this.parentNode = null;
+    }
     matches(selector) {
+        if (selector.startsWith('#')) return this.id === selector.slice(1);
         if (selector.startsWith('.')) return this.className.split(' ').includes(selector.slice(1));
         const attribute = selector.match(/^\[data-([\w-]+)(?:="([^"]*)")?\](:checked)?$/);
         if (attribute) {
@@ -60,19 +79,25 @@ class Element {
         return this.tagName === selector;
     }
     querySelectorAll(selector) {
-        return this.children.flatMap(child => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]);
+        if (selector.startsWith('[data-settings-panel] :is(')) {
+            return this.querySelectorAll('[data-settings-panel]').flatMap(panel => panel.querySelectorAll('button, input, select, textarea'));
+        }
+        if (selector.includes(' ') && !selector.includes(',')) {
+            const [ancestor, target] = selector.split(' ');
+            return this.querySelectorAll(ancestor).flatMap(item => item.querySelectorAll(target));
+        }
+        const selectors = selector.split(',').map(part => part.trim());
+        return this.children.flatMap(child => [...(selectors.some(part => child.matches(part)) ? [child] : []), ...child.querySelectorAll(selector)]);
     }
     querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
 }
 
-async function boot(language = 'zh') {
-    const ids = ['pageStatus', 'providerList', 'cliGrid', 'libraryPath', 'moveExisting', 'themeSelect',
-        'librarySummary', 'photoshopStatus', 'backButton', 'refreshAll', 'addProvider', 'saveProviders',
-        'savePreferences', 'libraryForm'];
-    const elements = Object.fromEntries(ids.map(id => {
-        assert.ok(html.includes(`id="${id}"`), `real page includes ${id}`);
-        return [id, new Element()];
-    }));
+const settle = () => new Promise(resolve => setImmediate(resolve));
+
+async function boot(language = 'zh', receipts = {}) {
+    const document = new Element('document');
+    document.innerHTML = html;
+    const elements = new Proxy({}, {get: (_, id) => document.getElementById(id)});
     const calls = [];
     let providers = [
         {id: 'direct', protocol: 'openai', image_bypass_system_proxy: true},
@@ -84,33 +109,57 @@ async function boot(language = 'zh') {
     ].map(item => ({name: item.id, base_url: 'https://private-fake.invalid/v1', image_models: ['image-one'],
         chat_models: ['chat-one'], video_models: ['video-one'], key_preview: '****6789', has_key: true, ...item}));
     const dictionary = {};
+    const messages = [];
+    let preferences = {theme: 'dark', upstream_direct: true};
+    let library = {path: 'D:/fake-original', project_count: 1};
+    document.createElement = tag => new Element(tag);
     const context = vm.createContext({
-        document: {getElementById: id => elements[id] || null, createElement: tag => new Element(tag)},
+        document,
+        URL, URLSearchParams,
+        scrollTo() {},
+        setInterval: () => 1,
+        clearInterval() {},
         StudioI18n: {register: value => Object.assign(dictionary, value), t: key => dictionary[key]?.[language] || key, lang: () => language},
         location: {origin: 'http://private-qa.invalid'},
         addEventListener() {},
-        BroadcastChannel: class { postMessage() {} },
+        BroadcastChannel: class { postMessage(message) { messages.push(message); } },
         async fetch(url, options = {}) {
             const body = options.body ? JSON.parse(options.body) : null;
             calls.push({url, method: options.method || 'GET', body});
             let data;
-            if (url === '/api/global-settings') data = {providers: structuredClone(providers), cli: {}, preferences: {}, project_library: {}};
-            else if (url === '/api/config/data-diagnostics') data = {items: []};
+            if (url === '/api/global-settings') {
+                data = {providers: structuredClone(providers), cli: receipts.cli, photoshop: receipts.photoshop,
+                    preferences: structuredClone(preferences), project_library: structuredClone(library)};
+                if (receipts.recovery) data = {storage_recovery: {message: receipts.recovery}};
+            } else if (url === '/api/config/data-diagnostics') data = {items: []};
+            else if (url.startsWith('/api/global-tasks?')) data = {tasks: structuredClone(receipts.tasks || []), projects: []};
+            else if (url === '/api/project-library/p/image-generation-tasks/t/cancel' && options.method === 'POST') data = {ok: true};
+            else if (url === '/api/global-settings/preferences' && options.method === 'PATCH') {
+                preferences = body;
+                data = {preferences: {...preferences, language: 'zh', agent_file_access: 'read-only'}};
+            } else if (url === '/api/global-settings/project-library' && options.method === 'POST') {
+                library.path = body.path;
+                data = {project_library: library, migration: {file_count: 2}};
+            }
             else if (url === '/api/providers' && options.method === 'PUT') {
-                providers = structuredClone(body);
+                providers = body.map(({api_key, ...item}) => api_key ? {...item, has_key: true, key_preview: '••••••••0000'} : item);
                 data = {providers: structuredClone(providers)};
-            } else if (['/api/providers/test-connection', '/api/providers/fetch-models'].includes(url)) data = {ok: true, image_models: ['image-one']};
+            } else if (url === '/api/providers/test-connection') data = receipts.testResult || {ok: true, image_models: ['image-one']};
+            else if (url === '/api/providers/fetch-models') data = {ok: true, image_models: ['image-one']};
             else throw new Error(`Unexpected fake-backend endpoint: ${url}`);
             return {ok: true, json: async () => data};
         },
     });
     context.window = context;
-    context.self = context.top = context;
+    context.self = context;
+    context.top = receipts.embedded ? {postMessage: message => messages.push(message)} : context;
+    context.parent = context.top;
     vm.runInContext(translations, context);
     vm.runInContext(source, context);
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(elements.pageStatus.dataset.kind, 'success', elements.pageStatus.textContent);
-    return {elements, calls, card: id => elements.providerList.children.find(card => card.dataset.providerId === id)};
+    await settle();
+    assert.equal(elements.pageStatus.dataset.kind, receipts.recovery ? 'error' : 'success', elements.pageStatus.textContent);
+    const nav = panel => elements.settingsNav.querySelectorAll('button').find(button => button.getAttribute('aria-controls') === panel);
+    return {document, elements, calls, messages, nav, card: id => elements.providerList.children.find(card => card.dataset.providerId === id)};
 }
 
 for (const language of ['zh', 'en']) {
@@ -164,4 +213,139 @@ test('protocol changes and new providers never acquire the deferred switch', asy
     assert.equal(elements.providerList.children.at(-1).querySelector(bypass), null);
     await elements.saveProviders.fire('click');
     assert.ok(calls.filter(call => call.method === 'PUT').every(call => call.body.every(item => !Object.hasOwn(item, 'image_bypass_system_proxy'))));
+});
+
+test('#504: grouped navigation shows exactly one panel and keeps drafts across sections, save and refresh', async () => {
+    const {elements, document, calls, card, nav} = await boot();
+    const assertPanel = panel => {
+        assert.deepEqual(document.querySelectorAll('[data-settings-panel]').filter(el => !el.hidden).map(el => el.id), [panel]);
+        assert.deepEqual(elements.settingsNav.querySelectorAll('button').filter(el => el.getAttribute('aria-current') === 'true'), [nav(panel)]);
+    };
+    assert.deepEqual(elements.settingsNav.children.map(group => group.querySelectorAll('button').map(button => button.getAttribute('aria-controls'))), [
+        ['preferencesPanel', 'providersPanel', 'libraryPanel'], ['agentFileAccessPanel', 'cliPanel'], ['photoshopPanel', 'tasksPanel'],
+    ]);
+    assertPanel('preferencesPanel');
+    await nav('preferencesPanel').fire('keydown', {key: 'ArrowDown'});
+    assert.equal(document.activeElement, nav('providersPanel'));
+    await nav('providersPanel').fire('click');
+    assertPanel('providersPanel');
+    assert.equal(document.activeElement, elements.providersTitle);
+    const draft = card('old');
+    const toggle = draft.querySelector('.provider-toggle');
+    const editor = draft.querySelector('.provider-editor');
+    assert.equal(editor.hidden, true);
+    await toggle.fire('click');
+    assert.equal(editor.hidden, false);
+    assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+    const key = draft.querySelector('[data-field="api_key"]');
+    assert.equal(key.value, '');
+    assert.equal(key.placeholder, '****6789');
+    key.value = 'test-draft-key';
+    draft.querySelector('[data-models="image_models"]').value = 'draft-model';
+    await nav('libraryPanel').fire('click');
+    elements.libraryPath.value = 'D:/draft-library';
+    elements.moveExisting.checked = true;
+    await nav('preferencesPanel').fire('click');
+    elements.themeSelect.value = 'light';
+    elements.upstreamDirect.checked = false;
+    await elements.refreshAll.fire('click');
+    assert.equal(elements.themeSelect.value, 'light');
+    assert.equal(elements.upstreamDirect.checked, false);
+    await elements.savePreferences.fire('click');
+    assert.deepEqual(calls.find(call => call.method === 'PATCH').body, {theme: 'light', upstream_direct: false});
+    assert.equal(elements.libraryPath.value, 'D:/draft-library');
+    assert.equal(elements.moveExisting.checked, true);
+    await nav('providersPanel').fire('click');
+    assertPanel('providersPanel');
+    assert.equal(card('old'), draft);
+    assert.equal(key.value, 'test-draft-key');
+    assert.equal(editor.hidden, false);
+    await elements.saveProviders.fire('click');
+    const savedCard = calls.find(call => call.method === 'PUT').body.find(provider => provider.id === 'old');
+    assert.deepEqual(savedCard.image_models, ['draft-model']);
+    assert.equal(savedCard.api_key, 'test-draft-key');
+    assert.equal(card('old').querySelector('[data-field="api_key"]').value, '');
+    assert.ok(!elements.providerList.textContent.includes('test-draft-key'));
+    assert.equal(elements.libraryPath.value, 'D:/draft-library');
+});
+
+test('#504: aggregate CTA and status dots distinguish known issues, unknown CLI, and task activity', async () => {
+    const receipts = {
+        cli: {codex: {installed: true, logged_in: false, raw: {login_status_checked: false}},
+            gemini: {installed: false, logged_in: false, message: 'Antigravity 状态读取失败：probe failure'}},
+        tasks: [{task_id: 't', project_id: 'p', status: 'running', cancellable: true}],
+    };
+    const {elements, document, nav, card, calls} = await boot('zh', receipts);
+    const dot = id => nav(id).querySelector('.settings-nav-dot');
+    const issuePanels = () => elements.settingsIssueActions.children.map(action => action.dataset.issuePanel);
+    assert.equal(elements.settingsIssues.hidden, true);
+    assert.equal(dot('tasksPanel').dataset.tone, 'activity');
+    assert.equal(dot('cliPanel').hidden, true);
+    assert.equal(dot('providersPanel').hidden, true);
+    assert.equal(elements.photoshopStatus.textContent, '状态未知');
+    assert.equal(calls.some(call => call.url === '/api/providers/test-connection'), false);
+    receipts.photoshop = {connected: false};
+    receipts.cli.codex.raw.login_status_checked = true;
+    await elements.refreshAll.fire('click');
+    assert.deepEqual(issuePanels(), ['cliPanel', 'photoshopPanel']);
+    assert.equal(dot('cliPanel').dataset.tone, 'warning');
+    assert.equal(dot('photoshopPanel').dataset.tone, 'problem');
+    await elements.settingsIssueActions.children[1].fire('click');
+    assert.equal(elements.photoshopPanel.hidden, false);
+    assert.equal(document.activeElement, elements.psTitle);
+
+    receipts.testResult = {ok: false, status: 503, message: 'fake-key-in-upstream-response'};
+    const provider = card('direct');
+    const key = provider.querySelector('[data-field="api_key"]');
+    key.value = 'fake-key-in-upstream-response';
+    await provider.querySelector('[data-provider-action="test"]').fire('click');
+    await settle();
+    assert.deepEqual(issuePanels(), ['providersPanel', 'cliPanel', 'photoshopPanel']);
+    assert.equal(dot('providersPanel').dataset.tone, 'problem');
+    assert.equal(provider.querySelector('.provider-fetch-status').textContent, '••••••••');
+    assert.ok(!elements.settingsIssueSummary.textContent.includes('fake-key'));
+    await key.fire('input');
+    assert.equal(dot('providersPanel').hidden, true);
+    receipts.photoshop.connected = true;
+    receipts.cli.codex.logged_in = true;
+    await elements.refreshAll.fire('click');
+    assert.equal(elements.settingsIssues.hidden, true);
+});
+
+test('#504: task refresh keeps keyboard focus and cancellation updates the activity dot', async () => {
+    const task = {task_id: 't', project_id: 'p', status: 'queued', cancellable: true, result_node_id: 'r'};
+    const {elements, document, nav, calls} = await boot('zh', {tasks: [task]});
+    await nav('tasksPanel').fire('click');
+    const findRow = () => elements.taskConsoleList.querySelector('.task-console-row');
+    assert.ok(findRow().querySelector('a').href.endsWith('&focus_node=r'));
+    const cancel = findRow().querySelector('button');
+    cancel.focus();
+    await elements.consoleRefresh.fire('click');
+    await settle();
+    assert.notEqual(findRow().querySelector('button'), cancel);
+    assert.equal(document.activeElement, findRow().querySelector('button'));
+    await document.activeElement.fire('click');
+    await settle();
+    assert.ok(calls.some(call => call.url === '/api/project-library/p/image-generation-tasks/t/cancel' && call.method === 'POST'));
+    assert.equal(nav('tasksPanel').querySelector('.settings-nav-dot').hidden, true);
+    assert.equal(findRow().querySelector('button'), null);
+});
+
+test('#504: storage recovery leaves category navigation and embedded return usable', async () => {
+    const receipts = {embedded: true, recovery: '恢复设置后再试'};
+    const {document, elements, calls, messages, nav} = await boot('zh', receipts);
+    assert.equal(elements.savePreferences.disabled, true);
+    assert.equal(elements.themeSelect.disabled, true);
+    assert.equal(elements.settingsIssues.hidden, true);
+    assert.ok(!calls.some(call => call.url.startsWith('/api/global-tasks')));
+    await nav('agentFileAccessPanel').fire('click');
+    assert.equal(elements.agentFileAccessPanel.hidden, false);
+    assert.equal(document.activeElement, elements.agentFileAccessTitle);
+    await document.fire('keydown', {key: 'Escape'});
+    await elements.backButton.fire('click');
+    assert.deepEqual(messages.map(message => message.type), ['close-settings', 'close-settings']);
+    delete receipts.recovery;
+    await elements.refreshAll.fire('click');
+    assert.equal(elements.savePreferences.disabled, false);
+    assert.equal(elements.themeSelect.disabled, false);
 });

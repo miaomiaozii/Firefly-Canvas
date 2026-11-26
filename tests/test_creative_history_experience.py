@@ -292,13 +292,10 @@ class CreativeHistoryExperienceTests(unittest.TestCase):
 
     def test_embedded_settings_use_the_available_desktop_width(self):
         self.assertRegex(CANVAS_CSS, r"\.smart-settings-panel\s*\{[^}]*width:min\(1560px, calc\(100vw - 32px\)\)")
-        shell = re.search(r"\.settings-shell\s*\{(?P<body>.*?)\}", SETTINGS_CSS, re.S)
-        self.assertIsNotNone(shell)
-        self.assertIn("width: calc(100% - 40px);", shell.group("body"))
-        self.assertIn("max-width: none;", shell.group("body"))
-        self.assertIn("window.self !== window.top", SETTINGS_HTML)
-        self.assertIn("dataset.studioScale = 'off'", SETTINGS_HTML)
-        self.assertRegex(SETTINGS_CSS, r"@media \(max-width: 800px\)")
+        self.assertRegex(SETTINGS_CSS, r"\.settings-shell\s*\{[^}]*grid-template-columns: var\(--settings-sidebar-width\) minmax\(0, 1fr\)")
+        self.assertRegex(SETTINGS_CSS, r"\.settings-main\s*\{[^}]*max-width: var\(--settings-content-width\)")
+        self.assertIn('data-studio-scale="off"', SETTINGS_HTML)
+        self.assertRegex(SETTINGS_CSS, r"@media \(max-width: 760px\)\s*\{\s*\.settings-shell\s*\{ grid-template-columns: minmax\(0, 1fr\)")
 
 
 if __name__ == "__main__":

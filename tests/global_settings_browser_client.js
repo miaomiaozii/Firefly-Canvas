@@ -17,10 +17,6 @@
     return null;
   }
 
-  function text(el) {
-    return el ? (el.textContent || '').trim() : '';
-  }
-
   function px(value) {
     return Number.parseFloat(value) || 0;
   }
@@ -82,7 +78,7 @@
 
     await waitFor('page status', () => {
       const s = document.getElementById('pageStatus');
-      return s && s.textContent.trim().length > 0;
+      return s?.dataset.kind === 'success';
     });
 
     await waitFor('provider cards', () => {
@@ -90,10 +86,27 @@
       return list ? list.querySelectorAll('.provider-card').length : 0;
     }, 20000);
 
-    const sections = ['preferencesTitle', 'providersTitle', 'cliTitle', 'libraryTitle', 'psTitle'];
-    const sectionEls = {};
-    sections.forEach(id => { sectionEls[id] = document.getElementById(id); });
-    record('all five sections present', sections.every(id => !!sectionEls[id]), sections.map(id => id + '=' + !!sectionEls[id]).join(' '));
+    const categories = [...document.querySelectorAll('#settingsNav button')];
+    const panelFor = button => document.getElementById(button.getAttribute('aria-controls'));
+    const visiblePanels = () => [...document.querySelectorAll('[data-settings-panel]')].filter(panel => getComputedStyle(panel).display !== 'none');
+    const groups = [...document.querySelectorAll('.settings-nav-group')].map(group => group.querySelectorAll('button').length);
+    const widthFits = () => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1;
+    record('seven categories, grouped 3/2/2, with Appearance selected initially', categories.length === 7 && groups.join() === '3,2,2' && visiblePanels()[0]?.id === 'preferencesPanel', groups);
+    let categoryChecks = true;
+    for (const button of categories) {
+      button.click();
+      const panel = panelFor(button);
+      categoryChecks &&= visiblePanels().length === 1 && visiblePanels()[0] === panel && widthFits()
+        && button.getAttribute('aria-current') === 'true' && document.activeElement === panel.querySelector('h2');
+    }
+    record('each category displays only its own panel, focuses its title, and fits the viewport', categoryChecks, innerWidth);
+    categories[0]?.click();
+    const issue = document.querySelector('#settingsIssueActions button');
+    if (issue) {
+      issue.click();
+      record('issue action opens the affected section', visiblePanels()[0]?.id === issue.dataset.issuePanel, issue.dataset.issuePanel);
+      categories[0]?.click();
+    }
 
     const theme = document.getElementById('themeSelect');
     // #365：语言下拉已从设置页拿掉（英文选项实际用不到），主题下拉还在。
@@ -125,7 +138,7 @@
     const foundationLink = document.querySelector('link[href*="/static/css/studio-foundation.css"]');
     record('shared studio foundation is loaded', !!foundationLink, foundationLink?.getAttribute('href') || 'missing');
 
-    const section = document.querySelector('.settings-section');
+    const section = document.querySelector('#preferencesPanel .settings-card');
     const sectionTitle = document.querySelector('.section-heading h2');
     const providerCard = document.querySelector('.provider-card');
     const providerTitle = providerCard?.querySelector('.provider-name');
@@ -135,16 +148,14 @@
     const providerTextarea = providerCard?.querySelector('textarea');
     const providerCheckbox = providerCard?.querySelector('input[type="checkbox"]');
     const subtitle = document.querySelector('.subtitle');
-    const pageTitle = document.querySelector('h1');
-
     const typographyOk = [
       [sectionTitle, 20],
-      [providerTitle, 16],
+      [providerTitle, 14],
       [providerLabel, 13],
       [providerInput, 12],
       [providerSelect, 12],
     ].every(([el, expected]) => el && Math.abs(px(getComputedStyle(el).fontSize) - expected) < 0.25);
-    record('settings typography follows foundation', typographyOk && px(getComputedStyle(pageTitle).fontSize) >= 32 && px(getComputedStyle(pageTitle).fontSize) <= 48, [sectionTitle, providerTitle, providerLabel, providerInput, providerSelect, pageTitle].map(el => el ? getComputedStyle(el).fontSize : 'missing').join('/'));
+    record('settings typography follows foundation', typographyOk, [sectionTitle, providerTitle, providerLabel, providerInput, providerSelect].map(el => el ? getComputedStyle(el).fontSize : 'missing').join('/'));
 
     const inputHeight = providerInput ? px(getComputedStyle(providerInput).height) : 0;
     const selectHeight = providerSelect ? px(getComputedStyle(providerSelect).height) : 0;
@@ -154,14 +165,16 @@
 
     const radii = {
       section: section ? px(getComputedStyle(section).borderRadius) : 0,
-      card: providerCard ? px(getComputedStyle(providerCard).borderRadius) : 0,
+      editor: providerCard ? px(getComputedStyle(providerCard.querySelector('.provider-editor')).borderRadius) : 0,
       input: providerInput ? px(getComputedStyle(providerInput).borderRadius) : 0,
       button: savePrefs ? px(getComputedStyle(savePrefs).borderRadius) : 0,
     };
-    record('settings radius scale is mapped', radii.section === 12 && radii.card === 8 && radii.input === 8 && radii.button === 6, JSON.stringify(radii));
+    record('settings radius scale is mapped', radii.section === 12 && radii.editor === 8 && radii.input === 8 && radii.button === 6, JSON.stringify(radii));
+    const buttonHeights = [...categories, savePrefs, saveProviders].map(el => px(getComputedStyle(el).height));
+    record('settings uses 30px toolbar buttons', buttonHeights.every(height => height === 30), buttonHeights);
 
     const sectionStyle = section ? getComputedStyle(section) : null;
-    record('settings removes decorative gradients and heavy cards', getComputedStyle(document.body).backgroundImage === 'none' && sectionStyle?.backgroundImage === 'none' && sectionStyle?.boxShadow === 'none', `body=${getComputedStyle(document.body).backgroundImage} section=${sectionStyle?.backgroundImage}/${sectionStyle?.boxShadow}`);
+    record('settings uses the dotted workspace and solid grouped cards', getComputedStyle(document.body).backgroundImage.startsWith('radial-gradient(') && sectionStyle?.backgroundImage === 'none', getComputedStyle(document.body).backgroundImage);
 
     const interactive = [...document.querySelectorAll('button, select, textarea, input:not([type="checkbox"]):not([type="radio"]), .model-option')];
     const undersized = interactive.filter(el => px(getComputedStyle(el).fontSize) < 12);
@@ -173,19 +186,20 @@
     const darkMetrics = themeMetrics('dark', themeElements);
     window.StudioTheme.apply(initialTheme);
     record('light and dark token surfaces are distinct', lightMetrics.page !== darkMetrics.page && lightMetrics.panel !== darkMetrics.panel, JSON.stringify({ light: lightMetrics, dark: darkMetrics }));
-    record('canvas accent is shared in both themes', lightMetrics.accent === '#5879dc' && darkMetrics.accent === '#5879dc', `${lightMetrics.accent}/${darkMetrics.accent}`);
+    record('canvas accent is shared in both themes', lightMetrics.accent === '#865500' && darkMetrics.accent === '#edbd62', `${lightMetrics.accent}/${darkMetrics.accent}`);
     record('light theme content meets readable contrast', Math.min(lightMetrics.body, lightMetrics.subtitle, lightMetrics.primary, lightMetrics.input) >= 4.5, JSON.stringify(lightMetrics));
     record('dark theme content meets readable contrast', Math.min(darkMetrics.body, darkMetrics.subtitle, darkMetrics.primary, darkMetrics.input) >= 4.5, JSON.stringify(darkMetrics));
 
     if (window.innerWidth <= 760) {
-      const oneColumn = ['.preference-grid', '.provider-fields', '.model-grid', '.status-grid'].every(selector => {
-        const el = document.querySelector(selector);
-        return el && getComputedStyle(el).gridTemplateColumns.trim().split(/\s+/).length === 1;
-      });
-      const shellRect = document.querySelector('.settings-shell').getBoundingClientRect();
-      const headingDirection = getComputedStyle(document.querySelector('.section-heading')).flexDirection;
-      record('mobile settings uses explicit single-column layout', oneColumn && headingDirection === 'column', `columns=${oneColumn} heading=${headingDirection}`);
-      record('mobile settings stays inside viewport', shellRect.left >= -1 && shellRect.right <= window.innerWidth + 1 && document.documentElement.scrollWidth <= window.innerWidth + 1, `shell=${shellRect.left.toFixed(1)}..${shellRect.right.toFixed(1)} viewport=${window.innerWidth} scroll=${document.documentElement.scrollWidth}`);
+      const nav = document.querySelector('#settingsNav');
+      const sidebar = document.querySelector('.settings-sidebar').getBoundingClientRect();
+      const content = document.querySelector('.settings-main').getBoundingClientRect();
+      record('mobile categories scroll within the header above the content', getComputedStyle(nav).overflowX === 'auto' && sidebar.bottom <= content.top + 1 && widthFits(), `navigation=${nav.clientWidth}/${nav.scrollWidth}`);
+      categories[1]?.click();
+      providerCard?.querySelector('.provider-toggle')?.click();
+      record('expanded provider editor fits the narrow screen', widthFits(), document.documentElement.scrollWidth);
+      providerCard?.querySelector('.provider-toggle')?.click();
+      categories[0]?.click();
     }
 
     const ok = results.every(r => r.ok);
