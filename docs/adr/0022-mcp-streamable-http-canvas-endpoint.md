@@ -190,6 +190,7 @@ search 额外字段：
 - show/get 成功均返回 `{presentation: P}`。P 精确为 `{schema: 1, id: string, kind: "plan"|"question"|"diff", title: string, state: "presented"|"pending"|"answered"|"expired", data: object, answers?: Record<string,string>}`。ID 由服务端生成；plan/diff 为 presented，question 初始 pending，答题后 answered，失效后 expired；answers 仅为实际人工选择的题 ID → 选项 ID。
 - 旧 steps 形态 plan 的 data 是 `{steps}`，仅是提案，不改执行 todo；#482 的真实预览引用形态见下文。question 的 data 是 `{questions}`；推荐值必须存在于该题选项，题 ID/题内选项 ID 必须唯一，多题同卡。C1 仅显示选项/推荐与“按推荐开始”，不做 #411 的编辑、勾选等完整交互。
 - diff 的 data 从本调用者有权读取的真实引用解析，不接受助手自述“已应用”：operation 为 `{source:"operation", op_id, turn_id, tool, before, after, undone}`，preview 为 `{source:"preview", diff_id, items, applied:false}`。读取 preview 不消费原确认/CAS 对象；没有真实操作或预览回执不能伪造差异卡。
+- #506：保持 data 的 65,536 UTF-8 字节上限与窗内原形态。超限的 operation 先合并相同的身份、路径及端点元数据，输出 `detail:"merged"` 和 `changes` 代替顶层 `before/after`：每项的两侧状态和值完整保留。仍超限或旧格式无法安全配对时用 `detail:"summary"`，保留来源 ID、撤销/未应用状态以及可核实的数量；TUI 明示未显示逐项内容。超限的 preview 同样出摘要。此转换不修改日志、撤销记录或应用权限。
 - live 事件为 `{type: P.kind, presentation: P, turn_id, host, generation, seq, ...既有事件元数据}`，同一 payload 进入已有 /events、/events/page 和 JSONL；项目、节点、host/generation、原 turn 和 seq 均来自服务端，不猜原生协议、不回填旧轮次。展示、人工决策和投递失败更新沿用同一 presentation ID，TUI 原位更新，历史回放只读。普通助手正文不解析成这些事件。
 - 宿主投递失败时，question 事件可另带顶层 `delivery_error`（标准 Agent 错误对象），并保存/回放；它不是 P 内的答案字段。“answered”只证明人工选择已记录，不证明原生宿主已收到、执行或确认。UI 必须显示真实投递错误；真实 HTTP 拒绝也不能被已记录的答案遮掉。
 

@@ -277,7 +277,7 @@ _Avoid_: 独立音频项目、音频工作站
 
 ### 结构化呈现、方案预览与人工答题（#406/#482/#484）
 
-- 共享 `agent.present` 只呈现 plan/question/diff，不批准、执行、建节点或扩权限；差异必须引用真实 op_id/diff_id，项目/宿主/generation/原轮及事件 seq 均来自服务端。多题同卡，推荐项来自真实选项；同一 ID 的答案/投递错误原位更新，历史只读。最薄 TUI 不代替 #411 完整交互。
+- 共享 `agent.present` 只呈现 plan/question/diff，不批准、执行、建节点或扩权限；差异必须引用真实 op_id/diff_id，项目/宿主/generation/原轮及事件 seq 均来自服务端。超限先无损合并操作日志的双侧元数据，仍超限则明示只展示摘要，不修改原记录。多题同卡，推荐项来自真实选项；同一 ID 的答案/投递错误原位更新，历史只读。最薄 TUI 不代替 #411 完整交互。
 - 真实方案卡用 `plan_id/generation` 引用原预览，事件不复制任务；旧 steps 卡保留。人工预览接口须严格同源并带匹配项目头，编辑不等于批准。所有 hosted/external/REST 来源统一 `apply_via=human_apply`：#411「应用」直接调用人工接口，不向 Agent 发输入、续接或启动宿主；只为勾选任务建提示词、input 边、空生图槽和框，不生图或导入媒体。原 Agent 精确 scope 保留；幂等导入可查真实应用回执，首次非空提交消费代次，追加须编辑成新代次并重新批准。失效不能复活，#411 须显示「方案已过期，请让 Agent 重新导入」。精确接口、回执、确认与 RAM/附件限制以 [ADR 0022「#482 / #484」](docs/adr/0022-mcp-streamable-http-canvas-endpoint.md) 为准。
 - #405：超大 Agent 方案 MCP 回包有有界的模型视图，保留每页最多 15 个完整任务 ID 和原完整文本；`plan.read_preview` 可拿下一页或任务详情，只认原附件、确切版本及原会话绑定。见 [ADR 0022「#405」](docs/adr/0022-mcp-streamable-http-canvas-endpoint.md)。
 - 人工答案走独立用户输入与 FIFO，不是 #402 的同轮系统确认续接；queued/answered 不证明宿主收到或执行。外部 MCP 仅原绑定取回答案，不跨宿主注入、不自动开跑，不承诺重启续跑。真实投递失败必须可见，不把答案记录冒充投递成功。

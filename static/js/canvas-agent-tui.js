@@ -3203,8 +3203,21 @@ function agentPresentationHtml(message, readonly, state, nodeId) {
             : `<div>${escapeHtml(tr('smart.agentPresentProposal'))}</div>`
                 + (steps.length ? `<ol>${steps.map(step => `<li>${escapeHtml(step?.text || '')}</li>`).join('')}</ol>` : empty);
     } else if (p.kind === 'diff') {
-        // Only server-resolved data is displayed; it never becomes HTML or an apply action.
-        content = Object.keys(p.data).length ? `<pre>${escapeHtml(JSON.stringify(p.data, null, 2))}</pre>` : empty;
+        // Even server-resolved diffs can contain user-authored values; never turn them into HTML or actions.
+        if (p.data.detail === 'summary') {
+            const counts = p.data.counts;
+            const preview = p.data.source === 'preview';
+            content = `<div role="status">${escapeHtml(tr('smart.agentPresentDiffSummary'))}</div>`;
+            if (counts) {
+                const key = preview ? 'smart.agentPresentDiffPreviewCounts' : 'smart.agentPresentDiffCounts';
+                content += `<div>${escapeHtml(trf(key, counts))}</div>`;
+            }
+            content += `<code>${escapeHtml(preview ? p.data.diff_id : p.data.op_id)}</code>`;
+            if (p.data.undone) content += `<div>${escapeHtml(tr('smart.agentPresentDiffUndone'))}</div>`;
+        } else {
+            if (p.data.detail === 'merged') content = `<div>${escapeHtml(tr('smart.agentPresentDiffComplete'))}</div>`;
+            content += Object.keys(p.data).length ? `<pre>${escapeHtml(JSON.stringify(p.data, null, 2))}</pre>` : empty;
+        }
     } else if (p.kind === 'question') {
         const questions = Array.isArray(p.data.questions) ? p.data.questions.filter(question => question && typeof question === 'object') : [];
         const editable = p.state === 'pending' && !readonly && !message.presentationReadonly

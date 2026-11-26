@@ -12,6 +12,7 @@ from fastapi import HTTPException
 
 from app.constants import NODE_TYPE_AGENT
 from app.services.agent_errors import agent_error
+from app.services.agent_ops_delta import merge_record_sides
 from app.services.agent_node_host_settings import read_host_fields
 from app.services.agent_refs import invalid
 
@@ -266,7 +267,7 @@ def _resolve_diff(store, project, actor, owner, args):
         expected = (actor, 'hosted') if owner[0] == 'hosted' else (owner[1], 'external')
         if turn is None or tuple(turn) != expected:
             raise agent_present_stale()
-        return {'source': 'operation', **{key: deepcopy(operation[key]) for key in
+        return {'source': 'operation', **{key: operation[key] for key in
                 ('op_id', 'turn_id', 'tool', 'before', 'after', 'undone')}}
     from app.services import agent_batch_prompt
     binding = ('agent', actor) if owner[0] == 'hosted' else ('mcp', owner[1], actor)
@@ -280,6 +281,29 @@ def _resolve_diff(store, project, actor, owner, args):
     agent_batch_prompt.build_mutations(store.canvas(project), items, 0)
     return {'source': 'preview', 'diff_id': args['diff_id'],
             'items': [item.public() for item in items], 'applied': False}
+
+
+def _fit_diff(data):
+    if _bounded(data):
+        return data
+    source = data['source']
+    if source == 'preview':
+        return {'source': source, 'detail': 'summary', 'diff_id': data['diff_id'], 'applied': False,
+                'counts': {'edits': len(data['items'])}}
+    summary = {'source': source, 'detail': 'summary', 'op_id': data['op_id'], 'undone': data['undone']}
+    try:
+        changes = merge_record_sides(data['before'], data['after'])
+    except ValueError:
+        # Unpaired legacy sides cannot safely imply a count of distinct changes.
+        return summary
+    merged = {'source': source, 'detail': 'merged', 'op_id': data['op_id'], 'turn_id': data['turn_id'],
+              'tool': data['tool'], 'undone': data['undone'], 'changes': changes}
+    if _bounded(merged):
+        return merged
+    counts = {'changes': len(changes)}
+    for entity, label in (('node', 'nodes'), ('connection', 'connections'), ('media', 'media')):
+        counts[label] = len({change['id'] for change in changes if change['entity'] == entity})
+    return {**summary, 'counts': counts}
 
 
 def _resolve_plan(store, manager, project, actor, binding, args):
@@ -322,13 +346,13 @@ async def agent_present_call(store, manager, project, actor, args, *, binding, o
     if not external and (not turn or not session.is_running):
         raise agent_present_stale()
     if args['kind'] == 'diff':
-        data = _resolve_diff(store, project, actor, owner, args)
+        data = _fit_diff(_resolve_diff(store, project, actor, owner, args))
     elif args['kind'] == 'plan' and 'plan_id' in args:
         data = _resolve_plan(store, manager, project, actor, binding, args)
     else:
         data_key = 'questions' if args['kind'] == 'question' else 'steps'
         data = {data_key: deepcopy(args[data_key])}
-    if not _bounded(data):
+    if args['kind'] != 'diff' and not _bounded(data):
         raise invalid('Resolved presentation exceeds the payload limit')
     p = {'schema': 1, 'id': uuid4().hex, 'kind': args['kind'], 'title': args['title'],
          'state': 'pending' if args['kind'] == 'question' else 'presented', 'data': data}

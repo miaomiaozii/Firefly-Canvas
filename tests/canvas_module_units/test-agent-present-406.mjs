@@ -114,6 +114,30 @@ test('resolved diff data is read-only escaped text alongside existing rich tool 
     assert.equal(h.calls.length, 0);
 });
 
+test('large diff receipts distinguish complete changes from read-only count summaries', () => {
+    const h = setup();
+    h.event({ type: 'diff', seq: 1, presentation: { schema: 1, id: 'full', kind: 'diff', title: '15 rows', state: 'presented', data: {
+        source: 'operation', op_id: 'full-op', detail: 'merged', changes: [{ id: '<svg onload=alert(1)>', before: { present: false }, after: { present: true, value: '商品 15' } }],
+    } } });
+    h.event({ type: 'diff', seq: 2, presentation: { schema: 1, id: 'summary', kind: 'diff', title: 'Larger diff', state: 'presented', data: {
+        source: 'operation', op_id: 'summary-op', detail: 'summary', counts: { changes: 47, nodes: 32, connections: 15, media: 0 }, undone: true,
+    } } });
+    h.event({ type: 'diff', seq: 3, presentation: { schema: 1, id: 'preview', kind: 'diff', title: 'Prompt preview', state: 'presented', data: {
+        source: 'preview', diff_id: 'preview-diff', detail: 'summary', counts: { edits: 2 }, applied: false,
+    } } });
+    const html = h.html();
+    assert.match(html, /全部变更/);
+    assert.match(html, /商品 15/);
+    assert.match(html, /&lt;svg onload=alert\(1\)&gt;/);
+    assert.match(html, /仅显示摘要/);
+    assert.match(html, /47 项变更，涉及 32 个节点、15 条连线、0 个媒体条目/);
+    assert.match(html, /summary-op/);
+    assert.match(html, /操作已撤销/);
+    assert.match(html, /2 项提示词编辑，尚未应用/);
+    assert.doesNotMatch(html, /<svg onload|data-agent-question-answer|data-agent-plan-apply/);
+    assert.equal(h.calls.length, 0);
+});
+
 test('recommendation click checks freshness, submits only recommended IDs and waits for an authoritative receipt', async () => {
     const h = setup();
     h.event({ type: 'question', seq: 1, presentation: question });

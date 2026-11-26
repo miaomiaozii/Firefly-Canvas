@@ -100,6 +100,35 @@ def build_delta(before: dict, after: dict) -> list[dict]:
     return result
 
 
+def merge_record_sides(before, after) -> list[dict]:
+    """Reconstruct changes without losing either state or accepting mismatched identities."""
+    if not isinstance(before, list) or not isinstance(after, list) or len(before) != len(after):
+        raise ValueError("invalid operation delta")
+    result = []
+    for old, new in zip(before, after):
+        if not isinstance(old, dict) or not isinstance(new, dict):
+            raise ValueError("invalid operation delta entry")
+        common = {key: value for key, value in old.items() if key != "before"}
+        if not _equal(common, {key: value for key, value in new.items() if key != "after"}):
+            raise ValueError("operation delta sides disagree")
+        kind, entity_id, path = common.get("entity"), common.get("id"), common.get("path")
+        keys = {"entity", "id", "path"} | ({"node_ids"} if kind == "connection" else set())
+        if (common.keys() != keys or kind not in ("node", "connection", "media")
+                or not isinstance(entity_id, str) or not entity_id
+                or not isinstance(path, list) or any(not isinstance(k, str) for k in path)):
+            raise ValueError("invalid operation delta identity")
+        if kind == "connection" and (not isinstance(common["node_ids"], list)
+                                     or any(not isinstance(n, str) for n in common["node_ids"])):
+            raise ValueError("invalid connection node IDs")
+        for state in (old.get("before"), new.get("after")):
+            if not isinstance(state, dict) or type(state.get("present")) is not bool:
+                raise ValueError("invalid operation delta state")
+            if state.keys() != ({"present", "value"} if state["present"] else {"present"}):
+                raise ValueError("invalid operation delta state")
+        result.append({**deepcopy(common), "before": deepcopy(old["before"]), "after": deepcopy(new["after"])})
+    return result
+
+
 def _at_path(entity, path: list[str]):
     for key in path[:-1]:
         if not isinstance(entity, dict) or key not in entity:
