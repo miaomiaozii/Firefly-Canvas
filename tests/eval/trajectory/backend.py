@@ -10,7 +10,7 @@ import sys
 from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
-from tests.eval.trajectory.safety import SECRET_KEY, digest, register_owned_secrets, save
+from tests.eval.trajectory.safety import RECORDING_KEY_ENV, SECRET_KEY, digest, register_owned_secrets, save
 from tests.eval.trajectory.stub import Journal, ProviderFence, SafetyViolation, providers
 
 
@@ -115,7 +115,14 @@ def assert_isolated(root):
 def serve(config):
     root = Path(config['root']).resolve()
     assert_isolated(root)
-    journal = Journal(root / 'backend.jsonl')
+    # Consume the key before startup so neither native children nor evidence receive it.
+    try:
+        recording_key = bytes.fromhex(os.environ.pop(RECORDING_KEY_ENV, ''))
+    except ValueError:
+        recording_key = b''
+    if len(recording_key) != 32:
+        raise SafetyViolation('Missing or invalid trajectory recording key')
+    journal = Journal(root / 'backend.jsonl', recording_key=recording_key)
     auth = root / 'private-codex/auth.json'
     strata = config.get('strata') is True
     if strata:
@@ -227,7 +234,7 @@ def serve(config):
         if main.generate_ai_image is not generation.generate_ai_image or not isinstance(manager._adapters['codex'], CodexAdapter):
             raise SafetyViolation('Actual adapter/generation pipeline missing')
         save(root / 'seed.json', {'project': project, 'node': 'trajectory-agent', 'product_asset': product['asset_id'],
-                                 'canvas': store.canvas(project), 'preflight': preflight})
+                                 'canvas': store.canvas(project), 'preflight': preflight}, recording_key=recording_key)
         journal.emit('preflight', **preflight)
         observed = ToolObserver(main.app, journal=journal, store=store, project=project)
         try:
@@ -236,7 +243,7 @@ def serve(config):
             for child in children:
                 journal.emit('native_exit_snapshot', pid=child.pid, returncode=child.poll())
             store.flush(project)
-            save(root / 'server-final-canvas.json', store.canvas(project))
+            save(root / 'server-final-canvas.json', store.canvas(project), recording_key=recording_key)
             store.close()
 
 

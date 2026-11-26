@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 from contextlib import ExitStack
+from functools import partial
 import hashlib
 import json
 import os
@@ -15,7 +16,7 @@ import sys
 import threading
 import time
 
-from tests.eval.trajectory.safety import (REPO, clean_private, digest, e0_inputs, isolated_env, redact,
+from tests.eval.trajectory.safety import (RECORDING_KEY_ENV, REPO, clean_private, digest, e0_inputs, isolated_env, redact,
                                          register_owned_secrets, save, validate)
 
 GOLD = REPO / 'tests/eval/agent_plan/gold/E0.json'
@@ -59,17 +60,19 @@ async def submit_confirmation(request, prefix, project_id, confirm_id, approved)
                          json={'confirm_id': confirm_id, 'approved': approved})
 
 
-async def drive(config, root, relay=None):
+async def drive(config, root, relay=None, *, recording_key):
     import httpx
     from tests.eval.trajectory.stub import Journal
-    journal = Journal(root / 'driver.jsonl')
+    journal = Journal(root / 'driver.jsonl', recording_key=recording_key)
+    record_evidence = partial(save, recording_key=recording_key)
     base = f'http://127.0.0.1:{config["port"]}'
     deadline = time.monotonic() + config['timeout']
     async with httpx.AsyncClient(base_url=base, headers={'Origin': base}, trust_env=False, timeout=45) as client:
         async def request(method, path, **kwargs):
             response = await client.request(method, path, **kwargs)
             if response.is_error:
-                raise RuntimeError(f'{method} {path}: HTTP {response.status_code} {redact(response.text[:1000])}')
+                detail = redact(response.text[:1000], recording_key=recording_key)
+                raise RuntimeError(f'{method} {path}: HTTP {response.status_code} {detail}')
             return response.json()
 
         for _ in range(160):
@@ -89,16 +92,17 @@ async def drive(config, root, relay=None):
         prefix = f'/api/projects/{pid}/agent-nodes/{node}'
         records, seen, cursor, confirmed = [], set(), 0, set()
         done, continued, last_change = False, False, time.monotonic()
+        last_jobs = {}
         try:
-            save(root / 'created.json', await request('POST', f'/api/projects/{pid}/agent-nodes',
+            record_evidence(root / 'created.json', await request('POST', f'/api/projects/{pid}/agent-nodes',
                  json={'node_id': node, 'model': config['model'], 'agentCli': 'codex', 'autonomy': config['autonomy']}))
             attachment = await request('POST', prefix + '/attachments', content=Path(config['workbook_path']).read_bytes(),
                                        headers={'X-Attachment-Name': 'E0-plan.xlsx',
                                                 'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'})
-            save(root / 'attachment.json', attachment)
+            record_evidence(root / 'attachment.json', attachment)
             text = prompt(attachment['id'], seed['product_asset'], soon=bool(config.get('soon_ledger')))
             journal.emit('user_action', action='initial_goal', source='scenario-script', decision_id='initial', message=text)
-            save(root / 'prompt-receipt.json', await request('POST', prefix + '/prompt',
+            record_evidence(root / 'prompt-receipt.json', await request('POST', prefix + '/prompt',
                  json={'message': text, 'attachments': [attachment['id']]}))
             while time.monotonic() < deadline:
                 if relay is not None and relay.failure:
@@ -125,11 +129,11 @@ async def drive(config, root, relay=None):
                                      decision_id=cid, confirm_id=cid, approved=approved, tool=event.get('tool'),
                                      reason='fixed E0 policy' if approved else 'outside fixed E0 policy')
                         await submit_confirmation(request, prefix, pid, cid, approved)
-                save(root / 'host-events.json', {'events': records, 'last_seq': cursor})
+                record_evidence(root / 'host-events.json', {'events': records, 'last_seq': cursor})
                 canvas = await request('GET', f'/api/project-library/{pid}')
-                save(root / 'final-canvas.json', canvas.get('canvas', canvas))
+                record_evidence(root / 'final-canvas.json', canvas.get('canvas', canvas))
                 status = await request('GET', prefix + '/status')
-                save(root / 'final-status.json', status)
+                record_evidence(root / 'final-status.json', status)
                 # A script continuation is recorded as user assistance, never credited to model autonomy.
                 backend = read_jsonl(root / 'backend.jsonl', allow_partial_final_line=True)
                 calls = [row for row in backend if row['kind'] == 'tool_end']
@@ -137,10 +141,10 @@ async def drive(config, root, relay=None):
                 batch_id = next((item.get('batch_id') for item in reversed(batches) if isinstance(item, dict) and item.get('batch_id')), None)
                 settled = True
                 if batch_id:
-                    batch = await request('POST', f'/api/projects/{pid}/generate/batch_status?agent_node_id={node}',
-                                          headers={'X-Agent-Project': pid}, json={'batch_id': batch_id})
-                    save(root / 'final-jobs.json', batch)
-                    settled = batch.get('status') in {'done', 'paused', 'rejected', 'stopped'}
+                    last_jobs = await request('POST', f'/api/projects/{pid}/generate/batch_status?agent_node_id={node}',
+                                              headers={'X-Agent-Project': pid}, json={'batch_id': batch_id})
+                    record_evidence(root / 'final-jobs.json', last_jobs)
+                    settled = last_jobs.get('status') in {'done', 'paused', 'rejected', 'stopped'}
                 if done and settled and time.monotonic() - last_change > 3:
                     if batch_id and not continued:
                         continued = True
@@ -160,14 +164,14 @@ async def drive(config, root, relay=None):
             try:
                 await request('DELETE', prefix)
                 data = await request('GET', prefix + '/events')
-                save(root / 'host-events.json', data)
+                record_evidence(root / 'host-events.json', data)
                 canvas = await request('GET', f'/api/project-library/{pid}')
                 final = canvas.get('canvas', canvas)
-                save(root / 'final-canvas.json', final)
+                record_evidence(root / 'final-canvas.json', final)
                 if config.get('soon_ledger'):
-                    jobs_path = root / 'final-jobs.json'
-                    jobs = json.loads(jobs_path.read_text(encoding='utf-8')) if jobs_path.is_file() else {}
-                    save(root / 'canvas-image-hashes.json', await canvas_image_hashes(client, pid, final, jobs))
+                    # Media lookups must use live IDs, not aliases from the sealed evidence.
+                    assets = await canvas_image_hashes(client, pid, final, last_jobs)
+                    record_evidence(root / 'canvas-image-hashes.json', assets)
             except (RuntimeError, httpx.HTTPError) as exc:
                 journal.emit('cleanup_error', message=str(exc))
 
@@ -304,6 +308,8 @@ def run(args):
         claim_soon_scenario(ledger, args.scenario)
     root.mkdir(parents=True, exist_ok=False)
     env, folders = isolated_env(root)
+    recording_key = os.urandom(32)
+    env[RECORDING_KEY_ENV] = recording_key.hex()
     save(root / 'run-owner.json', {'pid': os.getpid(), 'created': time.time()})
     config = {'root': str(root), 'host': args.host, 'model': args.model, 'native_cli': str(args.native_cli.resolve()),
               'llm_base_url': args.llm_base_url, 'scenario': args.scenario, 'autonomy': args.autonomy,
@@ -353,14 +359,15 @@ def run(args):
         def drain():
             with (root / 'server.log').open('w', encoding='utf-8') as log:
                 for line in child.stdout:
-                    log.write(redact(line))
+                    log.write(redact(line.rstrip('\r\n'), recording_key=recording_key) + '\n')
                     log.flush()
         reader = threading.Thread(target=drain, daemon=True)
         reader.start()
-        asyncio.run(drive(config, root, relay))
+        asyncio.run(drive(config, root, relay, recording_key=recording_key))
         result = 0
     except Exception as exc:
-        save(root / 'unavailable.json', {'available': False, 'reason': str(exc), 'type': type(exc).__name__})
+        save(root / 'unavailable.json', {'available': False, 'reason': str(exc), 'type': type(exc).__name__},
+             recording_key=recording_key)
     finally:
         # The server is still writing here; finalized parsing happens only after its exit.
         receipts = []
@@ -382,7 +389,7 @@ def run(args):
         if diagnostic.exists():
             with (root / 'diagnostics.jsonl').open('w', encoding='utf-8') as log:
                 for row in read_jsonl(diagnostic):
-                    log.write(json.dumps(redact(row), ensure_ascii=False) + '\n')
+                    log.write(json.dumps(redact(row, recording_key=recording_key), ensure_ascii=False) + '\n')
         cleanup['private_data_removed'] = clean_private(root)
         save(root / 'cleanup.json', cleanup)
         if ledger:

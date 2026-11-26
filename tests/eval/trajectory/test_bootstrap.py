@@ -10,7 +10,7 @@ import time
 import httpx
 
 from tests.eval.trajectory.live import stop_tree
-from tests.eval.trajectory.safety import REPO, clean_private, isolated_env, save
+from tests.eval.trajectory.safety import RECORDING_KEY_ENV, REPO, clean_private, isolated_env, save
 from tests.eval.trajectory.stub import tiny_png
 
 
@@ -30,7 +30,9 @@ def test_private_server_bootstraps_fenced_without_native_or_auth(tmp_path):
                 continue
         else:
             raise AssertionError('No dedicated test port available')
-    env.update(FIREFLY_PORT=str(port), FIREFLY_AGENT_API_BASE=f'http://127.0.0.1:{port}')
+    recording_key = 'ab' * 32
+    env.update(FIREFLY_PORT=str(port), FIREFLY_AGENT_API_BASE=f'http://127.0.0.1:{port}',
+               **{RECORDING_KEY_ENV: recording_key})
     save(root / 'config.json', {'root': str(root), 'scenario': 'normal', 'port': port,
                                'max_provider_calls': 3, 'native_cli': sys.executable, 'model': 'synthetic-not-run',
                                'render_path': str(render), 'autonomy': 'standard', 'llm_base_url': 'https://unused.invalid'})
@@ -57,6 +59,7 @@ def test_private_server_bootstraps_fenced_without_native_or_auth(tmp_path):
         assert not (root / 'private-codex/auth.json').exists()
         rows = [json.loads(line) for line in (root / 'backend.jsonl').read_text(encoding='utf-8').splitlines()]
         assert [r['kind'] for r in rows] == ['preflight']
+        assert all(recording_key.encode() not in path.read_bytes() for path in root.iterdir() if path.is_file())
     finally:
         result = stop_tree(child)
         log.close()

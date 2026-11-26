@@ -4752,7 +4752,7 @@
         {
           "module": "tests/eval/trajectory/live.py",
           "ordinal": 1,
-          "ast_sha256": "5c17282f81209a1a91a38aa31e1ceab9e61071b41dbd09960749ad49686cc631"
+          "ast_sha256": "99c7a2f0632295d35a5d035e21c5a80893c6c70b7236fbd0aa172dd11990e673"
         },
         {
           "module": "tests/long_content_native_browser.py",
@@ -5497,7 +5497,7 @@
         {
           "module": "tests/eval/trajectory/backend.py",
           "ordinal": 1,
-          "ast_sha256": "790fd2a2655f49c870ab83c2ab54749f196a328b5fdbd1d64694720f0c51f43e"
+          "ast_sha256": "94aa353249ad87f5494b6e6e09be30d6d4f685d716e43a1732910d67bf674a48"
         },
         {
           "module": "tests/tabbit_e2e_evidence.py",

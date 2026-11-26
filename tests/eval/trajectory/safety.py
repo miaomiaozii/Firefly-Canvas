@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -13,7 +14,11 @@ REPO = Path(__file__).resolve().parents[3]
 MARKER = '.trajectory-owned-auth'
 SECRET_KEY = re.compile(r'(?i)authorization|cookie|password|secret|api.?key|access.?token|refresh.?token|id_token')
 SECRET_TEXT = re.compile(r'(?i)(?:bearer\s+[^\s"\']+|(?:sk-|sess-)[\w-]{12,}|eyJ[\w-]+\.[\w-]+\.[\w-]+|(?:access_token|refresh_token|api_key|authorization)\s*[:=]\s*[^\s,;}]+)')
-_PLAN_TASK_ID = re.compile(r'task-[0-9a-f]{32}')
+_PLAN_TASK_ID = re.compile(r'(task-[0-9a-f]{32})(-prompt|-image)?')
+_TASK_REFERENCES = {'task_id', 'task_ids', 'planTaskId', 'excel_task_id', 'prompt_node', 'gen_node',
+                    'id', 'node_id', 'node_ids', 'result_node_id', 'from', 'to', 'items',
+                    'retry_root_id', 'retry_parent_id'}
+RECORDING_KEY_ENV = 'FIREFLY_TRAJECTORY_RECORDING_KEY'
 _KNOWN_SECRETS = set()
 
 
@@ -131,33 +136,40 @@ def e0_inputs(manifest_path, render):
     return books[0], chosen[0]
 
 
-def redact(value, *, _task_id=False):
+def redact(value, *, recording_key=None, _field=None):
     if isinstance(value, dict):
-        return {redact(k): '[REDACTED]' if SECRET_KEY.search(k) else redact(v, _task_id=k == 'task_id')
+        return {redact(k): '[REDACTED]' if SECRET_KEY.search(k) else redact(v, recording_key=recording_key, _field=k)
                 for k, v in value.items()}
     if isinstance(value, (list, tuple)):
-        return [redact(v) for v in value]
+        item_field = _field if _field in {'items', 'task_ids', 'node_ids'} else None
+        return [redact(v, recording_key=recording_key, _field=item_field) for v in value]
     if isinstance(value, str):
         for secret in sorted(_KNOWN_SECRETS, key=len, reverse=True):
             value = value.replace(secret, '[REDACTED]')
-        # Synthetic plan IDs contain "sk-"; exempt only canonical IDs in the actual task field.
-        if _task_id and _PLAN_TASK_ID.fullmatch(value):
-            return value
-        # MCP embeds the plan as JSON text; inspect fields before masking credential-shaped text.
-        if '"task_id"' in value and value.lstrip().startswith(('{', '[')):
+        # References derived from the same task must join across evidence without publishing its original ID.
+        if _field in _TASK_REFERENCES and (match := _PLAN_TASK_ID.fullmatch(value)):
+            task, suffix = match.groups()
+            if recording_key is not None:
+                alias = hmac.digest(recording_key, task.encode('ascii'), 'sha256').hex()[:32]
+                return f'eval-plan-{alias}{suffix or ""}'
+            if _field == 'task_id' and suffix is None:
+                return value
+        is_embedded_json = '"task_id"' in value or (recording_key is not None and _field in {'text', 'arguments'})
+        if is_embedded_json and value.lstrip().startswith(('{', '[')):
             try:
                 decoded = json.loads(value)
             except (ValueError, RecursionError):
                 pass
             else:
-                cleaned = redact(decoded)
+                cleaned = redact(decoded, recording_key=recording_key)
                 return value if cleaned == decoded else json.dumps(cleaned, ensure_ascii=False)
         return SECRET_TEXT.sub('[REDACTED]', value)
     return value
 
 
-def save(path, value):
-    Path(path).write_text(json.dumps(redact(value), ensure_ascii=False, indent=2, default=str) + '\n', encoding='utf-8')
+def save(path, value, *, recording_key=None):
+    cleaned = redact(value, recording_key=recording_key)
+    Path(path).write_text(json.dumps(cleaned, ensure_ascii=False, indent=2, default=str) + '\n', encoding='utf-8')
 
 
 def isolated_env(root):

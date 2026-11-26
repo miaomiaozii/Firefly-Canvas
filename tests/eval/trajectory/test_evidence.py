@@ -1,11 +1,15 @@
 """Provenance fixtures test rejection; they do not constitute model evidence."""
+import asyncio
+from functools import partial
 import hashlib
 import io
 import json
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
+from tests.eval.trajectory import live
 from tests.eval.trajectory.backend import ObservedPipe
 from tests.eval.trajectory.metrics import measure, replay, report_from_root
 from tests.eval.trajectory.safety import clean_private, digest, register_owned_secrets, redact, save
@@ -74,6 +78,50 @@ def test_recorded_tool_result_preserves_all_fifteen_task_ids_without_retaining_c
     assert task_ids[0] not in tool_output['api_key']
     assert record['other'] == {'task_id': '[REDACTED]', 'api_key': '[REDACTED]'}
     assert record['diagnostics'] == ['[REDACTED]'] * 6 + ['ta[REDACTED]']
+
+
+def test_driver_joins_live_asset_then_exports_the_same_canvas_alias(tmp_path, monkeypatch):
+    key = b'c' * 32
+    result_node = 'task-' + 'd' * 32 + '-image'
+    project, actor, asset = 'project', 'actor', 'real-asset'
+    prefix = f'/api/projects/{project}/agent-nodes/{actor}'
+    seed = {'project': project, 'node': actor, 'product_asset': 'seed-asset', 'preflight': {'installed': True}}
+    save(tmp_path / 'seed.json', seed)
+    workbook = tmp_path / 'synthetic.xlsx'
+    workbook.write_bytes(b'synthetic workbook')
+    Journal(tmp_path / 'backend.jsonl', recording_key=key).emit('tool_end', tool='generate.request_batch',
+        result={'result': {'structuredContent': {'batch_id': 'b'}}})
+    clock, media_reads = [0], []
+    canvas = {'nodes': [{'id': result_node, 'images': [{'asset_id': asset}]}]}
+    jobs = {'status': 'done', 'items': [{'status': 'succeeded', 'result_node_id': result_node}]}
+
+    def wire(request):
+        path = request.url.path
+        if path == f'/api/projects/{project}/generate/batch_status':
+            clock[0] = 2
+            return httpx.Response(200, json=jobs)
+        if path == f'/api/project-library/{project}':
+            return httpx.Response(200, json={'canvas': canvas})
+        if path == f'/api/project-library/{project}/media/{asset}':
+            media_reads.append(path)
+            return httpx.Response(200, content=b'synthetic material')
+        if path == f'{prefix}/events':
+            return httpx.Response(200, json={'events': [], 'last_seq': 0})
+        if path == f'{prefix}/attachments':
+            return httpx.Response(200, json={'id': 'attachment'})
+        assert path in {'/', prefix, f'{prefix}/status', f'{prefix}/prompt', f'/api/projects/{project}/agent-nodes'}
+        return httpx.Response(200, json={})
+
+    monkeypatch.setattr(live, 'time', SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(httpx, 'AsyncClient', partial(httpx.AsyncClient, transport=httpx.MockTransport(wire)))
+    asyncio.run(live.drive({'port': 3194, 'timeout': 1, 'model': 'synthetic', 'autonomy': 'standard',
+                            'workbook_path': str(workbook), 'soon_ledger': 'synthetic-only'}, tmp_path, recording_key=key))
+    assert media_reads == [f'/api/project-library/{project}/media/{asset}']
+    saved_canvas, saved_jobs, hashes = [json.loads((tmp_path / name).read_text(encoding='utf-8'))
+        for name in ('final-canvas.json', 'final-jobs.json', 'canvas-image-hashes.json')]
+    alias = saved_canvas['nodes'][0]['id']
+    assert alias != result_node and alias == saved_jobs['items'][0]['result_node_id']
+    assert hashes == [{'node_id': alias, 'asset_id': asset, 'sha256': hashlib.sha256(b'synthetic material').hexdigest()}]
 
 
 def test_observed_native_pipe_records_real_read_and_iteration_not_invented_events():

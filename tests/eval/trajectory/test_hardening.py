@@ -8,7 +8,7 @@ import pytest
 
 from tests.eval.trajectory.live import read_jsonl
 from tests.eval.trajectory.metrics import replay, report_from_root
-from tests.eval.trajectory.safety import digest, isolated_env, save
+from tests.eval.trajectory.safety import digest, isolated_env, register_owned_secrets, save
 from tests.eval.trajectory.stub import Journal, MODELS, ORIGIN
 
 
@@ -211,6 +211,61 @@ def test_replay_rejects_nonlocal_manifest_names_before_reading(tmp_path, name):
     save(root / 'evidence-hashes.json', hashes)
     with pytest.raises(ValueError, match='traversal'):
         replay(root, tmp_path / 'report.json')
+
+
+@pytest.mark.parametrize('legacy', [False, True])
+def test_report_counts_plan_image_placeholders_but_not_as_generated_assets(tmp_path, legacy, monkeypatch):
+    root = native_shaped_fixture(tmp_path / 'trace')
+    key = b'a' * 32
+    tasks = [f'task-{row:032x}' for row in range(2, 17)]
+    final = json.loads((root / 'final-canvas.json').read_text(encoding='utf-8'))
+    final['connections'] = [{'from': f'{task}-prompt', 'to': f'{task}-image'} for task in tasks]
+    final['nodes'] += [{'id': 'frame-main', 'type': 'smart-group', 'items': [f'{task}-image' for task in tasks]},
+                       {'id': 'frame-aplus', 'type': 'smart-group'}]
+    for row, task in enumerate(tasks, 2):
+        lineage = {'planTaskId': task} if legacy else {
+            'excel_task_id': task, 'planLineage': {'source_row': f'E0!{row}'}}
+        final['nodes'] += [{'id': f'{task}-prompt', 'type': 'smart-prompt', **lineage},
+                           {'id': f'{task}-image', 'type': 'smart-image', **lineage}]
+    save(root / 'final-canvas.json', final, recording_key=key)
+    save(root / 'final-jobs.json', {'batch_id': 'b', 'status': 'stopped', 'items': [
+        {'node_id': f'{task}-image', 'status': 'stopped'} for task in tasks]}, recording_key=key)
+    provenance = json.loads((root / 'provenance.json').read_text(encoding='utf-8'))
+    save(root / 'provenance.json', provenance | {'generation_mode': 'approved_soon_with_stubs'})
+    monkeypatch.setattr('tests.eval.trajectory.safety._KNOWN_SECRETS', set())
+    registered = 'task-' + 'f' * 32
+    register_owned_secrets({'api_key': registered})
+    payload = {'tasks': [{'task_id': task, 'prompt_node': f'{task}-prompt', 'gen_node': f'{task}-image'} for task in tasks],
+               'diagnostics': {'task_id': registered, 'id': registered + '-image', 'api_key': tasks[0],
+                               'raw': f'raw {tasks[0]}'}}
+    journal = Journal(root / 'driver.jsonl', recording_key=key)
+    journal.emit('test_observation', result={'text': json.dumps(payload), 'structuredContent': payload})
+    seal(root)
+    canvas = json.loads((root / 'final-canvas.json').read_text(encoding='utf-8'))
+    assert len(canvas['nodes']) == len({node['id'] for node in canvas['nodes']}) == 35
+    entry = read_jsonl(root / 'driver.jsonl')[0]['result']
+    recorded = json.loads(entry['text'])
+    assert recorded == entry['structuredContent']
+    aliases = [task['task_id'] for task in recorded['tasks']]
+    assert len(set(aliases)) == 15 and not set(tasks) & set(aliases)
+    assert [node['planTaskId' if legacy else 'excel_task_id'] for node in canvas['nodes'][5::2]] == aliases
+    assert canvas['connections'] == [{'from': row['prompt_node'], 'to': row['gen_node']} for row in recorded['tasks']]
+    assert canvas['nodes'][3]['items'] == [row['gen_node'] for row in recorded['tasks']]
+    assert recorded['diagnostics'] == {'task_id': '[REDACTED]', 'id': '[REDACTED]-image',
+                                       'api_key': '[REDACTED]', 'raw': 'raw ta[REDACTED]'}
+    other_run = Journal(recording_key=b'b' * 32).emit('test_observation', result=payload)
+    assert set(aliases).isdisjoint(row['task_id'] for row in other_run['result']['tasks'])
+    for evidence in root.iterdir():
+        assert all(value.encode() not in evidence.read_bytes() for value in [*tasks, registered])
+    destination = tmp_path / 'replay.json'
+    replay(root, destination)
+    report = json.loads(destination.read_text(encoding='utf-8'))
+    assert report['recording_safety']['available']
+    assert report['final_plan_generation_nodes'] == 15
+    assert [item['node_id'] for item in report['final_jobs']['items']] == canvas['nodes'][3]['items']
+    billing = report['generation_billing']
+    assert [billing[k] for k in ('image_receipts', 'materialized_images', 'canvas_real_matches',
+                                 'canvas_stub_matches', 'canvas_unclassified_assets')] == [0] * 5
 
 
 def test_valid_strict_fixture_preserves_safety_detection(tmp_path):

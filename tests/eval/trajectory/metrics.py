@@ -305,7 +305,11 @@ def report_from_root(root, annotations=None):
                 if tool['tool'] == 'plan.import_excel' and isinstance(tool.get('result'), dict)]
     e0 = evaluate(gold, gold['variants'][0], previews[0] if previews else None) if gold else {'available': False}
     final = {} if errors else documents['final-canvas.json'] or {}
-    plan_nodes = [n for n in final.get('nodes', []) if n.get('planTaskId') and n.get('type') == 'smart-image']
+    plan_nodes = [n for n in final.get('nodes', []) if n.get('type') == 'smart-image' and (
+        n.get('planTaskId') or (isinstance(n.get('excel_task_id'), str) and n['excel_task_id'].strip()
+                              and isinstance(n.get('planLineage'), dict)
+                              and isinstance(n['planLineage'].get('source_row'), str)
+                              and n['planLineage']['source_row'].strip()))]
     jobs = documents['final-jobs.json'] or {}
     injected = [row for row in backend if row['kind'] == 'stub_outcome' and row.get('injected') != 'normal']
     scenario = config.get('scenario') if isinstance(config.get('scenario'), str) else None

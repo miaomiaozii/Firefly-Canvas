@@ -131,12 +131,14 @@ class Faults:
 
 
 class Journal:
-    def __init__(self, path=None):
+    def __init__(self, path=None, *, recording_key=None):
         self.path, self.rows, self.lock = path, [], threading.Lock()
+        self.recording_key = recording_key
 
     def emit(self, kind, **fields):
         with self.lock:
-            row = redact({'index': len(self.rows) + 1, 'time': time.time(), 'kind': kind, **fields})
+            row = redact({'index': len(self.rows) + 1, 'time': time.time(), 'kind': kind, **fields},
+                         recording_key=self.recording_key)
             self.rows.append(row)
             if self.path:
                 with self.path.open('a', encoding='utf-8') as stream:
