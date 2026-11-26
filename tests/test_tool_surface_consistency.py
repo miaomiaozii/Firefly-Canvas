@@ -752,7 +752,16 @@ class DualPathEquivalenceTests(unittest.TestCase):
                            args, {'X-Agent-Project': pid_b})
             self._assert_pair(a, b, 'agent.present')
             self.assertTrue(a['ok'], a)
-            self.assertEqual(json.loads(a['text'])['presentation']['state'], 'presented')
+            for pid, result in ((pid_a, a), (pid_b, b)):
+                presentation = json.loads(result['text'])['presentation']
+                self.assertEqual(presentation['state'], 'presented')
+                log = store.root / pid / 'agent-events' / f'{self.ACTOR}.jsonl'
+                plans = [entry for line in log.read_text(encoding='utf-8').splitlines()
+                         if (entry := json.loads(line))['event']['type'] == 'plan']
+                self.assertEqual(len(plans), 1)
+                self.assertEqual(plans[0]['project_id'], pid)
+                self.assertEqual(plans[0]['node_id'], self.ACTOR)
+                self.assertEqual(plans[0]['event']['presentation'], presentation)
             self.assertEqual([store.canvas(pid) for pid in (pid_a, pid_b)], before)
 
         cases = {
@@ -789,6 +798,7 @@ class DualPathEquivalenceTests(unittest.TestCase):
             }, "NODE_NOT_FOUND"),
             "plan.import_excel": plan_validation("import_excel", {"file_path": "not-an-attachment.xlsx"}, "FILE_NOT_ALLOWED"),
             "plan.edit_preview": plan_validation("edit_preview", {"plan_id": "missing", "ops": []}, "PLAN_STALE"),
+            "plan.read_preview": plan_validation("read_preview", {"plan_id": "missing", "generation": 1}, "PLAN_STALE"),
             "plan.apply": plan_validation("apply", {"plan_id": "missing"}, "PLAN_STALE"),
             "canvas.batch_edit": gated("canvas.batch_edit", {"node_ids": ["image-1"], "prompt": "p"}, "POST", "/canvas/batch_edit"),
             "canvas.edit_rotate": gated("canvas.edit_rotate", {"node_id": "image-1", "angle": 90}, "POST", "/canvas/edit_rotate", expected_error="ASSET_NOT_FOUND"),

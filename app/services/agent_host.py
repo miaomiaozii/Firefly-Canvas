@@ -1184,7 +1184,7 @@ class AgentHostManager:
         session._current_request_id = kwargs.get("request_id")
         # Only refs supplied by the user in this logical turn can bypass an autonomous layout prompt.
         session._turn_layout_refs = self._layout_ref_ids(kwargs.get("node_refs"))
-        store = _app_main.FIREFLY_PROJECT_STORE
+        store = getattr(_app_main, 'FIREFLY_PROJECT_STORE', None)
         if store is not None:
             from firefly_opsdb import OpsDb
             from .agent_ops_store import begin_turn, mark_turn_lookup_failed
@@ -1251,7 +1251,7 @@ class AgentHostManager:
         from .agent_frame import REF_MAX_IMAGES, REF_MAX_IMAGE_BYTES
         images: list = []
         skipped: list = []
-        store = _app_main.FIREFLY_PROJECT_STORE
+        store = getattr(_app_main, 'FIREFLY_PROJECT_STORE', None)
         if store is None or not getattr(session, "node_id", ""):
             return images, skipped
         try:
@@ -2717,11 +2717,9 @@ class AgentHostManager:
         session.confirm_handlers.append(handler)
 
     def _get_project_dir(self, project_id: str) -> str:
-        """Get the project directory path."""
-        store = _app_main.FIREFLY_PROJECT_STORE
+        store = getattr(_app_main, 'FIREFLY_PROJECT_STORE', None)
         if store is None:
             raise RuntimeError("Project store not initialized")
-        # ProjectStore has a root attribute
         return str(store.root / project_id)
 
     @staticmethod
@@ -2940,9 +2938,13 @@ class AgentHostManager:
         self.sessions.clear()
 
 
-# Resolve the main module without re-importing it (isolated-module test design).
-import sys as _sys
-_app_main = _sys.modules.get(os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
+_app_main = None
 
-# Global singleton
+
+def bind_agent_host_app(app_module) -> None:
+    # #502: the entry point owns the binding, and may replace its store at runtime.
+    global _app_main
+    _app_main = app_module
+
+
 agent_host_manager = AgentHostManager()

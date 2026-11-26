@@ -1556,6 +1556,7 @@ from app.routers.ws_stats import websocket_endpoint  # noqa: F401
 
 # ---- services binding (W1c) ----
 _svc._bind_main(sys.modules[__name__])
+_agent_host_boot.bind_agent_host_app(sys.modules[__name__])
 
 if __name__ == "__main__":
     import runpy
