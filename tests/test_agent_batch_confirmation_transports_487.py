@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 
+from tests.eval.trajectory.live import submit_confirmation
 from tests.test_agent_batch_400 import fx, patch_node, rest, status_until
 
 
@@ -55,6 +56,30 @@ def read_gate(fx, receipt):
     response = fx.client.get(preview_url(fx, receipt), headers={'X-Agent-Project': fx.pid})
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def test_e0_driver_confirms_batch_with_the_project_header(fx):
+    import httpx
+
+    _, receipt, event = _transports_start_batch_487(fx, ['b'])
+    prefix = f'/api/projects/{fx.pid}/agent-nodes/actor'
+    confirm_id = event['confirm_id']
+    rejected = fx.client.post(prefix + '/confirm', json={'confirm_id': confirm_id, 'approved': True})
+    assert rejected.status_code == 403 and rejected.json()['detail']['code'] == 'PROJECT_MISMATCH'
+    assert read_gate(fx, receipt)['actionable'] and fx.calls.empty()
+
+    async def submit():
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=fx.client.app),
+                                     base_url='http://localhost', headers={'Origin': 'http://localhost'},
+                                     trust_env=False) as client:
+            return await submit_confirmation(client.request, prefix, fx.pid, confirm_id, True)
+
+    response = fx.client.portal.call(submit)
+    assert response.status_code == 200, response.text
+    assert response.json() == {'ok': True, 'confirm_id': confirm_id, 'approved': True}
+    final = status_until(fx, receipt['batch_id'], lambda row: row['status'] in ('done', 'rejected'))
+    assert final['status'] == 'done' and final['approved_count'] == final['spent'] == 1
+    assert final['items'][0]['status'] == 'succeeded' and fx.calls.qsize() == 1
 
 
 def test_published_batch_gate_has_registered_callback_before_notification(fx):

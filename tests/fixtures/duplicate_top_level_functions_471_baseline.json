@@ -6071,7 +6071,7 @@
         {
           "module": "tests/eval/trajectory/stub.py",
           "ordinal": 1,
-          "ast_sha256": "70021d44e5d5676310890d5f2a4401cc951d377bfe84e4b0a41caf2d89a9e1c2"
+          "ast_sha256": "3052ad3edbb7c5d27bd11871a0d9cfbe7a2dac4efae32d1cbca33b36a3836908"
         },
         {
           "module": "tests/generation_task_native_browser.py",

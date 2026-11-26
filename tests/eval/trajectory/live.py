@@ -54,6 +54,11 @@ def prompt(attachment, product, *, soon=False):
         '用 batch_status 等待真实结果，最后汇报成功/失败/暂停数量和原因，不把桩图质量当真实生图质量。')
 
 
+async def submit_confirmation(request, prefix, project_id, confirm_id, approved):
+    return await request('POST', prefix + '/confirm', headers={'X-Agent-Project': project_id},
+                         json={'confirm_id': confirm_id, 'approved': approved})
+
+
 async def drive(config, root, relay=None):
     import httpx
     from tests.eval.trajectory.stub import Journal
@@ -119,7 +124,7 @@ async def drive(config, root, relay=None):
                         journal.emit('user_action', action='confirm_decision', source='scenario-script',
                                      decision_id=cid, confirm_id=cid, approved=approved, tool=event.get('tool'),
                                      reason='fixed E0 policy' if approved else 'outside fixed E0 policy')
-                        await request('POST', prefix + '/confirm', json={'confirm_id': cid, 'approved': approved})
+                        await submit_confirmation(request, prefix, pid, cid, approved)
                 save(root / 'host-events.json', {'events': records, 'last_seq': cursor})
                 canvas = await request('GET', f'/api/project-library/{pid}')
                 save(root / 'final-canvas.json', canvas.get('canvas', canvas))
