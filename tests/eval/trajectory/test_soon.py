@@ -4,7 +4,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
-from tests.eval.trajectory.soon import SoonBudgetExhausted, SoonPostBudget
+from tests.eval.trajectory.soon import SUBMIT, SoonBudgetExhausted, SoonPostBudget
 from tests.eval.trajectory.stub import ImageBudget, Journal, SafetyViolation
 from tests.test_soon_url_default_493 import (
     MODEL, PROMPT, MemoryNetwork, no_outbound, pipeline, ref, runtime, soon_reference_png, transport,
@@ -39,6 +39,38 @@ def test_candidate_413_does_not_submit_the_smaller_reference_again(tmp_path, run
     assert [row['kind'] for row in journal.rows] == ['soon_submit', 'soon_submit_outcome', 'soon_submit_blocked']
     assert journal.rows[1]['status'] == 413
     assert journal.rows[2]['reason'] == 'repeat_post'
+
+
+def test_smoke_polls_only_the_task_issued_by_the_single_post(tmp_path):
+    budget = ImageBudget.create(tmp_path / 'poll.sqlite')
+    journal = Journal()
+    seen = []
+    task = 'https://api.soonstudio.ai/v1/images/tasks/task-original'
+
+    async def provider(request):
+        seen.append((request.method, str(request.url)))
+        if request.method == 'POST':
+            return httpx.Response(200, json={'data': {'task_id': 'task-original'}})
+        return httpx.Response(200, json={'status': 'completed', 'data': [{'url': 'https://result.invalid/one.png'}]})
+
+    async def run():
+        boundary = SoonPostBudget(httpx.MockTransport(provider), budget=budget, scenario='smoke', journal=journal)
+        async with httpx.AsyncClient(transport=boundary, trust_env=False) as client:
+            with pytest.raises(SafetyViolation):
+                await client.get(task)
+            await client.post(SUBMIT, json={'n': 1, 'model': MODEL, 'prompt': 'one', 'response_format': 'url'})
+            for url in (task + '?other=1', task.replace('original', 'foreign'), 'https://result.invalid/one.png'):
+                with pytest.raises(SafetyViolation):
+                    await client.get(url)
+            response = await client.get(task)
+            assert response.json()['status'] == 'completed'
+            with pytest.raises(SafetyViolation, match='repeat_post'):
+                await client.post(SUBMIT, json={'n': 1, 'model': MODEL, 'prompt': 'two', 'response_format': 'url'})
+
+    asyncio.run(run())
+    assert seen == [('POST', SUBMIT), ('GET', task)]
+    assert budget.snapshot() == {'normal': 0, 'campaign': 0, 'smoke': 1, 'total': 1}
+    assert [row['status'] for row in journal.rows if row['kind'] == 'soon_poll'] == [200]
 
 
 def test_smoke_is_capped_at_one_and_shares_the_twenty_post_limit(tmp_path):

@@ -182,13 +182,14 @@ def request_fields(request, *, budgeted=False):
 
 class ProviderFence:
     """Installed only within a context; HTTP plus socket guards also cover unexpected generators."""
-    def __init__(self, scenario='normal', *, port=3194, limit=60, journal=None, image_budget=None, image_transport=None):
+    def __init__(self, scenario='normal', *, port=3194, limit=60, journal=None, image_budget=None, image_transport=None, egress=None):
         if (image_budget is None) != (image_transport is None) or (image_transport is not None and not callable(image_transport)):
             raise ValueError('Image budget and one-shot transport must be supplied together')
         if image_budget is not None and scenario not in ('normal', 'campaign'):
             raise ValueError('Budgeted images only support E0 normal and campaign')
         self.faults, self.port = Faults(scenario, limit), port
         self.image_budget, self.image_transport = image_budget, image_transport
+        self.egress = egress
         self.journal = journal or Journal()
         self.stack = ExitStack()
         self.installed = False
@@ -250,6 +251,8 @@ class ProviderFence:
         fence = self
 
         async def async_send(client, request, **kwargs):
+            if fence.egress is not None and fence.egress.is_guarded_client(client):
+                return await original_async(client, request, **kwargs)
             if request.url.host == 'trajectory.invalid':
                 await request.aread()
                 if fence.image_budget is not None:
@@ -271,6 +274,8 @@ class ProviderFence:
             if (getattr(pair_state, 'active', False) and isinstance(address, tuple)
                     and str(address[0]) in ('127.0.0.1', '::1')):
                 return
+            if fence.egress is not None and fence.egress.is_resolved_address(address):
+                return
             if not isinstance(address, tuple) or not fence.local(address[0], address[1]):
                 fence.deny('Non-owned socket network blocked')
 
@@ -290,7 +295,10 @@ class ProviderFence:
             return original_connect_ex(sock, address)
 
         def dns(host, port, *args, **kwargs):
-            if not fence.local(host.decode() if isinstance(host, bytes) else host, port):
+            name = host.decode() if isinstance(host, bytes) else host
+            if fence.egress is not None and fence.egress.permits_resolution(name, port):
+                return fence.egress.resolve(original_dns, host, port, *args, **kwargs)
+            if not fence.local(name, port):
                 return fence.deny('Non-owned DNS blocked')
             return original_dns(host, port, *args, **kwargs)
 

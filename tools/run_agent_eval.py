@@ -7,7 +7,7 @@ import sys
 
 
 def parser():
-    command = argparse.ArgumentParser(description='B2 native-model trajectories; image/video generation NEVER goes online.')
+    command = argparse.ArgumentParser(description='B2 trajectories; media stays offline unless an approved Soon mode is selected.')
     modes = command.add_subparsers(dest='mode', required=True)
     offline = modes.add_parser('offline', help='Zero-fee report; real E0 metrics remain explicitly unmeasured')
     offline.add_argument('--report', type=Path, required=True, help='NEW external JSON file')
@@ -29,6 +29,9 @@ def parser():
     strata.set_defaults(mode='live', strata=True, host='codex', autonomy='standard', auth_home_source=None,
                         ack_owned_auth_copy=False, ack_paid_model_approval=False)
     native_options(strata, ('normal', 'campaign'))
+    soon = modes.add_parser('soon-smoke', allow_abbrev=False, help='One explicitly approved real Soon image')
+    soon.add_argument('--ack-soon-image-approval', action='store_true', required=True)
+    soon.add_argument('--output-root', type=Path, required=True, help='NEW external run root; keeps the shared image ledger')
     replay = modes.add_parser('replay', help='Recalculate a REAL recorded trace, not a model run')
     replay.add_argument('--trace-root', type=Path, required=True)
     replay.add_argument('--report', type=Path, required=True, help='NEW external JSON file')
@@ -61,6 +64,9 @@ def main(argv=None):
     if args.mode == 'live':
         from tests.eval.trajectory.live import run
         return run(args)
+    if args.mode == 'soon-smoke':
+        from tests.eval.trajectory.soon_smoke import run_smoke
+        return run_smoke(args.output_root)
     from tests.eval.trajectory.metrics import replay
     replay(args.trace_root, args.report, args.annotations)
     return 0

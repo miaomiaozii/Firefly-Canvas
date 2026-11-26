@@ -1,13 +1,17 @@
 """Evaluation-only dispatch boundary around the product's Soon candidate."""
 import asyncio
 import json
+import re
 
 import httpx
 
 from tests.eval.trajectory.stub import ImageBudget, SafetyViolation
 
 MODEL = 'gemini-3.1-flash-image-preview'
-SUBMIT = 'https://api.soonstudio.ai/v1/images/generations?async=true'
+HOST = 'api.soonstudio.ai'
+SUBMIT = f'https://{HOST}/v1/images/generations?async=true'
+_POLL_PREFIX = f'https://{HOST}/v1/images/tasks/'
+_TASK_ID = re.compile(r'[A-Za-z0-9_:-][A-Za-z0-9_.:-]{0,199}')
 _PAYLOAD_FIELDS = {'model', 'prompt', 'response_format', 'n', 'image', 'size', 'aspect_ratio', 'resolution', 'image_size'}
 
 
@@ -30,12 +34,16 @@ class SoonPostBudget(httpx.AsyncBaseTransport):
             raise ValueError('Unknown Soon budget scope')
         self.upstream, self.budget, self.scenario, self.journal = upstream, budget, scenario, journal
         self.claimed = False
+        self.poll_url = None
+        self.polls = 0
 
     def _blocked(self, reason, error=SafetyViolation):
         self.journal.emit('soon_submit_blocked', scenario=self.scenario, reason=reason)
         raise error(f'Soon evaluation refused request: {reason}')
 
     async def handle_async_request(self, request):
+        if request.method == 'GET' and str(request.url) == self.poll_url:
+            return await self._poll(request)
         if request.method != 'POST' or str(request.url) != SUBMIT:
             self._blocked('unexpected_destination')
         if self.claimed:
@@ -63,6 +71,32 @@ class SoonPostBudget(httpx.AsyncBaseTransport):
             self.journal.emit('soon_submit_outcome', scenario=self.scenario, status='unknown')
             raise
         self.journal.emit('soon_submit_outcome', scenario=self.scenario, status=response.status_code)
+        if response.is_success:
+            from app.core import extract_task_id
+
+            try:
+                await response.aread()
+                task_id = extract_task_id(response.json())
+            except (ValueError, TypeError, AttributeError):
+                task_id = None
+            if task_id and _TASK_ID.fullmatch(task_id):
+                self.poll_url = _POLL_PREFIX + task_id
+        return response
+
+    async def _poll(self, request):
+        if self.polls >= 120:
+            self._blocked('poll_limit')
+        self.polls += 1
+        # A transport error or failed HTTP poll must not retry automatically.
+        url, self.poll_url = self.poll_url, None
+        try:
+            response = await self.upstream.handle_async_request(request)
+        except BaseException:
+            self.journal.emit('soon_poll', scenario=self.scenario, status='unknown')
+            raise
+        self.journal.emit('soon_poll', scenario=self.scenario, status=response.status_code)
+        if response.is_success:
+            self.poll_url = url
         return response
 
     async def aclose(self):
