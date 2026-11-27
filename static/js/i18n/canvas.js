@@ -157,7 +157,7 @@
         "canvas.rhNoTaskId": { zh: "RunningHub 没有返回 taskId", en: "RunningHub did not return a taskId" },
         "canvas.rhTimeout": { zh: "RunningHub 任务超时", en: "RunningHub task timed out" },
         "canvas.rhOutputsEmpty": { zh: "RunningHub 没有返回产物", en: "RunningHub returned no outputs" },
-        "canvas.hint": { zh: "拖拽画布移动，Ctrl 框选多选，拖动选中节点可一起移动。上传/提示词节点右下端口拖线到生成节点。", en: "Drag the canvas to pan. Ctrl-select multiple nodes. Drag selected nodes together. Connect upload/prompt ports to generation nodes." },
+        "canvas.hint": { zh: "拖拽空白处平移。Ctrl/⌘ 单击或框选可加选，Alt 单击或框选可减选。Ctrl/⌘ 拖动节点连线，Alt 拖动节点复制，Shift 拖动图片节点右下角等比缩放。", en: "Drag empty canvas to pan. Ctrl/Cmd-click or box-select to add; Alt-click or box-select to subtract. Ctrl/Cmd-drag a node to connect it, Alt-drag to duplicate it, and Shift-drag an image node’s bottom-right handle to resize proportionally." },
         "canvas.cropImage": { zh: "裁剪图片", en: "Crop Image" },
         "canvas.cropHint": { zh: "拖动裁剪框移动，拖右下角调整大小", en: "Drag the crop box to move it. Drag the corner to resize." },
         "canvas.editImage": { zh: "编辑图片", en: "Edit Image" },

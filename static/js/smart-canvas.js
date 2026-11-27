@@ -1106,6 +1106,33 @@ function isNodeSelected(id){
 function selectedNodeIds(){
     return canvasState.selectedIds.length ? canvasState.selectedIds.slice() : (canvasState.selectedId ? [canvasState.selectedId] : []);
 }
+function nodeSelectionModifier(event){
+    if(event.altKey) return 'subtract';
+    if(event.ctrlKey || event.metaKey) return 'add';
+    return '';
+}
+function applyNodeSelection(ids, mode){
+    const previous = selectedNodeIds();
+    const hits = new Set(ids);
+    const next = mode === 'add' ? [...new Set([...previous, ...hits])]
+        : mode === 'subtract' ? previous.filter(id => !hits.has(id)) : [...hits];
+    if(mode !== 'replace' && next.length === previous.length) return false;
+    canvasState.selectedIds = next;
+    canvasState.selectedId = next.length === 1 ? next[0] : '';
+    if(mode === 'replace') canvasState.selectedImage = {nodeId:'', index:-1};
+    return true;
+}
+function handleModifiedNodeClick(event, id){
+    const mode = nodeSelectionModifier(event);
+    if(!mode) return false;
+    clearImageClickTimer();
+    if(applyNodeSelection([id], mode)){
+        if(smartCascadeAnyRunning()) smartCascadeSilentSelection = false;
+        syncSelectionUi();
+        scheduleComposerUpdate(180);
+    }
+    return true;
+}
 function isEditableTarget(target){
     const el = target || document.activeElement;
     return !!el?.closest?.('input, textarea, select, option, [contenteditable="true"], .prompt-node-control, .prompt-input');
@@ -7872,10 +7899,10 @@ function copySmartConnection(conn, idMap){
     return {...conn, id:uid('edge'), from, to};
 }
 function duplicateForAltDrag(node, preserveConnections=false){
-    const ids = (isNodeSelected(node.id) ? selectedNodeIds() : [node.id]);
+    const ids = isNodeSelected(node.id) ? selectedNodeIds() : [node.id];
     const sourceNodes = ids.map(id => canvasState.nodes.find(n => n.id === id)).filter(Boolean);
     if(!sourceNodes.length || rejectSmartHumanCopy(sourceNodes)) return null;
-    pushUndo();
+    capturePendingUndo();
     const idMap = new Map();
     const copies = sourceNodes.map(n => {
         const copy = canvasCore.smartNewNodeOwnership(cloneSmartNode(n, 0, 0));
@@ -7912,7 +7939,6 @@ function duplicateForAltDrag(node, preserveConnections=false){
     canvasState.selectedImage = {nodeId:'', index:-1};
     const dragCopy = copies.find(c => c.id === idMap.get(node.id)) || copies[0];
     render();
-    scheduleSave();
     return dragCopy;
 }
 let interactionLayerRaf = 0;
@@ -11724,9 +11750,13 @@ function bindNodeEvents(){
                 openCreateMenu(e, {groupId:id});
             };
         }
+        el.addEventListener('mousedown', e => {
+            // 只拦截上一手势派生的 click，不吞掉下一次快速点击。
+            if(e.button === 0) suppressNodeClickUntil = 0;
+        }, true);
         el.onclick = e => {
             e.stopPropagation();
-            if(Date.now() < suppressNodeClickUntil) return;
+            if(Date.now() < suppressNodeClickUntil || handleModifiedNodeClick(e, id)) return;
             const node = canvasState.nodes.find(n => n.id === id);
             hideRunTimerForNode(node);
             const alreadySelected = canvasState.selectedId === id && canvasState.selectedIds.length === 0 && canvasState.selectedImage.nodeId === '';
@@ -11936,7 +11966,7 @@ function bindNodeEvents(){
             item.addEventListener('mousedown', e => {
                 if(e.target.closest('video,audio')) return;
                 if(e.button !== 0 || e.target.closest('.image-delete,.image-name-badge')) return;
-                if(e.detail < 2) return;
+                if(e.detail < 2 || nodeSelectionModifier(e)) return;
                 e.preventDefault();
                 e.stopPropagation();
                 e.stopImmediatePropagation();
@@ -11959,7 +11989,8 @@ function bindNodeEvents(){
                 e.preventDefault();
                 e.stopPropagation();
                 e.stopImmediatePropagation();
-                if(Date.now() < suppressImageClickUntil) return;
+                if(Date.now() < Math.max(suppressImageClickUntil, suppressNodeClickUntil)) return;
+                if(handleModifiedNodeClick(e, id)) return;
                 const target = thumbTarget();
                 const owner = canvasState.nodes.find(n => n.id === id);
                 if(mediaKindForItem(target.image || {}) === 'video'){
@@ -11981,11 +12012,11 @@ function bindNodeEvents(){
                 clearImageClickTimer();
                 imageClickTimer = setTimeout(() => {
                     imageClickTimer = null;
-                hideRunTimerForNode(owner);
-                canvasState.selectedId = id;
-                canvasState.selectedIds = [];
-                // Composer 绑定节点本身；这里记录图层焦点，用于交叠时置顶和工具栏目标。
-                canvasState.selectedImage = {nodeId:target.targetNodeId, index:target.imageIndex};
+                    hideRunTimerForNode(owner);
+                    canvasState.selectedId = id;
+                    canvasState.selectedIds = [];
+                    // Composer 绑定节点本身；这里记录图层焦点，用于交叠时置顶和工具栏目标。
+                    canvasState.selectedImage = {nodeId:target.targetNodeId, index:target.imageIndex};
                     if(smartCascadeAnyRunning()) smartCascadeSilentSelection = false;
                     syncSelectionUi();
                     scheduleComposerUpdate(180);
@@ -11997,6 +12028,7 @@ function bindNodeEvents(){
             e.preventDefault();
             e.stopPropagation();
             e.stopImmediatePropagation();
+            if(nodeSelectionModifier(e)) return;
             clearImageClickTimer();
             suppressImageClickUntil = Date.now() + 260;
             const target = thumbTarget();
@@ -12014,7 +12046,7 @@ function bindNodeEvents(){
             item.addEventListener('mousedown', e => {
                 if(e.target.closest('video,audio')) return;
                 if(e.button !== 0 || e.target.closest('.mini-x')) return;
-                if(e.detail >= 2) return;
+                if(e.detail >= 2 || nodeSelectionModifier(e)) return;
                 const node = canvasState.nodes.find(n => n.id === id);
                 const refNodeId = item.dataset.refNodeId || '';
                 if(refNodeId && refNodeId !== id) return;
@@ -12036,8 +12068,13 @@ function bindNodeEvents(){
             const rect = nodeRect(node);
             resizeState = {id, startX:e.clientX, startY:e.clientY, startW:rect.width, startH:rect.height,
                 moved:false, humanEdit:beginSmartNodeHumanEdit(smartHumanGeometryTargets([id]), ['x','y','w','h','scale','_memberZoom'])};
-            // 分组缩放：记录本次手势开始时所有成员的位置/尺寸快照与起始缩放，缩放过程按相对快照的比例实时计算，
-            // 整体等比缩放+重排。用快照而非持久基准，移动成员后再缩放也不会回退到旧位置。
+            const imageAspect = resizeImageAspect(node, el, rect);
+            if(imageAspect){
+                resizeState.imageAspect = imageAspect;
+                resizeState.startSize = {w:node.w, h:node.h, scale:node.scale};
+                resizeState.pointer = {x:e.clientX, y:e.clientY};
+            }
+            // 用本次手势的快照，避免分组成员回退到此前的位置。
             if(isSmartGroupNode(node)){
                 resizeState.startZoom = smartGroupZoom(node);
                 const gx0 = Number(node.x) || 0, gy0 = Number(node.y) || 0;
@@ -12057,38 +12094,21 @@ function bindNodeEvents(){
             capturePendingUndo();
         });
         const beginNodeDrag = e => {
-            if(e.button !== 0 || e.target.closest('.mini-x, .smart-node-floating-menu, .node-resize-handle, .thumb-item, .node-port, .prompt-node-control, .conversation-node-message-text, select, input, textarea, button')) return;
+            if(e.button !== 0 || e.target.closest('.mini-x, .smart-node-floating-menu, .node-resize-handle, .node-port, .prompt-node-control, .conversation-node-message-text, select, input, textarea, button')) return;
+            const pendingModifier = nodeSelectionModifier(e);
             if(e.target.closest('.prompt-node-pill, textarea:not(.prompt-node-text)')) return;
+            if(e.target.closest('.thumb-item') && !pendingModifier) return;
             e.preventDefault(); e.stopPropagation();
             window.getSelection?.()?.removeAllRanges?.();
             if(document.activeElement?.blur) document.activeElement.blur();
-            let node = canvasState.nodes.find(n => n.id === id);
+            const node = canvasState.nodes.find(n => n.id === id);
             if(!node) return;
-            let altDuplicated = false;
-            if(e.altKey){
-                const copied = duplicateForAltDrag(node, e.shiftKey);
-                if(!copied) return;
-                if(copied.id !== node.id){ node = copied; altDuplicated = true; }
+            if(pendingModifier){
+                clearImageClickTimer();
+                dragState = {id, startX:e.clientX, startY:e.clientY, pendingModifier, preserveConnections:e.shiftKey};
+                return;
             }
-            let dragIds = canvasState.selectedIds.includes(node.id) ? canvasState.selectedIds.slice() : [node.id];
-            dragIds = smartNodeDragIds(node, dragIds);
-            const group = dragIds.map(dragId => {
-                const n = canvasState.nodes.find(x => x.id === dragId);
-                return n ? {id:n.id, ox:Number(n.x) || 0, oy:Number(n.y) || 0} : null;
-            }).filter(Boolean);
-            dragState = {id:node.id, startX:e.clientX, startY:e.clientY, ox:node.x || 0, oy:node.y || 0, group, groupIds:group.map(item => item.id), ctrlGroup:Boolean(e.ctrlKey),
-                createdIds:altDuplicated ? [node.id] : [], geometryEdited:false,
-                humanEdit:beginSmartNodeHumanEdit(group.filter(item => !altDuplicated || item.id !== node.id).map(item => canvasState.nodes.find(node => node.id === item.id)), ['x','y'])};
-            if(composerDragSettleTimer){
-                clearTimeout(composerDragSettleTimer);
-                composerDragSettleTimer = 0;
-            }
-            document.body.classList.remove('smart-node-drag-settling');
-            document.body.classList.add('smart-node-drag');
-            // Alt+drag 复制+放置是同一步撤销：duplicateForAltDrag 已推送复制前快照。
-            // 若这里再捕获 pending 快照（其中已含复制节点），一次 Ctrl+Z 只回退“拖动”，
-            // 复制节点仍留在画布上，用户需再按一次才撤掉复制。
-            if(!altDuplicated) capturePendingUndo();
+            startSmartNodeDrag(node, e.clientX, e.clientY);
         };
         el.querySelectorAll('.node-port').forEach(port => {
             port.addEventListener('mousedown', e => {
@@ -12122,6 +12142,22 @@ function bindNodeEvents(){
             await handleSmartImageDropPayload(payload, id, isSmartLayoutFrame(nodeForControls) ? {point:screenToWorld(e)} : {});
         };
     });
+}
+function startSmartNodeDrag(node, startX, startY, {ctrlGroup=false, altDuplicated=false}={}){
+    const dragIds = smartNodeDragIds(node, canvasState.selectedIds.includes(node.id) ? canvasState.selectedIds : [node.id]);
+    const nodes = dragIds.map(id => canvasState.nodes.find(n => n.id === id)).filter(Boolean);
+    const group = nodes.map(n => ({id:n.id, ox:Number(n.x) || 0, oy:Number(n.y) || 0}));
+    dragState = {id:node.id, startX, startY, ox:node.x || 0, oy:node.y || 0, group, groupIds:group.map(item => item.id), ctrlGroup,
+        altDuplicated, createdIds:altDuplicated ? [node.id] : [], geometryEdited:false,
+        humanEdit:beginSmartNodeHumanEdit(nodes.filter(n => !altDuplicated || n.id !== node.id), ['x','y'])};
+    if(composerDragSettleTimer){
+        clearTimeout(composerDragSettleTimer);
+        composerDragSettleTimer = 0;
+    }
+    document.body.classList.remove('smart-node-drag-settling');
+    document.body.classList.add('smart-node-drag');
+    // Alt + 拖动用复制前的快照，让撤销和重做都包含复制与放置。
+    if(!altDuplicated) capturePendingUndo();
 }
 function smartNodeDragIds(primary, ids){
     const roots = ids.map(id => canvasState.nodes.find(n => n.id === id));
@@ -15328,6 +15364,17 @@ async function runGeneration(){
 }
 // Local ComfyUI generation execution was removed.
 
+function beginSelection(event, mode){
+    event.preventDefault();
+    didPan = false;
+    shell.tabIndex = -1;
+    shell.focus({preventScroll:true});
+    if(mode !== 'replace') clearImageClickTimer();
+    selectionState = {startScreen:{x:event.clientX, y:event.clientY}, startWorld:screenToWorld(event), mode};
+    selectionBox.classList.toggle('selection-box-add', mode === 'add');
+    selectionBox.classList.toggle('selection-box-subtract', mode === 'subtract');
+    updateSelectionBox(event);
+}
 function updateSelectionBox(event){
     if(!selectionState) return;
     const sx = selectionState.startScreen.x, sy = selectionState.startScreen.y;
@@ -15344,16 +15391,16 @@ function finishSelection(event){
     const b = screenToWorld(event);
     const minX = Math.min(a.x, b.x), minY = Math.min(a.y, b.y);
     const maxX = Math.max(a.x, b.x), maxY = Math.max(a.y, b.y);
-    canvasState.selectedIds = canvasState.nodes.filter(node => {
+    const hitIds = canvasState.nodes.filter(node => {
         const r = nodeRect(node);
         return r.x < maxX && r.x + r.width > minX && r.y < maxY && r.y + r.height > minY;
     }).map(n => n.id);
-    canvasState.selectedId = canvasState.selectedIds.length === 1 ? canvasState.selectedIds[0] : '';
-    canvasState.selectedImage = {nodeId:'', index:-1};
+    const changed = applyNodeSelection(hitIds, selectionState.mode);
     selectionState = null;
     selectionJustFinished = true;
     selectionBox.style.display = 'none';
-    render();
+    selectionBox.classList.remove('selection-box-add', 'selection-box-subtract');
+    if(changed) render();
     setTimeout(() => { selectionJustFinished = false; }, 0);
 }
 function groupSelectedNodes(){
@@ -15638,22 +15685,9 @@ shell.onmousedown = e => {
         eraseConnectionsAtPoint(e);
         return;
     }
-    if(e.button === 0 && isRKeyDown){
-        e.preventDefault();
-        didPan = false;
-        shell.tabIndex = -1;
-        shell.focus({preventScroll:true});
-        selectionState = {startScreen:{x:e.clientX, y:e.clientY}, startWorld:screenToWorld(e)};
-        updateSelectionBox(e);
-        return;
-    }
-    if(e.button === 0 && (e.ctrlKey || e.metaKey)){
-        e.preventDefault();
-        didPan = false;
-        shell.tabIndex = -1;
-        shell.focus({preventScroll:true});
-        selectionState = {startScreen:{x:e.clientX, y:e.clientY}, startWorld:screenToWorld(e)};
-        updateSelectionBox(e);
+    const selectionMode = isRKeyDown ? 'replace' : nodeSelectionModifier(e);
+    if(e.button === 0 && selectionMode){
+        beginSelection(e, selectionMode);
         return;
     }
     if(e.button !== 0 && e.button !== 1) return;
@@ -15864,6 +15898,53 @@ document.getElementById('smartMarkedExportBtn')?.addEventListener('click', e => 
     e.stopPropagation();
     void exportMarkedSmartNodes();
 });
+function resizeImageAspect(node, element, rect){
+    if(node.type !== NODE_TYPE_IMAGE) return 0;
+    const selected = canvasState.selectedImage;
+    const index = selected.nodeId === node.id && node.images?.[selected.index] ? selected.index : 0;
+    const image = node.images?.[index];
+    if(!image || mediaKindForItem(image) !== 'image') return 0;
+    // 批量生成比例和预览尺寸都可能与当前原图不同。
+    const original = element.querySelector(`[data-image-index="${index}"] img`);
+    const loadedOriginal = original && !isSmartPreviewImage(original) ? original : null;
+    for(const [w,h] of [[image.natural_w,image.natural_h], [loadedOriginal?.naturalWidth,loadedOriginal?.naturalHeight], [image.width,image.height]]){
+        const ratio = Number(w) / Number(h);
+        if(Number(w) > 0 && Number(h) > 0 && Number.isFinite(ratio) && ratio > 0) return ratio;
+    }
+    return rect.width / rect.height;
+}
+function updateImageHandleResize(node, state, shiftKey){
+    const {startX,startY,startW,startH,imageAspect,pointer} = state;
+    const dx = (pointer.x - startX) / viewport.scale;
+    const dy = (pointer.y - startY) / viewport.scale;
+    const minSize = 48;
+    let w = Math.max(minSize, Math.round(startW + dx));
+    let h = Math.max(minSize, Math.round(startH + dy));
+    if(shiftKey){
+        // 锁定、解除锁定都从起始框重算；钳制主边后再推导另一边，避免触底时丢失比例。
+        const width = Math.abs(dx / startW) >= Math.abs(dy / startH) ? startW + dx : (startH + dy) * imageAspect;
+        w = Math.max(minSize, minSize * imageAspect, width);
+        h = Math.max(minSize, w / imageAspect);
+    }
+    if(!dx && !dy && (!shiftKey || (Math.abs(w - startW) < 1e-6 && Math.abs(h - startH) < 1e-6))){
+        if(!state.moved) return;
+        for(const [key,value] of Object.entries(state.startSize)){
+            if(value === undefined) delete node[key]; else node[key] = value;
+        }
+    } else {
+        node.w = w;
+        node.h = h;
+        node.scale = 1;
+    }
+    state.moved = true;
+    updateNodeElementDuringResize(node);
+}
+function updateImageResizeModifier(shiftKey){
+    if(!resizeState?.imageAspect) return false;
+    const node = canvasState.nodes.find(n => n.id === resizeState.id);
+    if(node) updateImageHandleResize(node, resizeState, shiftKey);
+    return true;
+}
 window.onmousemove = e => {
     lastMouseWorld = screenToWorld(e);
     if(smartMinimapDrag){
@@ -15970,6 +16051,11 @@ window.onmousemove = e => {
     if(resizeState){
         const node = canvasState.nodes.find(n => n.id === resizeState.id);
         if(!node) return;
+        if(resizeState.imageAspect){
+            resizeState.pointer = {x:e.clientX, y:e.clientY};
+            updateImageHandleResize(node, resizeState, e.shiftKey);
+            return;
+        }
         const dx = (e.clientX - resizeState.startX) / viewport.scale;
         const dy = (e.clientY - resizeState.startY) / viewport.scale;
         if(dx === 0 && dy === 0 && !resizeState.moved) return;
@@ -16120,9 +16206,19 @@ window.onmousemove = e => {
         applyViewport();
         return;
     }
-    if(!dragState) return;
-    const node = canvasState.nodes.find(n => n.id === dragState.id);
+    if(!dragState || dragState.modifierRejected) return;
+    let node = canvasState.nodes.find(n => n.id === dragState.id);
     if(!node) return;
+    if(dragState.pendingModifier){
+        const {startX,startY,pendingModifier,preserveConnections} = dragState;
+        // 用 CSS 像素判定点击/拖动，画布缩放不得改变阈值。
+        if(Math.hypot(e.clientX - startX, e.clientY - startY) <= 4) return;
+        const altDuplicated = pendingModifier === 'subtract';
+        if(altDuplicated) node = duplicateForAltDrag(node, preserveConnections);
+        if(!node){ dragState.modifierRejected = true; return; }
+        startSmartNodeDrag(node, startX, startY, {ctrlGroup:!altDuplicated, altDuplicated});
+        dragState.moved = true;
+    }
     const moveDx = (e.clientX - dragState.startX) / viewport.scale;
     const moveDy = (e.clientY - dragState.startY) / viewport.scale;
     if(moveDx === 0 && moveDy === 0 && !dragState.geometryEdited) return;
@@ -16177,7 +16273,7 @@ window.onmouseup = e => {
     const nodeDragMoved = Boolean(dragState?.moved);
     document.body.classList.remove('smart-node-drag');
     document.body.classList.remove('smart-node-resize');
-    FireflySnapUI.clearGuides(world); // #253：拖拽结束清参考线
+    FireflySnapUI.clearGuides(world);
     if(nodeDragMoved){
         document.body.classList.add('smart-node-drag-settling');
         if(composerDragSettleTimer) clearTimeout(composerDragSettleTimer);
@@ -16217,6 +16313,10 @@ window.onmouseup = e => {
         cropDrag = null;
     }
     if(resizeState){
+        if(resizeState.imageAspect && resizeState.moved){
+            resizeState.pointer = {x:e.clientX, y:e.clientY};
+            updateImageResizeModifier(e.shiftKey);
+        }
         const changed = resizeState.moved && finishSmartNodeHumanEdit(resizeState.humanEdit);
         if(changed){
             commitPendingUndo();
@@ -16253,13 +16353,18 @@ window.onmouseup = e => {
         smartMinimapDrag = false;
     }
     if(dragState){
+        if(dragState.pendingModifier){
+            if(dragState.modifierRejected) suppressNodeClickUntil = Date.now() + 180;
+            dragState = null;
+            return;
+        }
         if(!dragState.geometryEdited && !dragState.thumbDetached){
             discardPendingUndo();
             dragState = null;
             return;
         }
         const draggedNode = canvasState.nodes.find(n => n.id === dragState.id);
-        let stateChanged = false;
+        let stateChanged = Boolean(dragState.altDuplicated);
         let contentChanged = false;
         const hit = document.elementFromPoint(e.clientX, e.clientY);
         const droppedOnAssetPanel = assetLibraryOpen && hit && assetPanel?.contains(hit);
@@ -16271,7 +16376,9 @@ window.onmouseup = e => {
                 if(n){ n.x = item.ox; n.y = item.oy; }
             });
             setAssetDragOver(false);
-            discardPendingUndo();
+            if(dragState.altDuplicated){ commitPendingUndo(); scheduleSave(); }
+            else discardPendingUndo();
+            if(dragState.altDuplicated || dragState.ctrlGroup) suppressNodeClickUntil = Date.now() + 180;
             clearDropHighlight();
             dragState = null;
             document.body.classList.remove('smart-node-drag');
@@ -16369,6 +16476,8 @@ window.onmouseup = e => {
         }
         if(finishSmartNodeHumanEdit(dropEdit)) stateChanged = true;
         if(finishSmartNodeHumanEdit(dragState.humanEdit)) stateChanged = true;
+        const positioned = dragState.group || [{id:dragState.id, ox:dragState.ox, oy:dragState.oy}];
+        if(dragState.altDuplicated) markNodePositionsLocallyUpdated(positioned);
         if(stateChanged) commitPendingUndo();
         else discardPendingUndo();
         if(stateChanged && !contentChanged){
@@ -16376,8 +16485,8 @@ window.onmouseup = e => {
             // 必须进入自动保存队列，否则界面显示"已保存"而关页后位置静默丢失。
             scheduleSave();
         }
-        if(stateChanged || dragState.thumbDetached) suppressNodeClickUntil = Date.now() + 180;
-        if(stateChanged) markNodePositionsLocallyUpdated(dragState.group || [{id:dragState.id, ox:dragState.ox, oy:dragState.oy}]);
+        if(stateChanged || dragState.thumbDetached || dragState.ctrlGroup) suppressNodeClickUntil = Date.now() + 180;
+        if(stateChanged && !dragState.altDuplicated) markNodePositionsLocallyUpdated(positioned);
         clearDropHighlight();
         loopInsertPreview = null;
         dragState = null;
@@ -16474,6 +16583,7 @@ window.addEventListener('paste', e => {
 });
 window.addEventListener('keydown', e => {
     const key = String(e.key || '').toLowerCase();
+    if(key === 'shift' && updateImageResizeModifier(e.shiftKey)) return;
     if((e.ctrlKey || e.metaKey) && key === 's'){
         e.preventDefault();
         void manualSaveCanvas();
@@ -16637,7 +16747,9 @@ window.addEventListener('keydown', e => {
     }
 });
 window.addEventListener('keyup', e => {
-    if(String(e.key || '').toLowerCase() === 'r') isRKeyDown = false;
+    const key = String(e.key || '').toLowerCase();
+    if(key === 'r') isRKeyDown = false;
+    if(key === 'shift') updateImageResizeModifier(e.shiftKey);
 });
 window.addEventListener('blur', () => {
     isRKeyDown = false;

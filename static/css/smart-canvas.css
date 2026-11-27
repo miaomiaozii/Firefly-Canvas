@@ -1497,6 +1497,8 @@ input[type=range].smart-range::-webkit-slider-thumb { -webkit-appearance:none; w
 .toast.show { opacity:1; transform:translateY(0); }
 .selection-box { position:absolute; z-index:18; border:1px solid var(--strong); background:color-mix(in srgb, var(--panel) 8%, var(--transparent)); border-radius:10px; pointer-events:none; display:none; }
 .theme-dark .selection-box { background:rgba(248,250,252,.1); }
+.selection-box.selection-box-add { border-color:var(--accent); background:color-mix(in srgb, var(--accent) 14%, var(--transparent)); }
+.selection-box.selection-box-subtract { border-color:var(--danger); border-style:dashed; background:color-mix(in srgb, var(--danger) 14%, var(--transparent)); }
 .composer-actions { grid-area:run; display:flex; justify-content:flex-end; gap:6px; }
 .preview-icon-btn { width:34px; height:34px; border-radius:12px; display:inline-flex; align-items:center; justify-content:center; color:var(--muted); background:var(--card); border:1px solid var(--line); }
 .preview-icon-btn:hover { background:var(--strong); color:var(--strong-text); }

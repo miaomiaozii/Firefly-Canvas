@@ -222,14 +222,14 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # 两个引用方向必须独立实测；合法调用也须同步 ADR 0020 和精确计数，不能豁免。
         rev = _cached_reverse()
         self.assertEqual(rev["reverse_names"], 266)
-        self.assertEqual(rev["reverse_core_refs"], 1013)
+        self.assertEqual(rev["reverse_core_refs"], 1017)
         self.assertEqual(rev["core_dominant_names"], 178)
-        self.assertEqual(rev["core_dominant_core_refs"], 824)
+        self.assertEqual(rev["core_dominant_core_refs"], 828)
         rows = {(row["owner"], row["name"]): row for row in rev["reverse_rows"]}
         self.assertEqual(rows[("canvas-generation-cascade.js", "composer")]["core_refs"], 66)
         self.assertEqual(rows[("canvas-node-types.js", "NODE_TYPE_IMAGE")], {
             "name": "NODE_TYPE_IMAGE", "owner": "canvas-node-types.js",
-            "core_refs": 19, "owner_refs": 1, "category": "unclassified",
+            "core_refs": 20, "owner_refs": 1, "category": "unclassified",
         })
         self.assertEqual(rows[("canvas-media-history.js", "mediaReferencesForStorage")], {
             "name": "mediaReferencesForStorage", "owner": "canvas-media-history.js",

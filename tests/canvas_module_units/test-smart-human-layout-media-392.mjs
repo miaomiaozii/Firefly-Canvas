@@ -355,7 +355,7 @@ test('paste preserves original source but touches an existing external input tar
 function pointerEditor(nodes){
     const e=editor(nodes);
     loadModules(e.ctx,['canvas-node-ops.js','canvas-snap.js']);
-    Object.assign(e.ctx,{shell:e.harness.makeElement(),smartMinimapDrag:null,portDragState:null,promptResizeState:null,selectionState:null,previewCompareDrag:null,previewPanDrag:null,imageEditPanDrag:null,cropDrag:null,cropState:null,resizeState:null,llmInstructionResizeState:null,promptSplitResizeState:null,thumbDragState:null,panState:null,dragState:null,composerDragSettleTimer:0,interactionLayerRaf:0,suppressNodeClickUntil:0});
+    Object.assign(e.ctx,{shell:e.harness.makeElement(),smartMinimapDrag:null,portDragState:null,promptResizeState:null,selectionState:null,previewCompareDrag:null,previewPanDrag:null,imageEditPanDrag:null,cropDrag:null,cropState:null,resizeState:null,llmInstructionResizeState:null,promptSplitResizeState:null,thumbDragState:null,panState:null,dragState:null,composerDragSettleTimer:0,interactionLayerRaf:0,suppressNodeClickUntil:0,imageClickTimer:null});
     evaluate(e.ctx,source.slice(source.indexOf('window.onmousemove ='),source.indexOf('function canvasWheelIsReserved')));
     const resize=e.harness.makeElement(),el=e.harness.makeElement();
     el.dataset.id=nodes[0].id;
@@ -385,7 +385,10 @@ test('pointer resize and drag touch geometry with same-action undo; click and re
     }
     const e=pointerEditor([{id:'photo',type:'smart-image',...identity,images:[],pendingActionResumes:[{kind:'conversation',actionId:'a',payload:{requestId:'r',text:'send'}}]}]);
     e.el.onmousedown(e.pointer({altKey:true}));
+    e.ctx.onmousemove(e.pointer({altKey:true,clientX:20}));
+    e.ctx.onmouseup(e.pointer({altKey:true,clientX:20}));
     assert.equal(e.ctx.dragState,null);
+    assert.equal(e.stored().length,1);
     assert.equal(evaluate(e.ctx,'undoStack.length'),0);
 });
 
