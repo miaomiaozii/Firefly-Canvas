@@ -48,7 +48,7 @@ test('pill title and keyboard-accessible name both preserve the selected label',
     assert.match(html, /class="smart-popover compact-popover"/);
 });
 
-test('visible image editor fits horizontally without reanchoring video or an offscreen image', () => {
+test('composer stays below its node and only fits visible image editors horizontally', () => {
     const style = {removeProperty() {}};
     let image = true;
     const ctx = imageLayoutContext({
@@ -57,13 +57,17 @@ test('visible image editor fits horizontally without reanchoring video or an off
         world:{offsetWidth:6000,getBoundingClientRect:() => ({left:0,width:3000})},
     });
     const node = {x:60, y:30, width:100, height:100};
-    ctx.positionComposerForNode(node);
-    assert.equal(style.left, '40px');
-    assert.equal(style.top, '144px');
+    const check = (rect, left, top) => {
+        ctx.positionComposerForNode(rect);
+        assert.equal(style.left, `${left}px`);
+        assert.equal(style.top, `${top}px`);
+    };
+
+    check(node, 40, 144);
+    check({...node, x:430, y:90, height:140}, 300, 244);
+    check({...node, x:1190}, 880, 144);
     image = false;
-    ctx.positionComposerForNode(node);
-    assert.equal(style.left, '-70px');
+    check(node, -70, 144);
     image = true;
-    ctx.positionComposerForNode({...node,x:-200});
-    assert.equal(style.left, '-330px');
+    check({...node, x:-200}, -330, 144);
 });

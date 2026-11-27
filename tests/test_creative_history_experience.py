@@ -280,9 +280,7 @@ class CreativeHistoryExperienceTests(unittest.TestCase):
         self.assertIn("nodeRect.right + margin + menuRect.width / 2", SCRIPT)
         self.assertIn("nodeRect.left - margin - menuRect.width / 2", SCRIPT)
 
-    def test_composer_is_world_anchored_below_node_and_wheel_ownership_is_narrow(self):
-        self.assertIn("composer.style.left = `${modelRect.x + (modelRect.width - composerWidth) / 2}px`", SCRIPT)
-        self.assertIn("composer.style.top = `${modelRect.y + modelRect.height + 14}px`", SCRIPT)
+    def test_composer_wheel_ownership_is_narrow(self):
         self.assertIn("function canvasWheelIsReserved(target)", SCRIPT)
         self.assertIn("'.composer .smart-popover'", SCRIPT)
         self.assertIn("if(canvasWheelIsReserved(e.target)) return;", SCRIPT)
