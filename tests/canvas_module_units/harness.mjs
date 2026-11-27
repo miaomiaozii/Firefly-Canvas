@@ -55,6 +55,8 @@ export const HTML_SCRIPT_ORDER = [
     'canvas-placement.js',
     // #255：ComfyArt vectorPath.ts MIT 移植（路径归一化 / 缩放纯函数）。
     'canvas-vector-path.js',
+    'canvas-image-toolbar.js',
+    'canvas-image-color.js',
     'canvas-image-editor.js',
     // #255：图像分层 + 图层面板（layers.ts MIT 移植 + store/合成/面板）。
     'canvas-layers.js',
@@ -148,6 +150,10 @@ function makeElement(tag = 'div') {
             el.open = false;
             (listeners.get('close') || []).slice().forEach((fn) => fn.call(el, { type: 'close' }));
         },
+        matches: (selector) => selector.split(',').some(part => {
+            const singleClass = /^\.([\w-]+)$/.exec(part.trim());
+            return singleClass ? classes.has(singleClass[1]) : false;
+        }),
         querySelector: () => null,
         querySelectorAll: () => [],
         getBoundingClientRect: () => ({ x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0 }),

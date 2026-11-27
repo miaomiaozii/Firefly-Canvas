@@ -84,14 +84,18 @@ def rotate_image(image: Image.Image | bytes, angle: int) -> Image.Image:
     return source.transpose(constant)
 
 
-def flip_image(image: Image.Image | bytes, direction: str) -> Image.Image:
-    """#266b canvas.edit_flip: horizontal=左右镜像 / vertical=上下镜像；其余方向拒绝。"""
-    source = as_rgba(image)
+def flip_image(image: Image.Image | bytes, direction: str, *, preserve_mode: bool = False) -> Image.Image:
+    """Keep the Agent's RGBA default; human edits must not lose original image samples (#514)."""
+    if not preserve_mode:
+        image = as_rgba(image)
     direction = str(direction or "").strip().lower()
     if direction not in FLIP_DIRECTIONS:
         raise ValueError(f"flip direction must be one of {FLIP_DIRECTIONS}, got {direction!r}")
-    constant = Image.FLIP_LEFT_RIGHT if direction == "horizontal" else Image.FLIP_TOP_BOTTOM
-    return source.transpose(constant)
+    constant = Image.Transpose.FLIP_LEFT_RIGHT if direction == "horizontal" else Image.Transpose.FLIP_TOP_BOTTOM
+    if isinstance(image, Image.Image):
+        return image.transpose(constant)
+    with Image.open(io.BytesIO(image)) as source:
+        return source.transpose(constant)
 
 
 #: #289 扩图红底 keying 色（与前端 applyImageOutpaint 的 fillStyle '#ff0044' 一致）：

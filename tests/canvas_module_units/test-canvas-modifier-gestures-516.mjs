@@ -19,7 +19,7 @@ function gestures(nodes = [photo('a',20), photo('b',320), photo('c',620)]){
         previewCompareDrag:null, previewPanDrag:null, imageEditPanDrag:null, cropDrag:null, cropState:null, resizeState:null,
         llmInstructionResizeState:null, promptSplitResizeState:null, thumbDragState:null, panState:null, dragState:null,
         composerDragSettleTimer:0, interactionLayerRaf:0, suppressNodeClickUntil:0, suppressImageClickUntil:0,
-        imageClickTimer:null, zoomPreviewState:null, didPan:false, isRKeyDown:false, Element:class {},
+        imageClickTimer:null, zoomPreviewState:null, didPan:false, isRKeyDown:false, Element:class {}, smartImageToolbarHost:null,
         MEDIA_NODE_DEFAULT_SCALE:2, MEDIA_GROUP_THUMB_BASE:224, MEDIA_GROUP_MAX_VISIBLE_ROWS:3,
         closeCreateMenu(){}, applyViewport(){}, syncSelectionUi(){}, updateComposer(){}, scheduleComposerUpdate(){},
         activeSmartCascadeCount:()=>0,
@@ -67,6 +67,32 @@ function gestures(nodes = [photo('a',20), photo('b',320), photo('c',620)]){
     const size = (id = 'a') => [e.node(id).w,e.node(id).h];
     return {...e,els,pointer,key,down,move,up,click,boxDown,box,seed,selection,focus,history,resize,size};
 }
+
+test('#514 shift-flip records only eligible unmodified canvas shortcuts', () => {
+    const e = gestures();
+    const calls = [];
+    e.ctx.document.body.matches = () => false;
+    Object.assign(e.ctx, {
+        smartImageToolbarAnchor:({imageOnly}) => imageOnly ? {node:{id:'b'}} : null,
+        smartImageToolbar:{recordUse:key=>calls.push(key)},
+        runSmartNodeToolbarAction:(id, key)=>calls.push(`${id}:${key}`),
+        getSelection:()=>({toString:()=>''}), imeComposing:()=>false,
+    });
+    const send = (key, extra = {}) => {
+        const press = e.pointer({type:'keydown',key,shiftKey:true,...extra});
+        e.harness.windowListeners.get('keydown').forEach(fn => fn(press));
+    };
+    send('H');
+    send('V');
+    send('h', {ctrlKey:true});
+    send('h', {metaKey:true});
+    send('h', {altKey:true});
+    send('h', {repeat:true});
+    send('h', {target:{isContentEditable:true, closest:()=>null}});
+    e.ctx.FireflyEscapeStack = {size:1};
+    send('h');
+    assert.deepEqual(calls, ['flip','b:flip','flip-vertical','b:flip-vertical']);
+});
 
 test('Ctrl and Cmd clicks union with the selection, Alt subtracts without changing image focus or history', () => {
     const e = gestures();

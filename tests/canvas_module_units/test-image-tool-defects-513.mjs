@@ -74,15 +74,30 @@ test('Photoshop action stays in the toolbar but cannot send a video asset', asyn
     const ctx = vm.createContext({
         NODE_TYPE_IMAGE:'smart-image', smartNodeToolbarImageIndex:()=>0, imageForDisplay:item=>item,
         mediaKindForItem:item=>item.kind, tr:key=>key, toast:key=>calls.push(key),
-        escapeAttr:String, escapeHtml:String, ico:()=>'', canvas:{project_id:'project'},
+        window:{}, canvas:{project_id:'project'},
+        imageToolNodeEditable:()=>true, imageToolIsImage:item=>item?.kind === 'image',
+        imageToolScope:()=>({}), imageToolItemAssetId:(_scope,item)=>item.asset_id,
+        imageToolColorProvenance:item=>item.edit, isLocalEditOriginalItem:()=>true,
         psSendRoundTrip:async()=>calls.push('sent'),
     });
     const node={id:'node',type:'smart-image',images:[{asset_id:'owned',kind:'video'}]};
-    vm.runInContext(section('smart-canvas','function smartNodeToolbarHtml(', 'function duplicateSmartNodeMediaToCanvas('),ctx);
+    vm.runInContext(section('smart-canvas','const smartImageToolbar =', 'function duplicateSmartNodeMediaToCanvas('),ctx);
     vm.runInContext(section('smart-canvas','async function sendSmartNodeImageToPhotoshop(', 'function runSmartNodeToolbarAction('),ctx);
-    assert.match(ctx.smartNodeToolbarHtml(node), /data-smart-node-action="send-ps"[^>]* disabled/);
+    vm.runInContext('smartImageToolbarPsConnected = true;', ctx);
+    const photoshop = ctx.smartImageToolbarActions(node, ctx.smartImageToolbarMedia(node), false).find(action => action.key === 'send-ps');
+    assert.equal(photoshop.enabled, false);
     await ctx.sendSmartNodeImageToPhotoshop(node,0);
     assert.deepEqual(calls,['smart.noProjectMediaOriginal']);
+    node.images[0] = {asset_id:'owned',kind:'image',url:'/source.png'};
+    const media = ctx.smartImageToolbarMedia(node);
+    const enabled = multi => Array.from(ctx.smartImageToolbarActions(node, media, multi).filter(action => action.enabled), action => action.key);
+    assert.deepEqual(enabled(true), ['preview','flip','color','flip-vertical']);
+    assert.ok(enabled(false).includes('send-ps'));
+    vm.runInContext('smartImageToolbarPsConnected = false;', ctx);
+    assert.ok(!enabled(false).includes('send-ps'));
+    assert.ok(!enabled(false).includes('restore'));
+    node.images[0].edit = {source_asset_id:'original'};
+    assert.ok(enabled(false).includes('restore'));
 });
 
 test('single preview download reports an unsuccessful HTTP response and saves a valid result', async () => {

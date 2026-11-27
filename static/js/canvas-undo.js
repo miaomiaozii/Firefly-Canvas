@@ -305,6 +305,7 @@ async function restoreCanvasUndoDelta(snap, direction){
         restoredNodes = filterDanglingProjectMediaImages(result.canvas.nodes);
     }
     const reverse = {...snapshotForUndo(), actionDeltaVersion:1, actionDelta:snap.actionDelta};
+    if(snap.keepReplacedMedia) reverse.keepReplacedMedia = true;
     if(direction === 'backward'){
         undoStack.pop();
         redoStack.push(reverse);
@@ -320,7 +321,7 @@ async function restoreCanvasUndoDelta(snap, direction){
     undoSuppressed = true;
     try {
         applyCanvasUndoSnapshot({...snap, ...result.canvas}, restoredNodes);
-        if(direction === 'forward' && lostImages.length) scheduleMediaArchive(lostImages);
+        if(direction === 'forward' && !snap.keepReplacedMedia && lostImages.length) scheduleMediaArchive(lostImages);
     } finally { undoSuppressed = false; }
     toast(tr(direction === 'backward' ? 'smart.toastUndone' : 'smart.toastRedone'));
     syncUndoRedoButtons();

@@ -44,6 +44,10 @@ class ProjectNotFound(ProjectStoreError):
     pass
 
 
+class ProjectImageReferenceError(ProjectStoreError):
+    """The requested media exists but is not a project image."""
+
+
 class InvalidMutation(ProjectStoreError):
     pass
 
@@ -1485,12 +1489,30 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                 if not path_is_within(media_root, path) or not path.is_file():
                     raise ProjectNotFound('项目媒体不存在')
                 if (record.get('kind') or self._media_kind(record.get('mime_type') or '', path.name)) != 'image':
-                    raise ProjectStoreError('参考图不是项目图片')
+                    raise ProjectImageReferenceError('参考图不是项目图片')
                 if fingerprint:
                     stat = path.stat()
                     files.append((asset_id, str(path), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns,
                                   record.get('name'), record.get('mime_type')))
         return tuple(files) if fingerprint else None
+
+    def image_tool_sources(self, project_id, asset_ids):
+        with self._lock:
+            directory = self._project_directory(project_id)
+            if not self._safe_project_path(directory, 'project.json').is_file():
+                raise ProjectNotFound('项目不存在')
+            # Replaying a pending transaction would mutate the canvas and could replace
+            # the entire media index. Only normal project opening may recover it.
+            if self._original_transaction_path(project_id).exists():
+                raise ProjectStoreError('项目原图事务尚未恢复，请先打开项目')
+            return self.check_image_reference_files(project_id, asset_ids, fingerprint=True)
+
+    def archive_image_tool_outputs(self, project_id, sources, outputs):
+        with self._lock:
+            if self.image_tool_sources(project_id, [source[0] for source in sources]) != sources:
+                raise ProjectStoreError('项目源图片已变化，请重试')
+            return [self.import_media_file(project_id, path, name, mime, _media_only=True)
+                    for path, name, mime in outputs]
 
     def import_media(
         self,
@@ -1560,6 +1582,8 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
         filename: str,
         mime_type: str = "",
         source_info: Dict[str, Any] | None = None,
+        *,
+        _media_only: bool = False,
     ) -> Dict[str, Any]:
         project_id = _clean_project_id(project_id)
         source = Path(source_path).resolve()
@@ -1572,8 +1596,11 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
         if size > 1024 * 1024 * 1024:
             raise ProjectStoreError("媒体文件超过 1GB 限制")
         with self._lock:
-            self.open_project(project_id)
-            media_root = self.root / project_id / "media"
+            if _media_only:
+                media_root = self._safe_project_path(self._project_directory(project_id), 'media')
+            else:
+                self.open_project(project_id)
+                media_root = self.root / project_id / 'media'
         temporary = media_root / f".incoming.{uuid.uuid4().hex}.tmp"
         digest_builder = hashlib.sha256()
         copied_size = 0
@@ -1591,16 +1618,18 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                 raise ProjectStoreError("媒体文件为空")
             digest = digest_builder.hexdigest()
             with self._lock:
-                self.open_project(project_id)
+                if not _media_only:
+                    self.open_project(project_id)
                 index = self._load_media_index(project_id)
-                existing = self._existing_media_record(project_id, index, digest, source_info)
+                existing = self._existing_media_record(
+                    project_id, index, digest, source_info, media_only_root=media_root if _media_only else None)
                 if existing is not None:
                     return existing
                 suffix = Path(str(filename or source.name)).suffix.lower()
                 if not re.fullmatch(r"\.[a-z0-9]{1,10}", suffix):
                     suffix = mimetypes.guess_extension(str(mime_type or "").split(";", 1)[0].strip()) or ".bin"
                 stored_name = f"{digest}{suffix}"
-                media_path = media_root / stored_name
+                media_path = self._safe_project_path(media_root, stored_name) if _media_only else media_root / stored_name
                 if not media_path.exists():
                     os.replace(temporary, media_path)
                 record = self._new_media_record(digest, stored_name, filename or source.name, mime_type, copied_size, source_info)
@@ -2160,14 +2189,21 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
         index: Dict[str, Any],
         digest: str,
         source_info: Dict[str, Any] | None,
+        *,
+        media_only_root: Path | None = None,
     ) -> Dict[str, Any] | None:
         existing = index["items"].get(digest)
         if not isinstance(existing, dict):
             return None
-        try:
-            self.media_record(project_id, digest)
-        except ProjectNotFound:
-            return None
+        if media_only_root is not None:
+            # The public reader can repair both the canvas and media records.
+            if not self._safe_project_path(media_only_root, existing.get('filename') or '.').is_file():
+                return None
+        else:
+            try:
+                self.media_record(project_id, digest)
+            except ProjectNotFound:
+                return None
         if source_info and self._merge_media_source(existing, source_info):
             _write_json_atomic(self.root / project_id / "media" / "index.json", index, keep_backup=False)
         return copy.deepcopy(existing)
@@ -4151,6 +4187,15 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
             )
         )
 
+    @staticmethod
+    def _color_source_asset_id(edit: Any) -> str:
+        if not isinstance(edit, dict) or edit.get("op") != "color" or edit.get("algo_version") != 1:
+            return ""
+        source = edit.get("source_asset_id")
+        if isinstance(source, str) and source not in (".", "..") and re.fullmatch(r"[A-Za-z0-9._-]{1,200}", source):
+            return source
+        return ""
+
     @classmethod
     def _collect_asset_ids(cls, value: Any) -> set[str]:
         if isinstance(value, list):
@@ -4164,6 +4209,11 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
         asset_id = value.get("asset_id")
         if isinstance(asset_id, str) and asset_id.strip():
             result.add(asset_id.strip())
+        # A color result needs the actual original for a later edit, not just a recorded ID.
+        if isinstance(asset_id, str) and asset_id.strip():
+            source = cls._color_source_asset_id(value.get("edit"))
+            if source:
+                result.add(source)
         for key, child in value.items():
             if key in cls._MEDIA_ASSET_ID_FIELDS and isinstance(child, str) and child.strip():
                 result.add(child.strip())

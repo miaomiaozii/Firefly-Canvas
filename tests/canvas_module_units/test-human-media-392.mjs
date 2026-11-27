@@ -9,6 +9,8 @@ import {createCanvasContext,loadModules,evaluate,fromContext,JS_DIR} from './har
 import {declarations,identity} from './smart-human-handlers-harness-392.mjs';
 
 const imageNode=(id,extra={})=>({id,type:'smart-image',x:0,y:0,scale:.5,created_at:12,...identity,images:[{url:'/original.png',name:'original.png',kind:'image'}],...extra});
+const maskSource = {asset_id:'original',url:'/api/project-library/unit-392/media/original',name:'original.png',kind:'image'};
+const uploadedMask = {asset_id:'new-mask',url:'/api/project-library/unit-392/media/new-mask',name:'original_mask.png',kind:'image'};
 function mediaEditor(nodes){
     const {ctx,harness}=createCanvasContext();
     for(const id of ['imageEditModal','cropImage','cropCanvas','editDrawCanvas','editTextCanvas','imageEditStage','previewStage','cropBox','outpaintSizeHint']) harness.element(id);
@@ -47,9 +49,9 @@ function mediaEditor(nodes){
     ctx.fetch=async url=>{assert.equal(url,'/api/ai/upload');return {ok:true,json:async()=>({files:[{url:'/crop.png',name:'crop.png',kind:'image'}]})};};
     return {ctx,harness,node:id=>evaluate(ctx,`canvasState.nodes.find(n=>n.id===${JSON.stringify(id)})`),stored:()=>fromContext(ctx.canvasForStorage()).nodes};
 }
-function deferredUpload(e){
+function deferredUpload(e, file={url:'/crop.png',name:'crop.png',kind:'image'}){
     let release;
-    const response=new Promise(resolve=>{release=()=>resolve({ok:true,json:async()=>({files:[{url:'/crop.png',name:'crop.png',kind:'image'}]})});});
+    const response=new Promise(resolve=>{release=()=>resolve({ok:true,json:async()=>({files:[file]})});});
     e.ctx.fetch=async url=>{assert.equal(url,'/api/ai/upload');return response;};
     return release;
 }
@@ -93,10 +95,14 @@ test('brush apply changes only durable media/T and is undoable',async()=>{
 });
 
 test('mask apply appends to the captured live node with T only and restores metadata on undo',async()=>{
-    const e=mediaEditor([imageNode('a')]);
-    await e.ctx.applyImageMask();
+    const e=mediaEditor([imageNode('a',{images:[maskSource]})]);
+    const release=deferredUpload(e, uploadedMask);
+    const applying=e.ctx.applyImageMask();
+    release();
+    await applying;
     assert.equal(e.node('a').images.length,2);
     assert.equal(e.node('a').images[1].role,'mask');
+    assert.equal(e.node('a').images[1].source_media_id,'original');
     assert.deepEqual(ownership(e.node('a')),{...identity,userTouchedAt:1234,created_at:12});
     await e.ctx.performUndo();
     assert.equal(e.node('a').images.length,1);
@@ -405,8 +411,8 @@ test('grid join loads its captured source set, never images cached by a later ed
 });
 
 test('mask upload resolves a rebased live target rather than mutating its detached pre-await node',async()=>{
-    const e=mediaEditor([imageNode('a')]);
-    const detached=e.node('a'),release=deferredUpload(e);
+    const e=mediaEditor([imageNode('a',{images:[maskSource]})]);
+    const detached=e.node('a'),release=deferredUpload(e, uploadedMask);
     const pending=e.ctx.applyImageMask();await Promise.resolve();await Promise.resolve();
     evaluate(e.ctx,`canvasState.nodes=JSON.parse(JSON.stringify(canvasState.nodes));canvas.nodes=canvasState.nodes;canvasState.nodes[0].title='Remote title';`);
     release();await pending;

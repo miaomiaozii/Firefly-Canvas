@@ -21,6 +21,9 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
+from python_multipart.exceptions import MultipartParseError
+from starlette.concurrency import run_in_threadpool
+from local_edit import FLIP_DIRECTIONS
 from app.core import (AIReference, Any, BackgroundTask, BaseModel, CANVAS_TASKS, CANVAS_TASK_LOCK, CanvasMutationBatch, CanvasVideoRequest, Dict, FLY_IMPORT_UPLOAD_LOCK, Field, FileResponse, FireflyProjectCreateRequest, Future, GLOBAL_LOOP, HTTPException, Image, ImageGenerationRequest, InvalidMutation, JSONResponse, LLM_MESSAGE_MAX_LENGTH, LimitedFlyMultipartParser, List, Lock, Mapping, ModelRoutingError, MultiPartException, MultiPartParser, NODE_TYPE_CONVERSATION, NODE_TYPE_IMAGE, NODE_TYPE_LOCAL_EDIT, NODE_TYPE_PROMPT, NODE_TYPE_TASK, ONLINE_IMAGE_PROMPT_MAX_LENGTH, ONLINE_IMAGE_REFERENCE_MAX, ONLINE_VIDEO_REFERENCE_MAX, Optional, PHOTOSHOP_ROUND_TRIP_LOCK, PHOTOSHOP_ROUND_TRIP_MAX_MEDIA_BYTES, PHOTOSHOP_ROUND_TRIP_MAX_REQUESTS, PHOTOSHOP_ROUND_TRIP_REQUESTS, PHOTOSHOP_ROUND_TRIP_RETENTION_MS, PROJECT_AGENT_ADMISSION_LOCK, PROJECT_AGENT_EXECUTION_LOCKS, PROJECT_AGENT_EXECUTION_LOCKS_GUARD, PROJECT_AGENT_FUTURES, PROJECT_AGENT_MAX_PER_PROJECT, PROJECT_AGENT_RUNNING_IDS, PROJECT_AGENT_TASKS, PROJECT_AGENT_TASKS_LOCK, PROJECT_CONVERSATION_ADMISSION_LOCK, PROJECT_CONVERSATION_MAX_AUDIO_REFERENCES, PROJECT_CONVERSATION_MAX_VIDEO_REFERENCES, PROJECT_CONVERSATION_TASKS, PROJECT_CONVERSATION_TASKS_LOCK, PROJECT_IMAGE_GENERATION_FUTURES, PROJECT_IMAGE_GENERATION_MAX_PENDING, PROJECT_IMAGE_GENERATION_MAX_PER_PROJECT, PROJECT_IMAGE_GENERATION_ORPHANS, PROJECT_LIBRARY_SWITCH_LOCK, PROJECT_MEDIA_ADAPTER_PROJECT, PROJECT_MEDIA_IMPORT_FUTURES, PROJECT_MEDIA_IMPORT_MAX_PENDING, PROJECT_MEDIA_IMPORT_TASKS, PROJECT_MEDIA_IMPORT_TASKS_LOCK, PROJECT_VIDEO_CANDIDATE_INCOMPATIBLE_KEY, PROJECT_VIDEO_GENERATION_FUTURES, PROJECT_VIDEO_GENERATION_ORPHANS, Path, PhotoshopRoundTripCreateRequest, PhotoshopRoundTripReturnRequest, ProjectConversationMessageRequest, ProjectHistoryDeleteRequest, ProjectImageGenerationRequest, ProjectLocalEditRequest, ProjectMediaImportActive, ProjectMediaImportRequest, ProjectNotFound, ProjectOriginalDeleteRequest, ProjectStore, ProjectStoreError, ProjectVideoGenerationRequest, Request, RevisionConflict, StarletteUploadFile, Tuple, VIDEO_PROMPT_MAX_LENGTH, VideoGenerationRequest, _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _AGENT_PROMPT_PARAM_SCHEMA, _AGENT_TASK_INPUT_KEYS, _AGENT_VIDEO_PARAM_SCHEMA, _agent_clean_params, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_forbidden_value, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_plan_response, _agent_public_task, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout, _agent_task_specs, _ensure_photoshop_loopback, _local_upload_kind_ext, _os, _photoshop_protocol_error, _photoshop_public_request, _photoshop_reset_processing, _photoshop_validate_display_name, _photoshop_validate_media_type, _sys, acquire_fly_import_slot, apply_angle_preset, as_rgba, asyncio, base64, canvas_has_pending_conversation, composite_preserve, composite_rect, content_type_for_path, conversation_node_by_id, conversation_task_response, conversation_task_snapshot, copy, encode_png, ensure_project_image_generation_executor, ensure_project_media_import_executor, ensure_same_origin_request, extract_images, extract_task_id_from_text, forget_project_conversation_ready_result, forget_project_conversation_task, functools, hashlib, httpx, inspect, is_agnes_provider, is_apimart_provider, is_runninghub_provider, is_volcengine_provider, is_yuli_provider, json, mimetypes, nullcontext, os, parse_size_pair, project_agent_execution_lock, project_agent_node, project_canvas_video_payload, project_has_active_image_generation, project_has_active_media_import, project_has_active_video_generation, project_has_recoverable_conversation_sidecars, project_lifecycle_lock, project_media_adapter_reference, project_video_candidate_preflight_incompatible_parameters, project_video_mark_candidate_incompatible, public_project_media_import_task, rasterize_preserve_mask, re, require_project_media_adapter_scope, reserve_project_image_task, reserve_project_video_task, runninghub_configured_video_model_definition, runninghub_is_image_to_video, runninghub_video_incompatible_parameters, selection_json, shutil, tempfile, time, urllib, uuid, validate_generated_image, validate_generated_video, validate_project_media_source)
 from app.core import _AGENT_FORBIDDEN_VALUE_TOKENS, _AGENT_IMAGE_PARAM_SCHEMA, _AGENT_PROMPT_PARAM_SCHEMA, _AGENT_TASK_INPUT_KEYS, _AGENT_VIDEO_PARAM_SCHEMA, _agent_clean_params, _agent_execution_tasks_from_plan, _agent_find_task_node, _agent_forbidden_value, _agent_memory_task_active, _agent_nodes_by_id, _agent_normalize_task, _agent_plan_from_node, _agent_plan_hash, _agent_plan_response, _agent_public_task, _agent_recovery_payload, _agent_task_canonical, _agent_task_layout, _agent_task_specs, _ensure_photoshop_loopback, _local_upload_kind_ext, _photoshop_protocol_error, _photoshop_public_request, _photoshop_reset_processing, _photoshop_validate_display_name, _photoshop_validate_media_type, image_generation_task_timeout_seconds, ProjectOriginalProjectWideRequest, ProjectOriginalRestoreRequest
 from app.services.agent_host import agent_host_manager
@@ -29,10 +32,11 @@ from app.services.agent_refs import with_role_prefix
 from app.services.canvas_image_selection import require_canvas_image_provider, route_canvas_image
 from app.services.canvas_viewport import invalidate_project
 from app.services.misc import run_routed_image_candidate
+from app.services.project_image_tools import ImageToolError, MAX_BATCH_BYTES, MAX_IMAGE_BYTES, render_image
 from app.services.generation import open_reference_preparation as _open_reference_preparation, snapshot_reference_preparation as _snapshot_reference_preparation
 from app.services.image_request_budget import report_note as _report_note
 from app.services.generation_failures import AGENT_IMAGE_ACCEPTED, AGENT_IMAGE_ATTEMPT, describe_failure, provider_failure, redact_failure_detail
-from app.core import is_registered_conversation_user_message
+from app.core import SAME_ORIGIN_DETAIL, is_registered_conversation_user_message
 from app.project_activity import (
     ProjectCleanupActive,
     assert_project_owner_admissible,
@@ -43,7 +47,7 @@ from app.project_activity import (
 from app.project_downloads import ProjectMediaFileResponse
 from app.services.result_downloads import downloads, provider_identity, result_metadata, ResultLinkExpired, ResultRecoveryPending, EXPIRED
 from app.project_sessions import project_has_open_session
-from firefly_projects import CleanupDrift
+from firefly_projects import CleanupDrift, ProjectImageReferenceError
 from firefly_withdrawn_refs import AUTO_ARCHIVED_REFS, historical_image_retry_hint
 from app.routers import api_image_task_query as _api_image_task_query
 _from_main_names = ['FIREFLY_PROJECT_STORE', 'FLY_MAX_PACKAGE_BYTES', 'LOCAL_UPLOAD_DIR', 'PROJECT_AGENT_MAX_PENDING', 'PROJECT_AGENT_MAX_PER_NODE', 'PROJECT_CONVERSATION_MAX_IMAGE_REFERENCES', 'PROJECT_CONVERSATION_RUNNER', 'PROJECT_MEDIA_IMPORT_MAX_PER_PROJECT', 'PROJECT_VIDEO_REFERENCE_INLINE_MAX_BYTES', '_agent_active_counts', '_agent_apply_mutations', '_agent_mark_recovered_uncertain', '_agent_result_node', '_agent_submit_task', '_agent_task_node', '_local_upload_item', '_photoshop_mark_returned', '_photoshop_prune_requests_locked', '_photoshop_request_snapshot', 'archive_project_generated_image', 'archive_project_generated_video', 'build_project_media_preview', 'cleanup_project_generation_orphans', 'conversation_pending_task_keys', 'copy_project_media_to_global_library', 'execute_canvas_video', 'execute_project_video_generation', 'export_project_package', 'finalize_visible_project_conversation_terminal', 'forget_project_conversation_durable', 'generate_ai_image', 'generate_project_video', 'generate_video_preview_image', 'get_api_provider', 'load_api_providers', 'local_edit_adapter', 'manager', 'merge_project_conversation_result', 'now_ms', 'output_file_from_url', 'persist_project_conversation_pending', 'preflight_project_video_providers', 'project_agent_cancel_task', 'project_agent_connected_inputs', 'project_agent_retry_task', 'project_conversation_connected_references', 'project_has_active_conversation', 'project_image_references', 'project_lifecycle_store_call', 'project_media_adapter_path', 'project_media_source_path', 'project_store_call', 'project_video_adapter_incompatible_parameters', 'project_video_all_references', 'project_video_candidate_execution_incompatible_parameters', 'project_video_candidate_inline_reference_kinds', 'project_video_references', 'provider_env_key_value', 'reserve_project_media_import', 'route_image_generation', 'route_video_generation', 'run_project_image_task', 'run_project_video_task', 'runninghub_api_key', 'runninghub_model_definition', 'runninghub_wallet_key_value', 'schedule_project_conversation_task', 'video_adapter_incompatible_parameters', 'video_api_root']
@@ -3376,6 +3380,133 @@ async def archive_project_media_asset(project_id: str, asset_id: str, payload: P
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     await manager.broadcast_canvas_updated(project_id, int(_app_main.now_ms()))
     return {'ok': True, 'archived': asset_id}
+
+_IMAGE_TOOL_ASSET_ID = re.compile(r'[A-Za-z0-9._-]{1,200}')
+_IMAGE_TOOL_JSON_BYTES = 16 * 1024
+
+
+class _ImageToolBodyTooLarge(MultiPartException):
+    pass
+
+
+def _require_image_tool_origin(request: Request) -> None:
+    origins = request.headers.getlist('origin')
+    referers = request.headers.getlist('referer')
+    expected = f"{request.url.scheme}://{request.headers.get('host', '')}".lower()
+    if len(origins) > 1 or len(referers) > 1 or (origins and origins[0].lower() != expected):
+        raise HTTPException(403, detail=SAME_ORIGIN_DETAIL)
+    ensure_same_origin_request(request)
+
+
+async def _image_tool_body(request: Request, limit: int):
+    size = 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > limit:
+            raise _ImageToolBodyTooLarge
+        yield chunk
+
+
+def _valid_image_tool_asset_id(value) -> bool:
+    return isinstance(value, str) and value not in {'.', '..'} and _IMAGE_TOOL_ASSET_ID.fullmatch(value) is not None
+
+
+def _image_tool_media(project_id, asset_ids, *, direction='', pixels=None):
+    if not re.fullmatch(r'[A-Za-z0-9_-]{1,200}', project_id):
+        raise HTTPException(404, detail='项目不存在')
+    try:
+        with project_lifecycle_lock(project_id), PROJECT_LIBRARY_SWITCH_LOCK:
+            assert_project_owner_admissible(project_id)
+            store = _app_main.FIREFLY_PROJECT_STORE
+            sources = store.image_tool_sources(project_id, asset_ids)
+        with tempfile.TemporaryDirectory(prefix='firefly-image-tool-') as temp:
+            staged = []
+            total = 0
+            for index, (_, source, size, _, _, name, _) in enumerate(sources):
+                if size > MAX_IMAGE_BYTES:
+                    raise ImageToolError(413, 'image_too_large', '源图片超过 64 MiB 限制')
+                path = Path(temp) / str(index)
+                suffix, mime = render_image(Path(source), path, direction=direction, pixels=pixels)
+                total += path.stat().st_size
+                if total > MAX_BATCH_BYTES:
+                    raise ImageToolError(413, 'image_batch_too_large', '批量编码结果超过 256 MiB 限制')
+                stem = Path(str(name or 'image')).stem or 'image'
+                label = '镜像' if pixels is None else '调色'
+                staged.append((path, f'{stem}-{label}{suffix}', mime))
+            # The library or its owned sources can change during encoding. Recheck
+            # under the write locks before publishing any result; the browser owns canvas edits.
+            with project_lifecycle_lock(project_id), PROJECT_LIBRARY_SWITCH_LOCK:
+                assert_project_owner_admissible(project_id)
+                if store is not _app_main.FIREFLY_PROJECT_STORE:
+                    raise ImageToolError(409, 'project_library_changed', '项目库已切换，请重试')
+                records = store.archive_image_tool_outputs(project_id, sources, staged)
+    except ImageToolError as exc:
+        raise HTTPException(exc.status, detail=exc.detail) from exc
+    except (ProjectNotFound, FileNotFoundError) as exc:
+        raise HTTPException(404, detail='项目或源图片不存在') from exc
+    except ProjectImageReferenceError as exc:
+        raise HTTPException(415, detail={'code': 'unsupported_media_kind', 'message': '源媒体不是项目图片'}) from exc
+    except (ProjectStoreError, ProjectCleanupActive) as exc:
+        raise HTTPException(409, detail={'code': 'project_media_conflict', 'message': '项目媒体当前不可用，请重新打开项目后重试'}) from exc
+    except OSError as exc:
+        logger.exception('Project image tool failed for %s', project_id)
+        raise HTTPException(500, detail='项目图片编码或归档失败') from exc
+    files = {}
+    for source, record in zip(sources, records):
+        asset_id = record['asset_id']
+        files[source[0]] = {
+            'source_asset_id': source[0], 'asset_id': asset_id, 'name': record['name'], 'kind': 'image',
+            'mime_type': record['mime_type'], 'size': record['size'],
+            'url': f'/api/project-library/{project_id}/media/{asset_id}',
+        }
+    return [files[source_id] for source_id in asset_ids]
+
+
+@router.post('/api/project-library/{project_id}/image-tools/flip')
+async def flip_project_images(project_id: str, request: Request):
+    _require_image_tool_origin(request)
+    if request.headers.get('content-type', '').partition(';')[0].strip().lower() != 'application/json':
+        raise HTTPException(415, detail='请求必须为 JSON')
+    try:
+        payload = json.loads(b''.join([chunk async for chunk in _image_tool_body(request, _IMAGE_TOOL_JSON_BYTES)]))
+    except _ImageToolBodyTooLarge as exc:
+        raise HTTPException(413, detail='镜像请求过大') from exc
+    except (ValueError, UnicodeError, RecursionError) as exc:
+        raise HTTPException(422, detail='镜像请求不是有效 JSON') from exc
+    if not isinstance(payload, dict) or set(payload) != {'direction', 'asset_ids'}:
+        raise HTTPException(422, detail='镜像请求只接受 direction 和 asset_ids')
+    direction, asset_ids = payload['direction'], payload['asset_ids']
+    if (direction not in FLIP_DIRECTIONS or not isinstance(asset_ids, list)
+            or not 1 <= len(asset_ids) <= 32 or not all(map(_valid_image_tool_asset_id, asset_ids))):
+        raise HTTPException(422, detail='镜像方向必须有效，且必须提供 1–32 个项目图片标识')
+    files = await run_in_threadpool(_image_tool_media, project_id, asset_ids, direction=direction)
+    return {'files': files}
+
+
+@router.post('/api/project-library/{project_id}/image-tools/color-encode')
+async def encode_project_image_colors(project_id: str, request: Request):
+    _require_image_tool_origin(request)
+    if request.headers.get('content-type', '').partition(';')[0].strip().lower() != 'multipart/form-data':
+        raise HTTPException(415, detail='请求必须为 multipart/form-data')
+    try:
+        parser = MultiPartParser(request.headers, _image_tool_body(request, MAX_IMAGE_BYTES + _IMAGE_TOOL_JSON_BYTES),
+                                 max_files=1, max_fields=1, max_part_size=1024)
+        form = await parser.parse()
+    except _ImageToolBodyTooLarge as exc:
+        raise HTTPException(413, detail='浏览器像素超过 64 MiB 限制') from exc
+    except (MultiPartException, MultipartParseError) as exc:
+        raise HTTPException(422, detail='调色 multipart 请求无效') from exc
+    try:
+        source, pixels = form.get('source_asset_id'), form.get('pixels')
+        if set(form) != {'source_asset_id', 'pixels'} or not _valid_image_tool_asset_id(source) or not isinstance(pixels, StarletteUploadFile):
+            raise HTTPException(422, detail='调色请求必须提供 source_asset_id 和 pixels 文件')
+        if pixels.size > MAX_IMAGE_BYTES:
+            raise HTTPException(413, detail='浏览器像素超过 64 MiB 限制')
+        files = await run_in_threadpool(_image_tool_media, project_id, [source], pixels=pixels.file)
+        return {'file': files[0]}
+    finally:
+        await form.close()
+
 
 @router.get('/api/project-library/{project_id}/media/{asset_id}')
 async def get_project_media(project_id: str, asset_id: str):

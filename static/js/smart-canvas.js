@@ -1098,6 +1098,7 @@ function syncSelectionUi(){
     syncSmartSelectedImageResolution(world);
     syncRunButtonState();
     scheduleConnectionLayerRefresh();
+    scheduleSmartNodeFloatingMenuPosition();
     window.dispatchEvent(new CustomEvent('studio-canvas-selection-sync', {detail:{locate:focusRevealNode}}));
 }
 function isNodeSelected(id){
@@ -1956,11 +1957,17 @@ function positionSmartNodeFloatingMenus(){
     if(!world || !shell) return;
     const shellRect = shell.getBoundingClientRect();
     const margin = 12;
-    world.querySelectorAll('.image-node .smart-node-floating-menu').forEach(menu => {
-        menu.style.removeProperty('left');
-        menu.style.removeProperty('top');
-        const nodeEl = menu.closest('.image-node');
-        if(!nodeEl?.classList.contains('selected') || world.classList.contains('smart-multi-selected')) return;
+    const imageToolbar = syncSmartImageToolbar(shellRect);
+    const menus = [...world.querySelectorAll('.image-node .smart-node-floating-menu')];
+    if(imageToolbar) menus.push(imageToolbar.menu);
+    menus.forEach(menu => {
+        const onScreen = menu === imageToolbar?.menu;
+        if(!onScreen){
+            menu.style.removeProperty('left');
+            menu.style.removeProperty('top');
+        }
+        const nodeEl = onScreen ? imageToolbar.anchor : menu.closest('.image-node');
+        if(!onScreen && (!nodeEl?.classList.contains('selected') || world.classList.contains('smart-multi-selected'))) return;
         const nodeRect = nodeEl.getBoundingClientRect();
         const menuRect = menu.getBoundingClientRect();
         if(!nodeRect.width || !nodeRect.height || !menuRect.width || !menuRect.height) return;
@@ -1986,9 +1993,7 @@ function positionSmartNodeFloatingMenus(){
         }).filter(Boolean);
         const centerCandidates = [
             desiredCenter,
-            // 名称徽章是节点自身的标签，擦到它用户就认不出菜单归属；
-            // 必须给出「恰好贴住徽章边缘」的候选（零边距），否则 694px 宽菜单在窄视口
-            // （如 1280x720）里只有从 minimap 锚点推出的粗粒度位置可选，会残留 ~1.4px 擦碰。
+            // 给名称徽章保留零边距候选，避免窄视口下菜单擦碰节点归属标签。
             ...(nameRect ? [nameRect.left - menuRect.width / 2, nameRect.right + menuRect.width / 2] : []),
             ...uiBlockers.flatMap(rect => [
                 rect.left - margin - menuRect.width / 2,
@@ -2024,10 +2029,7 @@ function positionSmartNodeFloatingMenus(){
                 top:clampTop(nodeRect.top + menuRect.height + margin)
             }
         ];
-        // 字典序评分：chrome 表面（工具栏/minimap/composer/标题行）与名称徽章是硬约束——
-        // 它们与菜单同属固定 chrome 层，盖住它们会破坏可点击性（#world 的 transform 堆叠
-        // 上下文使菜单 z-index 无法覆盖 chrome，800x600 实测）；节点本身重叠是设计允许
-        // （菜单本就浮在节点上），只是软偏好。全部候选都在硬约束上打平时才比节点重叠。
+        // 先保护 chrome 的可点击性和节点名称；覆盖节点本身只作为软约束。
         const score = candidate => {
             let nodeOverlap = 0;
             let badgeOverlap = 0;
@@ -2049,11 +2051,18 @@ function positionSmartNodeFloatingMenus(){
         const position = candidates.reduce((best, candidate) => betterScore(score(candidate), score(best)) ? candidate : best, candidates[0]);
         const centerX = position.center;
         const screenTop = position.top;
+        if(onScreen){
+            menu.style.left = `${centerX}px`;
+            menu.style.top = `${screenTop}px`;
+            smartImageToolbar.positionPopup(menu);
+            return;
+        }
         const scaleX = nodeRect.width / Math.max(1, nodeEl.offsetWidth);
         const scaleY = nodeRect.height / Math.max(1, nodeEl.offsetHeight);
         menu.style.left = `${(centerX - nodeRect.left) / Math.max(scaleX, 0.001)}px`;
         menu.style.top = `${(screenTop - nodeRect.top) / Math.max(scaleY, 0.001)}px`;
     });
+    if(typeof repositionImageToolColor === 'function') repositionImageToolColor();
 }
 function scheduleSmartNodeFloatingMenuPosition(){
     if(smartNodeMenuPositionFrame) return;
@@ -9702,37 +9711,191 @@ function smartNodeToolbarImageIndex(node){
     }
     return 0;
 }
-function smartNodeToolbarHtml(node){
-    const isImageNode = node?.type === NODE_TYPE_IMAGE || !node?.type;
-    const images = node?.images || [];
-    if(!isImageNode || !images.some(img => img?.url || img?.asset_id)) return '';
-    const source = images[smartNodeToolbarImageIndex(node)] || images.find(img => img?.url || img?.asset_id);
+const smartImageToolbar = window.CanvasImageToolbar?.create();
+let smartImageToolbarHost = null;
+let smartImageToolbarProject = '';
+let smartImageToolbarSignature = '';
+let smartImageToolbarPsConnected = null;
+let smartImageToolbarPsRequest = null;
+
+function smartImageToolbarMedia(node){
+    const index = smartNodeToolbarImageIndex(node);
+    const source = node.images?.[index];
     const item = imageForDisplay(source) || source;
-    if(!item?.url && !source?.asset_id) return '';
-    const kind = item?.url ? mediaKindForItem(item) : (source?.kind || source?.media_kind || 'image');
-    const canEditImage = kind === 'image';
-    const imageCount = images.filter(img => {
+    return {index, source, item, kind:item?.url ? mediaKindForItem(item) : (source?.kind || source?.media_kind || 'image')};
+}
+function smartImageToolbarCanEdit(node, {source}){
+    if(!imageToolNodeEditable(node) || !imageToolIsImage(source) || source.role === 'mask') return false;
+    try{
+        return Boolean(imageToolItemAssetId(imageToolScope(), source));
+    }catch{
+        return false;
+    }
+}
+function smartImageToolbarAnchor({imageOnly=false, bounds=null}={}){
+    const ids = selectedNodeIds();
+    const multi = ids.length > 1;
+    const primaryIds = [canvasState.selectedId, canvasState.selectedImage.nodeId].filter(id => ids.includes(id));
+    for(const id of new Set([...primaryIds, ...ids])){
+        const node = canvasState.nodes.find(entry => entry.id === id);
+        if(!isSmartImageNode(node) || isSmartGroupCompactMember(node)) continue;
+        const media = smartImageToolbarMedia(node);
+        if(!media.item?.url && !media.source?.asset_id) continue;
+        if((imageOnly || multi) && !smartImageToolbarCanEdit(node, media)) continue;
+        const anchor = world.querySelector(`.image-node[data-id="${CSS.escape(id)}"]`);
+        if(!anchor) continue;
+        if(bounds){
+            const rect = anchor.getBoundingClientRect();
+            if(!rect.width || !rect.height || rect.right <= bounds.left || rect.left >= bounds.right || rect.bottom <= bounds.top || rect.top >= bounds.bottom) continue;
+        }
+        return {node, anchor, media, multi};
+    }
+    return null;
+}
+function smartImageToolbarActions(node, media, multi){
+    const {source, item, kind} = media;
+    const image = kind === 'image' && source?.role !== 'mask';
+    const projectImage = smartImageToolbarCanEdit(node, media);
+    const oneImage = image && Boolean(item?.url) && !multi;
+    const imageCount = (node.images || []).filter(img => {
         const display = imageForDisplay(img) || img;
-        const displayKind = display?.url ? mediaKindForItem(display) : (img?.kind || img?.media_kind);
-        return displayKind === 'image' && (display?.url || img?.asset_id);
+        return display?.url && mediaKindForItem(display) === 'image' && img?.role !== 'mask';
     }).length;
-    const gridLabel = imageCount > 1 ? tr('smart.nodeToolbarGridJoin') : tr('smart.nodeToolbarGridSplit');
-    const actions = [
-        {key:'preview', icon:'eye', label:tr('smart.modePreview'), enabled:kind === 'image' || kind === 'video'},
-        {key:'detail', icon:'info', label:tr('smart.nodeDetail'), enabled:kind === 'image'},
-        {key:'crop', icon:'crop', label:tr('smart.nodeToolbarCrop'), enabled:canEditImage},
-        {key:'outpaint', icon:'expand', label:tr('smart.nodeToolbarOutpaint'), enabled:canEditImage},
-        {key:'mask', icon:'inpaint', label:tr('smart.nodeToolbarMask'), enabled:canEditImage},
-        {key:'local-edit', icon:'inpaint', label:tr('smart.localEditTitle'), enabled:canEditImage},
-        {key:'brush', icon:'paintbrush', label:tr('smart.nodeToolbarBrush'), enabled:canEditImage},
-        {key:'grid', icon:'grid-3x3', label:gridLabel, enabled:canEditImage},
-        {key:'send-ps', icon:'send', label:tr('smart.nodeToolbarSendPs'), enabled:canEditImage && Boolean(source?.asset_id)},
-        {key:'download', icon:'download', label:tr('smart.nodeDownload'), enabled:true}
+    const flip = tr('imageToolbar.flipHorizontal');
+    const vertical = tr('imageToolbar.flipVertical');
+    const status = tr(smartImageToolbarPsConnected === true ? 'globalSettings.photoshopConnected'
+        : smartImageToolbarPsConnected === false ? 'globalSettings.photoshopDisconnected' : 'globalSettings.statusUnknown');
+    return [
+        {key:'preview', icon:'eye', label:tr('smart.modePreview'), enabled:Boolean(item?.url) && (kind === 'image' || kind === 'video')},
+        {key:'crop', icon:'crop', label:tr('smart.nodeToolbarCrop'), enabled:oneImage},
+        {key:'flip', icon:'flip-horizontal', label:flip, title:`${flip} (Shift+H)`, enabled:projectImage},
+        {key:'color', icon:'sliders-horizontal', label:tr('imageToolbar.color'), enabled:projectImage && Boolean(item?.url)},
+        {key:'local-edit', icon:'inpaint', label:tr('smart.localEditTitle'), enabled:oneImage && isLocalEditOriginalItem(source)},
+        {key:'outpaint', icon:'expand', label:tr('smart.nodeToolbarOutpaint'), enabled:oneImage},
+        {key:'brush', icon:'paintbrush', label:tr('smart.nodeToolbarBrush'), enabled:oneImage},
+        {key:'grid', icon:'grid-3x3', label:tr(imageCount > 1 ? 'smart.nodeToolbarGridJoin' : 'smart.nodeToolbarGridSplit'), enabled:oneImage},
+        {key:'flip-vertical', icon:'flip-vertical', label:vertical, title:`${vertical} (Shift+V)`, enabled:projectImage},
+        {key:'restore', icon:'undo-2', label:tr('imageToolbar.restore'), enabled:projectImage && !multi && Boolean(imageToolColorProvenance(source))},
+        {key:'download', icon:'download', label:tr('smart.nodeDownload'), enabled:!multi},
+        {key:'send-ps', icon:'send', label:tr('smart.nodeToolbarSendPs'), enabled:image && Boolean(source?.asset_id) && !multi && smartImageToolbarPsConnected === true, status}
     ];
-    return `<div class="smart-node-floating-menu" data-smart-node-menu="1">${actions.map(action => `
-        <button type="button" data-smart-node-action="${escapeAttr(action.key)}" data-node-id="${escapeAttr(node.id)}" ${action.enabled ? '' : 'disabled'} title="${escapeAttr(action.label)}" aria-label="${escapeAttr(action.label)}">
-            ${ico(escapeAttr(action.icon))}<span>${escapeHtml(action.label)}</span>
-        </button>`).join('')}</div>`;
+}
+async function refreshSmartImageToolbarPhotoshop(){
+    if(smartImageToolbarPsRequest) return;
+    // #514: the only existing status API also checks CLI providers; query on More, not on canvas renders.
+    smartImageToolbarPsConnected = null;
+    scheduleSmartNodeFloatingMenuPosition();
+    smartImageToolbarPsRequest = fetch('/api/global-settings', {cache:'no-store'});
+    try{
+        const response = await smartImageToolbarPsRequest;
+        const connected = response.ok ? (await response.json())?.photoshop?.connected : null;
+        smartImageToolbarPsConnected = typeof connected === 'boolean' ? connected : null;
+    }catch{
+        smartImageToolbarPsConnected = null;
+    }finally{
+        smartImageToolbarPsRequest = null;
+        scheduleSmartNodeFloatingMenuPosition();
+    }
+}
+function mountSmartImageToolbar(){
+    if(smartImageToolbarHost) return smartImageToolbarHost;
+    // The world DOM is rebuilt on edits. Keeping the toolbar in screen space preserves focus and physical size.
+    const host = document.createElement('div');
+    host.id = 'smartImageToolbarHost';
+    shell.prepend(host);
+    smartImageToolbar.bind(host, {run:runSmartNodeToolbarAction, translate:tr});
+    host.addEventListener('focus', event => {
+        // Color restores focus to its positioning anchor, not to a new tab stop.
+        if(event.target === host.firstElementChild){
+            event.target.querySelector('[role="toolbar"] [tabindex="0"]')?.focus({preventScroll:true});
+        }
+    }, true);
+    host.addEventListener('contextmenu', event => {
+        event.preventDefault();
+        event.stopPropagation();
+    });
+    let openPopup = null;
+    let releasePopupEscape;
+    const popupObserver = new MutationObserver(() => {
+        const popup = host.querySelector('[data-image-toolbar-popup]:not([hidden])');
+        if(popup === openPopup) return;
+        releasePopupEscape?.();
+        releasePopupEscape = undefined;
+        openPopup = popup;
+        const kind = popup?.dataset.imageToolbarPopup;
+        if(!kind) return;
+        const trigger = host.querySelector(`[data-image-toolbar-toggle="${kind}"]`);
+        releasePopupEscape = window.FireflyEscapeStack?.push(() => trigger?.click(), 'image-toolbar-popup');
+        if(kind === 'more'){
+            const selection = smartImageToolbarAnchor();
+            if(selection && !selection.multi && selection.media.kind === 'image' && selection.media.source?.asset_id){
+                void refreshSmartImageToolbarPhotoshop();
+            }
+        }
+    });
+    popupObserver.observe(host, {subtree:true, childList:true, attributes:true, attributeFilter:['hidden']});
+    const visibilityObserver = new MutationObserver(scheduleSmartNodeFloatingMenuPosition);
+    visibilityObserver.observe(document.body, {attributes:true, attributeFilter:['class']});
+    visibilityObserver.observe(imageEditModal, {attributes:true, attributeFilter:['class']});
+    smartImageToolbarHost = host;
+    return host;
+}
+function patchSmartImageToolbar(menu, fresh){
+    // Keep the renderer's session and roving stops, but update live state without replacing controls.
+    const focused = document.activeElement;
+    const controls = menu.querySelectorAll('[data-image-toolbar-control]');
+    const next = fresh.querySelectorAll('[data-image-toolbar-control]');
+    controls.forEach((control, index) => {
+        const update = next[index];
+        control.disabled = update.disabled;
+        control.tabIndex = update.tabIndex;
+        control.title = update.title;
+        control.setAttribute('aria-label', update.getAttribute('aria-label'));
+        for(const selector of ['.ff-image-toolbar__label','.ff-image-toolbar__action-status']){
+            const text = control.querySelector(selector);
+            const value = update.querySelector(selector)?.textContent;
+            if(text && value != null && text.textContent !== value) text.textContent = value;
+        }
+    });
+    if(menu.contains(focused) && focused.disabled){
+        const section = focused.closest('[data-image-toolbar-popup], [role="toolbar"]');
+        section?.querySelector('[tabindex="0"]')?.focus({preventScroll:true});
+    }
+}
+function syncSmartImageToolbar(bounds){
+    if(!smartImageToolbar) return null;
+    const hidden = zoomPreviewState || imageEditModal.classList.contains('open') || document.body.matches(
+        '.smart-node-drag,.smart-node-resize,.prompt-flow-active,.prompt-node-flow-active');
+    const selection = hidden ? null : smartImageToolbarAnchor({bounds});
+    const project = smartProjectId();
+    let menu = smartImageToolbarHost?.firstElementChild;
+    if(!selection || project !== smartImageToolbarProject){
+        smartImageToolbar.sync(null);
+        menu?.remove();
+        menu = null;
+        smartImageToolbarSignature = '';
+        smartImageToolbarProject = project;
+    }
+    if(!selection) return null;
+    const {node, anchor, media, multi} = selection;
+    const host = mountSmartImageToolbar();
+    smartImageToolbar.sync(node.id);
+    const actions = smartImageToolbarActions(node, media, multi);
+    const signature = JSON.stringify(actions);
+    if(menu?.dataset.imageToolbar !== node.id || signature !== smartImageToolbarSignature){
+        const html = smartImageToolbar.render({id:node.id, actions, translate:tr, icon:ico, escape:escapeHtml});
+        if(menu?.dataset.imageToolbar !== node.id){
+            host.innerHTML = html;
+            menu = host.firstElementChild;
+            menu.tabIndex = -1;
+        }else{
+            const template = document.createElement('template');
+            template.innerHTML = html;
+            patchSmartImageToolbar(menu, template.content);
+        }
+        smartImageToolbarSignature = signature;
+    }
+    return {menu, anchor};
 }
 function duplicateSmartNodeMediaToCanvas(node, imageIndex){
     const source = node?.images?.[imageIndex];
@@ -9786,11 +9949,26 @@ async function sendSmartNodeImageToPhotoshop(node, imageIndex){
 }
 function runSmartNodeToolbarAction(nodeId, action){
     const node = canvasState.nodes.find(n => n.id === nodeId);
-    if(!node) return;
-    const index = smartNodeToolbarImageIndex(node);
-    const source = node.images?.[index];
-    const item = imageForDisplay(source) || source;
-    const kind = mediaKindForItem(item);
+    const ids = selectedNodeIds();
+    if(!node || !ids.includes(nodeId)) return;
+    if(action === 'flip' || action === 'flip-vertical'){
+        void flipImageToolSelection(nodeId, action === 'flip' ? 'horizontal' : 'vertical');
+        return;
+    }
+    if(action === 'color'){
+        openImageToolColor(nodeId);
+        return;
+    }
+    const {index, item, kind} = smartImageToolbarMedia(node);
+    if(action === 'preview'){
+        openImagePreview(nodeId, index);
+        return;
+    }
+    if(ids.length !== 1) return;
+    if(action === 'restore'){
+        void restoreImageToolOriginal(nodeId);
+        return;
+    }
     canvasState.selectedId = nodeId;
     canvasState.selectedIds = [];
     canvasState.selectedImage = {nodeId, index};
@@ -9803,30 +9981,21 @@ function runSmartNodeToolbarAction(nodeId, action){
         return;
     }
     if(action === 'send-ps'){
-        sendSmartNodeImageToPhotoshop(node, index);
+        if(smartImageToolbarPsConnected === true) void sendSmartNodeImageToPhotoshop(node, index);
         return;
     }
     if(action === 'local-edit'){
         createLocalEditNodeFromImage(nodeId, index);
         return;
     }
-    if(!item?.url) return;
-    if(kind !== 'image' && action !== 'preview'){
+    const modeMap = {crop:'crop', outpaint:'outpaint', mask:'mask', brush:'brush', grid:'grid'};
+    if(!item?.url || !Object.hasOwn(modeMap, action)) return;
+    if(kind !== 'image'){
         toast(tr('smart.mediaNotSupported'));
         return;
     }
-    if(action === 'preview'){
-        openImagePreview(nodeId, index);
-        return;
-    }
-    if(action === 'detail'){
-        // #87：画布缩略图「详情」统一走「生成详情」面板（与生图历史抽屉同一组件）。
-        openSmartImageDetail(nodeId, index);
-        return;
-    }
-    const modeMap = {crop:'crop', outpaint:'outpaint', mask:'mask', brush:'brush', grid:'grid'};
     openImageEditor(nodeId, index);
-    setImageEditMode(modeMap[action] || 'preview', true);
+    setImageEditMode(modeMap[action], true);
     if(action === 'grid' && canGridJoinCurrentNode()){
         setGridOperationMode('join');
     }
@@ -10009,7 +10178,7 @@ function render(){
         const html = `<div class="image-node ${isEmpty ? 'empty-node' : ''} ${isGroup ? 'group-node' : ''} ${isHistory ? 'history-group-node' : ''} ${isPrompt ? 'prompt-smart-node' : ''} ${isLoop ? 'loop-smart-node' : ''} ${isConversation ? 'conversation-smart-node' : ''} ${isAgent ? 'agent-smart-node' : ''} ${isAgentTask ? 'agent-task-node' : ''} ${isLocalEdit ? 'local-edit-node' : ''} ${isSmartGroup ? 'smart-group-node' : ''} ${isLayoutFrame ? 'smart-layout-frame-node' : ''} ${isCompactMember ? 'smart-group-member-node' : ''} ${isNodeSelected(node.id) ? 'selected' : ''} ${(dragState?.groupIds?.includes(node.id) || dragState?.id === node.id) ? 'dragging' : ''} ${node.running ? 'node-running' : ''} ${isPending ? 'node-pending' : ''}" data-id="${escapeHtml(node.id)}" data-source-node-id="${escapeHtml(sourceNodeId)}" data-source-message-id="${escapeHtml(sourceMessageId)}" style="left:${node.x || 0}px;top:${node.y || 0}px;width:${layout.width}px;height:${layout.height}px">
             <div class="node-head"><div class="node-title">${titleKind}${escapeHtml(title)}</div><div class="node-head-meta">${agentCardStatus}</div><div class="node-actions">${headActions}</div></div>
             ${!isAgent && !isEmpty && !isGroup ? `<div class="floating-node-actions"><button class="mini-x node-delete" type="button" title="${escapeHtml(tr('smart.deleteNode'))}"><svg class="ico" aria-hidden="true"><use href="#i-trash-2"/></svg></button></div>` : ''}
-            ${smartNodeToolbarHtml(node)}${smartGroupToolbarHtml(node)}
+            ${smartGroupToolbarHtml(node)}
             ${runTimePillHtml(node)}
             ${deletedInputMarker}
             ${nodeReferenceNoteHtml(node)}
@@ -11796,17 +11965,6 @@ function bindNodeEvents(){
                 deleteNodeFromButton(id);
             });
         });
-        el.querySelectorAll('[data-smart-node-action]').forEach(btn => {
-            btn.addEventListener('mousedown', e => {
-                e.preventDefault();
-                e.stopPropagation();
-            }, true);
-            btn.addEventListener('click', e => {
-                e.preventDefault();
-                e.stopPropagation();
-                runSmartNodeToolbarAction(btn.dataset.nodeId || id, btn.dataset.smartNodeAction);
-            });
-        });
         el.querySelectorAll('[data-smart-group-action]').forEach(btn => {
             btn.addEventListener('mousedown', e => { e.preventDefault(); e.stopPropagation(); }, true);
             btn.addEventListener('click', e => {
@@ -12390,13 +12548,30 @@ function previewResolutionText(){
     const w = Number(image.natural_w || image.width || image.w || 0) || Number(currentVideo?.videoWidth || 0) || Number(currentImg?.naturalWidth || 0) || Number(cropImg?.naturalWidth || 0);
     const h = Number(image.natural_h || image.height || image.h || 0) || Number(currentVideo?.videoHeight || 0) || Number(currentImg?.naturalHeight || 0) || Number(cropImg?.naturalHeight || 0);
     if(!w || !h) return '';
-    return `${tr('smart.resolution')}: ${Math.round(w)} x ${Math.round(h)}`;
+    return `${Math.round(w)} × ${Math.round(h)}`;
 }
 function updatePreviewMetaHint(extraText=previewMetaExtraText){
     previewMetaExtraText = extraText || '';
     const hint = document.getElementById('previewMetaHint');
-    if(!hint) return;
-    hint.textContent = [previewResolutionText(), previewMetaExtraText].filter(Boolean).join(' · ');
+    const resolution = previewResolutionText();
+    if(hint) hint.textContent = [resolution && `${tr('smart.resolution')}: ${resolution}`, previewMetaExtraText].filter(Boolean).join(' · ');
+    const details = document.getElementById('imagePreviewDetailsFields');
+    if(!details) return;
+    const {node, image} = currentEditImage();
+    const fields = [
+        [tr('imageToolbar.fileName'), image?.name],
+        [tr('smart.resolution'), resolution],
+        [tr('smart.generationModel'), node?.runSettings?.model],
+        [tr('smart.generationPromptDetail'), node?.runModelPrompt || node?.runPrompt]
+    ];
+    details.replaceChildren(...fields.flatMap(([label, value]) => {
+        if(!value) return [];
+        const dt = document.createElement('dt');
+        const dd = document.createElement('dd');
+        dt.textContent = label;
+        dd.textContent = String(value);
+        return [dt, dd];
+    }));
 }
 function rememberPreviewImageResolution(){
     const editing = currentEditImage();
@@ -16589,7 +16764,25 @@ window.addEventListener('keydown', e => {
         void manualSaveCanvas();
         return;
     }
-    // #253 keeps Tab-to-rename on the canvas, but the image composer needs native focus traversal (#505).
+    const toolbar = smartImageToolbarHost?.firstElementChild;
+    const colorOpen = window.FireflyEscapeStack?.top?.label === 'image-color';
+    const inImageTools = toolbar?.contains(e.target) || colorOpen || e.target?.closest?.('.canvas-image-color');
+    if(e.shiftKey && !e.ctrlKey && !e.metaKey && !e.altKey && (key === 'h' || key === 'v')){
+        if(e.defaultPrevented || e.repeat || imeComposing(e) || isEditableTarget(e.target) || e.target?.isContentEditable
+            || e.target?.closest?.('[role="textbox"]') || window.getSelection?.()?.toString()
+            || zoomPreviewState || imageEditModal.classList.contains('open') || window.FireflyEscapeStack?.size
+            || document.body.matches('.prompt-flow-active,.prompt-node-flow-active,.smart-node-drag,.smart-node-resize')) return;
+        const selection = smartImageToolbarAnchor({imageOnly:true});
+        if(!selection) return;
+        const action = key === 'h' ? 'flip' : 'flip-vertical';
+        e.preventDefault();
+        smartImageToolbar?.recordUse(action);
+        runSmartNodeToolbarAction(selection.node.id, action);
+        return;
+    }
+    if(inImageTools) return;
+    // #253 preserves Tab-to-rename when no image toolbar needs native focus traversal (#505, #514).
+    if(e.key === 'Tab' && toolbar && getComputedStyle(toolbar).visibility === 'visible') return;
     if(e.key === 'Tab' && !e.shiftKey && !isEditableTarget(e.target)
         && !(e.target instanceof Element && e.target.closest('.image-params-composer'))){
         const tabIds = selectedNodeIds();
@@ -17720,6 +17913,7 @@ document.getElementById('imageEditStage').addEventListener('wheel', event => {
     stage.scrollTop = contentY * scale - my;
 }, {passive:false});
 window.addEventListener('resize', () => {
+    scheduleSmartNodeFloatingMenuPosition();
     if(cropState) syncImageEditOverflow();
     if(smartHistoryModal?.classList.contains('open')) scheduleSmartHistoryWindowRender(true);
     const repositionComposer = () => {

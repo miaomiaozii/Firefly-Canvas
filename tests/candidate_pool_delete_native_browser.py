@@ -336,13 +336,17 @@ def run_entry(entry: str, artifacts: pathlib.Path, shots_dir: pathlib.Path) -> d
                                     # --- step 2: outpaint apply (red-backed composite)
                                     wait_node_clickable(browser, f'.image-node[data-id="{NODE_ID}"]')
                                     browser.native_click(f'.image-node[data-id="{NODE_ID}"]')
-                                    browser.wait_for(
-                                        f'document.querySelector(\'[data-smart-node-action="outpaint"]\') && '
-                                        f'document.querySelector(\'[data-smart-node-action="outpaint"]\').getBoundingClientRect().width > 0',
-                                        timeout=20,
-                                    )
-                                    wait_node_clickable(browser, f'.image-node[data-id="{NODE_ID}"] [data-smart-node-action="outpaint"]')
-                                    browser.native_click(f'.image-node[data-id="{NODE_ID}"] [data-smart-node-action="outpaint"]')
+                                    toolbar = f'[data-image-toolbar="{NODE_ID}"]'
+                                    outpaint = '[data-image-toolbar-action="outpaint"]:enabled'
+                                    more_toggle = f'{toolbar} [data-image-toolbar-toggle="more"]'
+                                    wait_node_clickable(browser, more_toggle)
+                                    outpaint_button = f'{toolbar} .ff-image-toolbar__bar {outpaint}'
+                                    if not browser.evaluate(f'document.querySelector({json.dumps(outpaint_button)}) !== null'):
+                                        browser.native_click(more_toggle)
+                                        outpaint_button = f'{toolbar} [data-image-toolbar-popup="more"]:not([hidden]) {outpaint}'
+                                        browser.evaluate(f'document.querySelector({json.dumps(outpaint_button)})?.scrollIntoView({{block:"nearest"}})')
+                                    wait_node_clickable(browser, outpaint_button)
+                                    browser.native_click(outpaint_button)
                                     browser.wait_for('document.getElementById("imageEditModal").classList.contains("open")', timeout=20)
                                     browser.wait_for(
                                         "(function(){var i=document.getElementById('cropImage');"

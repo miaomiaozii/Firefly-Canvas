@@ -35,6 +35,8 @@ CANVAS_SCRIPTS: tuple[str, ...] = (
     "canvas-placement.js",
     # #255：ComfyArt vectorPath.ts MIT 移植（路径归一化 / 缩放纯函数）。
     "canvas-vector-path.js",
+    "canvas-image-toolbar.js",
+    "canvas-image-color.js",
     "canvas-image-editor.js",
     # #255：图像分层 + 图层面板（layers.ts MIT 移植 + store/合成/面板）。
     "canvas-layers.js",

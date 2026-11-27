@@ -500,7 +500,7 @@ function resizeEditDrawCanvas(){
 function setImageEditMode(mode, _userTouched=false){
     const session = imageEditorSession;
     if(session?.applying || session?.discarding) return;
-    const isVideoPreview = canvasCore.mediaKindForItem(currentEditImage().image || {}) === 'video';
+    const isVideoPreview = imageEditorMediaKind(currentEditImage().image || {}) === 'video';
     const next = !isVideoPreview && ['preview','crop','outpaint','mask','brush','resize','grid','layers'].includes(mode) ? mode : 'preview';
     const prev = imageEditMode;
     if(session && prev !== next){
@@ -538,6 +538,8 @@ function setImageEditMode(mode, _userTouched=false){
     previewStageEl.style.display = isPreview ? 'inline-flex' : 'none';
     editStageEl?.classList.toggle('preview-mode', isPreview);
     editPanelEl?.classList.toggle('video-preview-mode', isVideoPreview);
+    const details = document.getElementById('imagePreviewDetails');
+    if(details) details.hidden = !isPreview || isVideoPreview;
     if(previewDownloadBtn) previewDownloadBtn.style.display = isPreview ? 'inline-flex' : 'none';
     if(previewDownloadAllBtn) previewDownloadAllBtn.style.display = isPreview && !isVideoPreview && previewDownloadGroupItems().length > 1 ? 'inline-flex' : 'none';
     if(modeBar) modeBar.style.display = isVideoPreview ? 'none' : '';
@@ -997,14 +999,14 @@ function currentGridJoinItems(){
         const group = canvasState.nodes.find(n => n.id === gridJoinGroupId && isSmartGroupNode(n));
         if(group){
             return canvasCore.smartGroupImageRefs(group)
-                .filter(r => canvasCore.mediaKindForItem(r.item) === 'image' && r.item?.url)
+                .filter(r => imageEditorMediaKind(r.item) === 'image' && r.item?.url)
                 .map((r, index) => ({item:r.item, source:r.source, index}));
         }
     }
     const node = currentEditImage().node;
     return (node?.images || [])
         .map((item, index) => ({item:canvasCore.imageForDisplay(item), source:item, index}))
-        .filter(entry => canvasCore.mediaKindForItem(entry.item) === 'image' && entry.item?.url);
+        .filter(entry => imageEditorMediaKind(entry.item) === 'image' && entry.item?.url);
 }
 
 // 从分组小菜单打开“宫格拼接”：锚定在分组第一张图片（保证编辑器有真实底图，不出现破图/尺寸异常），
@@ -1683,7 +1685,7 @@ function openImageEditor(nodeId, imageIndex=0){
     const node = canvasState.nodes.find(n => n.id === nodeId);
     const image = canvasCore.imageForDisplay(node?.images?.[imageIndex]);
     if(!image?.url) return;
-    const kind = canvasCore.mediaKindForItem(image);
+    const kind = imageEditorMediaKind(image);
     if(kind !== 'image' && kind !== 'video'){
         canvasCore.downloadPreviewFile(image);
         return;
@@ -2115,25 +2117,39 @@ async function applyImageOutpaint(){
 
 async function applyImageMask(){
     if(!cropState || !editCanvasHasPixels()) return;
-    const {node, image} = currentEditImage();
-    if(!node || !image) return;
-    const editTarget = captureImageEditTarget();
-    const mask = maskCanvasFromDrawCanvas(editDrawCanvas());
-    const blob = await new Promise(resolve => mask.toBlob(resolve, 'image/png'));
-    const base = (image.name || 'image').replace(/\.[^.]+$/, '');
-    const file = blob ? await uploadCroppedBlob(blob, `${base}_mask.png`) : null;
-    if(file){
-        const live = liveImageEditTarget(editTarget);
-        if(!live) return;
-        const action = beginMediaHumanEdit([live.node], ['images']);
+    const {node, index} = currentEditImage();
+    if(!node) return;
+    const editor = cropState;
+    try {
+        const scope = imageToolScope();
+        const target = captureImageToolTarget(scope, node, index, {followThumbnail:false, allowRebase:true});
+        const check = () => assertImageToolCurrent(scope, [target]);
+        const mask = maskCanvasFromDrawCanvas(editDrawCanvas());
+        const blob = await new Promise(resolve => mask.toBlob(resolve, 'image/png'));
+        check();
+        if(!blob) throw imageToolError('imageTools.failed');
+        const base = imageToolStem(target.source.item.name) || 'image';
+        const file = await uploadCroppedBlob(blob, `${base}_mask.png`);
+        check();
+        if(!file) return;
+        const owned = await importProjectMediaReference(file);
+        check();
+        if(!imageToolAssetId(owned?.asset_id)) throw imageToolError('imageTools.projectImageRequired');
+        const url = imageToolMediaUrl(scope, owned.asset_id);
+        const entry = {...owned, url, preview_url:`${url}/preview`, kind:'image', role:'mask', source_media_id:target.assetId};
+        assertImageToolCanWrite(scope, [target]);
+        const live = canvasState.nodes.find(item => item.id === target.nodeId);
+        const action = beginMediaHumanEdit([live], ['images']);
         pushUndo();
-        live.node.images.push({url:file.url, name:file.name, role:'mask'});
+        live.images.push(entry);
         canvasCore.finishSmartHumanEdit(action, canvasState.nodes);
-        if(cropState === editTarget.editor){
-            canvasState.selectedId = live.node.id;
-            canvasState.selectedImage = {nodeId:live.node.id, index:live.node.images.length - 1};
+        if(cropState === editor){
+            canvasState.selectedId = live.id;
+            canvasState.selectedImage = {nodeId:live.id, index:live.images.length - 1};
         }
-        finishImageEdit(editTarget);
+        finishImageEdit({editor});
+    } catch(error){
+        reportImageToolError(error);
     }
 }
 
@@ -2428,7 +2444,7 @@ function updateImagePreviewMarkButton(){
     const item = canvasCore.imageForDisplay(raw) || raw;
     const assetId = String(raw?.asset_id || item?.asset_id || '');
     btn.dataset.markedAsset = assetId;
-    btn.hidden = !assetId || canvasCore.mediaKindForItem(item) !== 'image' || imageEditMode !== 'preview';
+    btn.hidden = !assetId || imageEditorMediaKind(item) !== 'image' || imageEditMode !== 'preview';
     syncMarkedImageButtons();
 }
 function textItemFont(item){
@@ -2498,8 +2514,403 @@ function updatePreviewNavButtons(){
     document.getElementById('previewPrevBtn')?.classList.toggle('visible', show);
     document.getElementById('previewNextBtn')?.classList.toggle('visible', show);
 }
+let imageToolColorSession = null;
+
+function imageToolError(key, reason=''){
+    const message = reason ? trf('imageTools.errorDetail', {reason}) : tr(key);
+    return Object.assign(new Error(message), {imageToolMessage:message});
+}
+function reportImageToolError(error){
+    const message = error?.imageToolMessage || tr('imageTools.failed');
+    if(window.ffToast?.error) window.ffToast.error(message);
+    else toast(message);
+}
+function imageEditorViewId(){
+    return canvasCore.canvasId;
+}
+function imageToolProjectId(){
+    return canvasCore.smartProjectId();
+}
+function imageToolScope(){
+    const project = imageToolProjectId();
+    if(!canvas || !canvasCore.isProjectCanvasData() || typeof project !== 'string' || !/^[A-Za-z0-9_-]{1,200}$/.test(project)){
+        throw imageToolError('imageTools.projectImageRequired');
+    }
+    return {canvas, viewId:imageEditorViewId(), project, path:`/api/project-library/${project}`};
+}
+function imageToolScopeIsCurrent(scope){
+    return canvas === scope.canvas && imageEditorViewId() === scope.viewId && imageToolProjectId() === scope.project
+        && canvasCore.isProjectCanvasData();
+}
+function imageToolAssetId(id){
+    return typeof id === 'string' && id !== '.' && id !== '..' && /^[A-Za-z0-9._-]{1,200}$/.test(id);
+}
+function imageToolMediaUrl(scope, assetId){
+    return `${scope.path}/media/${assetId}`;
+}
+function imageToolItemAssetId(scope, item){
+    if(imageToolAssetId(item?.asset_id)) return item.asset_id;
+    const prefix = imageToolMediaUrl(scope, '');
+    const id = typeof item?.url === 'string' && item.url.startsWith(prefix) ? item.url.slice(prefix.length) : '';
+    return imageToolAssetId(id) ? id : '';
+}
+function imageEditorMediaKind(item){
+    return canvasCore.mediaKindForItem(item);
+}
+function imageToolIsImage(item){
+    return item && (item.kind || item.media_kind || imageEditorMediaKind(item)) === 'image';
+}
+function imageToolNodeEditable(node){
+    return node && (!node.type || node.type === NODE_TYPE_IMAGE) && !node.running && !node.readonly && !node.readOnly;
+}
+function imageToolOccurrenceData(item){
+    const saved = mediaItemForStorage(item);
+    delete saved.natural_w;
+    delete saved.natural_h;
+    return [saved, item.url];
+}
+function captureImageToolOccurrence(item, index){
+    return {item, index, data:smartCanvasDataClone(imageToolOccurrenceData(item))};
+}
+function imageToolOccurrenceIsCurrent(node, occurrence, rebased){
+    const current = node.images[occurrence.index];
+    return current && (current === occurrence.item || rebased)
+        && smartCanvasDataEqual(occurrence.data, imageToolOccurrenceData(current));
+}
+function captureImageToolTarget(scope, node, index, {followThumbnail=true, allowRebase=false, selected=false}={}){
+    const item = node?.images?.[index];
+    const assetId = imageToolItemAssetId(scope, item);
+    if(!imageToolNodeEditable(node) || !imageToolIsImage(item) || item.role === 'mask' || !assetId){
+        throw imageToolError('imageTools.projectImageRequired');
+    }
+    const masks = node.images.flatMap((entry, i) => entry?.role === 'mask' ? [captureImageToolOccurrence(entry, i)] : []);
+    const legacy = masks.some(mask => !mask.item.source_media_id);
+    const peers = node.images.flatMap((entry, i) => entry?.role !== 'mask' && imageToolIsImage(entry)
+        && (legacy || imageToolItemAssetId(scope, entry) === assetId) ? [captureImageToolOccurrence(entry, i)] : []);
+    return {node, nodeId:node.id, createdAt:node.created_at, followThumbnail, allowRebase, selected, assetId,
+        source:captureImageToolOccurrence(item, index), masks, peers, legacy};
+}
+function imageToolThumbnailIndex(node){
+    return node ? canvasCore.smartNodeToolbarImageIndex(node) : -1;
+}
+function imageToolSelectedNodes(){
+    return canvasCore.selectedNodeIds();
+}
+function captureImageToolSelection(nodeId, {primaryOnly=false}={}){
+    const scope = imageToolScope();
+    const node = canvasState.nodes.find(item => item.id === nodeId);
+    const selected = imageToolSelectedNodes();
+    const nodes = !primaryOnly && selected.includes(nodeId)
+        ? [node, ...canvasState.nodes.filter(item => item.id !== nodeId && selected.includes(item.id)
+            && (!item.type || item.type === NODE_TYPE_IMAGE) && item.images?.some(entry => imageToolIsImage(entry) && entry.role !== 'mask'))]
+        : [node];
+    return {scope, targets:nodes.map(item => captureImageToolTarget(scope, item, imageToolThumbnailIndex(item), {selected:selected.includes(item?.id)}))};
+}
+function assertImageToolCurrent(scope, targets){
+    if(!imageToolScopeIsCurrent(scope) || targets.some(target => {
+        const {source, masks, peers} = target;
+        const node = canvasState.nodes.find(item => item.id === target.nodeId);
+        if(!imageToolNodeEditable(node) || !Array.isArray(node.images) || node.created_at !== target.createdAt) return true;
+        // The internal attach may outlive a rebase of an otherwise unchanged occurrence and will append to the live node.
+        const rebased = node !== target.node;
+        if((rebased && !target.allowRebase) || (target.selected && !imageToolSelectedNodes().includes(target.nodeId))
+            || (target.followThumbnail && imageToolThumbnailIndex(node) !== source.index)
+            || !imageToolOccurrenceIsCurrent(node, source, rebased)) return true;
+        if(node.images.filter(item => item?.role === 'mask').length !== masks.length
+            || masks.some(mask => !imageToolOccurrenceIsCurrent(node, mask, rebased))) return true;
+        return node.images.filter(item => item?.role !== 'mask' && imageToolIsImage(item)
+            && (target.legacy || imageToolItemAssetId(scope, item) === target.assetId)).length !== peers.length
+            || peers.some(peer => !imageToolOccurrenceIsCurrent(node, peer, rebased));
+    })) throw imageToolError('smart.imageEditTargetChanged');
+}
+function assertImageToolCanWrite(scope, targets){
+    // An open history capture would also absorb this batch into a second undo entry.
+    if(undoSuppressed || pendingUndoSnapshot) throw imageToolError('smart.imageEditTargetChanged');
+    assertImageToolCurrent(scope, targets);
+}
+
+function imageToolStem(name){
+    return typeof name === 'string' ? name.replace(/\.[^.]+$/, '') : '';
+}
+async function decodeImageToolAsset(scope, id){
+    const image = new Image();
+    image.src = imageToolMediaUrl(scope, id);
+    await image.decode();
+    if(!image.naturalWidth || !image.naturalHeight) throw imageToolError('imageTools.failed');
+    return image;
+}
+async function collectImageToolMasks(scope, targets, check){
+    const decoded = new Map();
+    const size = async id => {
+        if(!id) throw imageToolError('imageTools.maskAmbiguous');
+        if(!decoded.has(id)){
+            try {
+                const image = await decodeImageToolAsset(scope, id);
+                decoded.set(id, [image.naturalWidth, image.naturalHeight]);
+            } catch {
+                check();
+                throw imageToolError('imageTools.maskAmbiguous');
+            }
+        }
+        check();
+        return decoded.get(id);
+    };
+    const bindings = new Map();
+    for(const target of targets){
+        const matches = [];
+        let legacyCount = 0;
+        for(const mask of target.masks){
+            const id = imageToolItemAssetId(scope, mask.item);
+            const sourceId = mask.item.source_media_id;
+            if(sourceId){
+                if(sourceId !== target.assetId) continue;
+                if(!id || target.peers.filter(peer => imageToolItemAssetId(scope, peer.item) === sourceId).length !== 1){
+                    throw imageToolError('imageTools.maskAmbiguous');
+                }
+            } else {
+                const stem = imageToolStem(mask.item.name);
+                const candidates = target.peers.filter(peer => {
+                    const base = imageToolStem(peer.item.name);
+                    return base && stem === `${base}_mask`;
+                });
+                if(!candidates.length) throw imageToolError('imageTools.maskAmbiguous');
+                const [w, h] = await size(id);
+                check();
+                const owners = [];
+                for(const peer of candidates){
+                    const [pw, ph] = await size(imageToolItemAssetId(scope, peer.item));
+                    check();
+                    if(pw === w && ph === h) owners.push(peer);
+                }
+                if(owners.length !== 1) throw imageToolError('imageTools.maskAmbiguous');
+                if(owners[0].index !== target.source.index) continue;
+                if(++legacyCount > 1) throw imageToolError('imageTools.maskAmbiguous');
+            }
+            matches.push({occurrence:mask, assetId:id});
+        }
+        bindings.set(target, matches);
+    }
+    return bindings;
+}
+
+async function requestImageToolJson(url, options, check){
+    const response = await fetch(url, {...options, mode:'same-origin', credentials:'same-origin', redirect:'error'});
+    check();
+    const data = await response.json().catch(() => null);
+    check();
+    if(!response.ok){
+        const reason = typeof data?.detail === 'string' ? data.detail : data?.detail?.message;
+        throw imageToolError('imageTools.failed', typeof reason === 'string' ? reason : '');
+    }
+    return data;
+}
+function validateImageToolFile(scope, file, sourceId){
+    if(!file || file.source_asset_id !== sourceId || !imageToolAssetId(file.asset_id) || file.kind !== 'image'
+        || typeof file.name !== 'string' || !file.name || typeof file.mime_type !== 'string' || !file.mime_type.startsWith('image/')
+        || file.url !== imageToolMediaUrl(scope, file.asset_id)) throw imageToolError('imageTools.failed');
+    return file;
+}
+function imageToolColorProvenance(item){
+    const edit = item?.edit;
+    return edit?.op === 'color' && edit.algo_version === 1 && imageToolAssetId(edit.source_asset_id)
+        && edit.params && typeof edit.params === 'object' && !Array.isArray(edit.params) ? edit : null;
+}
+function imageToolReplacement(scope, old, file, edit){
+    if(old.asset_id === file.asset_id && smartCanvasDataEqual(old.edit, edit)) return old;
+    if(old.asset_id === file.asset_id && edit) return {...old, edit};
+    const next = mediaItemForStorage({...old, asset_id:file.asset_id});
+    // Locators and provider asset registrations belong to the old bytes, not the occurrence.
+    for(const key of ['marked','edit','size','type','mime','mime_type','filename','asset_uris','originalLocalUrl','localUrl','sourceUrl','local_url','source_url']) delete next[key];
+    const url = imageToolMediaUrl(scope, file.asset_id);
+    Object.assign(next, {url, preview_url:`${url}/preview`, name:file.name, kind:'image', natural_w:0, natural_h:0});
+    if(file.mime_type) next.mime_type = file.mime_type;
+    if(Number.isFinite(file.size)) next.size = file.size;
+    if(edit) next.edit = edit;
+    if(canvas.markedAssetIds?.includes(file.asset_id)) next.marked = true;
+    return next;
+}
+function stageImageToolChanges(scope, changes, bindings, flipFiles=null){
+    return changes.flatMap(({target, file, metadata}) => {
+        const images = target.node.images.slice();
+        const source = target.source;
+        images[source.index] = file.asset_id === target.assetId && flipFiles
+            ? source.item : imageToolReplacement(scope, source.item, file, metadata);
+        for(const {occurrence:mask, assetId} of bindings.get(target)){
+            const item = flipFiles ? imageToolReplacement(scope, mask.item, flipFiles.get(assetId)) : mask.item;
+            images[mask.index] = item.source_media_id === file.asset_id ? item : {...item, source_media_id:file.asset_id};
+        }
+        return images.some((item, index) => item !== target.node.images[index]) ? [{node:target.node, images}] : [];
+    });
+}
+function commitImageToolChanges(scope, targets, staged, successKey){
+    assertImageToolCanWrite(scope, targets);
+    if(!staged.length) return false;
+    const action = beginMediaHumanEdit(staged.map(change => change.node), ['images', 'curated']);
+    // Replacement is an edit, not a deletion; repeated undo/redo needs both versions.
+    pushUndo({keepReplacedMedia:true});
+    const entry = undoStack.at(-1);
+    staged.forEach(({node, images}) => { node.images = images; syncNodeCuratedFromMarks(node); });
+    canvasCore.finishSmartHumanEdit(action, canvasState.nodes);
+    finishImageEdit();
+    const message = tr(successKey);
+    if(window.ffToast?.success){
+        window.ffToast.success(message, {action:{label:tr('common.undo'), run:() => {
+            if(!entry || !imageToolScopeIsCurrent(scope) || undoSuppressed || pendingUndoSnapshot || undoStack.at(-1) !== entry) return;
+            finalizePendingCanvasUndo();
+            if(undoStack.at(-1) === entry) return performUndo();
+        }}});
+    } else toast(message);
+    return true;
+}
+
+async function flipImageToolSelection(nodeId, direction){
+    try {
+        if(direction !== 'horizontal' && direction !== 'vertical') throw imageToolError('imageTools.failed');
+        const {scope, targets} = captureImageToolSelection(nodeId);
+        const check = () => assertImageToolCurrent(scope, targets);
+        const bindings = await collectImageToolMasks(scope, targets, check);
+        check();
+        const assetIds = [...new Set(targets.flatMap(target => [target.assetId, ...bindings.get(target).map(mask => mask.assetId)]))];
+        if(assetIds.length > 32) throw imageToolError('imageTools.batchTooLarge');
+        const data = await requestImageToolJson(`${scope.path}/image-tools/flip`, {
+            method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({asset_ids:assetIds, direction})
+        }, check);
+        check();
+        if(!Array.isArray(data?.files) || data.files.length !== assetIds.length) throw imageToolError('imageTools.failed');
+        const files = new Map(data.files.map(file => [file?.source_asset_id, file]));
+        for(const id of assetIds) validateImageToolFile(scope, files.get(id), id);
+        const staged = stageImageToolChanges(scope, targets.map(target => ({target, file:files.get(target.assetId)})), bindings, files);
+        return commitImageToolChanges(scope, targets, staged, direction === 'horizontal'
+            ? 'imageTools.flipHorizontalSuccess' : 'imageTools.flipVerticalSuccess');
+    } catch(error){
+        reportImageToolError(error);
+        return false;
+    }
+}
+
+function openImageToolColor(nodeId){
+    const controller = window.CanvasImageColor;
+    let session;
+    try {
+        if(!controller?.open) throw imageToolError('imageTools.failed');
+        const {scope, targets} = captureImageToolSelection(nodeId);
+        const captured = new Map(targets.map(target => [target.nodeId, target]));
+        const panelTargets = targets.map(target => {
+            const edit = imageToolColorProvenance(target.source.item);
+            const sourceId = edit?.source_asset_id || target.assetId;
+            return {nodeId:target.nodeId, source_asset_id:sourceId, url:imageToolMediaUrl(scope, sourceId), current:edit?.params};
+        });
+        const sources = new Map(panelTargets.map(target => [target.nodeId, target]));
+        session = {};
+        let failure = '';
+        const check = affected => {
+            if(imageToolColorSession !== session) throw imageToolError('smart.imageEditTargetChanged');
+            assertImageToolCurrent(scope, affected);
+        };
+        const resolveTarget = target => {
+            const source = sources.get(target?.nodeId);
+            if(!source || source.source_asset_id !== target.source_asset_id || source.url !== target.url){
+                throw imageToolError('smart.imageEditTargetChanged');
+            }
+            return captured.get(source.nodeId);
+        };
+        const withFeedback = async work => {
+            failure = '';
+            try { return await work(); }
+            catch(error){
+                failure = error?.imageToolMessage || '';
+                throw error;
+            }
+        };
+        const previous = imageToolColorSession;
+        imageToolColorSession = session;
+        session.panel = controller.open({
+            anchor:() => document.querySelector(`[data-image-toolbar="${CSS.escape(nodeId)}"]`)
+                || document.querySelector(`.image-node[data-id="${CSS.escape(nodeId)}"]`),
+            targets:panelTargets,
+            translate:key => ((key === 'imageColor.applyError' || key === 'imageColor.loadError') && failure) || tr(key),
+            format:trf,
+            escapeStack:window.FireflyEscapeStack,
+            onClose:() => { if(imageToolColorSession === session) imageToolColorSession = null; },
+            loadImage:(url, target) => withFeedback(async () => {
+                const affected = [resolveTarget(target)];
+                check(affected);
+                if(url !== target.url) throw imageToolError('imageTools.projectImageRequired');
+                const decoded = await decodeImageToolAsset(scope, target.source_asset_id);
+                check(affected);
+                return decoded;
+            }),
+            encode:(target, png) => withFeedback(async () => {
+                const affected = [resolveTarget(target)];
+                const current = () => check(affected);
+                current();
+                const body = new FormData();
+                body.append('source_asset_id', target.source_asset_id);
+                body.append('pixels', png, 'pixels.png');
+                const data = await requestImageToolJson(`${scope.path}/image-tools/color-encode`, {method:'POST', body}, current);
+                current();
+                return validateImageToolFile(scope, data?.file, target.source_asset_id);
+            }),
+            commit:changes => withFeedback(async () => {
+                if(!Array.isArray(changes) || ![1, targets.length].includes(changes.length)) throw imageToolError('imageTools.failed');
+                const batch = changes.map(({target, file, metadata}, index) => {
+                    const capturedTarget = resolveTarget(target);
+                    const edit = imageToolColorProvenance({edit:metadata});
+                    if(capturedTarget !== targets[index] || !edit || edit.source_asset_id !== target.source_asset_id){
+                        throw imageToolError('imageTools.failed');
+                    }
+                    validateImageToolFile(scope, file, edit.source_asset_id);
+                    return {target:capturedTarget, file, metadata:file.asset_id === edit.source_asset_id ? undefined : smartCanvasDataClone({
+                        source_asset_id:edit.source_asset_id, op:'color', params:edit.params, algo_version:edit.algo_version
+                    })};
+                });
+                const affected = batch.map(change => change.target);
+                const current = () => check(affected);
+                current();
+                const bindings = await collectImageToolMasks(scope, affected, current);
+                current();
+                const staged = stageImageToolChanges(scope, batch, bindings);
+                current();
+                return commitImageToolChanges(scope, affected, staged, 'imageTools.colorSuccess');
+            })
+        });
+        previous?.panel?.close();
+        return session.panel;
+    } catch(error){
+        if(imageToolColorSession === session) imageToolColorSession = null;
+        reportImageToolError(error);
+        return null;
+    }
+}
+function repositionImageToolColor(){
+    imageToolColorSession?.panel?.reposition();
+}
+
+async function restoreImageToolOriginal(nodeId){
+    try {
+        const {scope, targets} = captureImageToolSelection(nodeId, {primaryOnly:true});
+        const [target] = targets;
+        const edit = imageToolColorProvenance(target.source.item);
+        if(!edit || edit.source_asset_id === target.assetId) throw imageToolError('imageTools.originalUnavailable');
+        const check = () => assertImageToolCurrent(scope, targets);
+        const data = await requestImageToolJson(`${scope.path}/media`, {cache:'no-store'}, check);
+        check();
+        const originals = Array.isArray(data?.items) ? data.items.filter(item => item?.asset_id === edit.source_asset_id) : [];
+        const [file] = originals;
+        if(originals.length !== 1 || file.kind !== 'image' || typeof file.name !== 'string' || !file.name
+            || file.original_url !== imageToolMediaUrl(scope, edit.source_asset_id)) throw imageToolError('imageTools.originalUnavailable');
+        const bindings = await collectImageToolMasks(scope, targets, check);
+        check();
+        const staged = stageImageToolChanges(scope, [{target, file}], bindings);
+        return commitImageToolChanges(scope, targets, staged, 'imageTools.restoreSuccess');
+    } catch(error){
+        reportImageToolError(error);
+        return false;
+    }
+}
+
 function imageEditTarget(node, index){
-    return {projectId:canvasId, nodeId:node.id, createdAt:node.created_at,
+    return {projectId:imageEditorViewId(), nodeId:node.id, createdAt:node.created_at,
         image:JSON.parse(JSON.stringify(node.images[index])), editor:cropState};
 }
 function captureImageEditTarget(){
@@ -2510,7 +2921,7 @@ function liveImageEditTarget(target){
     const node = canvasState.nodes.find(item => item.id === target.nodeId);
     // The upload boundary may outlive navigation, deletion, replacement or a
     // project switch. Match media identity, not the editor's current selection.
-    const matches = node && Array.isArray(node.images) && canvasId === target.projectId && node.created_at === target.createdAt
+    const matches = node && Array.isArray(node.images) && imageEditorViewId() === target.projectId && node.created_at === target.createdAt
         ? node.images.map((image, index) => ({image, index})).filter(({image}) => image
             && ['output_id', 'id', 'asset_id', 'url'].every(key => image[key] === target.image[key])) : [];
     if(matches.length !== 1){
@@ -2521,7 +2932,7 @@ function liveImageEditTarget(target){
 }
 function finishImageEdit(target){
     finalizePendingCanvasUndo();
-    if(cropState && cropState === target.editor) dismissImageEditor();
+    if(cropState && cropState === target?.editor) dismissImageEditor();
     canvasCore.render();
     canvasCore.scheduleSave();
 }
@@ -2531,8 +2942,9 @@ function replaceEditedImage(target, file, extra={}){
     const {node, index} = live;
     // #205: Keep the star on the original asset; an edit must not inherit its asset ID.
     const assetId = (extra && extra.asset_id) || file.asset_id || '';
-    const next = {...(node.images[index] || {}), url:file.url, name:file.name, kind:file.kind || canvasCore.mediaKindForItem(file), natural_w:0, natural_h:0, asset_id:assetId, ...extra};
+    const next = {...(node.images[index] || {}), url:file.url, name:file.name, kind:file.kind || imageEditorMediaKind(file), natural_w:0, natural_h:0, asset_id:assetId, ...extra};
     delete next.marked;
+    delete next.edit;
     const action = beginMediaHumanEdit([node], ['images', 'curated', 'w', 'h']);
     pushUndo();
     node.images[index] = next;
@@ -2540,7 +2952,6 @@ function replaceEditedImage(target, file, extra={}){
     if(cropState === target.editor){
         canvasState.selectedId = node.id; canvasState.selectedImage = {nodeId:node.id, index};
     }
-    // 旧图若是节点上唯一星标图，节点 curated（收集/导出的「保留」信号）需随真实星标重同步。
     syncNodeCuratedFromMarks(node);
     const changed = canvasCore.finishSmartHumanEdit(action, canvasState.nodes);
     if(!changed) finalizePendingCanvasUndo();

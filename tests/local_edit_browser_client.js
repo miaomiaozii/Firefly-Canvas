@@ -136,12 +136,16 @@
     const backToRect=await wait(()=>{const sel=(typeof nodes!=='undefined'&&(nodes().find(n=>n.id==='local-1')||{})).selection||[];return Array.isArray(sel)&&sel.length===4&&sel[2]>sel[0];});
     ok('switching back to modify resets selection to a rect',backToRect,(typeof nodes!=='undefined'&&(nodes().find(n=>n.id==='local-1')||{})).selection);
     // 工具排「局部编辑」入口
-    node=getLive();
-    const srcNodeEl=document.querySelector('.image-node[data-id="source-node"]');
-    const toolbarBefore=document.querySelectorAll('.image-node[data-id="source-node"] [data-smart-node-action="local-edit"]').length;
-    ok('image node toolbar exposes local-edit entry',toolbarBefore===1,toolbarBefore);
-    if(toolbarBefore===1){
-      document.querySelector('.image-node[data-id="source-node"] [data-smart-node-action="local-edit"]').click();
+    focusRevealNode('source-node');
+    const toolbarSelector='[data-image-toolbar="source-node"]';
+    await wait(()=>document.querySelector(toolbarSelector));
+    const toolbar=document.querySelector(toolbarSelector);
+    const localEdit='[data-image-toolbar-action="local-edit"]:enabled';
+    if(toolbar && !toolbar.querySelector(`.ff-image-toolbar__bar ${localEdit}`)) toolbar.querySelector('[data-image-toolbar-toggle="more"]').click();
+    const tool=toolbar?.querySelector(`.ff-image-toolbar__bar ${localEdit},[data-image-toolbar-popup="more"]:not([hidden]) ${localEdit}`);
+    ok('image node toolbar exposes local-edit entry',!!tool,Boolean(tool));
+    if(tool){
+      tool.click();
       const created=await wait(()=>{const n=nodes().find(n=>n.type==='local-edit'&&n.id!=='local-1');return n&&(canvas?.connections||[]).some(c=>c.from==='source-node'&&c.to===n.id&&c.role==='original');});
       ok('toolbar creates local-edit node with original edge',created,nodes().map(n=>n.type).join(','));
     }

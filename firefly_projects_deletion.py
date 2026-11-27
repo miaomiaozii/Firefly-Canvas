@@ -1895,6 +1895,8 @@ class ProjectDeletionMixin:
         for key, child in value.items():
             if key == "asset_id" and str(child or "") == asset_id:
                 continue
+            if key == "edit" and cls._color_source_asset_id(child) == asset_id:
+                continue
             if key in cls._MEDIA_ASSET_ID_FIELDS and isinstance(child, str) and child == asset_id:
                 continue
             if key in cls._MEDIA_ASSET_ID_LIST_FIELDS and isinstance(child, list):

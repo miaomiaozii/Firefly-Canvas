@@ -1592,7 +1592,6 @@ function ensureSmartHistoryDetail(){
                 <button type="button" data-smart-log-detail-mode="preview"><svg class="ico" aria-hidden="true"><use href="#i-eye"/></svg><span>${escapeHtml(tr('smart.modePreview'))}</span></button>
                 <button type="button" data-smart-log-detail-mode="crop"><svg class="ico" aria-hidden="true"><use href="#i-crop"/></svg><span>${escapeHtml(tr('canvas.modeCrop'))}</span></button>
                 <button type="button" data-smart-log-detail-mode="outpaint"><svg class="ico" aria-hidden="true"><use href="#i-expand"/></svg><span>${escapeHtml(tr('canvas.modeOutpaint'))}</span></button>
-                <button type="button" data-smart-log-detail-mode="mask"><svg class="ico" aria-hidden="true"><use href="#i-inpaint"/></svg><span>${escapeHtml(tr('canvas.modeMask'))}</span></button>
                 <button type="button" data-smart-log-detail-mode="brush"><svg class="ico" aria-hidden="true"><use href="#i-paintbrush"/></svg><span>${escapeHtml(tr('canvas.modeBrush'))}</span></button>
                 <button type="button" data-smart-log-detail-mode="resize"><svg class="ico" aria-hidden="true"><use href="#i-minimize-2"/></svg><span>${escapeHtml(tr('canvas.modeResize'))}</span></button>
                 <button type="button" data-smart-log-detail-mode="grid"><svg class="ico" aria-hidden="true"><use href="#i-grid-3x3"/></svg><span>${escapeHtml(tr('canvas.modeGrid'))}</span></button>

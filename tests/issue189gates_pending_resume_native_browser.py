@@ -525,6 +525,12 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
             store = ProjectStore(root / "projects", snapshot_delay=0)
             project_id = seed(store, gate)
             app = harness.load_production_app(root / "runtime-root", store)
+            if gate == "photoshop":
+                async def offline_cli_status():
+                    return {"installed": False, "logged_in": False}
+
+                production = app.state.issue13_module
+                production.codex_status_core = production.gemini_cli_status_core = offline_cli_status
             result["provider-file"] = write_test_provider(app, mock_base_url, with_video=(gate == "video"))
             # #198: the killer sits BELOW the logger so the forced 500 is also
             # recorded server-side (logger -> killer -> production app).
@@ -540,6 +546,17 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
                 )
                 browser.navigate(url)
                 browser.wait_for(FIRST_WAIT[gate], timeout=30)
+                if gate == "photoshop":
+                    # #514 gates Send on the real connector status, so the fixture connects to the same WS route.
+                    browser.evaluate(
+                        "new Promise((resolve,reject)=>{"
+                        "const ws=new WebSocket(location.origin.replace(/^http/,'ws')+'/ws/stats?client_id=ps_189g_fixture');"
+                        "window.__fix189Photoshop=ws;"
+                        "ws.addEventListener('open',()=>resolve(true),{once:true});"
+                        "ws.addEventListener('error',()=>reject(new Error('Photoshop fixture failed to connect')),{once:true});"
+                        "})",
+                        await_promise=True,
+                    )
                 time.sleep(1.0)
                 browser.evaluate(INSTRUMENT_JS)
                 browser.evaluate(FLUSH_SPY_JS)
@@ -595,9 +612,15 @@ def run_gate(run_id: str, artifacts: pathlib.Path, shots_dir: pathlib.Path,
                 elif gate == "photoshop":
                     wait_rect_stable(browser, f'.image-node[data-id="{PS_NODE}"]')
                     native_click_retry(browser, f'.image-node[data-id="{PS_NODE}"]')
-                    browser.wait_for('document.querySelector("button[data-smart-node-action=\\"send-ps\\"]")', timeout=20)
-                    wait_rect_stable(browser, 'button[data-smart-node-action="send-ps"]')
-                    native_click_retry(browser, 'button[data-smart-node-action="send-ps"]')
+                    toolbar = f'[data-image-toolbar="{PS_NODE}"]'
+                    more = f'{toolbar} [data-image-toolbar-toggle="more"]'
+                    send_ps = f'{toolbar} [data-image-toolbar-popup="more"]:not([hidden]) [data-image-toolbar-action="send-ps"]:enabled'
+                    wait_rect_stable(browser, more)
+                    native_click_retry(browser, more)
+                    browser.wait_for(f'document.querySelector({json.dumps(send_ps)})', timeout=20)
+                    browser.evaluate(f'document.querySelector({json.dumps(send_ps)}).scrollIntoView({{block:"nearest"}})')
+                    wait_rect_stable(browser, send_ps)
+                    native_click_retry(browser, send_ps)
                 elif gate == "local-edit":
                     # No node-selection click: any click inside the card triggers
                     # select + full re-render, which replaces the element tree between
