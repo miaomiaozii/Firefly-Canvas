@@ -1199,6 +1199,182 @@ class GateShardIntegrationTests(GateFixture):
         )
 
 
+class GateTerminationTests(InProcessGateFixture):
+    def setUp(self):
+        super().setUp()
+        self.elapsed = 0.0
+        # Only the gate's clock is synthetic; subprocess and thread waits use real time.
+        self.enterContext(mock.patch.object(quality_gate, "time", SimpleNamespace(
+            monotonic=lambda: self.elapsed, time=time.time,
+        )))
+
+    def assert_termination(self, report, **changes):
+        expected = {
+            "all_configured_steps_passed": True,
+            "no_real_or_boundary_failures": True,
+            "mode_budget_exceeded": False,
+            "mode_budget_only": False,
+            "incomplete_steps": [],
+            "failed_steps": [],
+            "precondition_failures": [],
+            "s0_boundary_failure": False,
+            "retry_detected": False,
+            "worktree_changed": False,
+            "shard_budget_exceeded_steps": [],
+        }
+        self.assertEqual(report.get("termination"), expected | changes)
+
+    def test_clean_gate_completed_every_configured_step(self):
+        result = self.run_gate()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        report = self.report()
+        self.assertIsNone(report["first_failure"])
+        self.assert_termination(report)
+
+    def test_only_finalization_crosses_the_mode_budget(self):
+        git_state = quality_gate.git_state
+        snapshots = []
+
+        def slow_final_snapshot(root):
+            snapshot = git_state(root)
+            snapshots.append(snapshot)
+            if len(snapshots) == 2:
+                self.elapsed = 31.0
+            return snapshot
+
+        with mock.patch.object(quality_gate, "git_state", side_effect=slow_final_snapshot):
+            result = self.run_gate(verify_git=True)
+
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        report = self.report()
+        self.assertEqual(report["effective_budget_seconds"], 30)
+        self.assertEqual(report["first_failure"]["name"], "mode-budget")
+        self.assertIn("finalization", report["first_failure"]["message"])
+        self.assertTrue(all(step["status"] == "passed" for step in report["steps"]))
+        self.assert_termination(report, mode_budget_exceeded=True, mode_budget_only=True)
+
+    def test_only_evidence_write_crosses_the_mode_budget(self):
+        write_report = quality_gate.write_report
+
+        def slow_write(evidence_dir, report):
+            write_report(evidence_dir, report)
+            self.elapsed = 31.0
+
+        with mock.patch.object(quality_gate, "write_report", side_effect=slow_write) as writer:
+            result = self.run_gate()
+
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        self.assertEqual(writer.call_count, 2)
+        report = self.report()
+        self.assertEqual(report["final_exit_code"], 124)
+        self.assertEqual(report["first_failure"]["name"], "mode-budget")
+        self.assertIn("writing quality gate evidence", report["first_failure"]["message"])
+        self.assert_termination(report, mode_budget_exceeded=True, mode_budget_only=True)
+
+    def test_child_timeout_is_not_a_mode_budget_only_termination(self):
+        def spawn(command, _root, _environment):
+            if command == STEP_DEFINITIONS["surface-contract"](sys.executable):
+                return StepResponse(timed_out=True)
+
+        result = self.run_gate(spawn=spawn)
+
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        report = self.report()
+        self.assertEqual(report["first_failure"]["name"], "surface-contract")
+        self.assert_termination(
+            report, all_configured_steps_passed=False,
+            incomplete_steps=[{"name": "surface-contract", "reason": "in-flight-timeout"}],
+        )
+
+    def test_failure_timeout_queue_and_omission_are_all_reported(self):
+        launched = []
+
+        def spawn(command, _root, _environment):
+            launched.append(command)
+            if command == STEP_DEFINITIONS["javascript-syntax"](sys.executable):
+                return StepResponse(returncode=7)
+            if command == STEP_DEFINITIONS["javascript-types"](sys.executable):
+                self.elapsed = 31.0
+                return StepResponse(timed_out=True)
+
+        result = self.run_gate(spawn=spawn, FIREFLY_QUALITY_GATE_PARALLEL_WORKERS="1")
+
+        self.assertEqual(result.returncode, 124, result.stdout + result.stderr)
+        self.assertEqual(launched, [STEP_DEFINITIONS[name](sys.executable) for name in MODE_STEPS["fast"][:2]])
+        report = self.report()
+        self.assertEqual(report["first_failure"]["name"], "javascript-syntax")
+        self.assertEqual(report["first_failure"]["exit_code"], 7)
+        self.assert_termination(
+            report, all_configured_steps_passed=False, no_real_or_boundary_failures=False,
+            mode_budget_exceeded=True, failed_steps=["javascript-syntax"],
+            incomplete_steps=[
+                {"name": "javascript-types", "reason": "in-flight-timeout"},
+                {"name": "canvas-coupling", "reason": "budget-before-worker"},
+                {"name": "excel-api-smoke", "reason": "budget-before-group"},
+                *({"name": name, "reason": "omitted-after-budget-break"} for name in MODE_STEPS["fast"][4:]),
+            ],
+        )
+
+    def test_precondition_failure_is_not_a_completed_step_failure(self):
+        def spawn(command, _root, _environment):
+            if command == STEP_DEFINITIONS["surface-contract"](sys.executable):
+                raise OSError("fixture child unavailable")
+
+        result = self.run_gate(spawn=spawn)
+
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        report = self.report()
+        self.assertEqual(report["first_failure"]["name"], "surface-contract")
+        self.assertEqual(report["first_failure"]["status"], "precondition-failed")
+        self.assert_termination(
+            report, all_configured_steps_passed=False, no_real_or_boundary_failures=False,
+            precondition_failures=["surface-contract"],
+            incomplete_steps=[{"name": "surface-contract", "reason": "precondition-failed"}],
+        )
+
+    def test_anonymous_s0_retry_worktree_drift_and_late_budget_are_independent(self):
+        guard_environment = {}
+        secret = "phase-b-retry-private-sentinel"
+
+        def proxy_factory(sink):
+            guard_environment[_GUARD_SINK] = str(sink)
+            return nullcontext(SimpleNamespace(url="http://127.0.0.1:41080"))
+
+        def spawn(command, _root, environment):
+            if command == STEP_DEFINITIONS["surface-contract"](sys.executable):
+                _deny_synthetic_proxy_request(guard_environment, "CONNECT", "anonymous.invalid:443", "anonymous.invalid:443")
+                Path(environment["FIREFLY_QUALITY_GATE_RETRY_EVENTS"]).write_text(
+                    json.dumps({"attempt": 2, "reason": secret}) + "\n", encoding="utf-8",
+                )
+                (self.fixture_root / "static" / "js" / "smart-canvas.js").write_text(
+                    "const changedDuringGate = true;\n", encoding="utf-8",
+                )
+
+        write_report = quality_gate.write_report
+
+        def slow_write(evidence_dir, report):
+            write_report(evidence_dir, report)
+            self.elapsed = 31.0
+
+        with mock.patch.object(quality_gate, "write_report", side_effect=slow_write):
+            result = self.run_gate(spawn=spawn, proxy_factory=proxy_factory, verify_git=True, GITHUB_TOKEN=secret)
+
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        report = self.report()
+        self.assertEqual(report["first_failure"]["name"], "surface-contract")
+        self.assertEqual(report["guard_attribution"]["blocking"], [
+            {"kind": "network", "target": "<redacted>", "pid": None,
+             "step": None, "attributed_by": "unattributed"},
+        ])
+        self.assertTrue(report["dirty_worktree"]["changed_during_run"])
+        self.assertNotIn(secret, json.dumps(report))
+        self.assert_termination(
+            report, all_configured_steps_passed=False, no_real_or_boundary_failures=False,
+            mode_budget_exceeded=True, s0_boundary_failure=True, retry_detected=True, worktree_changed=True,
+        )
+
+
 class GateOutcomeTests(InProcessGateFixture):
     @staticmethod
     def _append_outcome_event(event_path, event):

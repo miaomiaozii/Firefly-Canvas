@@ -24,7 +24,7 @@ import textwrap
 import threading
 import time
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -2737,7 +2737,9 @@ def _finalize_step(
     sensitive_values: list[str],
     *,
     parallel: bool = False,
-) -> None:
+) -> bool:
+    """Return whether the step failed independently of guard and retry evidence."""
+    step_failed = step["status"] == "failed"
     step["guard_events"] = classify_guard_events(guard_events)
     step["retry_events"] = retry_events
     step["child_events"] = child_events
@@ -2747,7 +2749,7 @@ def _finalize_step(
         step["status"] = "failed"
         step["exit_code"] = 1
     if spec is None:
-        return
+        return step_failed
     _command, artifact_root, validator, failed_evidence, evidence_name = spec
     if step["status"] == "passed":
         try:
@@ -2759,8 +2761,10 @@ def _finalize_step(
                 f"{evidence_name} evidence invalid: {error}", sensitive_values
             )
             step["browser_evidence"] = failed_evidence(artifact_root)
+            return True
     else:
         step["browser_evidence"] = failed_evidence(artifact_root)
+    return step_failed
 
 
 def execution_groups(names: tuple[str, ...], *, fast: bool = False) -> list[tuple[str, list[str]]]:
@@ -2929,6 +2933,14 @@ def build_severity_findings(
     return findings
 
 
+def _over_budget_unit_shards(steps: list[dict], run_budget: float) -> Iterator[dict]:
+    # #204: a shard can get too close to the deadline without actually timing out.
+    shard_budget_limit = run_budget * UNIT_CONTRACT_SHARD_BUDGET_RATIO
+    for step in steps:
+        if is_unit_contract_shard(step["name"]) and (step.get("duration_seconds") or 0) > shard_budget_limit:
+            yield step
+
+
 def final_failure_verdict(
     steps: list[dict],
     final_exit_code: int,
@@ -2950,17 +2962,7 @@ def final_failure_verdict(
                 "exit_code": 1,
                 "message": "blocking guard or retry evidence without a failing step",
             }
-    # #204: a shard can get too close to the deadline without actually timing out.
-    shard_budget_limit = run_budget * UNIT_CONTRACT_SHARD_BUDGET_RATIO
-    overshot_shard = next(
-        (
-            step
-            for step in steps
-            if is_unit_contract_shard(step["name"])
-            and (step.get("duration_seconds") or 0) > shard_budget_limit
-        ),
-        None,
-    )
+    overshot_shard = next(_over_budget_unit_shards(steps, run_budget), None)
     if overshot_shard is not None:
         if final_exit_code == 0:
             final_exit_code = 1
@@ -3002,6 +3004,59 @@ def _mode_budget_failure(
             ),
         }
     return None
+
+
+def _report_termination(
+    configured_steps: tuple[str, ...],
+    steps: list[dict],
+    failed_steps: list[str],
+    budget_prevented: dict[str, str],
+    *,
+    run_budget: float,
+    mode_budget_exceeded: bool,
+    mode_budget_only: bool,
+    s0_boundary_failure: bool,
+    retry_detected: bool,
+    worktree_changed: bool,
+) -> dict:
+    statuses = {step["name"]: step["status"] for step in steps}
+    precondition_failures = [name for name, status in statuses.items() if status == "precondition-failed"]
+    shard_budget_exceeded_steps = [step["name"] for step in _over_budget_unit_shards(steps, run_budget)]
+    omission = (
+        "omitted-after-workspace-precondition" if "execution-workspace" in precondition_failures
+        else "omitted-after-budget-break"
+    )
+    incomplete_steps = []
+    for name in configured_steps:
+        status = statuses.get(name)
+        if status is None:
+            reason = omission
+        elif status == "timed-out":
+            reason = budget_prevented.get(name, "in-flight-timeout")
+        elif status == "precondition-failed":
+            reason = "precondition-failed"
+        else:
+            continue
+        incomplete_steps.append({"name": name, "reason": reason})
+    all_passed = all(statuses.get(name) == "passed" for name in configured_steps)
+    # A timeout can leave work unfinished without proving that the work failed.
+    no_failures = not any((
+        failed_steps, precondition_failures, s0_boundary_failure, retry_detected,
+        worktree_changed, shard_budget_exceeded_steps,
+    ))
+    return {
+        "all_configured_steps_passed": all_passed,
+        "no_real_or_boundary_failures": no_failures,
+        "mode_budget_exceeded": mode_budget_exceeded,
+        "mode_budget_only": mode_budget_only and all_passed and no_failures,
+        "incomplete_steps": incomplete_steps,
+        "failed_steps": failed_steps,
+        "precondition_failures": precondition_failures,
+        "s0_boundary_failure": s0_boundary_failure,
+        "retry_detected": retry_detected,
+        "worktree_changed": worktree_changed,
+        "shard_budget_exceeded_steps": shard_budget_exceeded_steps,
+    }
 
 
 def verdict_reasons(
@@ -3946,7 +4001,10 @@ def main(argv: list[str] | None = None) -> int:
     started_at = utc_now()
     started = time.monotonic()
     before = git_state(repo_root)
+    configured_steps = MODE_STEPS[args.mode]
     steps = []
+    failed_steps: list[str] = []
+    budget_prevented: dict[str, str] = {}
     final_exit_code = 0
     sensitive_values = sensitive_environment_values()
     guard_events = []
@@ -3966,8 +4024,6 @@ def main(argv: list[str] | None = None) -> int:
     ) as temporary:
         run_root = Path(temporary)
         workspace_root = run_root / "workspace"
-        # #361：本轮的子进程从一开始就挂进作业；同时清掉上一轮没收尾的孤儿。
-        # （作业到底挂上没挂上，看报告里收尾时读的 ``process_lifecycle``——开跑时一个子进程都还没起。）
         process_lifecycle = dict(reap_leftover_runs(run_root.name))
         try:
             workspace_info["copied_files"] = create_execution_workspace(repo_root, workspace_root)
@@ -4005,9 +4061,8 @@ def main(argv: list[str] | None = None) -> int:
                     int(os.environ.get("FIREFLY_QUALITY_GATE_PARALLEL_WORKERS", "8")),
                 )
 
-                # #204：unit/contract 分片按工作区模块集合 + 实测 profile 计算，
-                # 槽位展开成具体分片步骤后再分组执行。
                 unit_shards = compute_unit_contract_shards(workspace_root)
+                configured_steps = expand_unit_contract_steps(configured_steps, unit_shards)
 
                 def resolve_step_command(name: str):
                     spec = browser_step_spec(name, sys.executable, evidence_dir)
@@ -4024,13 +4079,11 @@ def main(argv: list[str] | None = None) -> int:
                         return [sys.executable, "-m", "unittest", "-b", *targets], None
                     return STEP_DEFINITIONS[name](sys.executable), None
 
-                for group_kind, group_names in execution_groups(
-                    expand_unit_contract_steps(MODE_STEPS[args.mode], unit_shards),
-                    fast=args.mode == "fast",
-                ):
+                for group_kind, group_names in execution_groups(configured_steps, fast=args.mode == "fast"):
                     remaining = run_budget - (time.monotonic() - started)
                     if remaining <= 0:
                         for name in group_names:
+                            budget_prevented[name] = "budget-before-group"
                             command, _spec = resolve_step_command(name)
                             steps.append(
                                 {
@@ -4083,10 +4136,11 @@ def main(argv: list[str] | None = None) -> int:
                             retry_events_file,
                             sensitive_values,
                         )[previous_retry_count:]
-                        _finalize_step(
+                        if _finalize_step(
                             step, spec, step_guard_events, step_retry_events, step_child_events,
                             sensitive_values,
-                        )
+                        ):
+                            failed_steps.append(name)
                         steps.append(step)
                         # #370：预算允许时保留后续步骤的证据，不只报告首败。
                         final_exit_code = merge_gate_exit_code(final_exit_code, step_exit_code(step))
@@ -4108,7 +4162,7 @@ def main(argv: list[str] | None = None) -> int:
                         for name in group_names
                     }
 
-                    def run_group_step(name):
+                    def run_group_step(name: str) -> tuple[dict, str | None]:
                         step_remaining = run_budget - (time.monotonic() - started)
                         if step_remaining <= 0:
                             return {
@@ -4122,7 +4176,7 @@ def main(argv: list[str] | None = None) -> int:
                                 "stdout_tail": "",
                                 "stderr_tail": "mode budget exhausted before parallel worker started",
                                 **({'failure_diagnostics': {'completeness': 'incomplete', 'failures': []}} if is_private_test_step(name, commands[name]) else {}),
-                            }
+                            }, "budget-before-worker"
                         step_environment = dict(environment)
                         sinks = step_sinks[name]
                         step_environment["FIREFLY_QUALITY_GATE_GUARD_EVENTS"] = str(sinks["guard"])
@@ -4140,9 +4194,9 @@ def main(argv: list[str] | None = None) -> int:
                             step_environment,
                             step_remaining,
                             sensitive_values,
-                        )
+                        ), None
 
-                    def collect_group_step(name, future):
+                    def collect_group_step(name, future) -> tuple[dict, str | None]:
                         try:
                             return future.result()
                         except Exception as error:  # noqa: BLE001 — never lose a group member
@@ -4157,7 +4211,7 @@ def main(argv: list[str] | None = None) -> int:
                                 "stdout_tail": "",
                                 "stderr_tail": '' if is_private_test_step(name, commands[name]) else redact_text(str(error), sensitive_values),
                                 **({'failure_diagnostics': {'completeness': 'incomplete', 'failures': []}} if is_private_test_step(name, commands[name]) else {}),
-                            }
+                            }, None
 
                     with ThreadPoolExecutor(max_workers=parallel_workers) as pool:
                         futures = {
@@ -4177,7 +4231,9 @@ def main(argv: list[str] | None = None) -> int:
                         )
                     )
                     for name in group_names:
-                        step = group_steps[name]
+                        step, prevention_reason = group_steps[name]
+                        if prevention_reason is not None:
+                            budget_prevented[name] = prevention_reason
                         spec = specs[name]
                         sinks = step_sinks[name]
                         step_child_events = read_child_events(sinks["child"], sensitive_values)
@@ -4187,10 +4243,11 @@ def main(argv: list[str] | None = None) -> int:
                         merge_event_lines(sinks["guard"], guard_events_file)
                         merge_event_lines(sinks["child"], child_events_file)
                         merge_event_lines(sinks["retry"], retry_events_file)
-                        _finalize_step(
+                        if _finalize_step(
                             step, spec, step_guard_events, step_retry_events, step_child_events,
                             sensitive_values, parallel=True,
-                        )
+                        ):
+                            failed_steps.append(name)
                         steps.append(step)
                         final_exit_code = merge_gate_exit_code(final_exit_code, step_exit_code(step))
 
@@ -4216,7 +4273,8 @@ def main(argv: list[str] | None = None) -> int:
         steps, final_exit_code, guard_events, retry_events,
         changed_during_run=changed_during_run, mode=args.mode, run_budget=run_budget,
     )
-    budget_failure = _mode_budget_failure(final_exit_code, time.monotonic() - started, run_budget)
+    elapsed = time.monotonic() - started
+    budget_failure = _mode_budget_failure(final_exit_code, elapsed, run_budget)
     if budget_failure is not None:
         final_exit_code = budget_failure["exit_code"]
         first_failure = budget_failure
@@ -4224,8 +4282,7 @@ def main(argv: list[str] | None = None) -> int:
     unit_contract_inventory = unit_contract_shards(
         unit_contract_modules, load_unit_contract_durations(repo_root), repo_root
     )
-    # #361：本轮临时目录删不动 = 还有进程钉着里面的文件。不翻 verdict（那多半是刚杀完
-    # 进程的收尾竞态），但必须记进报告——静默吞掉等于把泄漏最直观的信号扔了。
+    # #361：删不掉的临时目录是进程泄漏线索，但也可能只是退出竞态，不改变 verdict。
     workspace_leftovers = remove_execution_workspace(run_root)
     report = {
         "schema_version": 1,
@@ -4238,9 +4295,7 @@ def main(argv: list[str] | None = None) -> int:
         "verdict": "passed" if final_exit_code == 0 else "failed",
         "final_exit_code": final_exit_code,
         "evidence_dir": str(evidence_dir),
-        # #361：报告要说清楚本轮子进程到底挂进作业了没有。挂不上不是错（受限环境），
-        # 但不能闭着不说——那样只有主动杀树在兜底，没人知道。作业状态在**收尾时**读，
-        # 开跑时读只能得到「一个子进程都还没挂」。
+        # #361：受限环境可能无法挂进作业；报告需区分作业保护和主动杀树兜底。
         "process_lifecycle": {
             **process_lifecycle,
             "job_object": process_job().status(),
@@ -4299,10 +4354,22 @@ def main(argv: list[str] | None = None) -> int:
         "provider_contract_summary": provider_contract_summary(repo_root),
     }
     report = redact_data(report, sensitive_values)
-    write_report(evidence_dir, report)
-    budget_failure = _mode_budget_failure(
-        final_exit_code, time.monotonic() - started, run_budget, writing_evidence=True
+    # This object contains only configured step names and fixed classifications, not diagnostic payloads.
+    termination = _report_termination(
+        configured_steps, steps, failed_steps, budget_prevented,
+        run_budget=run_budget,
+        mode_budget_exceeded=elapsed > run_budget,
+        mode_budget_only=budget_failure is not None,
+        s0_boundary_failure=bool(blocking_event_attribution) or any(
+            finding["severity"] == "S0" for finding in findings
+        ),
+        retry_detected=bool(retry_events),
+        worktree_changed=changed_during_run,
     )
+    report["termination"] = termination
+    write_report(evidence_dir, report)
+    elapsed = time.monotonic() - started
+    budget_failure = _mode_budget_failure(final_exit_code, elapsed, run_budget, writing_evidence=True)
     if budget_failure is not None:
         final_exit_code = budget_failure["exit_code"]
         report["ended_at"] = utc_now()
@@ -4310,9 +4377,15 @@ def main(argv: list[str] | None = None) -> int:
         report["verdict"] = "failed"
         report["final_exit_code"] = final_exit_code
         report["first_failure"] = budget_failure
+        termination["mode_budget_only"] = (
+            termination["all_configured_steps_passed"] and termination["no_real_or_boundary_failures"]
+        )
+    late_overrun = elapsed > run_budget and not termination["mode_budget_exceeded"]
+    if budget_failure is not None or late_overrun:
+        # A late overrun is evidence even if an earlier failure controls the verdict.
+        termination["mode_budget_exceeded"] = True
         write_report(evidence_dir, report)
-    # #370：逐步结果直接打 stderr——门不再中途 break 后一次会出现多个红点，
-    # 不打开 evidence JSON 也得能看见是哪几步红了（提交前 hook 就靠这段输出）。
+    # #370：提交前 hook 依赖 stderr 展示各步红点，不必读取 evidence JSON。
     for step in report.get("steps", []):
         print(
             f"[{step['status']}] {step['name']}"
