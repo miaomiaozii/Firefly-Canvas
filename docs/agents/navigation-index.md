@@ -168,6 +168,7 @@
 | `canvas-agent-tui.js` | Agent TUI 会话节点：WebSocket 事件、每宿主设置/只读历史、输入框工具条、消息导航与卡片渲染 | `tests/agent_tui_polish_browser.py`、`tests/agent_node_settings_browser.py`、`tests/agent_fork_browser.py` |
 | `canvas-search.js` | #324 跨项目搜索面板（ADR-0026）：顶栏按钮开合、输入防抖 250ms 调 `GET /api/search/projects`、结果按项目分组；当前项目命中就地 `focusAndSelectNode`，其他项目跳转其画布 | `tests/test_cross_project_search.py`（后端 API）、`tests/canvas_hidden_visibility_browser.py`（#346：面板开/×/Esc 三条路径的计算样式与截图） |
 | `static/css/studio-foundation.css` | 三页共用的基础样式表（只它被所有页面 link）。#346：全局 `[hidden]{display:none !important}`——作者样式的 `display:flex/grid` 会赢掉浏览器 UA 的 `[hidden]`，这条把 hidden 语义钉回来 | `tests/test_canvas_hidden_attribute_semantics.py`（纯文本，走 unit-contract 分片与全量 pytest）、`tests/canvas_hidden_visibility_browser.py`（页面级计算样式，在 domain/trial/release） |
+| `canvas-chat-capture.js` | #515 普通 AI 对话标签页的手动采集接收层：同窗消息校验、提示词撤销、原图上传及视口落点；宿主能力显式注入 | `extensions/chat-dock/tests/`（扩展协议与浏览器中继） |
 | `smart-canvas.js` | 主脚本：节点体渲染、提示词构建、`runGeneration` 编排与启动初始化 | 其余画布浏览器测试 |
 
 ## 注释规范

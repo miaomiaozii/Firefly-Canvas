@@ -228,6 +228,7 @@ REVERSE_REFERENCE_CEILINGS = {
     # 的 typeof 守卫 + 调用——那是 smart-canvas.js 经 window 暴露的契约，不是裸词法全局引用；
     # 本模块自带 escapeHtml，零 canvasCore 接口引用。钉 2 是防日后出现真·核心顶层名引用而漏计。
     "canvas-search.js": 2,
+    "canvas-chat-capture.js": 0,  # #515: the canvas supplies only the capabilities needed for manual capture.
     "canvas-state.js": 0,
     "project-canvas-mutations.js": 0,
     "canvas-layout-utils.js": 0,
@@ -278,6 +279,7 @@ FREE_GLOBAL_REFERENCE_CEILINGS = {
     "canvas-agent-viewport.js": 2,  # #485 same injected-property false positives as the reverse-reference count.
     # #324 新建跨项目搜索面板：同上 2 处 `window.focusAndSelectNode`（未接口化，自由侧等于反向侧）。
     "canvas-search.js": 2,
+    "canvas-chat-capture.js": 0,
     "canvas-state.js": 0,
     "project-canvas-mutations.js": 0,
     "canvas-layout-utils.js": 0,

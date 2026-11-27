@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Firefly 对话采集设置</title>
+<h1>Firefly 对话采集设置</h1>
+<form>
+  <label for="firefly-origin">Firefly 服务地址</label>
+  <input id="firefly-origin" type="url" size="36" required autocomplete="off" spellcheck="false" aria-describedby="origin-help">
+  <button type="submit">授权并保存</button>
+  <p id="origin-help">例如 http://127.0.0.1:3000。只填写服务地址，不含路径。改动后请刷新画布标签页。</p>
+  <p id="result" role="status"></p>
+</form>
+<script src="protocol.js"></script>
+<script src="options.js"></script>
+</html>

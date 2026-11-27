@@ -72,6 +72,7 @@ export const HTML_SCRIPT_ORDER = [
     'canvas-agent-tui.js',
     // #324（ADR-0026）：跨项目搜索面板（static/js/canvas-search.js，IIFE 自挂载）。
     'canvas-search.js',
+    'canvas-chat-capture.js',
     'smart-canvas.js',
 ];
 

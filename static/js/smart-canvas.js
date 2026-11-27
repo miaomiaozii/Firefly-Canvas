@@ -17702,6 +17702,33 @@ smartSaveButton?.addEventListener('click', event => {
     void manualSaveCanvas();
 });
 setupSmartHistoryDrawer();
+window.FireflyChatCapture?.connect({
+    project: () => canvasLoadReady && !canvasProjectDeleted() ? smartProjectId() || null : null,
+    selectedImage: () => {
+        const ids = selectedNodeIds();
+        const node = ids.length === 1 ? canvasState.nodes.find(item => item.id === ids[0]) : null;
+        return node && node.id !== SMART_LOG_PREVIEW_NODE_ID && isSmartImageNode(node) ? node : null;
+    },
+    isDraftOpen: node => activeComposerNode()?.id === node.id,
+    flushDraft: savePromptDraftForCurrent, readDraft: promptPlainText, showDraft: loadPromptDraft,
+    beginDraftEdit: node => {
+        const edit = beginSmartNodeHumanEdit([node], ['promptDraftText', 'promptDraftHtml'], true);
+        return () => finishSmartNodeHumanEdit(edit);
+    },
+    recordDraftUndo: (before, after) => pushUndo({
+        actionDeltaVersion:1, actionDelta:canvasCore.smartCanvasActionDelta({nodes:[before]}, {nodes:[after]}),
+    }),
+    formatDraft: promptHtmlWithMentionTokens, escapeText: escapeHtml,
+    viewCenter: viewportCenter, occupied: () => canvasState.nodes.map(node => canvasCore.nodeRect(node)).filter(Boolean),
+    findSpot: CanvasPlacement.findFreeSpot, uploadImage: file => uploadFiles([file]),
+    addTextNode: ({x, y}, text) => createPromptNode(x, y, {text, title:'对话采集'}),
+    measureImage: image => {
+        const subject = {type:NODE_TYPE_IMAGE, images:[image]};
+        return canvasCore.imageLayout(subject.images, canvasCore.mediaNodeDefaultScale(subject), subject);
+    },
+    addImageNode: ({x, y}, image) => createNode(x, y, [image]),
+    redraw: render, save: scheduleSave,
+});
 window.onload = async () => {
     applyTheme(localStorage.getItem('studio_theme') || localStorage.getItem('canvas_theme') || 'light');
     loadPromptPresets();

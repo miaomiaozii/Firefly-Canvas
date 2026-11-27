@@ -53,6 +53,7 @@ CANVAS_SCRIPTS: tuple[str, ...] = (
     "canvas-agent-tui.js",
     # #324：跨项目搜索面板（顶栏搜索 + 结果列表）。
     "canvas-search.js",
+    "canvas-chat-capture.js",
     "smart-canvas.js",
 )
 
