@@ -3373,7 +3373,7 @@
         {
           "module": "tests/eval/trajectory/metrics.py",
           "ordinal": 1,
-          "ast_sha256": "6f5ad50f3e8ad795ff3e3b8bdff0f7e6f626231f8eac46f82c1a2859fdd314f4"
+          "ast_sha256": "f490ec24818869a25cdc526b56c3d1b43283aac8d0984d2d92296a848b82edcf"
         },
         {
           "module": "tools/quality_gate_profile.py",

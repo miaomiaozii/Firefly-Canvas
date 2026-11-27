@@ -4,12 +4,13 @@ from __future__ import annotations
 from collections import Counter
 import hashlib
 import json
+import math
 from pathlib import Path
 
 from tests.eval.trajectory.safety import digest, external_new, save
 from tests.eval.trajectory.recording import REQUIRED_FILES, SAFETY_FILES, recorded_file, recording_root, safety_errors
 
-HUMAN_ONLY = {'QUOTA_EXHAUSTED', 'MODEL_UNAVAILABLE'}
+HUMAN_ONLY = {'QUOTA_EXHAUSTED', 'MODEL_UNAVAILABLE', 'CONTENT_REJECTED'}
 EXPECTED_CODES = {'no_channel': 'MODEL_UNAVAILABLE', 'transient': 'TRANSIENT', 'rate_limit': 'RATE_LIMITED',
                   'quota_exhausted': 'QUOTA_EXHAUSTED', 'content_refusal': 'CONTENT_REJECTED', 'size_mismatch': 'INVALID_PARAMS'}
 
@@ -58,7 +59,66 @@ def normalized_native_tools(records):
     return list(calls.values())
 
 
-def incidents(backend, final, actions, annotations):
+def _recorded_explanation_time(host_records, decision):
+    for record in host_records:
+        if record.get('seq') != decision.get('explanation_event_seq'):
+            continue
+        event = record.get('event', {})
+        message = event.get('assistantMessageEvent', {})
+        stamp = record.get('ts')
+        if (event.get('type') == 'message_update' and message.get('type') == 'text_delta'
+                and isinstance(message.get('delta'), str) and message['delta'].strip()
+                and type(stamp) in (int, float) and math.isfinite(stamp)):
+            return stamp
+    return None
+
+
+def _continued_rejected_generation(task, family, tasks, observations, backend):
+    task_id = task['task_id']
+    stamp = task['failure_seen']
+    prompt = task['failed_prompt']
+    prompt_hash = hashlib.sha256(prompt.encode()).hexdigest() if prompt else None
+    generation_nodes = {node for node in (task.get('source_node_id'), task.get('result_node_id'))
+                        if node and '[REDACTED]' not in node}
+    # Older recordings redacted history's source_node_id; batch status still joins the task to its slot and node.
+    batch_rows = [(unwrap(row['result']).get('batch_id'), item)
+                  for row in backend if row['kind'] == 'tool_end' and row.get('tool') == 'generate.batch_status'
+                  for item in unwrap(row['result']).get('items', [])]
+    rejected_rows = [(batch, item) for batch, item in batch_rows if item.get('task_id') == task_id]
+    generation_nodes.update(item['node_id'] for _, item in rejected_rows if item.get('node_id'))
+    if any(original_batch and original.get('item_id') and batch == original_batch
+           and item.get('item_id') == original['item_id']
+           and (item.get('attempts', 0) > original.get('attempts', 0) or item.get('retry_result'))
+           for original_batch, original in rejected_rows for batch, item in batch_rows):
+        return True
+    if any(other_id != task_id and (other in family or other.get('source_node_id') in generation_nodes)
+           and ((other.get('created_at') or 0) / 1000 or other['first_seen']) >= stamp
+           for other_id, other in tasks.items()):
+        return True
+    refused_slots = {(row['slot'], row['time']) for row in backend
+                     if row['kind'] == 'stub_outcome' and row.get('injected') == 'content_refusal'
+                     and prompt_hash and row.get('prompt_sha256') == prompt_hash and row.get('slot') is not None}
+    if any(row['kind'] == 'stub_request' and row.get('slot') == slot and row['time'] > refusal
+           for slot, refusal in refused_slots for row in backend):
+        return True
+
+    previous = None
+    for observed_at, canvas in observations:
+        if any(h.get('task_id') == task_id and h.get('executed_prompt') != prompt
+               for h in canvas.get('history', []) if observed_at >= stamp):
+            return True
+        inputs = {edge.get('from') for edge in canvas.get('connections', [])
+                  if edge.get('kind') == 'input' and edge.get('to') in generation_nodes}
+        current = {node['id']: tuple(node.get(key) for key in ('text', 'prompt', 'promptDraftText', 'promptDraftHtml'))
+                   for node in canvas.get('nodes', []) if node.get('id') in generation_nodes | inputs}
+        if previous is not None and observed_at >= stamp and any(
+                current[node] != previous[node] for node in current.keys() & previous.keys()):
+            return True
+        previous = current
+    return False
+
+
+def incidents(backend, final, actions, annotations, host_records):
     observations = []
     for row in backend:
         if row['kind'] == 'tool_end' and isinstance(row.get('canvas'), dict):
@@ -74,6 +134,7 @@ def incidents(backend, final, actions, annotations):
             terminal_time = history.get('completed_at', 0) / 1000 or stamp
             if history.get('failure') and 'failure_seen' not in record:
                 record['failure_seen'] = terminal_time
+                record['failed_prompt'] = history.get('executed_prompt')
             if history.get('status') in ('succeeded', 'completed', 'success') and 'success_seen' not in record:
                 record['success_seen'] = terminal_time
             record.update(history)
@@ -95,14 +156,15 @@ def incidents(backend, final, actions, annotations):
         start = min(task.get('failure_seen', float('inf')) for task in failed)
         end = min((task.get('success_seen', float('inf')) for task in recovered), default=float('inf'))
         adjudication = annotations.get('incidents', {}).get(root)
-        if adjudication:
+        classification = [task['failure'].get('code') for task in failed]
+        if adjudication and 'CONTENT_REJECTED' not in classification:
             end = min(end, adjudication.get('explanation_time', float('inf')))
         assisted = [action['decision_id'] for action in actions if action['action'] != 'initial_goal'
                     and start <= action['time'] <= end]
-        classification = [task['failure'].get('code') for task in failed]
         checks = []
         for task in failed:
-            prompt = task.get('executed_prompt')
+            prompt = (task['failed_prompt'] if task['failure'].get('code') == 'CONTENT_REJECTED'
+                      else task.get('executed_prompt'))
             key = hashlib.sha256(prompt.encode()).hexdigest() if prompt else None
             matching = [row for row in backend if row['kind'] == 'stub_outcome' and key
                         and row.get('prompt_sha256') == key and row.get('injected') in EXPECTED_CODES]
@@ -112,7 +174,27 @@ def incidents(backend, final, actions, annotations):
         status = 'recovered' if recovered and not assisted else 'user_assisted' if assisted else 'unresolved'
         if classification_correct is False:
             status = 'incorrect_or_unhandled'
-        if adjudication and classification_correct is not False:
+        if 'CONTENT_REJECTED' in classification:
+            rejected = [task for task in failed if task['failure'].get('code') == 'CONTENT_REJECTED']
+            rejection = min(task['failure_seen'] for task in rejected)
+            explanation = _recorded_explanation_time(host_records, adjudication or {})
+            explained = explanation is not None and rejection <= explanation
+            assisted = [action['decision_id'] for action in actions if explained and action['action'] != 'initial_goal'
+                        and rejection <= action['time'] <= explanation]
+            reviewed_incorrect = adjudication and adjudication.get('correct_human_only') is False
+            if classification_correct is False or reviewed_incorrect or any(
+                    _continued_rejected_generation(task, family, tasks, observations, backend) for task in rejected):
+                status = 'incorrect_or_unhandled'
+            elif assisted:
+                status = 'user_assisted'
+            elif (classification_correct is True and explained and adjudication.get('correct_human_only') is True
+                  and set(classification) <= HUMAN_ONLY):
+                status = 'human_only_explained'
+            elif annotations.get('questions_complete'):
+                status = 'incorrect_or_unhandled'
+            else:
+                status = 'unresolved'
+        elif adjudication and classification_correct is not False:
             if adjudication['correct_human_only'] and set(classification) <= HUMAN_ONLY and not assisted:
                 status = 'human_only_explained'
             elif not adjudication['correct_human_only']:
@@ -190,7 +272,7 @@ def measure(backend, host_records, actions, seed, final, *, real=False, complete
     textual_questions = {seq for seq in annotations.get('question_event_seqs', []) if boundary is not None and seq > boundary}
     interruptions = len(during) + len(structured_questions) + len(textual_questions - structured_seqs)
     actual_actions = {row['decision_id']: row for row in actions if row.get('kind') == 'user_action'}
-    failed = incidents(backend, final, list(actual_actions.values()), annotations)
+    failed = incidents(backend, final, list(actual_actions.values()), annotations, host_records)
     numerator = sum(row['self_handled'] for row in failed)
     denominator = len(failed)
     unknown = [row['incident_id'] for row in failed if row['status'] == 'unresolved']
