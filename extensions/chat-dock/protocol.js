@@ -26,7 +26,7 @@
     INVALID_IMAGE: '仅支持不超过 8 MiB 的 PNG、JPEG、GIF 或 WebP 图片。',
     NO_FREE_SPOT: '画布上没有可放置新节点的空位。',
     CHOOSE_CANVAS: '打开了多个 Firefly 画布，请关闭多余的标签页后重试。',
-    IMAGE_UNAVAILABLE: '无法读取这张图片：网站可能限制跨域读取。',
+    IMAGE_UNAVAILABLE: '无法读取这张图片：网站可能限制跨域读取。可以右键复制图片，再到画布按 Ctrl+V 粘贴。',
     PERMISSION_DENIED: '尚未授权此 Firefly 地址。',
   };
 

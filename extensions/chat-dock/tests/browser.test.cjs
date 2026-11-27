@@ -7,6 +7,8 @@ const ext = join(__dirname, '..');
 const canvasURL = 'http://127.0.0.1:3000/static/smart-canvas.html';
 const chatURL = 'https://chatgpt.com/fixture';
 const imageURL = 'https://chatgpt.com/fixture.gif';
+const cdnURL = 'https://cdn.chatgpt.com/cross-origin.gif';
+const unavailableURL = 'https://cdn.chatgpt.com/unavailable.gif';
 const gif = 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 const channel = 'firefly.chat-capture.v1';
 
@@ -20,6 +22,10 @@ test('unpacked MV3 runs the manual control and relay on offline fixtures', {time
     const worker = context.serviceWorkers()[0] || await context.waitForEvent('serviceworker', {timeout: 8000});
     assert.match(worker.url(), /^chrome-extension:\/\/ecbjgicacjhegoijmnkijlgeagafgogf\/background\.js$/);
     const imageFetches = [];
+    await context.addCookies([
+      {name: 'fixture_session', value: 'chat', url: chatURL},
+      {name: 'fixture_session', value: 'cdn', url: cdnURL},
+    ]);
     await context.route('**/*', async route => {
       const url = route.request().url();
       if (url.startsWith(worker.url().replace('background.js', ''))) return route.continue();
@@ -28,14 +34,19 @@ test('unpacked MV3 runs the manual control and relay on offline fixtures', {time
           body: `<p id="selected" style="font:24px sans-serif">Firefly</p>
             <p id="editable" contenteditable>Editable</p>
             <img id="image" style="width:150px;height:100px" src="data:image/gif;base64,${gif}">
-            <img id="https-image" style="width:150px;height:100px" src="${imageURL}">`});
+            <img id="https-image" style="width:150px;height:100px" src="${imageURL}">
+            <img id="cdn-image" style="width:150px;height:100px" src="${cdnURL}">
+            <img id="unavailable-image" style="width:150px;height:100px" src="${unavailableURL}">`});
       }
-      if (url === imageURL) {
-        if (route.request().resourceType() === 'fetch') {
-          const headers = await route.request().allHeaders();
-          imageFetches.push([route.request().method(), headers.cookie, headers.referer]);
-        }
-        return route.fulfill({contentType: 'image/gif', body: Buffer.from(gif, 'base64')});
+      if ([imageURL, cdnURL, unavailableURL].includes(url)) {
+        const request = route.request();
+        const {cookie, referer} = await request.allHeaders();
+        const capture = request.resourceType() === 'fetch';
+        const status = (url === imageURL && cookie !== 'fixture_session=chat') ||
+          (url === unavailableURL && capture) ? 401 : 200;
+        if (capture) imageFetches.push({url, cookie, referer, status});
+        return route.fulfill({status, contentType: 'image/gif', body: status === 200 ? Buffer.from(gif, 'base64') : '',
+          headers: {'Access-Control-Allow-Origin': 'https://chatgpt.com', 'Access-Control-Allow-Credentials': 'true'}});
       }
       if ([canvasURL, `${canvasURL}?other=1`, `${canvasURL}.bak`, canvasURL.replace('3000', '3001')].includes(url)) {
         return route.fulfill({contentType: 'text/html', body: '<h1>Fixture canvas</h1>'});
@@ -143,14 +154,27 @@ test('unpacked MV3 runs the manual control and relay on offline fixtures', {time
       {channel, action: 'new-text', site: 'chatgpt.com', text: 'Firefly'},
     ]);
     assert.equal((await emitted()).length, 5);
-    await chat.locator('#https-image').hover();
-    await imageChip.waitFor();
+    async function captureImage(selector, url) {
+      await chat.locator(selector).hover();
+      await imageChip.waitFor();
+      const network = chat.waitForResponse(response => response.url() === url && response.request().resourceType() === 'fetch');
+      await imageChip.click();
+      return (await network).status();
+    }
     assert.deepEqual(imageFetches, []);
-    await imageChip.click();
+    assert.equal(await captureImage('#https-image', imageURL), 200, 'same-origin image requires its existing session cookie');
     await host.locator('#feedback').getByText('已复制到画布。').waitFor();
-    assert.deepEqual(imageFetches, [['GET', undefined, undefined]]);
-    assert.deepEqual((await otherPort.evaluate(() => window.fixture.captured))[2],
-      {channel, action: 'new-image', site: 'chatgpt.com', mime: 'image/gif', bytes: gif});
+    assert.equal(await captureImage('#cdn-image', cdnURL), 200);
+    await host.locator('#feedback').getByText('已复制到画布。').waitFor();
+    assert.deepEqual(imageFetches, [
+      {url: imageURL, cookie: 'fixture_session=chat', referer: undefined, status: 200},
+      {url: cdnURL, cookie: undefined, referer: undefined, status: 200},
+    ]);
+    const capturedImage = {channel, action: 'new-image', site: 'chatgpt.com', mime: 'image/gif', bytes: gif};
+    assert.deepEqual((await otherPort.evaluate(() => window.fixture.captured)).slice(2), [capturedImage, capturedImage]);
+    assert.equal(await captureImage('#unavailable-image', unavailableURL), 401);
+    await host.locator('#feedback').getByText('可以右键复制图片，再到画布按 Ctrl+V 粘贴', {exact:false}).waitFor();
+    assert.equal((await otherPort.evaluate(() => window.fixture.captured)).length, 4);
   } finally {
     await context.close();
   }

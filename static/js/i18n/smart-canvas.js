@@ -228,6 +228,7 @@
         "smart.ocrFailed": { zh: "文字识别失败", en: "Text extraction failed" },
         "smart.ocrNoImage": { zh: "该节点没有可识别的图片内容", en: "No image available to extract text from" },
         "smart.ocrPromptTitle": { zh: "OCR 文字", en: "OCR text" },
+        "smart.chatCaptureTitle": { zh: "对话采集", en: "Chat capture" },
         "smart.createConversationTitle": { zh: "对话", en: "Conversation" },
         "smart.createConversationSub": { zh: "保存项目内多轮文本与多模态交流", en: "Save multi-turn text and multimodal chat in the project" },
         "smart.createAgentSub": { zh: "先展示计划，确认后创建提示词或执行在线图片/视频", en: "Show the plan first, then create prompts or run online image/video" },

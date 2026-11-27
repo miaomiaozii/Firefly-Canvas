@@ -136,6 +136,7 @@
             if (point.exhausted) return {ok:false, error:'NO_FREE_SPOT'};
             const node = host.addTextNode(point, text);
             node.chatSourceDomain = site;
+            host.redraw();
             host.save();
             return {ok:true};
         }

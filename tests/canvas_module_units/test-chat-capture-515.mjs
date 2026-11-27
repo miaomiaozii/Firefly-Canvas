@@ -21,15 +21,17 @@ function connect(host) {
 }
 
 test('only trusted same-window messages with bounded exact data reach capture actions', async () => {
-    let changes = 0;
+    const node = {id:'text'};
+    const changes = [];
     const send = connect({project:() => 'p1', viewCenter:() => ({x:0, y:0}), occupied:() => [],
-        findSpot:() => ({x:0, y:0, exhausted:false}), addTextNode:() => { changes++; return {id:'text'}; }, save() {}});
+        findSpot:() => ({x:0, y:0, exhausted:false}), addTextNode:() => { changes.push('added'); return node; },
+        redraw() { changes.push(`drawn:${node.chatSourceDomain}`); }, save() { changes.push('saved'); }});
     const text = {action:'new-text', text:'capture me'};
     const rejected = [send(text, {isTrusted:false}), send(text, {source:{}}), send(text, {origin:'https://example.test'}),
         send(text, {ports:[]}), send({...text, site:'sub.chatgpt.com'}), send({...text, sourceUrl:'https://chatgpt.com/private'}),
         send({...text, text:'x'.repeat(20001)})];
     assert.deepEqual(await send(text).closed, {ok:true});
-    assert.equal(changes, 1);
+    assert.deepEqual(changes, ['added', 'drawn:chatgpt.com', 'saved']);
     assert.ok(rejected.every(attempt => attempt.response() === undefined));
 });
 

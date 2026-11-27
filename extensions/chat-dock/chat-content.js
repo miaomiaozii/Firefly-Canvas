@@ -249,7 +249,9 @@
     const controller = new AbortController();
     const deadline = setTimeout(() => controller.abort(), 8000);
     try {
-      const reply = await fetch(url, {mode: 'cors', credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer', signal: controller.signal});
+      // A cross-origin image host must not receive credentials, even if the browser has a session there.
+      const credentials = new URL(url).origin === location.origin ? 'same-origin' : 'omit';
+      const reply = await fetch(url, {mode: 'cors', credentials, redirect: 'error', referrerPolicy: 'no-referrer', signal: controller.signal});
       if (!reply.ok || !reply.body) return P.failure('IMAGE_UNAVAILABLE');
       if (Number(reply.headers.get('Content-Length')) > P.MAX_BYTES) return P.failure('INVALID_IMAGE');
       const reader = reply.body.getReader();

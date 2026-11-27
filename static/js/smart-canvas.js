@@ -9940,7 +9940,8 @@ function render(){
         // Keep persisted titles raw until the final text interpolation.  The
         // Agent/group/conversation titles can be user-controlled; escaping
         // here and again in the template would render entities literally.
-        const title = node.type === NODE_TYPE_LOCAL_EDIT ? (node.title || tr('smart.localEditTitle')) : node.type === NODE_TYPE_GROUP ? (node.title === '万能分组' ? tr('smart.groupTitleSmart') : (node.title || tr('smart.groupTitleSmart'))) : node.type === NODE_TYPE_CONVERSATION ? (node.title || 'Conversation') : node.type === NODE_TYPE_AGENT ? (node.title || 'Agent') : node.type === NODE_TYPE_TASK ? 'Agent Task' : node.type === NODE_TYPE_PROMPT ? 'Prompt' : node.type === NODE_TYPE_LOOP ? 'Loop' : (imgs.length > 1 ? 'Group' : imgs.length ? 'Image' : tr('smart.createImportNode'));
+        const promptTitle = (node.chatSourceDomain && node.title) || 'Prompt';
+        const title = node.type === NODE_TYPE_LOCAL_EDIT ? (node.title || tr('smart.localEditTitle')) : node.type === NODE_TYPE_GROUP ? (node.title === '万能分组' ? tr('smart.groupTitleSmart') : (node.title || tr('smart.groupTitleSmart'))) : node.type === NODE_TYPE_CONVERSATION ? (node.title || 'Conversation') : node.type === NODE_TYPE_AGENT ? (node.title || 'Agent') : node.type === NODE_TYPE_TASK ? 'Agent Task' : node.type === NODE_TYPE_PROMPT ? promptTitle : node.type === NODE_TYPE_LOOP ? 'Loop' : (imgs.length > 1 ? 'Group' : imgs.length ? 'Image' : tr('smart.createImportNode'));
         const scale = nodeScale(node);
         const layout = imageLayout(imgs, scale, node);
         const isPrompt = node.type === NODE_TYPE_PROMPT;
@@ -17721,7 +17722,7 @@ window.FireflyChatCapture?.connect({
     formatDraft: promptHtmlWithMentionTokens, escapeText: escapeHtml,
     viewCenter: viewportCenter, occupied: () => canvasState.nodes.map(node => canvasCore.nodeRect(node)).filter(Boolean),
     findSpot: CanvasPlacement.findFreeSpot, uploadImage: file => uploadFiles([file]),
-    addTextNode: ({x, y}, text) => createPromptNode(x, y, {text, title:'对话采集'}),
+    addTextNode: ({x, y}, text) => createPromptNode(x, y, {text, title:tr('smart.chatCaptureTitle')}),
     measureImage: image => {
         const subject = {type:NODE_TYPE_IMAGE, images:[image]};
         return canvasCore.imageLayout(subject.images, canvasCore.mediaNodeDefaultScale(subject), subject);
