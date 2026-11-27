@@ -29,6 +29,7 @@ import time
 import urllib.parse
 import uuid
 import wave
+from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
 
@@ -605,6 +606,19 @@ def load_production_app(root: Path, store: ProjectStore, *, runtime_root: Path |
 
     production_main.project_conversation_adapter = fake_project_conversation_adapter
     production_main.sync_static_html_versions = lambda: None
+    production_lifespan = production_main.app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan_with_main(app):
+        # #510: production startup resolves its own module by name after import.
+        sys.modules[module_name] = production_main
+        try:
+            async with production_lifespan(app) as state:
+                yield state
+        finally:
+            sys.modules.pop(module_name, None)
+
+    production_main.app.router.lifespan_context = lifespan_with_main
     production_main.app.state.issue13_module = production_main
     production_main.app.state.issue13_runtime_root = runtime_root
     production_main.app.state.issue13_projects_root = projects_root

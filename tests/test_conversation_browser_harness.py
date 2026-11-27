@@ -64,20 +64,31 @@ class LifecycleFixtureApp(FixtureApp):
 
 
 def run_viewport_isolation_assertions(temp_root: Path) -> None:
-    """原 test_each_viewport_loads... 的断言体；在子进程 runner 内执行。
+    """Run in a subprocess: reloading app modules in pytest breaks later suites (#243)."""
 
-    load_production_app 会弹掉/重建 sys.modules 里的 app.*/main——绝不能
-    在共享的 pytest 进程里跑（#243 全量回归 12 个 MCP 假失败的根因）。
-    """
-    first_store = ProjectStore(temp_root / "viewport-first", snapshot_delay=0)
-    second_store = ProjectStore(temp_root / "viewport-second", snapshot_delay=0)
-    try:
-        first_app = load_production_app(temp_root / "runtime-first", first_store)
-        second_app = load_production_app(temp_root / "runtime-second", second_store)
-    finally:
-        first_store.close()
-        second_store.close()
+    def run_viewport(name: str):
+        store = ProjectStore(temp_root / f"viewport-{name}", snapshot_delay=0)
+        try:
+            app = load_production_app(temp_root / f"runtime-{name}", store)
+            module = app.state.issue13_module
+            assert module.__name__ not in sys.modules
+            server = ConversationBrowserServer(store, app)
+            server.start()
+            try:
+                assert sys.modules[module.__name__] is module
+            finally:
+                server.close()
+            assert [message["type"] for message in server.lifespan_messages] == [
+                "lifespan.startup.complete",
+                "lifespan.shutdown.complete",
+            ]
+            assert module.__name__ not in sys.modules
+        finally:
+            store.close()
+        return app, store
 
+    first_app, first_store = run_viewport("first")
+    second_app, second_store = run_viewport("second")
     assert first_app is not second_app
     assert first_app.state.issue13_module is not second_app.state.issue13_module
     assert first_app.state.issue13_module.FIREFLY_PROJECT_STORE is first_store
@@ -239,10 +250,6 @@ class ConversationBrowserHarnessTests(unittest.TestCase):
         self.assertTrue(app.stopped)
 
     def test_each_viewport_loads_an_isolated_production_module_and_project_root(self):
-        # 本测试的 load_production_app 会从 sys.modules 弹掉并重新导入全部
-        # app.*/main 模块——这是对测试进程的永久污染（后续同进程测试拿到陈旧
-        # 模块绑定与已删除的 store root）。#243：改在子进程里跑，主进程模块表
-        # 不受影响；断言逻辑在 _ViewportIsolationSubprocessRunner 中保持不变。
         runner = ROOT / "tests" / "_conversation_viewport_isolation_runner.py"
         completed = subprocess.run(
             [sys.executable, str(runner)],
