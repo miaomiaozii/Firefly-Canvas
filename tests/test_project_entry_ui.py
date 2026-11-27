@@ -73,8 +73,13 @@ class ProjectEntryUiTests(unittest.TestCase):
         css = (ROOT / "static" / "css" / "project-list.css").read_text(encoding="utf-8")
         self.assertRegex(page, r'id="projectGrid"[^>]*>\s*<button id="gridCreate"')
         self.assertIn('id="projectSearch" type="search"', page)
-        for control in ('importProject', 'showTrash', 'projectSettings', 'showCreate'):
-            self.assertIn(f'id="{control}"', page.split('id="projectTools"', 1)[1].split('</nav>', 1)[0])
+        self.assertNotIn('id="projectTools"', page)
+        dock = page.split('id="projectDock"', 1)[1].split('</nav>', 1)[0]
+        controls = ('toggleProjectSearch', 'projectSearch', 'clearProjectSearch', 'importProject',
+                    'showTrash', 'projectSettings', 'showCreate')
+        ordered_positions = [dock.index(f'id="{control}"') for control in controls]
+        self.assertEqual(ordered_positions, sorted(ordered_positions))
+        self.assertIn('id="projectSearchBox" class="project-search" hidden', dock)
         self.assertIn('min-block-size: var(--height-utility)', css)
 
     def test_project_card_separates_open_and_disclosed_actions(self):

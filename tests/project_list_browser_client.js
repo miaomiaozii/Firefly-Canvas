@@ -112,11 +112,14 @@
     document.querySelector('#closeVersions').click();
 
     const search = document.querySelector('#projectSearch');
+    const searchToggle = document.querySelector('#toggleProjectSearch');
+    searchToggle.click();
+    check('dock search opens and receives focus', search === document.activeElement && searchToggle.hidden);
     search.value = 'no project has this name';
     search.dispatchEvent(new Event('input', { bubbles: true }));
-    check('search preserves create and reports no matches', !document.querySelector('#searchEmpty').hidden && document.querySelector('#projectGrid').children.length === 1);
-    search.value = '';
-    search.dispatchEvent(new Event('input', { bubbles: true }));
+    check('search reports no matches and hides create tile', !document.querySelector('#searchEmpty').hidden && document.querySelector('#gridCreate').hidden && document.querySelector('#projectSummary').textContent.includes(search.value));
+    search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    check('Escape resets search and restores button focus', !search.value && searchToggle === document.activeElement && !document.querySelector('#gridCreate').hidden);
     const visibleSeed = cardForId(seedId);
 
     const foundationLink = document.querySelector('link[href*="/static/css/studio-foundation.css"]');
@@ -140,7 +143,14 @@
       [cardAction, '--font-control'],
     ];
     check('project typography follows foundation', typography.every(([el, token]) => px(getComputedStyle(el).fontSize) === tokenPx(token)));
-    check('toolbar uses canvas utility height', [...document.querySelectorAll('#projectTools .tool-button, .project-search')].every(el => el.getBoundingClientRect().height === tokenPx('--height-utility')));
+    const dock = document.querySelector('#projectDock');
+    const dockBounds = dock.getBoundingClientRect();
+    const headerStyle = getComputedStyle(dock.parentElement);
+    check('dock uses canvas inset, padding, and utility height', px(headerStyle.paddingLeft) === tokenPx('--space-16') && px(headerStyle.paddingTop) === tokenPx('--space-16') &&
+      px(getComputedStyle(dock).paddingTop) === tokenPx('--space-3') &&
+      dock.offsetHeight === tokenPx('--height-utility') + 2 * (tokenPx('--space-3') + tokenPx('--space-1')) &&
+      [...dock.querySelectorAll(':scope > .tool-button')].every(el => el.offsetHeight === tokenPx('--height-utility')));
+    check('project grid aligns with dock', document.querySelector('#projectGrid').getBoundingClientRect().left === dockBounds.left);
     check('cards use the shared panel radius', px(getComputedStyle(visibleSeed).borderRadius) === tokenPx('--radius-panel'));
     check('placeholder is a decorative 16:10 dot matrix', (() => {
       const thumb = visibleSeed.querySelector('.project-thumb');
@@ -161,11 +171,11 @@
     }
 
     check('project list stays inside viewport', document.documentElement.scrollWidth <= window.innerWidth + 1, `viewport=${window.innerWidth} scroll=${document.documentElement.scrollWidth}`);
-    if (window.innerWidth <= 440) {
+    if (window.innerWidth <= 520) {
       const gridColumns = getComputedStyle(document.querySelector('#projectGrid')).gridTemplateColumns.trim().split(/\s+/).length;
-      const find = document.querySelector('.project-find').getBoundingClientRect();
-      const tools = document.querySelector('.project-tools').getBoundingClientRect();
-      check('narrow project list stacks toolbar capsules and cards', gridColumns === 1 && tools.top >= find.bottom);
+      check('narrow project list uses two columns and icon-only create', gridColumns === 2 &&
+        getComputedStyle(document.querySelector('#projectCreateLabel')).display === 'none' &&
+        createButton.getAttribute('aria-labelledby') === 'projectCreateLabel');
     }
 
     const dialog = document.querySelector('#createDialog');
@@ -209,7 +219,9 @@
     document.querySelector('#showTrash').click();
     await waitFor('trash card', trashCard);
     check('deleted project has the same card treatment', trashCard().querySelector('h2').textContent === seed.name && trashCard().querySelector('.project-thumb') && !trashCard().querySelector('.project-open'));
-    check('trash is a separate view with safety copy', document.querySelector('#projectLibrary').hidden && !document.querySelector('.trash-note').hidden);
+    check('trash is a separate view with safety copy and active count', document.querySelector('#projectLibrary').hidden &&
+      !document.querySelector('.trash-note').hidden && document.querySelector('#showTrash').getAttribute('aria-expanded') === 'true' &&
+      document.querySelector('#projectTrashLabel').textContent.includes('1') && document.querySelector('#trashSummary').textContent.includes('1'));
     trashCard().querySelector('.restore').click();
     await waitFor('restore refreshes the list and trash count', () => cardForId(seedId) && !trashCard() && trashCount() === '0');
     document.querySelector('#closeTrash').click();

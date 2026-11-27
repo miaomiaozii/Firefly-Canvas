@@ -3,6 +3,10 @@
   const emptyState = document.getElementById('emptyState');
   const searchEmpty = document.getElementById('searchEmpty');
   const search = document.getElementById('projectSearch');
+  const searchBox = document.getElementById('projectSearchBox');
+  const searchToggle = document.getElementById('toggleProjectSearch');
+  const clearSearch = document.getElementById('clearProjectSearch');
+  const showCreateButton = document.getElementById('showCreate');
   const summary = document.getElementById('projectSummary');
   const library = document.getElementById('projectLibrary');
   const grid = document.getElementById('projectGrid');
@@ -16,6 +20,8 @@
   const trashPanel = document.getElementById('trashPanel');
   const trashGrid = document.getElementById('trashGrid');
   const trashCount = document.getElementById('trashCount');
+  const trashSummary = document.getElementById('trashSummary');
+  const trashLabel = document.getElementById('projectTrashLabel');
   const trashEmpty = document.getElementById('trashEmpty');
   const showTrash = document.getElementById('showTrash');
   const closeTrash = document.getElementById('closeTrash');
@@ -50,7 +56,18 @@
   let openMenu = null;
   let cleanupInvoker = null;
   const tr = key => window.StudioI18n?.t?.(key) || key;
-  document.getElementById('projectTools').setAttribute('aria-label', tr('projectList.tools'));
+  function syncDockLabels(){
+    document.getElementById('projectDock').setAttribute('aria-label', tr('projectList.tools'));
+    trashLabel.textContent = trashCount.hidden ? tr('projectList.trashShort') :
+      tr('projectList.trashWithCount').replace('{count}', () => trashCount.textContent);
+    trashSummary.textContent = trashCount.hidden ? '' :
+      tr('projectList.trashSummary').replace('{count}', () => trashCount.textContent);
+  }
+  syncDockLabels();
+  window.addEventListener('studio-lang-change', () => {
+    syncDockLabels();
+    render();
+  });
 
   function openProject(project){
     const id = encodeURIComponent(project.id);
@@ -404,17 +421,21 @@
   }
   function render(){
     if(!projects) return;
-    const query = search.value.trim().toLocaleLowerCase();
-    const visible = projects.filter(project => project.name.toLocaleLowerCase().includes(query));
+    const query = search.value.trim();
+    const normalized = query.toLocaleLowerCase();
+    const visible = projects.filter(project => project.name.toLocaleLowerCase().includes(normalized));
     const active = document.activeElement;
     const focusedCard = active.closest('#projectGrid .project-card');
     closeProjectMenu();
     grid.querySelectorAll('.project-card').forEach(card => card.remove());
     grid.append(...visible.map(projectCard));
-    summary.textContent = tr('projectList.summary').replace('{count}', String(visible.length));
-    emptyState.hidden = projects.length !== 0;
-    searchEmpty.hidden = !query || visible.length !== 0 || !emptyState.hidden;
-    if(focusedCard) focusCard(grid, focusedCard.dataset.projectId, active.matches('.project-open') ? '.project-open' : '.project-more', gridCreate);
+    summary.textContent = query
+      ? tr('projectList.searchSummary').replace(/\{(query|count)\}/g, (_, key) => key === 'query' ? query : String(visible.length))
+      : tr('projectList.summary').replace('{count}', String(visible.length));
+    gridCreate.hidden = Boolean(query);
+    emptyState.hidden = Boolean(query) || projects.length !== 0;
+    searchEmpty.hidden = !query || visible.length !== 0;
+    if(focusedCard) focusCard(grid, focusedCard.dataset.projectId, active.matches('.project-open') ? '.project-open' : '.project-more', gridCreate.hidden ? search : gridCreate);
   }
   async function requestProjectMutation(url, method, failureKey){
     const response = await fetch(url, {method}).catch(() => { throw new Error(tr(failureKey)); });
@@ -472,12 +493,14 @@
       const focusedCard = active.closest('#trashGrid .trash-card');
       trashCount.textContent = String(trashed.length);
       trashCount.hidden = false;
+      syncDockLabels();
       trashGrid.replaceChildren(...trashed.map(trashCard));
       trashEmpty.hidden = trashed.length !== 0;
       if(focusedCard) focusCard(trashGrid, focusedCard.dataset.projectId, active.matches('.purge') ? '.purge' : '.restore', closeTrash);
     } catch(error) {
       if(request !== trashRequest) return;
       trashCount.hidden = true;
+      syncDockLabels();
       if(!trashPanel.hidden) status.textContent = dataError(error, 'projectList.trashFailed');
     }
   }
@@ -501,13 +524,13 @@
   function refreshLibrary(){
     return Promise.all([load(), loadTrash()]);
   }
-  document.getElementById('showCreate').addEventListener('click', showCreate);
+  showCreateButton.addEventListener('click', showCreate);
   gridCreate.addEventListener('click', showCreate);
   document.getElementById('cancelCreate').addEventListener('click', () => dialog.close());
   document.getElementById('closeCleanupPreview').addEventListener('click', () => cleanupDialog.close());
   cleanupDialog.addEventListener('close', () => {
     if(cleanupInvoker && !library.hidden && document.activeElement === document.body){
-      focusCard(grid, cleanupInvoker, '.project-more', gridCreate);
+      focusCard(grid, cleanupInvoker, '.project-more', gridCreate.hidden ? search : gridCreate);
     }
     cleanupInvoker = null;
   });
@@ -517,8 +540,29 @@
     library.hidden = false;
     showTrash.setAttribute('aria-expanded', 'false');
   }
+  function closeSearchBox({restoreFocus = true} = {}){
+    if(searchBox.hidden) return;
+    search.value = '';
+    searchBox.hidden = true;
+    searchToggle.hidden = false;
+    render();
+    if(restoreFocus) searchToggle.focus({preventScroll:true});
+  }
+  searchToggle.addEventListener('click', () => {
+    if(!trashPanel.hidden) closeTrashPanel();
+    searchToggle.hidden = true;
+    searchBox.hidden = false;
+    search.focus();
+  });
+  clearSearch.addEventListener('click', () => closeSearchBox());
+  searchBox.addEventListener('keydown', event => {
+    if(event.key !== 'Escape' || event.isComposing) return;
+    event.preventDefault();
+    closeSearchBox();
+  });
   showTrash.addEventListener('click', () => {
     if(!trashPanel.hidden){ closeTrashPanel(); return; }
+    closeSearchBox({restoreFocus:false});
     closeProjectMenu();
     trashPanel.hidden = false;
     library.hidden = true;
@@ -531,10 +575,7 @@
     closeTrashPanel();
     showTrash.focus();
   });
-  search.addEventListener('input', () => {
-    if(!trashPanel.hidden) closeTrashPanel();
-    render();
-  });
+  search.addEventListener('input', render);
   importFile.addEventListener('change', async () => {
     const file = importFile.files?.[0];
     if(!file) return;
