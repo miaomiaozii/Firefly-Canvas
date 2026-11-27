@@ -13,7 +13,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from app.core import (Any, BaseModel, CANVAS_LOCK, CanvasCreateRequest, CanvasMetaUpdate, CanvasSaveRequest, DEFAULT_PROJECT_ID, DeleteCanvasLogRequest, Dict, HISTORY_LOCK, HTTPException, List, NODE_TYPE_IMAGE, Optional, ProjectNotFound, ProjectStoreError, _os, _sys, asyncio, canvas_record, collect_local_media_urls, ensure_same_origin_request, hashlib, json, normalize_canvas_color, normalize_canvas_kind, os, re, urllib)
-_from_main_names = ['ASSETS_DIR', 'ASSET_LIBRARY_PATH', 'CANVAS_DIR', 'CONVERSATION_DIR', 'HISTORY_FILE', 'MEDIA_PREVIEW_DIR', 'OUTPUT_DIR', 'OUTPUT_OUTPUT_DIR', 'canvas_path', 'cleanup_expired_canvas_trash', 'delete_media_preview_cache', 'expand_canvas_generated_media_paths', 'generated_media_path_from_url', 'iter_canvas_records', 'json_references_media_path', 'list_canvases', 'list_deleted_canvases', 'load_canvas', 'load_canvas_any', 'local_media_path_from_url', 'manager', 'now_ms', 'persisted_json_references_media_path', 'project_store_call', 'reset_canvas_result_nodes_for_media', 'save_canvas', 'smart_owned_result_items', 'storage_file_path']
+_from_main_names = ['ASSETS_DIR', 'ASSET_LIBRARY_PATH', 'CANVAS_DIR', 'CONVERSATION_DIR', 'HISTORY_FILE', 'MEDIA_PREVIEW_DIR', 'OUTPUT_DIR', 'OUTPUT_OUTPUT_DIR', 'canvas_path', 'cleanup_expired_canvas_trash', 'delete_media_preview_cache', 'expand_canvas_generated_media_paths', 'generated_media_path_from_url', 'iter_canvas_records', 'json_references_media_path', 'load_canvas', 'local_media_path_from_url', 'manager', 'now_ms', 'persisted_json_references_media_path', 'project_store_call', 'reset_canvas_result_nodes_for_media', 'save_canvas', 'smart_owned_result_items', 'storage_file_path']
 import app.services as _svc
 for _nm in _from_main_names:
     _v = getattr(_app_main, _nm, None)
@@ -83,21 +83,6 @@ def list_canvases():
 def list_deleted_canvases():
     records = iter_canvas_records(include_deleted=True)
     return sorted(records, key=lambda item: item['deleted_at'], reverse=True)
-
-def collect_local_media_urls(value: Any) -> List[str]:
-    """Collect local /assets and /output URLs from nested canvas log payloads."""
-    urls = []
-    if isinstance(value, str):
-        text = value.strip()
-        if text.startswith(('/assets/', '/output/', '/api/storage-files/')):
-            urls.append(text)
-    elif isinstance(value, dict):
-        for item in value.values():
-            urls.extend(collect_local_media_urls(item))
-    elif isinstance(value, (list, tuple)):
-        for item in value:
-            urls.extend(collect_local_media_urls(item))
-    return urls
 
 def local_media_path_from_url(url: str) -> Optional[str]:
     """Resolve a local media URL using the same one-to-one mapping as app mounts."""

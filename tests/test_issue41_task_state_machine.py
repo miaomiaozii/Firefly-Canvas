@@ -43,6 +43,7 @@ import main  # noqa: E402
 import app.services as services  # noqa: E402
 import app.services.misc as misc  # noqa: E402
 from firefly_projects import ProjectStore  # noqa: E402
+from tests.image_test_support import fake_image_payload  # noqa: E402
 
 PROVIDER_INVALID_BASE_URL = "https://provider.invalid/v1"
 PROVIDER_INVALID_URL = f"{PROVIDER_INVALID_BASE_URL}/images/generations"
@@ -52,14 +53,6 @@ def tiny_png_base64():
     buffer = io.BytesIO()
     Image.new("RGB", (3, 2), (38, 190, 133)).save(buffer, format="PNG")
     return base64.b64encode(buffer.getvalue()).decode("ascii")
-
-
-def _fake_payload():
-    png = tiny_png_base64()
-    return (
-        {"type": "b64", "value": png, "mime_type": "image/png"},
-        {"data": [{"b64_json": png}], "id": f"upstream-{time.monotonic_ns()}"},
-    )
 
 
 def _rate_limited_error(text="rate limited"):
@@ -85,7 +78,7 @@ class ConcurrencyFake:
         try:
             await asyncio.sleep(self.hold)
             self.successes += 1
-            return _fake_payload()
+            return fake_image_payload(tiny_png_base64())
         finally:
             self.in_flight -= 1
 
@@ -105,7 +98,7 @@ class Flaky429Fake:
             raise _rate_limited_error()
         await asyncio.sleep(self.hold)
         self.successes += 1
-        return _fake_payload()
+        return fake_image_payload(tiny_png_base64())
 
 
 class SlowFake:
@@ -123,7 +116,7 @@ class SlowFake:
     async def __call__(self, *args, **kwargs):
         self.attempts += 1
         await asyncio.sleep(self.hold)
-        return _fake_payload()
+        return fake_image_payload(tiny_png_base64())
 
 
 class MixedFake:
@@ -147,7 +140,7 @@ class MixedFake:
         else:
             await asyncio.sleep(self.hold)
         self.successes += 1
-        return _fake_payload()
+        return fake_image_payload(tiny_png_base64())
 
 
 FAKE_PROVIDER = {

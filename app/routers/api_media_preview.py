@@ -19,20 +19,10 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-def image_has_alpha(img: Image.Image) -> bool:
-    if img.mode in ('RGBA', 'LA'):
-        return True
-    if img.mode == 'P':
-        return 'transparency' in img.info
-    return False
-
 def media_preview_cache_paths(path: str, width: int):
     stat = os.stat(path)
     key = hashlib.sha1(f'{os.path.realpath(path)}|{stat.st_mtime_ns}|{stat.st_size}|{width}'.encode('utf-8', 'ignore')).hexdigest()
     return (os.path.join(_app_main.MEDIA_PREVIEW_DIR, f'{key}.webp'), os.path.join(_app_main.MEDIA_PREVIEW_DIR, f'{key}.png'))
-
-def is_video_preview_file(path: str) -> bool:
-    return os.path.splitext(str(path or '').split('?', 1)[0])[1].lower() in {'.mp4', '.webm', '.mov', '.m4v', '.avi', '.mkv'}
 
 @router.get('/api/media-preview')
 async def media_preview(url: str, w: int=512):

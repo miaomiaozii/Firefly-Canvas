@@ -32,17 +32,7 @@ from app.services import agent_host
 from app.services.agent_host import AgentHostManager, AgentSession
 from app.services.agent_message_refs import resolve_node_refs
 from firefly_projects import ProjectStore
-
-
-@pytest.fixture(autouse=True)
-def isolated_event_loop_policy():
-    # asyncio.run clears the current loop; preserve the caller's policy and loop.
-    previous = asyncio.get_event_loop_policy()
-    asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
-    try:
-        yield
-    finally:
-        asyncio.set_event_loop_policy(previous)
+from tests.agent_loop_fixtures import isolated_event_loop_policy  # noqa: F401
 
 
 class StdinWorker:

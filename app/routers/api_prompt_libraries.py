@@ -22,10 +22,6 @@ for _nm in _from_main_names:
 router = APIRouter()
 
 
-def normalize_prompt_category_id(category='custom'):
-    category_id = re.sub('[^A-Za-z0-9_-]+', '_', str(category or 'custom'))[:40] or 'custom'
-    return 'custom' if category_id in {'mine', 'my', 'personal'} else category_id
-
 def normalize_prompt_library_item(item):
     if not isinstance(item, dict):
         item = {}
@@ -33,36 +29,8 @@ def normalize_prompt_library_item(item):
     positive = str(item.get('positive') or item.get('text') or '').strip()
     return {'id': re.sub('[^A-Za-z0-9_-]+', '_', str(item.get('id') or item.get('item_id') or f'tpl_{uuid.uuid4().hex[:12]}'))[:60], 'name': name, 'category': normalize_prompt_category_id(item.get('category') or 'custom'), 'scene': str(item.get('scene') or '').strip()[:500], 'positive': positive, 'negative': str(item.get('negative') or '').strip(), 'params': item.get('params') if isinstance(item.get('params'), dict) else {}, 'created_at': int(item.get('created_at') or _app_main.now_ms()), 'updated_at': int(item.get('updated_at') or item.get('created_at') or _app_main.now_ms())}
 
-def seed_system_prompt_library():
-    return {'id': 'system', 'name': '系统提示词库', 'type': 'prompt', 'items': builtin_prompt_templates(), 'categories': defaultPromptTemplateCategories()}
-
 def default_prompt_libraries():
     return {'active_library_id': 'system', 'libraries': [seed_system_prompt_library()], 'updated_at': _app_main.now_ms()}
-
-def defaultPromptTemplateCategories():
-    return [{'id': 'view', 'name': '视角'}, {'id': 'storyboard', 'name': '分镜'}, {'id': 'character', 'name': '角色'}, {'id': 'product', 'name': '产品'}, {'id': 'lighting', 'name': '光影'}, {'id': 'custom', 'name': '我的'}]
-
-def normalize_prompt_template_categories(*category_lists, include_defaults=True):
-    normalized = []
-    seen = set()
-
-    def add_category(category):
-        if not isinstance(category, dict):
-            return
-        cat_id = normalize_prompt_category_id(category.get('id') or category.get('name') or 'custom')
-        if cat_id in seen:
-            return
-        seen.add(cat_id)
-        name = sanitize_asset_name(category.get('name') or cat_id, cat_id)
-        normalized.append({'id': cat_id, 'name': name})
-    for categories in category_lists:
-        if isinstance(categories, list):
-            for category in categories:
-                add_category(category)
-    if include_defaults and (not normalized):
-        for category in defaultPromptTemplateCategories():
-            add_category(category)
-    return normalized
 
 def normalize_prompt_libraries(data):
     if not isinstance(data, dict):
@@ -123,13 +91,6 @@ def save_prompt_libraries(data):
 def public_prompt_libraries(data=None):
     data = normalize_prompt_libraries(data or load_prompt_libraries())
     return {'active_library_id': data.get('active_library_id') or (data.get('libraries') or [{}])[0].get('id') or 'system', 'libraries': data.get('libraries') or [], 'updated_at': data.get('updated_at') or _app_main.now_ms()}
-
-def find_prompt_library(data, library_id=''):
-    if not isinstance(data, dict):
-        return None
-    libraries = data.get('libraries') if isinstance(data.get('libraries'), list) else []
-    library_id = str(library_id or data.get('active_library_id') or '').strip()
-    return next((item for item in libraries if item.get('id') == library_id), None) or (libraries[0] if libraries else None)
 
 @router.get('/api/prompt-libraries')
 async def get_prompt_libraries():

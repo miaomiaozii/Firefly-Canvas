@@ -24,7 +24,7 @@ from PIL import Image, ImageDraw
 
 from firefly_projects import ProjectStore
 from tests import conversation_browser as harness
-from tests.native_browser import AsgiBrowserServer, NativeBrowser, find_browser
+from tests.native_browser import AsgiBrowserServer, NativeBrowser, find_browser, relative
 from tools.ui_integrity_evidence import (
     DETAIL_PAN_CONTRACT,
     EXPECTED_NODE_ACTION_IDS,
@@ -379,10 +379,6 @@ def set_fixed_preferences(server: AsgiBrowserServer) -> None:
     with urlopen(request, timeout=10) as response:
         if response.status != 200:
             raise AssertionError(f"failed to set fixed screenshot preferences: HTTP {response.status}")
-
-
-def relative(path: Path, root: Path) -> str:
-    return path.resolve().relative_to(root.resolve()).as_posix()
 
 
 def settle(browser: NativeBrowser) -> dict:

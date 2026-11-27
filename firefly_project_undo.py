@@ -21,15 +21,12 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timezone
 from typing import Any, Dict, List
+
+from firefly_opsdb import ops_utc_now_iso as _now_iso
 
 # 快照栈保留上限：与 static/js/canvas-undo.js 的 UNDO_LIMIT=40 同口径。
 UNDO_STACK_MAX_ENTRIES = 40
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _sanitize_entries(entries: Any) -> List[Any]:

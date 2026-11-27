@@ -25,8 +25,14 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, List, Tuple
+
+
+def ops_utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 # additive-only 迁移表：(key, [SQL 语句])。追加即可新增租户，禁止修改已发布条目。
 OPS_MIGRATIONS: List[Tuple[str, List[str]]] = [

@@ -21,7 +21,7 @@ from app.services import agent_refs, agent_image_settings
 from app.services.agent_errors import agent_error
 from app.services.agent_ops_async import run_blocking_to_completion
 from app.services.agent_ops_context import agent_ops_scope, current_agent_ops_context
-from app.services.agent_confirmation import Origin
+from app.services.agent_confirmation import Origin, _api
 from app.services.canvas_image_refs import ReferenceGraph
 from firefly_projects import ProjectNotFound, ProjectStoreError
 
@@ -37,11 +37,6 @@ _BATCHES = {}
 _GATES = WeakValueDictionary()
 _COPY = re.compile(r'(?:文案\s*[:：]|(?:on[- ]image|overlay)\s+(?:copy|text)\b|(?:叠加|添加|写上)(?:文字|文案))', re.I)
 _LOG = logging.getLogger(__name__)
-
-
-def _api():
-    from app.routers import api_agent_tools
-    return api_agent_tools
 
 
 def _digest(value):

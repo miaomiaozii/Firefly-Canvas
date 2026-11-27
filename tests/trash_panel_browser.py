@@ -41,6 +41,7 @@ from PIL import Image  # noqa: E402
 
 from firefly_projects import ProjectStore  # noqa: E402
 from tests import conversation_browser as harness  # noqa: E402
+from tests.conversation_browser import canvas_nodes  # noqa: E402
 from tests.native_browser import AsgiBrowserServer, NativeBrowser, find_browser  # noqa: E402
 
 CLIENT_SCRIPT = ROOT / "tests" / "trash_panel_browser_client.js"
@@ -92,10 +93,6 @@ def seed(store: ProjectStore) -> tuple[str, dict[str, str]]:
     store.apply_mutations(project_id, nodes, base_revision=0)
     store.flush(project_id)
     return project_id, asset_by_node
-
-
-def canvas_nodes(store: ProjectStore, project_id: str) -> list:
-    return store.open_project(project_id)["canvas"].get("nodes") or []
 
 
 def canvas_node_with_asset(store: ProjectStore, project_id: str, asset_id: str) -> dict | None:

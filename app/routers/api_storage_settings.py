@@ -22,15 +22,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-def _storage_abs_path(value, fallback):
-    text = str(value or '').strip()
-    if not text:
-        return os.path.abspath(fallback)
-    text = os.path.expanduser(os.path.expandvars(text))
-    if not os.path.isabs(text):
-        text = os.path.join(BASE_DIR, text)
-    return os.path.abspath(text)
-
 def load_storage_settings():
     return _app_main.load_storage_settings()
 

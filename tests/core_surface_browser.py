@@ -22,7 +22,7 @@ if str(ROOT) not in sys.path:
 
 from firefly_projects import ProjectStore
 from tests.conversation_browser import image_bytes, load_production_app
-from tests.native_browser import AsgiBrowserServer, NativeBrowser, VIEWPORTS, find_browser
+from tests.native_browser import AsgiBrowserServer, NativeBrowser, VIEWPORTS, find_browser, relative
 
 
 FONT_FAMILIES = ("Inter", "JetBrains Mono", "Space Grotesk")
@@ -119,10 +119,6 @@ def write_json(path: Path, value) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return str(path)
-
-
-def relative(path: Path, root: Path) -> str:
-    return path.resolve().relative_to(root.resolve()).as_posix()
 
 
 def project_scope_snapshot(store: ProjectStore, project_id: str) -> dict:

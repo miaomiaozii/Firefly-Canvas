@@ -10,12 +10,6 @@ def shared_folders_load():
         folders = []
     return {'folders': [f for f in folders if isinstance(f, dict)]}
 
-def shared_folder_by_id(folder_id):
-    for entry in shared_folders_load().get('folders', []):
-        if entry.get('id') == folder_id:
-            return entry
-    return None
-
 def shared_folders_save(data):
     firefly_json_io.read_global_json(_svc._main('SHARED_FOLDERS_FILE'), dict)
     firefly_json_io.write_json_atomic(_svc._main('SHARED_FOLDERS_FILE'), data)

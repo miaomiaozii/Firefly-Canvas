@@ -20,8 +20,6 @@ instead of a silent skip.
 from __future__ import annotations
 
 import argparse
-import base64
-import io
 import json
 import os
 import pathlib
@@ -32,7 +30,6 @@ import traceback
 from unittest.mock import patch
 
 import httpx
-from PIL import Image
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -40,8 +37,9 @@ if str(ROOT) not in sys.path:
 
 from firefly_projects import ProjectStore
 from tests import conversation_browser as harness
+from tests.image_test_support import rgba_png
 from tests.native_browser import AsgiBrowserServer, NativeBrowser
-from tests.provider_contract import ProviderContractCapture
+from tests.provider_contract import ProviderContractCapture, gemini_image_response
 
 VIEWPORT = (1440, 900)
 MODEL = "gemini-2.5-flash-image"
@@ -56,32 +54,6 @@ PROMPT = "edge compatibility generation"
 RESULT_PNG = None  # built lazily from rgba_png
 
 STEP_NAMES = ("edge-launched", "edge-canvas-interacted", "edge-generation-succeeded")
-
-
-def rgba_png(color: tuple[int, int, int, int]) -> bytes:
-    image = Image.new("RGBA", (1, 1), color)
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    return buffer.getvalue()
-
-
-def gemini_image_response(png: bytes) -> dict:
-    return {
-        "candidates": [
-            {
-                "content": {
-                    "parts": [
-                        {
-                            "inlineData": {
-                                "mimeType": "image/png",
-                                "data": base64.b64encode(png).decode("ascii"),
-                            }
-                        }
-                    ]
-                }
-            }
-        ]
-    }
 
 
 def provider_fixture() -> dict:

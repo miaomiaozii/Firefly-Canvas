@@ -19,7 +19,7 @@ if str(ROOT) not in sys.path:
 
 from firefly_projects import MEDIA_TRASH_RETENTION_MS, ProjectStore
 from tests.conversation_browser import load_production_app
-from tests.native_browser import AsgiBrowserServer, NativeBrowser, find_browser
+from tests.native_browser import AsgiBrowserServer, NativeBrowser, find_browser, relative
 
 
 VIEWPORTS = ((1920, 1080), (1440, 900), (1280, 720), (1024, 768), (800, 600))
@@ -41,10 +41,6 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def write_json(path: Path, value) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-
-def relative(path: Path, root: Path) -> str:
-    return path.resolve().relative_to(root.resolve()).as_posix()
 
 
 def image_bytes(path: Path, color: tuple[int, int, int]) -> bytes:

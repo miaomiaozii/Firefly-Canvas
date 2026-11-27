@@ -10,16 +10,7 @@ from fastapi import HTTPException
 import main  # Initialize the application before its routers resolve the main module.
 from app.routers import api_agent_nodes
 from app.services.agent_host import AgentHostManager
-
-
-@pytest.fixture(autouse=True)
-def isolated_event_loop_policy():
-    previous = asyncio.get_event_loop_policy()
-    asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
-    try:
-        yield
-    finally:
-        asyncio.set_event_loop_policy(previous)
+from tests.agent_loop_fixtures import isolated_event_loop_policy  # noqa: F401
 
 
 def test_router_does_not_retry_a_partially_written_queued_input(tmp_path):

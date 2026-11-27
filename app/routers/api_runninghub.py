@@ -22,32 +22,6 @@ for _nm in _from_main_names:
 router = APIRouter()
 
 
-def normalize_seed_uint32(value):
-    try:
-        if isinstance(value, bool):
-            return value
-        raw = str(value).strip()
-        if not raw:
-            return value
-        num = int(float(raw))
-    except Exception:
-        return value
-    if 0 <= num <= SEED_UINT32_MAX:
-        return value
-    safe = (abs(num) - 1) % SEED_UINT32_MAX + 1
-    return str(safe) if isinstance(value, str) else safe
-
-def sanitize_runninghub_node_info_list(items):
-    result = []
-    for item in items or []:
-        if not isinstance(item, dict):
-            continue
-        clean = dict(item)
-        if rh_is_seed_like_name(clean.get('fieldName'), clean.get('label'), clean.get('note')):
-            clean['fieldValue'] = normalize_seed_uint32(clean.get('fieldValue'))
-        result.append(clean)
-    return result
-
 @router.get('/api/runninghub/app-info')
 async def runninghub_app_info(webappId: str=''):
     webapp_id = str(webappId or '').strip()

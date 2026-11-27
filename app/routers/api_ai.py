@@ -24,31 +24,6 @@ for _nm in _from_main_names:
 router = APIRouter()
 
 
-def normalize_local_image_path(value):
-    text = str(value or '').strip().strip('"').strip("'")
-    if not text:
-        raise HTTPException(status_code=400, detail='本地图片路径为空')
-    if text.lower().startswith('file:'):
-        parsed = urllib.parse.urlparse(text)
-        if parsed.scheme.lower() != 'file':
-            raise HTTPException(status_code=400, detail='只支持本地图片路径')
-        if parsed.netloc and re.match('^[a-zA-Z]:$', parsed.netloc) and (os.name == 'nt'):
-            path = f"{parsed.netloc}{urllib.request.url2pathname(parsed.path or '')}"
-        elif parsed.netloc and parsed.netloc.lower() not in ('localhost',):
-            raise HTTPException(status_code=400, detail='只支持本机图片路径')
-        else:
-            path = urllib.request.url2pathname(parsed.path or '')
-    else:
-        path = text
-    path = path.strip().strip('"').strip("'")
-    if re.match('^/[a-zA-Z]:[\\\\/]', path):
-        path = path[1:]
-    if re.match('^[a-zA-Z]:[\\\\/]', path):
-        return os.path.abspath(path)
-    if path.startswith('/') and os.name != 'nt':
-        return os.path.abspath(path)
-    raise HTTPException(status_code=400, detail='只支持本机绝对图片路径')
-
 def import_local_image_file(path):
     ext = os.path.splitext(path)[1].lower()
     if ext not in LOCAL_IMAGE_IMPORT_EXTS:

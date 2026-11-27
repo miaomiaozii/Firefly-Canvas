@@ -34,16 +34,6 @@ def _local_upload_abs(rel):
         raise HTTPException(status_code=400, detail='非法路径')
     return (rel_path, path)
 
-def _local_upload_safe_path(name):
-    filename, path = _local_upload_abs(name)
-    if not filename:
-        raise HTTPException(status_code=400, detail='文件名不能为空')
-    return (filename, path)
-
-def _local_upload_safe_folder(path_value):
-    rel, path = _local_upload_abs(path_value)
-    return (rel, path)
-
 def _local_upload_caption_path(filename):
     return os.path.splitext(os.path.join(_svc._main('LOCAL_UPLOAD_DIR'), filename))[0] + '.txt'
 

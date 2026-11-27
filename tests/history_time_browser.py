@@ -15,12 +15,11 @@ from pathlib import Path as _bootstrap_Path
 _REPO_ROOT = str(_bootstrap_Path(__file__).resolve().parents[1])
 if _REPO_ROOT not in _bootstrap_sys.path:
     _bootstrap_sys.path.insert(0, _REPO_ROOT)
-from tools.browser_process import browser_popen
+from tools.browser_process import browser_popen, remove_profile
 from tools.process_tree import kill_process_tree
 
 import http.server
 import json
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -247,14 +246,6 @@ class HistoryTimeServer:
                     raise RuntimeError("browser history timestamp validation timed out")
                 self.condition.wait(remaining)
             return self.results[start_count]
-
-
-def remove_profile(profile: Path):
-    for _attempt in range(20):
-        shutil.rmtree(profile, ignore_errors=True)
-        if not profile.exists():
-            return
-        time.sleep(0.15)
 
 
 def launch(browser: Path, server: HistoryTimeServer, fixture: dict[str, str]):

@@ -34,6 +34,7 @@ from app.routers import api_mcp
 from app.services.agent_host import agent_host_manager
 from app.services.agent_tools_manifest import TOOL_NAMES
 from tests.fake_agent_host import FakeAgentProcess
+from tests.image_test_support import open_canvas_asset as _open_asset
 from tests.test_mcp_endpoint import McpTestBase, run_async
 
 #: 节点原图颜色（本地 PNG 字节，走 store.import_media）
@@ -50,12 +51,6 @@ def _png_bytes(size=(16, 16), color=SOURCE_COLOR):
 
 def _b64_png(size=(8, 8), color=MODEL_COLOR):
     return base64.b64encode(_png_bytes(size=size, color=color)).decode("ascii")
-
-
-def _open_asset(store, project_id, asset_id):
-    record = store.media_record(project_id, asset_id)
-    with open(record["path"], "rb") as f:
-        return Image.open(io.BytesIO(f.read()))
 
 
 class _FakeResponse:

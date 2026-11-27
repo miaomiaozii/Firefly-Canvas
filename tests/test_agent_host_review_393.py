@@ -10,16 +10,7 @@ import main  # Initialize the application before importing host services.
 from app.routers import api_agent_nodes
 from fastapi import HTTPException
 from app.services.agent_host import AgentHostManager
-
-
-@pytest.fixture(autouse=True)
-def isolated_event_loop_policy():
-    previous = asyncio.get_event_loop_policy()
-    asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
-    try:
-        yield
-    finally:
-        asyncio.set_event_loop_policy(previous)
+from tests.agent_loop_fixtures import isolated_event_loop_policy  # noqa: F401
 
 
 def setup_manager(tmp_path):

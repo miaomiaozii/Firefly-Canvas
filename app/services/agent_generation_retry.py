@@ -10,6 +10,7 @@ from fastapi import HTTPException
 
 from app.services import agent_refs, agent_image_settings
 from app.services.agent_batch import _digest, is_running
+from app.services.agent_confirmation import _api
 from app.services.agent_errors import agent_error
 from app.services.canvas_image_refs import ReferenceGraph
 from firefly_opsdb import OpsDb
@@ -18,11 +19,6 @@ from firefly_withdrawn_refs import REATTACH_HINT, historical_image_retry_hint, w
 
 
 _TASK = re.compile(r'agent_img_[a-f0-9]{32}')
-
-
-def _api():
-    from app.routers import api_agent_tools
-    return api_agent_tools
 
 
 def source_identity(node):

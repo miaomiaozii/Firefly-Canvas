@@ -26,16 +26,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-def model_list(env_name, primary, defaults):
-    configured = os.getenv(env_name, '')
-    configured_values = [item.strip() for item in configured.split(',') if item.strip()]
-    values = configured_values or [primary, *defaults]
-    deduped = []
-    for value in values:
-        if value and value not in deduped:
-            deduped.append(value)
-    return deduped
-
 def reload_env_globals():
     """保存 API 设置后，将 os.environ 里最新的值同步回模块级全局变量，
     避免保存后需要重启才能生效。"""
@@ -55,33 +45,6 @@ def volcengine_provider_api_key(explicit_key: str='') -> str:
     if explicit_key:
         return explicit_key
     return _app_main.provider_env_key_value('volcengine')
-
-def static_runninghub_thumbnail_url(entry_id, kind):
-    if kind != 'app':
-        return ''
-    entry_id = re.sub('[^0-9A-Za-z_-]', '', str(entry_id or '').strip())
-    if not entry_id:
-        return ''
-    for name in (f'app-{entry_id}', entry_id):
-        for ext in RUNNINGHUB_THUMBNAIL_EXTS:
-            for root in (STATIC_RUNNINGHUB_THUMBNAIL_DIR, STATIC_RUNNINGHUB_DIR):
-                path = os.path.abspath(os.path.join(root, f'{name}{ext}'))
-                if not path.startswith(os.path.abspath(STATIC_RUNNINGHUB_DIR) + os.sep):
-                    continue
-                if os.path.isfile(path):
-                    rel = os.path.relpath(path, STATIC_DIR).replace(os.sep, '/')
-                    return f"/static/{urllib.parse.quote(rel, safe='/._-')}?v={int(os.path.getmtime(path))}"
-    return ''
-
-def apply_runninghub_system_thumbnails(entries, kind):
-    result = []
-    for entry in normalize_runninghub_entries(entries or [], kind):
-        if not entry.get('thumbnail'):
-            thumb = static_runninghub_thumbnail_url(runninghub_entry_id(entry, kind), kind)
-            if thumb:
-                entry['thumbnail'] = thumb
-        result.append(entry)
-    return result
 
 def load_static_runninghub_provider():
     if not os.path.exists(STATIC_RUNNINGHUB_API_PROVIDERS_FILE):
@@ -117,16 +80,6 @@ def preserve_runninghub_hidden_overrides(provider):
     provider['rh_apps'] = [item for item in current if item]
     return provider
 
-def apply_locked_recommended_model_rules(base_url='', grouped=None):
-    rule = locked_recommended_provider_rule('', '', base_url)
-    if not rule or 'video_models' not in rule:
-        return grouped
-    grouped = {key: list(value or []) for key, value in (grouped or {}).items()}
-    grouped.setdefault('image', [])
-    grouped.setdefault('chat', [])
-    grouped['video'] = list(rule.get('video_models') or [])
-    return grouped
-
 def save_api_providers(providers):
     providers_file = _app_main.API_PROVIDERS_FILE
     _svc.write_guard.ensure_writable_config(providers_file)
@@ -141,58 +94,6 @@ def _encrypt_provider_secrets(provider):
             provider[key] = _svc.secret_store.encrypt_secret(provider[key])
     return provider
 
-
-def codex_models_payload(raw=None):
-    all_models = [*CODEX_DEFAULT_IMAGE_MODELS, *CODEX_DEFAULT_CHAT_MODELS]
-    return {'ok': True, 'protocol': 'codex', 'status': 200, 'message': 'OpenAI Codex CLI 可用，模型列表来自本机 CLI 默认配置。', 'model_count': len(all_models), 'total': len(all_models), 'image_models': CODEX_DEFAULT_IMAGE_MODELS, 'chat_models': CODEX_DEFAULT_CHAT_MODELS, 'video_models': [], 'all': all_models, 'raw': raw or {}}
-
-def gemini_cli_models_payload(raw=None):
-    all_models = [*GEMINI_CLI_DEFAULT_IMAGE_MODELS, *GEMINI_CLI_DEFAULT_CHAT_MODELS]
-    all_models = model_list_from_values(all_models)
-    return {'ok': True, 'protocol': 'gemini-cli', 'status': 200, 'message': 'Antigravity CLI 可用，模型列表使用 auto 默认模型。', 'model_count': len(all_models), 'total': len(all_models), 'image_models': GEMINI_CLI_DEFAULT_IMAGE_MODELS, 'chat_models': GEMINI_CLI_DEFAULT_CHAT_MODELS, 'video_models': [], 'all': all_models, 'raw': raw or {}}
-
-def runninghub_model_display_name(item, model_id=''):
-    if not isinstance(item, dict):
-        return ''
-    raw_id = str(model_id or runninghub_model_id(item) or '').strip()
-    for key in ('name_cn', 'name_zh', 'zh_name', 'cn_name', 'display_name', 'displayName', 'title', 'label', 'nameCn', 'nameZh', 'chinese_name', 'chineseName'):
-        value = re.sub('\\s+', ' ', str(item.get(key) or '').strip())
-        if value and value != raw_id:
-            return value[:160]
-    name = re.sub('\\s+', ' ', str(item.get('name') or '').strip())
-    if name and name != raw_id and (not re.fullmatch('[A-Za-z0-9_./:-]+', name)):
-        return name[:160]
-    return ''
-
-def runninghub_registry_payload(items):
-    grouped = {'image': [], 'chat': RUNNINGHUB_FALLBACK_CHAT_MODELS[:], 'video': []}
-    model_names = {}
-    all_ids = []
-    for item in items or []:
-        mid = runninghub_model_id(item)
-        if not mid:
-            continue
-        display_name = runninghub_model_display_name(item, mid)
-        if display_name:
-            model_names[mid] = display_name
-        output_type = str(item.get('output_type') or item.get('outputType') or '').strip().lower()
-        if output_type in ('image', 'video'):
-            grouped[output_type].append(mid)
-            all_ids.append(mid)
-    for model in RUNNINGHUB_DEFAULT_IMAGE_MODELS:
-        if model not in grouped['image']:
-            grouped['image'].append(model)
-            all_ids.append(model)
-    for model in RUNNINGHUB_DEFAULT_VIDEO_MODELS:
-        if model not in grouped['video']:
-            grouped['video'].append(model)
-            all_ids.append(model)
-    for model in RUNNINGHUB_FALLBACK_CHAT_MODELS:
-        if model not in all_ids:
-            all_ids.append(model)
-    for key in grouped:
-        grouped[key] = sorted(set(grouped[key]))
-    return {'total': len(set(all_ids)), 'image_models': grouped['image'], 'chat_models': grouped['chat'], 'video_models': grouped['video'], 'all': sorted(set(all_ids)), 'model_names': model_names, 'protocol': 'runninghub'}
 
 async def runninghub_models_payload(provider=None):
     registry, meta = await _app_main.fetch_runninghub_model_registry(provider, include_fallback=True, include_meta=True)
@@ -265,18 +166,6 @@ async def save_providers(payload: List[ApiProviderPayload]):
     return {'providers': [public_provider(p) for p in providers]}
 
 
-def protocol_from_payload(payload):
-    provider_id = str(getattr(payload, 'provider_id', '') or '').strip().lower()
-    if provider_id == 'volcengine':
-        return 'volcengine'
-    if provider_id == 'runninghub':
-        return 'runninghub'
-    base_url = str(getattr(payload, 'base_url', '') or '').strip().lower()
-    if 'runninghub.cn' in base_url or 'runninghub.ai' in base_url:
-        return 'runninghub'
-    protocol = str(getattr(payload, 'protocol', '') or 'openai').strip().lower()
-    return protocol if protocol in SUPPORTED_PROVIDER_PROTOCOLS else 'openai'
-
 def api_key_from_payload(payload, protocol: str=''):
     explicit = str(getattr(payload, 'api_key', '') or '').strip()
     provider_id = str(getattr(payload, 'provider_id', '') or '').strip().lower()
@@ -294,139 +183,6 @@ def api_key_from_payload(payload, protocol: str=''):
     if protocol == 'volcengine':
         return volcengine_provider_api_key('')
     return ''
-
-def upstream_models_url(base_url: str, protocol: str):
-    if protocol == 'gemini':
-        return f'{base_url}/models' if base_url.endswith('/v1beta') else f'{base_url}/v1beta/models'
-    if protocol == 'volcengine':
-        return f'{base_url}/models' if base_url.endswith('/api/v3') else f'{base_url}/api/v3/models'
-    if protocol == 'runninghub':
-        return runninghub_openapi_url({'base_url': base_url}, 'models')
-    return f'{base_url}/models' if base_url.endswith('/v1') else f'{base_url}/v1/models'
-
-def upstream_model_headers(api_key: str, protocol: str):
-    if protocol == 'gemini':
-        return {'x-goog-api-key': api_key, 'Accept': 'application/json'}
-    if protocol == 'runninghub':
-        return {'Authorization': bearer_auth_value(api_key), 'Accept': 'application/json'}
-    return {'Authorization': bearer_auth_value(api_key), 'Accept': 'application/json'}
-
-def volcengine_default_model_payload(status=200, message='', raw=None):
-    return {'ok': True, 'protocol': 'volcengine', 'status': status, 'message': message or '方舟任务接口可用，模型列表接口未返回模型。请按实际方舟控制台模型名称手动填写视频模型。', 'model_count': 0, 'image_models': [], 'chat_models': [], 'video_models': [], 'recommended_models': {}, 'all': [], 'raw': raw}
-
-def volcengine_task_probe_url(base_url: str):
-    base = str(base_url or '').strip().rstrip('/')
-    if not base:
-        return ''
-    if base.endswith('/api/v3'):
-        return f'{base}/contents/generations/tasks/healthcheck_probe_do_not_submit'
-    return f'{base}/api/v3/contents/generations/tasks/healthcheck_probe_do_not_submit'
-
-async def probe_volcengine_task_endpoint(client, base_url: str, api_key: str):
-    probe_url = volcengine_task_probe_url(base_url)
-    if not probe_url:
-        return (False, {'status': 0, 'message': 'Base URL 为空'})
-    response = await client.get(probe_url, headers=upstream_model_headers(api_key, 'volcengine'))
-    try:
-        raw = response.json() if response.text else {}
-    except Exception:
-        raw = response.text[:500]
-    if response.status_code in (401, 403):
-        return (False, {'status': response.status_code, 'message': '方舟 API Key 无效或无权限', 'raw': raw})
-    if looks_like_html_response(response.text):
-        return (False, {'status': response.status_code, 'message': '任务接口返回 HTML，Base URL 可能不是 API 地址', 'raw': raw})
-    if response.status_code < 500:
-        return (True, {'status': response.status_code, 'message': '方舟任务查询端点可达', 'raw': raw})
-    return (False, {'status': response.status_code, 'message': f'方舟任务接口服务端错误 {response.status_code}', 'raw': raw})
-
-def openai_compat_root_for_probe(base_url: str):
-    base = str(base_url or '').strip().rstrip('/')
-    if base.endswith('/api/v3'):
-        base = base[:-len('/api/v3')]
-    if base.endswith('/v1'):
-        return base
-    return f'{base}/v1' if base else ''
-
-async def probe_openai_compat_bearer_endpoint(client, base_url: str, api_key: str):
-    root = openai_compat_root_for_probe(base_url)
-    if not root:
-        return (False, {'status': 0, 'message': 'Base URL 为空'})
-    url = f'{root}/chat/completions'
-    response = await client.post(url, headers={**upstream_model_headers(api_key, 'openai'), 'Content-Type': 'application/json'}, json={'messages': []})
-    try:
-        raw = response.json() if response.text else {}
-    except Exception:
-        raw = response.text[:500]
-    if response.status_code in (401, 403):
-        return (False, {'status': response.status_code, 'message': 'API Key 无效或无权限', 'raw': raw})
-    if looks_like_html_response(response.text):
-        return (False, {'status': response.status_code, 'message': 'OpenAI 兼容入口返回 HTML，Base URL 可能不是 API 地址', 'raw': raw})
-    if response.status_code < 500:
-        return (True, {'status': response.status_code, 'message': 'OpenAI 兼容 Bearer 鉴权入口可达', 'raw': raw})
-    return (False, {'status': response.status_code, 'message': f'OpenAI 兼容入口服务端错误 {response.status_code}', 'raw': raw})
-
-async def probe_openai_models_endpoint(client, base_url: str, api_key: str):
-    url = upstream_models_url(base_url, 'openai')
-    response = await client.get(url, headers=upstream_model_headers(api_key, 'openai'))
-    try:
-        raw = response.json() if response.text else {}
-    except Exception:
-        raw = response.text[:500]
-    if response.status_code in (301, 302, 303, 307, 308):
-        location = response.headers.get('Location') or response.headers.get('location') or ''
-        suffix = f'：{location}' if location else ''
-        return (False, {'status': response.status_code, 'message': f'OpenAI /v1/models 发生跳转{suffix}，请填写 API Base URL，不要填写网页登录地址', 'raw': raw})
-    if response.status_code in (401, 403):
-        return (False, {'status': response.status_code, 'message': 'OpenAI API Key 无效或无权限', 'raw': raw})
-    if looks_like_html_response(response.text):
-        return (False, {'status': response.status_code, 'message': 'OpenAI /v1/models 返回网页 HTML，请检查请求地址是否为 API Base URL', 'raw': raw})
-    if response.status_code < 300:
-        grouped, ids = parse_upstream_models(raw, 'openai') if isinstance(raw, dict) else ({'image': [], 'chat': [], 'video': []}, [])
-        grouped, ids = apply_agnes_model_defaults(base_url, grouped, ids)
-        grouped = apply_locked_recommended_model_rules(base_url, grouped)
-        return (True, {'status': response.status_code, 'message': f"OpenAI 兼容模型列表端点可用{(f'，找到 {len(ids)} 个模型' if ids else '')}", 'raw': raw, 'model_count': len(ids), 'image_models': grouped['image'], 'chat_models': grouped['chat'], 'video_models': grouped['video'], 'all': ids})
-    if 400 <= response.status_code < 500:
-        return (False, {'status': response.status_code, 'message': f'OpenAI /v1/models 不可用 (HTTP {response.status_code})', 'raw': raw})
-    return (False, {'status': response.status_code, 'message': f'OpenAI /v1/models 服务端错误 {response.status_code}', 'raw': raw})
-
-async def probe_volcengine_auto_detect(client, base_url: str, api_key: str):
-    task_ok, task_probe = await probe_volcengine_task_endpoint(client, base_url, api_key)
-    if task_ok:
-        return (True, {'status': task_probe.get('status') or 200, 'message': '检测到方舟/Ark 任务协议', 'raw': {'task_probe': task_probe.get('raw')}})
-    compat_ok, compat_probe = await probe_openai_compat_bearer_endpoint(client, base_url, api_key)
-    if compat_ok:
-        return (True, {'status': compat_probe.get('status') or 200, 'message': '检测到方舟/Ark Bearer 鉴权入口（OpenAI 兼容透传）', 'raw': {'task_probe': task_probe, 'openai_compat_probe': compat_probe.get('raw')}})
-    return (False, {'status': compat_probe.get('status') or task_probe.get('status') or 0, 'message': compat_probe.get('message') or task_probe.get('message') or '未检测到方舟/Ark 兼容入口', 'raw': {'task_probe': task_probe, 'openai_compat_probe': compat_probe.get('raw')}})
-
-def recommend_upstream_models(grouped):
-    """Choose one stable default per media kind for automatic routing.
-
-    The upstream list is still returned in full; these values only tell the
-    canvas which model to select first after a provider is fetched.
-    """
-    priorities = {'image': ('nano-banana-pro', 'nano-banana-2.1', 'nano-banana-2', 'nano-banana', 'gpt-image', 'imagen', 'seedream', 'qwen-image', 'dall-e', 'flux', 'image'), 'chat': ('gpt-5.4', 'chatgpt-5.4', 'gpt-5.', 'gpt-', 'claude', 'gemini', 'qwen', 'deepseek', 'glm', 'llama', 'chat'), 'video': ('veo', 'sora', 'seedance', 'wan', 'kling', 'hailuo', 'video')}
-    result = {}
-    for kind, values in (grouped or {}).items():
-        models = [str(value or '').strip() for value in values or [] if str(value or '').strip()]
-        if not models:
-            continue
-        selected = next((model for hint in priorities.get(kind, ()) for model in models if hint in model.lower()), models[0])
-        result[kind] = selected
-    return result
-
-def apply_agnes_model_defaults(base_url, grouped, ids):
-    if 'apihub.agnes-ai.com' not in str(base_url or '').strip().lower():
-        return (grouped, ids)
-    grouped = {key: list(value or []) for key, value in (grouped or {}).items()}
-    ids = list(ids or [])
-    for model in AGNES_DEFAULT_VIDEO_MODELS:
-        if model not in ids:
-            ids.append(model)
-        if model not in grouped.setdefault('video', []):
-            grouped['video'].append(model)
-    ids = sorted(set(ids))
-    grouped['video'] = sorted(set(grouped.get('video') or []))
-    return (grouped, ids)
 
 async def comfyui_test_connection(payload):
     """探测可达性和生图能力，不修改服务商配置（#472）。"""

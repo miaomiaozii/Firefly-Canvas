@@ -30,15 +30,6 @@ for _nm in _from_main_names:
 router = APIRouter()
 
 
-def avatar_platform_for_provider(provider) -> str:
-    if not provider:
-        return ''
-    if is_apimart_provider(provider):
-        return 'apimart'
-    if is_volcengine_provider(provider):
-        return 'volcengine'
-    return ''
-
 def remove_asset_library_file(item) -> None:
     """删除资产对应的本地文件（仅限 library 副本，删了不影响 /output 原图）。日志不影响主流程。"""
     try:
@@ -68,32 +59,6 @@ async def upload_media_for_apimart(client, provider, ref_url: str, kind: str) ->
     if kind == 'audio':
         return await upload_audio_for_apimart(client, provider, ref_url)
     return await upload_image_for_apimart(client, provider, ref_url)
-
-def apimart_avatar_asset_type(kind: str) -> str:
-    return {'video': 'Video', 'audio': 'Audio'}.get(str(kind or '').lower(), 'Image')
-
-def extract_apimart_avatar_asset_uri(payload) -> str:
-    """从 /v1/tasks 审核结果里取出 asset://<id> 形式的可信素材 URI。"""
-    if isinstance(payload, list):
-        for item in payload:
-            found = extract_apimart_avatar_asset_uri(item)
-            if found:
-                return found
-        return ''
-    if not isinstance(payload, dict):
-        return ''
-    for key in ('asset_url', 'assetUrl', 'uri', 'url'):
-        value = str(payload.get(key) or '').strip()
-        if value.startswith('asset://'):
-            return value
-    for key in ('usable_assets', 'assets', 'result', 'data'):
-        found = extract_apimart_avatar_asset_uri(payload.get(key))
-        if found:
-            return found
-    asset_id = str(payload.get('asset_id') or payload.get('assetId') or '').strip()
-    if asset_id:
-        return f'asset://{asset_id}'
-    return ''
 
 async def submit_apimart_avatar_asset(provider, public_url: str, name: str, kind: str, project_name: str='default', group_name: str='') -> str:
     """把一个公网可访问的素材提交到 APIMart private-avatar 审核，立即返回任务 ID（不阻塞轮询）。"""
@@ -134,32 +99,6 @@ async def check_apimart_avatar_task(provider, task_id: str) -> Dict[str, Any]:
     if status in AVATAR_TASK_FAIL_STATUSES:
         return {'status': 'Failed', 'asset_uri': '', 'detail': f'审核未通过（{status}）。'}
     return {'status': 'Processing', 'asset_uri': '', 'detail': '审核中'}
-
-def _volc_hmac(key: bytes, msg: str) -> bytes:
-    return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).digest()
-
-def volcengine_sign_v4_headers(ak: str, sk: str, action: str, body_str: str, service: str=VOLCENGINE_ARK_ASSET_SERVICE, region: str=VOLCENGINE_ARK_ASSET_REGION, version: str=VOLCENGINE_ARK_ASSET_VERSION, host: str=VOLCENGINE_ARK_ASSET_HOST) -> Dict[str, str]:
-    """火山引擎 OpenAPI 签名 V4（POST + JSON body）。返回需随请求发送的鉴权头。"""
-    method = 'POST'
-    content_type = 'application/json'
-    now = datetime.datetime.now(datetime.timezone.utc)
-    x_date = now.strftime('%Y%m%dT%H%M%SZ')
-    short_date = x_date[:8]
-    payload_hash = hashlib.sha256(body_str.encode('utf-8')).hexdigest()
-    canonical_query = f"Action={urllib.parse.quote(action, safe='')}&Version={urllib.parse.quote(version, safe='')}"
-    canonical_headers = f'content-type:{content_type}\nhost:{host}\nx-content-sha256:{payload_hash}\nx-date:{x_date}\n'
-    signed_headers = 'content-type;host;x-content-sha256;x-date'
-    canonical_request = '\n'.join([method, '/', canonical_query, canonical_headers, signed_headers, payload_hash])
-    algorithm = 'HMAC-SHA256'
-    credential_scope = f'{short_date}/{region}/{service}/request'
-    string_to_sign = '\n'.join([algorithm, x_date, credential_scope, hashlib.sha256(canonical_request.encode('utf-8')).hexdigest()])
-    k_date = _volc_hmac(sk.encode('utf-8'), short_date)
-    k_region = _volc_hmac(k_date, region)
-    k_service = _volc_hmac(k_region, service)
-    k_signing = _volc_hmac(k_service, 'request')
-    signature = hmac.new(k_signing, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
-    authorization = f'{algorithm} Credential={ak}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}'
-    return {'Content-Type': content_type, 'Host': host, 'X-Date': x_date, 'X-Content-Sha256': payload_hash, 'Authorization': authorization}
 
 async def volcengine_ark_asset_call(client, action: str, body: Dict[str, Any]) -> Dict[str, Any]:
     """调用一次火山 Ark Assets OpenAPI，返回 Result 内容；出错抛 HTTPException。"""
@@ -377,16 +316,6 @@ async def rename_asset_library_item(item_id: str, payload: AssetLibraryRenameReq
                     save_asset_library(lib)
                     return {'library': lib, 'item': item}
     raise HTTPException(status_code=404, detail='资产不存在')
-
-def find_asset_item_in_library(lib, item_id, library_id=''):
-    for library in lib.get('libraries', []):
-        if library_id and library.get('id') != library_id:
-            continue
-        for cat in library.get('categories', []):
-            for item in cat.get('items', []):
-                if item.get('id') == item_id:
-                    return item
-    return None
 
 @router.post('/api/asset-library/items/classify')
 async def classify_asset_library_items(payload: AssetLibraryClassifyRequest):

@@ -68,10 +68,11 @@ class LifecycleBase(unittest.TestCase):
         main.FIREFLY_PROJECT_STORE = self.store
         self.project = self.store.create_project("e2e-tabbit-lifecycle-353")
         self.project_id = self.project["id"]
-        self.manager = agent_host_manager_singleton()
+        self.manager = agent_host.agent_host_manager
         self._sessions_backup = dict(self.manager.sessions)
         self.addCleanup(self._restore_sessions)
-        self.loop = _loop()
+        # set_event_loop 会改动线程的策略状态，导致后续测试的 get_event_loop() 失败。
+        self.loop = asyncio.new_event_loop()
         self.addCleanup(self.loop.close)
 
     def _restore_store(self):
@@ -101,7 +102,7 @@ class LifecycleBase(unittest.TestCase):
 
     def _live_session(self, node_id, ext=None, last_activity=0.0):
         key = f"{self.project_id}:{node_id}"
-        session = self.manager.sessions[key] = _new_session(self.project_id, node_id)
+        session = self.manager.sessions[key] = agent_host.AgentSession(project_id=self.project_id, node_id=node_id)
         session.status = "running"
         session.process = FakeProc()
         session._last_activity = last_activity
@@ -111,22 +112,6 @@ class LifecycleBase(unittest.TestCase):
 
     def _sessions_dir(self, node_id):
         return Path(self.store.root) / self.project_id / "agent_nodes" / node_id / "sessions"
-
-
-def agent_host_manager_singleton():
-    from app.services.agent_host import agent_host_manager
-    return agent_host_manager
-
-
-def _new_session(project_id, node_id):
-    return agent_host.AgentSession(project_id=project_id, node_id=node_id)
-
-
-def _loop():
-    # 绝不调 asyncio.set_event_loop：会在主线程永久标 _set_called=True，
-    # 后续测试（test_agent_host_kill/test_quality_gate 等 380+ 条）的
-    # get_event_loop() 就从「自动新建」变成 RuntimeError: no current event loop。
-    return asyncio.new_event_loop()
 
 
 class DropNodeSessionTests(LifecycleBase):

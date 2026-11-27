@@ -10,6 +10,7 @@ import pytest
 
 from app.services import agent_host
 from app.services.agent_host import AgentHostManager
+from tests.agent_loop_fixtures import isolated_event_loop_policy  # noqa: F401
 
 
 @pytest.fixture(autouse=True)
@@ -17,17 +18,6 @@ def isolated_host(monkeypatch, tmp_path):
     # No application bootstrap (or journal) is needed for queue unit tests.
     monkeypatch.setattr(agent_host, '_app_main', SimpleNamespace(FIREFLY_PROJECT_STORE=None))
     monkeypatch.setattr(AgentHostManager, '_get_project_dir', lambda self, project_id: str(tmp_path / project_id))
-
-
-@pytest.fixture(autouse=True)
-def isolated_event_loop_policy():
-    # IsolatedAsyncioTestCase clears the current loop; preserve the caller's policy and loop.
-    previous = asyncio.get_event_loop_policy()
-    asyncio.set_event_loop_policy(asyncio.DefaultEventLoopPolicy())
-    try:
-        yield
-    finally:
-        asyncio.set_event_loop_policy(previous)
 
 
 class LogicalTurnTests(unittest.IsolatedAsyncioTestCase):

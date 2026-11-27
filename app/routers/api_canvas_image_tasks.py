@@ -21,11 +21,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-def extract_task_id_from_text(text):
-    value = str(text or '')
-    match = re.search('(?:task_id|taskId|task id)\\s*[=:：]\\s*([A-Za-z0-9_.:-]+)', value, re.IGNORECASE)
-    return match.group(1) if match else ''
-
 async def run_canvas_image_task(task_id: str, payload: OnlineImageRequest, *, canvas_selection):
     with CANVAS_TASK_LOCK:
         if task_id in CANVAS_TASKS:

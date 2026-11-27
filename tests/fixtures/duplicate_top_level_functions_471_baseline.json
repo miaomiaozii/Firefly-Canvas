@@ -17,75 +17,6 @@
         }
       ]
     },
-    "_agent_clean_params": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "b84a95fe5c94a644e8c600037fe67af189c8374f5547602c47926612eb7a3587"
-        },
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "b84a95fe5c94a644e8c600037fe67af189c8374f5547602c47926612eb7a3587"
-        }
-      ]
-    },
-    "_agent_forbidden_value": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "869b989649da8c33cbe7d57b8bba6392e55ff66afbaea45c6bfccd290028e360"
-        },
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "869b989649da8c33cbe7d57b8bba6392e55ff66afbaea45c6bfccd290028e360"
-        }
-      ]
-    },
-    "_agent_public_task": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "4295715e785bf4ff790394afaace3c32e0bc3873606b356eccd74d01e769122f"
-        },
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "4295715e785bf4ff790394afaace3c32e0bc3873606b356eccd74d01e769122f"
-        }
-      ]
-    },
-    "_api": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/services/agent_batch.py",
-          "ordinal": 1,
-          "ast_sha256": "0ed70a20d9d2082a226e357b562a330d54ac7843f8e7eec79d54df5ceeddd77a"
-        },
-        {
-          "module": "app/services/agent_confirmation.py",
-          "ordinal": 1,
-          "ast_sha256": "0ed70a20d9d2082a226e357b562a330d54ac7843f8e7eec79d54df5ceeddd77a"
-        },
-        {
-          "module": "app/services/agent_generation_retry.py",
-          "ordinal": 1,
-          "ast_sha256": "0ed70a20d9d2082a226e357b562a330d54ac7843f8e7eec79d54df5ceeddd77a"
-        }
-      ]
-    },
     "_atomic_copy": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -179,22 +110,6 @@
           "module": "app/services/providers.py",
           "ordinal": 1,
           "ast_sha256": "7df6fe84bbc3901511e240ede4ddb044e5033ce9cef236bc395a435cea6599da"
-        }
-      ]
-    },
-    "_fake_payload": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "tests/test_issue40_count8_concurrency.py",
-          "ordinal": 1,
-          "ast_sha256": "3f56b083b61bf6b9bae5fa455954d0422d39bdb668216aefb4f17fed8a8dbc40"
-        },
-        {
-          "module": "tests/test_issue41_task_state_machine.py",
-          "ordinal": 1,
-          "ast_sha256": "3f56b083b61bf6b9bae5fa455954d0422d39bdb668216aefb4f17fed8a8dbc40"
         }
       ]
     },
@@ -299,86 +214,6 @@
         }
       ]
     },
-    "_local_upload_folder_node": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "344c85a5dde6fe29ebaee31e10dda3c9b4eee7b1d83328f1faa2834a9d611fd4"
-        },
-        {
-          "module": "app/routers/api_local_assets.py",
-          "ordinal": 1,
-          "ast_sha256": "344c85a5dde6fe29ebaee31e10dda3c9b4eee7b1d83328f1faa2834a9d611fd4"
-        }
-      ]
-    },
-    "_local_upload_safe_file_stem": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "70cd39466f596f66524df3235943f070868843c751eee2f2cdbe92e2d585502f"
-        },
-        {
-          "module": "app/routers/api_local_assets.py",
-          "ordinal": 1,
-          "ast_sha256": "70cd39466f596f66524df3235943f070868843c751eee2f2cdbe92e2d585502f"
-        }
-      ]
-    },
-    "_local_upload_safe_folder": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/routers/api_local_assets.py",
-          "ordinal": 1,
-          "ast_sha256": "f3d2e336cadd367b155c539b016bf29ce23bf50b88a9481139bdaf2543bd61ed"
-        },
-        {
-          "module": "app/services/local_assets.py",
-          "ordinal": 1,
-          "ast_sha256": "f3d2e336cadd367b155c539b016bf29ce23bf50b88a9481139bdaf2543bd61ed"
-        }
-      ]
-    },
-    "_local_upload_safe_folder_name": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "872fdf2e6610eea99ba5c880c2404364337310d443338081c6b1abe0afbdee33"
-        },
-        {
-          "module": "app/routers/api_local_assets.py",
-          "ordinal": 1,
-          "ast_sha256": "872fdf2e6610eea99ba5c880c2404364337310d443338081c6b1abe0afbdee33"
-        }
-      ]
-    },
-    "_local_upload_safe_path": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/routers/api_local_assets.py",
-          "ordinal": 1,
-          "ast_sha256": "b989b33f3a72fe5ce43f0472be5804237e02e881d7e13738d1b0e43d3ed68358"
-        },
-        {
-          "module": "app/services/local_assets.py",
-          "ordinal": 1,
-          "ast_sha256": "b989b33f3a72fe5ce43f0472be5804237e02e881d7e13738d1b0e43d3ed68358"
-        }
-      ]
-    },
     "_local_upload_tree_and_items": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -392,43 +227,6 @@
           "module": "app/services/local_assets.py",
           "ordinal": 1,
           "ast_sha256": "f0aa3ed52a00e8c472c6e504ae0ca918d7a08c6536c3859e4a4b8d7c67c3b3b8"
-        }
-      ]
-    },
-    "_loop": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "tests/test_agent_node_seed_354.py",
-          "ordinal": 1,
-          "ast_sha256": "1a51041808ba5aa8caf5d59bb315100bed1cc6ac54e9c7b19106bcb03fb84d72"
-        },
-        {
-          "module": "tests/test_agent_node_seed_354.py",
-          "ordinal": 2,
-          "ast_sha256": "1a51041808ba5aa8caf5d59bb315100bed1cc6ac54e9c7b19106bcb03fb84d72"
-        },
-        {
-          "module": "tests/test_agent_session_lifecycle_353.py",
-          "ordinal": 1,
-          "ast_sha256": "1a51041808ba5aa8caf5d59bb315100bed1cc6ac54e9c7b19106bcb03fb84d72"
-        }
-      ]
-    },
-    "_new_session": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "tests/test_agent_node_seed_354.py",
-          "ordinal": 1,
-          "ast_sha256": "274aade3fe29ca12b9b429ffcbf3219c164359fc3dbbc5172ebd1871e8aa04e7"
-        },
-        {
-          "module": "tests/test_agent_session_lifecycle_353.py",
-          "ordinal": 1,
-          "ast_sha256": "274aade3fe29ca12b9b429ffcbf3219c164359fc3dbbc5172ebd1871e8aa04e7"
         }
       ]
     },
@@ -464,32 +262,6 @@
         }
       ]
     },
-    "_now_iso": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "firefly_project_annotations.py",
-          "ordinal": 1,
-          "ast_sha256": "292dc649f39823ff28b51ef0217a6f2f7f20797dae4a0cf8a3b8c532b61d82a0"
-        },
-        {
-          "module": "firefly_project_undo.py",
-          "ordinal": 1,
-          "ast_sha256": "292dc649f39823ff28b51ef0217a6f2f7f20797dae4a0cf8a3b8c532b61d82a0"
-        },
-        {
-          "module": "firefly_project_versions.py",
-          "ordinal": 1,
-          "ast_sha256": "292dc649f39823ff28b51ef0217a6f2f7f20797dae4a0cf8a3b8c532b61d82a0"
-        },
-        {
-          "module": "firefly_usage.py",
-          "ordinal": 1,
-          "ast_sha256": "292dc649f39823ff28b51ef0217a6f2f7f20797dae4a0cf8a3b8c532b61d82a0"
-        }
-      ]
-    },
     "_now_ms": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -519,22 +291,6 @@
           "module": "app/services/canvas_image_refs.py",
           "ordinal": 1,
           "ast_sha256": "d51c7cc827fc7607b8259d1220eafa2d7367debb06ccf7c07e8494d872a1a5aa"
-        }
-      ]
-    },
-    "_open_asset": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "tests/test_mcp_canvas_edit_erase_290.py",
-          "ordinal": 1,
-          "ast_sha256": "10f4b952a843676e3697c5f41e5e90e4de2ec1d354c65ed5b849aff9fc3df7ff"
-        },
-        {
-          "module": "tests/test_mcp_canvas_edit_outpaint_289.py",
-          "ordinal": 1,
-          "ast_sha256": "10f4b952a843676e3697c5f41e5e90e4de2ec1d354c65ed5b849aff9fc3df7ff"
         }
       ]
     },
@@ -618,22 +374,6 @@
         }
       ]
     },
-    "_photoshop_public_request": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "75568d36288dcb65a1ce1aafd5357a89a6727bca7182bcb90eb279a28c24bc35"
-        },
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "75568d36288dcb65a1ce1aafd5357a89a6727bca7182bcb90eb279a28c24bc35"
-        }
-      ]
-    },
     "_photoshop_request_snapshot": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -647,54 +387,6 @@
           "module": "app/services/photoshop.py",
           "ordinal": 1,
           "ast_sha256": "96b3f434b20470e1f374ec0786e8fc8c2880ed071fddf6327518271e0ecbd88a"
-        }
-      ]
-    },
-    "_photoshop_reset_processing": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "4e18ea09456b0fd70438df3563ae777df90b9fd1b00e8d9c3f13b6ac8ddc75a2"
-        },
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "4e18ea09456b0fd70438df3563ae777df90b9fd1b00e8d9c3f13b6ac8ddc75a2"
-        }
-      ]
-    },
-    "_photoshop_validate_display_name": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "02dd5784087a7abbe06aeef7293ee485ab91745722748b68d3ee58ca24821543"
-        },
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "02dd5784087a7abbe06aeef7293ee485ab91745722748b68d3ee58ca24821543"
-        }
-      ]
-    },
-    "_photoshop_validate_media_type": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "4d106a59e4a7105b71e042cd2ab753e138e3a685567e929caa2e2d2fe0b67bbe"
-        },
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "4d106a59e4a7105b71e042cd2ab753e138e3a685567e929caa2e2d2fe0b67bbe"
         }
       ]
     },
@@ -802,22 +494,6 @@
         }
       ]
     },
-    "_sniff_image_ext": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "b5c1a5298c5dfef5011020de96755550a543ee14086bfb525484a0daff6ef504"
-        },
-        {
-          "module": "app/routers/startup.py",
-          "ordinal": 1,
-          "ast_sha256": "b5c1a5298c5dfef5011020de96755550a543ee14086bfb525484a0daff6ef504"
-        }
-      ]
-    },
     "_snippet": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -831,22 +507,6 @@
           "module": "firefly_search.py",
           "ordinal": 1,
           "ast_sha256": "7b4bcf4176cd5c65271dd57d22a5750e897ec93f850fdaafae9798c0c00d4f00"
-        }
-      ]
-    },
-    "_storage_abs_path": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "d1978aab78b37ad51d220f3bba887cd3f06d66a8d887b55382e0f5b38fe7a9b7"
-        },
-        {
-          "module": "app/routers/api_storage_settings.py",
-          "ordinal": 1,
-          "ast_sha256": "d1978aab78b37ad51d220f3bba887cd3f06d66a8d887b55382e0f5b38fe7a9b7"
         }
       ]
     },
@@ -930,22 +590,6 @@
         }
       ]
     },
-    "_volc_hmac": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "71ccb1f54485648890244973e7430171966d530f18a83704f4585da178ae7a93"
-        },
-        {
-          "module": "app/routers/api_asset_library.py",
-          "ordinal": 1,
-          "ast_sha256": "71ccb1f54485648890244973e7430171966d530f18a83704f4585da178ae7a93"
-        }
-      ]
-    },
     "_write_local_upload_classification": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -959,43 +603,6 @@
           "module": "app/services/local_assets.py",
           "ordinal": 1,
           "ast_sha256": "26843ba13d50ff15b61e49b54ae41db05f9157a05d97712d6e2366f83a700b74"
-        }
-      ]
-    },
-    "acquire_fly_import_slot": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "247e0cf702f05144d17a9ed7a60f2a8f47659ec909318e5f29084fd9df44735b"
-        },
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "247e0cf702f05144d17a9ed7a60f2a8f47659ec909318e5f29084fd9df44735b"
-        }
-      ]
-    },
-    "agent_host_manager_singleton": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "tests/test_agent_node_seed_354.py",
-          "ordinal": 1,
-          "ast_sha256": "dfab5b8a3ddbc2fc7a7a5034167fb99e4c35076130cc3069f3b803c969b22cd0"
-        },
-        {
-          "module": "tests/test_agent_node_seed_354.py",
-          "ordinal": 2,
-          "ast_sha256": "dfab5b8a3ddbc2fc7a7a5034167fb99e4c35076130cc3069f3b803c969b22cd0"
-        },
-        {
-          "module": "tests/test_agent_session_lifecycle_353.py",
-          "ordinal": 1,
-          "ast_sha256": "dfab5b8a3ddbc2fc7a7a5034167fb99e4c35076130cc3069f3b803c969b22cd0"
         }
       ]
     },
@@ -1036,70 +643,6 @@
         }
       ]
     },
-    "apimart_avatar_asset_type": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "feb015e68d9c87d603b9ec32316dfc1ca79319ca2a1779624a747ab445536f1c"
-        },
-        {
-          "module": "app/routers/api_asset_library.py",
-          "ordinal": 1,
-          "ast_sha256": "feb015e68d9c87d603b9ec32316dfc1ca79319ca2a1779624a747ab445536f1c"
-        }
-      ]
-    },
-    "apply_agnes_model_defaults": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "f05d03e506f8b02d01b678e110b275d1b984d242008fd25919fa10253f55adbf"
-        },
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "f05d03e506f8b02d01b678e110b275d1b984d242008fd25919fa10253f55adbf"
-        }
-      ]
-    },
-    "apply_locked_recommended_model_rules": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "836bb2e93a32ac379172cad8eb3f502dea97328d249174f335f6cf974c7ed887"
-        },
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "836bb2e93a32ac379172cad8eb3f502dea97328d249174f335f6cf974c7ed887"
-        }
-      ]
-    },
-    "apply_runninghub_system_thumbnails": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "d31da11fcdba0346c00362a432e79f31fe01aa8a40aa830b39ea4983d31393cc"
-        },
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "d31da11fcdba0346c00362a432e79f31fe01aa8a40aa830b39ea4983d31393cc"
-        }
-      ]
-    },
     "approve": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -1132,22 +675,6 @@
         }
       ]
     },
-    "avatar_platform_for_provider": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "7db1641a626f004d6fca0544a2b4844579c416411fa873b9e374d19b1c522830"
-        },
-        {
-          "module": "app/routers/api_asset_library.py",
-          "ordinal": 1,
-          "ast_sha256": "7db1641a626f004d6fca0544a2b4844579c416411fa873b9e374d19b1c522830"
-        }
-      ]
-    },
     "build_composed_app": {
       "category": "逻辑已经分叉",
       "basis": "存在 3 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -1166,22 +693,6 @@
           "module": "tests/dual_tab_sync_browser.py",
           "ordinal": 1,
           "ast_sha256": "9ee41b9c3fc9690a23d05009d7031011cf3ef0b57aaf79df60d69e9b89e87ebe"
-        }
-      ]
-    },
-    "build_image_param_fields": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "9529eea943f3b3516d5ede418a2c121c4ec5d03313b93a936e2ee14750e4125d"
-        },
-        {
-          "module": "app/routers/api_image_params.py",
-          "ordinal": 1,
-          "ast_sha256": "9529eea943f3b3516d5ede418a2c121c4ec5d03313b93a936e2ee14750e4125d"
         }
       ]
     },
@@ -1254,70 +765,6 @@
         }
       ]
     },
-    "canvas_asset_downloadable_url": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "eb5caa2b288d3ddd56993057f437a5b121d1fa313d2d63d61d38cf113d7c594c"
-        },
-        {
-          "module": "app/routers/api_canvas_assets.py",
-          "ordinal": 1,
-          "ast_sha256": "eb5caa2b288d3ddd56993057f437a5b121d1fa313d2d63d61d38cf113d7c594c"
-        }
-      ]
-    },
-    "canvas_asset_kind": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "eacdeb24c273e8b3f71ebf03ec9bfd512677d91e8c09d1b52d9855405e0a86be"
-        },
-        {
-          "module": "app/routers/api_canvas_assets.py",
-          "ordinal": 1,
-          "ast_sha256": "eacdeb24c273e8b3f71ebf03ec9bfd512677d91e8c09d1b52d9855405e0a86be"
-        }
-      ]
-    },
-    "canvas_asset_name": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "eec1db92c81dac58f1ddb8b90e6d40dfdfbef44d04edfac11effc45a2dcc5967"
-        },
-        {
-          "module": "app/routers/api_canvas_assets.py",
-          "ordinal": 1,
-          "ast_sha256": "eec1db92c81dac58f1ddb8b90e6d40dfdfbef44d04edfac11effc45a2dcc5967"
-        }
-      ]
-    },
-    "canvas_asset_url_value": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "09e1c3b3fa0dc11bf4d163c2cd0d0bc98a6232405da05604868f022a0128375e"
-        },
-        {
-          "module": "app/routers/api_canvas_assets.py",
-          "ordinal": 1,
-          "ast_sha256": "09e1c3b3fa0dc11bf4d163c2cd0d0bc98a6232405da05604868f022a0128375e"
-        }
-      ]
-    },
     "canvas_assets_index": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -1331,54 +778,6 @@
           "module": "app/services/canvas.py",
           "ordinal": 1,
           "ast_sha256": "58f978240ad789959b6c85f4769a2a03b3ff4f41503796344408ef3b11420b9e"
-        }
-      ]
-    },
-    "canvas_has_pending_conversation": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "d2d3fc8234cd2c35337678bab9a58aed4f0ab6942f7ae4567ef70e01ea8e8d77"
-        },
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "d2d3fc8234cd2c35337678bab9a58aed4f0ab6942f7ae4567ef70e01ea8e8d77"
-        }
-      ]
-    },
-    "canvas_node_title": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "eed2b91b7ddc837a3cc55f144a78888ca63796093e1f5ab80657fdda9d5fbfd6"
-        },
-        {
-          "module": "app/routers/api_canvas_assets.py",
-          "ordinal": 1,
-          "ast_sha256": "eed2b91b7ddc837a3cc55f144a78888ca63796093e1f5ab80657fdda9d5fbfd6"
-        }
-      ]
-    },
-    "canvas_nodes": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "tests/candidate_pool_delete_native_browser.py",
-          "ordinal": 1,
-          "ast_sha256": "87d5881d34eb1a9293992fb60073bddc8fc1c54ce1658047ed2b5f874b2ace40"
-        },
-        {
-          "module": "tests/trash_panel_browser.py",
-          "ordinal": 1,
-          "ast_sha256": "87d5881d34eb1a9293992fb60073bddc8fc1c54ce1658047ed2b5f874b2ace40"
         }
       ]
     },
@@ -1467,38 +866,6 @@
         }
       ]
     },
-    "codex_models_payload": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "dee8e298b467ff7b3cda683415331862c35efe3a6e661c44512fb33300b14653"
-        },
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "dee8e298b467ff7b3cda683415331862c35efe3a6e661c44512fb33300b14653"
-        }
-      ]
-    },
-    "collect_local_media_urls": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "cd09b6b9ade300ac18a1c0665c7814c57ffbeb176a4f124b44bc2e0f4b2c046c"
-        },
-        {
-          "module": "app/routers/api_canvases.py",
-          "ordinal": 1,
-          "ast_sha256": "cd09b6b9ade300ac18a1c0665c7814c57ffbeb176a4f124b44bc2e0f4b2c046c"
-        }
-      ]
-    },
     "confirm_approve": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -1528,22 +895,6 @@
           "module": "tests/test_agent_plan_399.py",
           "ordinal": 1,
           "ast_sha256": "80b6e45ffd61be9d02ffbee6fb02b2d20ac3364b80a3325a6e0aa27fcc96ae01"
-        }
-      ]
-    },
-    "conversation_task_response": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "880839223da2cdfe657ec81517437d0e80b450e0bbabb6a3179c342c50932cff"
-        },
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "880839223da2cdfe657ec81517437d0e80b450e0bbabb6a3179c342c50932cff"
         }
       ]
     },
@@ -1592,22 +943,6 @@
           "module": "app/routers/api_app_info.py",
           "ordinal": 1,
           "ast_sha256": "4b0479abe3d498aee5029c075cf3a59d9075b5f0021c5879f093c303838cf0f8"
-        }
-      ]
-    },
-    "defaultPromptTemplateCategories": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "4e24665d0b820554ea5338c5574f24398cf19904f621b8cb4dc5ec01e2295831"
-        },
-        {
-          "module": "app/routers/api_prompt_libraries.py",
-          "ordinal": 1,
-          "ast_sha256": "4e24665d0b820554ea5338c5574f24398cf19904f621b8cb4dc5ec01e2295831"
         }
       ]
     },
@@ -1786,54 +1121,6 @@
         }
       ]
     },
-    "extract_apimart_avatar_asset_uri": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "95907ed5be7e0ac4499b733cc4f83e7f35e59ae1fc9d0c6954c361cc5cbb7f9d"
-        },
-        {
-          "module": "app/routers/api_asset_library.py",
-          "ordinal": 1,
-          "ast_sha256": "95907ed5be7e0ac4499b733cc4f83e7f35e59ae1fc9d0c6954c361cc5cbb7f9d"
-        }
-      ]
-    },
-    "extract_canvas_assets": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "1143dc9d62299d45e5e6d696f3bddc97e080fa2ca22aefb8c7ab78816c6962af"
-        },
-        {
-          "module": "app/routers/api_canvas_assets.py",
-          "ordinal": 1,
-          "ast_sha256": "1143dc9d62299d45e5e6d696f3bddc97e080fa2ca22aefb8c7ab78816c6962af"
-        }
-      ]
-    },
-    "extract_task_id_from_text": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "5f9ccbfd2362518cd2d9245c3f330b022e84e3bd5b01ff834e9702be4050e3bf"
-        },
-        {
-          "module": "app/routers/api_canvas_image_tasks.py",
-          "ordinal": 1,
-          "ast_sha256": "5f9ccbfd2362518cd2d9245c3f330b022e84e3bd5b01ff834e9702be4050e3bf"
-        }
-      ]
-    },
     "fetch_models_from_upstream": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -1847,22 +1134,6 @@
           "module": "app/services/providers.py",
           "ordinal": 1,
           "ast_sha256": "7bc4d804ea7156b0ae405f6a6b1012c4972b97f12382c9386e51abc88ceb1d80"
-        }
-      ]
-    },
-    "fetch_remote_media_bytes": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "97b5058ea12d6d6a1475fa41012b5221d3c60e621c2e2ac76f214b56df3930aa"
-        },
-        {
-          "module": "app/routers/api_canvas_assets.py",
-          "ordinal": 1,
-          "ast_sha256": "97b5058ea12d6d6a1475fa41012b5221d3c60e621c2e2ac76f214b56df3930aa"
         }
       ]
     },
@@ -1895,22 +1166,6 @@
           "module": "app/services/assets.py",
           "ordinal": 1,
           "ast_sha256": "71f15cd71442f10c4a1a349e285b00c43274e0c567fd541464eb01bd9e85c842"
-        }
-      ]
-    },
-    "find_asset_item_in_library": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "05ece1c0284df694d77f69f784fd362261c7559047413c5c1b0aeca7c2905253"
-        },
-        {
-          "module": "app/routers/api_asset_library.py",
-          "ordinal": 1,
-          "ast_sha256": "05ece1c0284df694d77f69f784fd362261c7559047413c5c1b0aeca7c2905253"
         }
       ]
     },
@@ -1947,75 +1202,6 @@
           "module": "tests/single_image_pending_placeholder_browser.py",
           "ordinal": 1,
           "ast_sha256": "6c1c33fba2f8df0173f28706e31ca65fc69ca487ad0602e6451f4fd5ab66b5b8"
-        }
-      ]
-    },
-    "find_prompt_library": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "710156449bdc2340c956840db8cea21fd2ff39dd0354cea5922bd3de62389ebc"
-        },
-        {
-          "module": "app/routers/api_prompt_libraries.py",
-          "ordinal": 1,
-          "ast_sha256": "710156449bdc2340c956840db8cea21fd2ff39dd0354cea5922bd3de62389ebc"
-        }
-      ]
-    },
-    "friendly_validation_error": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "9e2d1838688daa1fec8dd90f1004ca35666a38a1e1aabed613c1e67a4a3e984f"
-        },
-        {
-          "module": "app/routers/unknown.py",
-          "ordinal": 1,
-          "ast_sha256": "9e2d1838688daa1fec8dd90f1004ca35666a38a1e1aabed613c1e67a4a3e984f"
-        }
-      ]
-    },
-    "gemini_cli_models_payload": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "757b0221a2d0ccca045029f0a73a0453a7bb600ba57963191d3d9d927cd0583e"
-        },
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "757b0221a2d0ccca045029f0a73a0453a7bb600ba57963191d3d9d927cd0583e"
-        }
-      ]
-    },
-    "gemini_image_response": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "tests/candidate_pool_delete_native_browser.py",
-          "ordinal": 1,
-          "ast_sha256": "b63cefc557c1ea219e4377ab89f6873ee56d0da15b73d9b40e87d666e05a6d23"
-        },
-        {
-          "module": "tests/edge_compatibility_browser.py",
-          "ordinal": 1,
-          "ast_sha256": "b63cefc557c1ea219e4377ab89f6873ee56d0da15b73d9b40e87d666e05a6d23"
-        },
-        {
-          "module": "tests/project_linked_generation_native_browser.py",
-          "ordinal": 1,
-          "ast_sha256": "b63cefc557c1ea219e4377ab89f6873ee56d0da15b73d9b40e87d666e05a6d23"
         }
       ]
     },
@@ -2183,22 +1369,6 @@
         }
       ]
     },
-    "image_has_alpha": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "866a91eb68a4599a4109057dc110e5abc2f6267e5c684a604575478ac29c26b8"
-        },
-        {
-          "module": "app/routers/api_media_preview.py",
-          "ordinal": 1,
-          "ast_sha256": "866a91eb68a4599a4109057dc110e5abc2f6267e5c684a604575478ac29c26b8"
-        }
-      ]
-    },
     "import_local_image_file": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -2252,22 +1422,6 @@
         }
       ]
     },
-    "is_video_preview_file": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "2193ee0e35b191ac4db50de2722e78e31c80115721f7a5504bf0ad21e1d4b703"
-        },
-        {
-          "module": "app/routers/api_media_preview.py",
-          "ordinal": 1,
-          "ast_sha256": "2193ee0e35b191ac4db50de2722e78e31c80115721f7a5504bf0ad21e1d4b703"
-        }
-      ]
-    },
     "isolated_env": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -2281,48 +1435,6 @@
           "module": "tests/tabbit_e2e_evidence.py",
           "ordinal": 1,
           "ast_sha256": "642d7ed9ad8e459e509ee9cb5b2024907fc2344f8df0c26d11ef617c02bf4efe"
-        }
-      ]
-    },
-    "isolated_event_loop_policy": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "tests/test_agent_host_review_393.py",
-          "ordinal": 1,
-          "ast_sha256": "527d449a17e1eb13054f7dd5fda787a82bfe985d5e3010aa0d623552c88e14f7"
-        },
-        {
-          "module": "tests/test_agent_host_turn_393.py",
-          "ordinal": 1,
-          "ast_sha256": "527d449a17e1eb13054f7dd5fda787a82bfe985d5e3010aa0d623552c88e14f7"
-        },
-        {
-          "module": "tests/test_agent_message_refs_backend.py",
-          "ordinal": 1,
-          "ast_sha256": "527d449a17e1eb13054f7dd5fda787a82bfe985d5e3010aa0d623552c88e14f7"
-        },
-        {
-          "module": "tests/test_agent_queue_recovery_review_393.py",
-          "ordinal": 1,
-          "ast_sha256": "527d449a17e1eb13054f7dd5fda787a82bfe985d5e3010aa0d623552c88e14f7"
-        }
-      ]
-    },
-    "iter_canvas_asset_values": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "fcee48a5a4d079a31b11bc3ae6d9ae8ab5c35202d660e60d35a70a3fdca97022"
-        },
-        {
-          "module": "app/routers/api_canvas_assets.py",
-          "ordinal": 1,
-          "ast_sha256": "fcee48a5a4d079a31b11bc3ae6d9ae8ab5c35202d660e60d35a70a3fdca97022"
         }
       ]
     },
@@ -2546,38 +1658,6 @@
         }
       ]
     },
-    "list_canvases": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/routers/api_canvases.py",
-          "ordinal": 1,
-          "ast_sha256": "f7b97d57d8fa2933b78d2565f9e4a3af208fd826664d9c4affaad8decfb0f8b2"
-        },
-        {
-          "module": "app/services/canvas.py",
-          "ordinal": 1,
-          "ast_sha256": "f7b97d57d8fa2933b78d2565f9e4a3af208fd826664d9c4affaad8decfb0f8b2"
-        }
-      ]
-    },
-    "list_deleted_canvases": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/routers/api_canvases.py",
-          "ordinal": 1,
-          "ast_sha256": "8a2b039657b5ee142277acf660774d1e5e1647c61b3882232c4bded138a91495"
-        },
-        {
-          "module": "app/services/canvas.py",
-          "ordinal": 1,
-          "ast_sha256": "8a2b039657b5ee142277acf660774d1e5e1647c61b3882232c4bded138a91495"
-        }
-      ]
-    },
     "load_app": {
       "category": "逻辑已经分叉",
       "basis": "存在 21 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -2707,22 +1787,6 @@
           "module": "app/services/canvas.py",
           "ordinal": 1,
           "ast_sha256": "929d3e04316e29d44f2afebbae947568f81daf87f84bfc8d1a8e4767ef64e155"
-        }
-      ]
-    },
-    "load_canvas_any": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/routers/api_canvases.py",
-          "ordinal": 1,
-          "ast_sha256": "0a128427cd5925f60ffcae3917df023e91c390aa154029229ad434332226ac82"
-        },
-        {
-          "module": "app/services/canvas.py",
-          "ordinal": 1,
-          "ast_sha256": "0a128427cd5925f60ffcae3917df023e91c390aa154029229ad434332226ac82"
         }
       ]
     },
@@ -3430,22 +2494,6 @@
         }
       ]
     },
-    "model_list": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "9e2bbc032a57ac123967804fd84f264b8ffd0761e9e1a878d0785022ac6c481f"
-        },
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "9e2bbc032a57ac123967804fd84f264b8ffd0761e9e1a878d0785022ac6c481f"
-        }
-      ]
-    },
     "node": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -3464,38 +2512,6 @@
           "module": "tests/test_agent_ownership_392.py",
           "ordinal": 1,
           "ast_sha256": "e1e150db182acbb7d6f7bcab640e66697df33f7656a7d56966305e64d98c13e9"
-        }
-      ]
-    },
-    "normalize_local_image_path": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "64fe4fd616ea681b454d9c6c87436f77bd01ddf1f6804611f466f325c86d2853"
-        },
-        {
-          "module": "app/routers/api_ai.py",
-          "ordinal": 1,
-          "ast_sha256": "64fe4fd616ea681b454d9c6c87436f77bd01ddf1f6804611f466f325c86d2853"
-        }
-      ]
-    },
-    "normalize_prompt_category_id": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "f4e89be687b67d36c106386cebc784481ad33da2975a11034074c49cc044792f"
-        },
-        {
-          "module": "app/routers/api_prompt_libraries.py",
-          "ordinal": 1,
-          "ast_sha256": "f4e89be687b67d36c106386cebc784481ad33da2975a11034074c49cc044792f"
         }
       ]
     },
@@ -3528,54 +2544,6 @@
           "module": "app/services/assets.py",
           "ordinal": 1,
           "ast_sha256": "0406d3a42a606941a8473fc3e10b3b454589c522bf92add0cbf7aad632589bc3"
-        }
-      ]
-    },
-    "normalize_prompt_template_categories": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "0619339d2193cdad35e9bf0ef51d5ed04cddfa688e0dd3bb657f4656e443e494"
-        },
-        {
-          "module": "app/routers/api_prompt_libraries.py",
-          "ordinal": 1,
-          "ast_sha256": "0619339d2193cdad35e9bf0ef51d5ed04cddfa688e0dd3bb657f4656e443e494"
-        }
-      ]
-    },
-    "normalize_seed_uint32": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "4487962936857e7068f59edc10b9d805ce27249ca513f2505c46c585c90bca29"
-        },
-        {
-          "module": "app/routers/api_runninghub.py",
-          "ordinal": 1,
-          "ast_sha256": "4487962936857e7068f59edc10b9d805ce27249ca513f2505c46c585c90bca29"
-        }
-      ]
-    },
-    "openai_compat_root_for_probe": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "73167eec4e3909e9cf92cad5805309216403a58413b99114d2f6d02590a5a796"
-        },
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "73167eec4e3909e9cf92cad5805309216403a58413b99114d2f6d02590a5a796"
         }
       ]
     },
@@ -3836,70 +2804,6 @@
         }
       ]
     },
-    "probe_openai_compat_bearer_endpoint": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "fc24f7b18971bd29560706a8fd6b1a615398772dc48bc6309c7676cdf040c87b"
-        },
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "fc24f7b18971bd29560706a8fd6b1a615398772dc48bc6309c7676cdf040c87b"
-        }
-      ]
-    },
-    "probe_openai_models_endpoint": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "0362f7720211c48dac1fa3c54b4f545e254144dcb5e08a3e0d657e49b4c0e41d"
-        },
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "0362f7720211c48dac1fa3c54b4f545e254144dcb5e08a3e0d657e49b4c0e41d"
-        }
-      ]
-    },
-    "probe_volcengine_auto_detect": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "b2dba03cd9f5af78f388ced01696e22f8ba471deb05fe116510785f2bbb82e49"
-        },
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "b2dba03cd9f5af78f388ced01696e22f8ba471deb05fe116510785f2bbb82e49"
-        }
-      ]
-    },
-    "probe_volcengine_task_endpoint": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "8ba2da65926f6ffb44f0b144861adc137fc36520c30ec806cea3289dedb66afb"
-        },
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "8ba2da65926f6ffb44f0b144861adc137fc36520c30ec806cea3289dedb66afb"
-        }
-      ]
-    },
     "project": {
       "category": "逻辑已经分叉",
       "basis": "存在 4 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -3942,38 +2846,6 @@
         }
       ]
     },
-    "project_agent_execution_lock": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "03f19443db393694201f32c3150cede4b194ff3c409ec1b440565ce983afe4fe"
-        },
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "03f19443db393694201f32c3150cede4b194ff3c409ec1b440565ce983afe4fe"
-        }
-      ]
-    },
-    "project_canvas_video_payload": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "8938723848a369126eb6b8fc538658ca919c01073c65998117ac1a8638354b06"
-        },
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "8938723848a369126eb6b8fc538658ca919c01073c65998117ac1a8638354b06"
-        }
-      ]
-    },
     "project_conversation_connected_references": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -3987,22 +2859,6 @@
           "module": "app/services/agents.py",
           "ordinal": 1,
           "ast_sha256": "4c7b39d348cd49bec823918dd6402fcb2c05da951e20d4ab565b26ab42ddb284"
-        }
-      ]
-    },
-    "project_conversation_ready_result": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "8ec2dea16a081e236c71ebecd9d792646a0bb27de6b68b17349fda74482ea87c"
-        },
-        {
-          "module": "app/routers/startup.py",
-          "ordinal": 1,
-          "ast_sha256": "8ec2dea16a081e236c71ebecd9d792646a0bb27de6b68b17349fda74482ea87c"
         }
       ]
     },
@@ -4051,54 +2907,6 @@
           "module": "app/routers/api_project_library.py",
           "ordinal": 1,
           "ast_sha256": "6a36936e828bbfada242b5169e6bccd6b631174d6892525e9493cb3659ae2e4f"
-        }
-      ]
-    },
-    "project_has_active_media_import": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "a7f0de30a6bd88c01bcd538ceb4ea437f426c384025b4c4e35e9430b9cec3800"
-        },
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "a7f0de30a6bd88c01bcd538ceb4ea437f426c384025b4c4e35e9430b9cec3800"
-        }
-      ]
-    },
-    "project_has_active_video_generation": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "75286ec606f657185377264fd30ccd89c3ceb750f54f9e370a79f287dd11fa0a"
-        },
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "75286ec606f657185377264fd30ccd89c3ceb750f54f9e370a79f287dd11fa0a"
-        }
-      ]
-    },
-    "project_has_recoverable_conversation_sidecars": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "a4c34b4034b305c2915b4d233c01830cf13cd7daaa92c07eb881b5755a6bb72f"
-        },
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "a4c34b4034b305c2915b4d233c01830cf13cd7daaa92c07eb881b5755a6bb72f"
         }
       ]
     },
@@ -4230,38 +3038,6 @@
         }
       ]
     },
-    "project_video_candidate_preflight_incompatible_parameters": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "cbf86f41c0a71376bc20c9f04ace38a0e58451f88148cf40ac0e8c64c5bac61f"
-        },
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "cbf86f41c0a71376bc20c9f04ace38a0e58451f88148cf40ac0e8c64c5bac61f"
-        }
-      ]
-    },
-    "project_video_mark_candidate_incompatible": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "3d26eab84a6fab027556320fa7e7b2e241f03ec038e34429af78dd12b429d363"
-        },
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "3d26eab84a6fab027556320fa7e7b2e241f03ec038e34429af78dd12b429d363"
-        }
-      ]
-    },
     "project_video_references": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -4275,22 +3051,6 @@
           "module": "app/services/misc.py",
           "ordinal": 1,
           "ast_sha256": "555a01909a6c2d4373c8d870ca99464f3bf895ca9ec65c2e48c3ce9f1376458a"
-        }
-      ]
-    },
-    "protocol_from_payload": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "414a470d660eda9a770ae9175ad25efc97a3ad1ee142564171accdc081c69401"
-        },
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "414a470d660eda9a770ae9175ad25efc97a3ad1ee142564171accdc081c69401"
         }
       ]
     },
@@ -4333,22 +3093,6 @@
           "module": "tests/test_gpt_image2_5_ratio_resolution.py",
           "ordinal": 1,
           "ast_sha256": "6059aacf15ff151c0dbd4fa9931059ea14a9472c395099dccfd72b5ab28688a3"
-        }
-      ]
-    },
-    "public_project_media_import_task": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "9133f679981357be8ef8f7602bcbdffc23e6d1c1064f3f363b1d1820ef2bd511"
-        },
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "9133f679981357be8ef8f7602bcbdffc23e6d1c1064f3f363b1d1820ef2bd511"
         }
       ]
     },
@@ -4437,22 +3181,6 @@
         }
       ]
     },
-    "recommend_upstream_models": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "e6e58e25fe90aa05c081b52c14963e72b809f478dc2bbb7de96911a616b2b8b2"
-        },
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "e6e58e25fe90aa05c081b52c14963e72b809f478dc2bbb7de96911a616b2b8b2"
-        }
-      ]
-    },
     "record": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -4482,27 +3210,6 @@
           "module": "tests/layering_drag_browser.py",
           "ordinal": 1,
           "ast_sha256": "3ed0f33a71b758b16bd88aad9d0b4287dff8f27db96d311d66f71c842f0ba76c"
-        }
-      ]
-    },
-    "relative": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "tests/core_surface_browser.py",
-          "ordinal": 1,
-          "ast_sha256": "78aa309922bb92481f5bb3a903292b0a1e62fbbc02850523aff5ce8c22fe5b91"
-        },
-        {
-          "module": "tests/generation_lifecycle_browser.py",
-          "ordinal": 1,
-          "ast_sha256": "78aa309922bb92481f5bb3a903292b0a1e62fbbc02850523aff5ce8c22fe5b91"
-        },
-        {
-          "module": "tests/ui_integrity_native_browser.py",
-          "ordinal": 1,
-          "ast_sha256": "78aa309922bb92481f5bb3a903292b0a1e62fbbc02850523aff5ce8c22fe5b91"
         }
       ]
     },
@@ -4538,22 +3245,6 @@
         }
       ]
     },
-    "remember_project_conversation_ready_result": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "4bd8430062ce7474dd5fadf9e521befc5eb9bc48db146dd4069af9f631a8424e"
-        },
-        {
-          "module": "app/routers/startup.py",
-          "ordinal": 1,
-          "ast_sha256": "4bd8430062ce7474dd5fadf9e521befc5eb9bc48db146dd4069af9f631a8424e"
-        }
-      ]
-    },
     "remove_asset_library_file": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -4567,22 +3258,6 @@
           "module": "app/services/assets.py",
           "ordinal": 1,
           "ast_sha256": "4af2e52f7e98757447acfe8507f9dcfed6b756f2bf88e4ccfa827d137104bc13"
-        }
-      ]
-    },
-    "remove_profile": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "tests/conversation_browser.py",
-          "ordinal": 1,
-          "ast_sha256": "7c62572e7a2c93857b40b0b0f3709cd08118ff77cad87fa3d7bf35934208a6bd"
-        },
-        {
-          "module": "tests/history_time_browser.py",
-          "ordinal": 1,
-          "ast_sha256": "7c62572e7a2c93857b40b0b0f3709cd08118ff77cad87fa3d7bf35934208a6bd"
         }
       ]
     },
@@ -4716,22 +3391,6 @@
           "module": "tests/test_agent_generation_settings_396.py",
           "ordinal": 1,
           "ast_sha256": "08066577be110f0a6813986fed711d3d00b4ed5314d215beaa3bf4d91ec1de26"
-        }
-      ]
-    },
-    "rgba_png": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "tests/edge_compatibility_browser.py",
-          "ordinal": 1,
-          "ast_sha256": "f5dd017c6a013c231eb7fbff370eb37392bbb59ca2ed8692fcca169f77066e66"
-        },
-        {
-          "module": "tests/project_linked_generation_native_browser.py",
-          "ordinal": 1,
-          "ast_sha256": "f5dd017c6a013c231eb7fbff370eb37392bbb59ca2ed8692fcca169f77066e66"
         }
       ]
     },
@@ -4963,22 +3622,6 @@
         }
       ]
     },
-    "runninghub_model_display_name": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "1b20ccb399b6fb892a1515b66823218fb1910ca95b1370a038fc1e309e046ec8"
-        },
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "1b20ccb399b6fb892a1515b66823218fb1910ca95b1370a038fc1e309e046ec8"
-        }
-      ]
-    },
     "runninghub_models_payload": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -4992,38 +3635,6 @@
           "module": "app/services/providers.py",
           "ordinal": 1,
           "ast_sha256": "88d57e7e73c4be1f5f202472005fd7d53d042a0892409d8b7a8b78a57dd3b4c1"
-        }
-      ]
-    },
-    "runninghub_registry_payload": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "a32ee96093ffad3ee53761c447b1b166c54d0b622beb6f33e9c4c9fdf694eab1"
-        },
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "a32ee96093ffad3ee53761c447b1b166c54d0b622beb6f33e9c4c9fdf694eab1"
-        }
-      ]
-    },
-    "sanitize_runninghub_node_info_list": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "85f3876b8913b3fc7e727aa2e57466c40b22db898c2f9486433e455fcc4f056b"
-        },
-        {
-          "module": "app/routers/api_runninghub.py",
-          "ordinal": 1,
-          "ast_sha256": "85f3876b8913b3fc7e727aa2e57466c40b22db898c2f9486433e455fcc4f056b"
         }
       ]
     },
@@ -5120,22 +3731,6 @@
           "module": "app/services/providers.py",
           "ordinal": 1,
           "ast_sha256": "26dad9cf924ea2c55cdd44fac4e399f08fb0c7466d8a140b9a948aa8acbc25fe"
-        }
-      ]
-    },
-    "scan_shared_tree": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "aa29e9194d1d1dd9d3a2b52f00dd4d7057ccea226d502507c6204be58b15d9df"
-        },
-        {
-          "module": "app/routers/api_shared_folders.py",
-          "ordinal": 1,
-          "ast_sha256": "aa29e9194d1d1dd9d3a2b52f00dd4d7057ccea226d502507c6204be58b15d9df"
         }
       ]
     },
@@ -5474,22 +4069,6 @@
         }
       ]
     },
-    "seed_system_prompt_library": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "db50cca01966e989f09b6e282a8dafd39381f6a8ebc0ab8e80fb048444c6ab07"
-        },
-        {
-          "module": "app/routers/api_prompt_libraries.py",
-          "ordinal": 1,
-          "ast_sha256": "db50cca01966e989f09b6e282a8dafd39381f6a8ebc0ab8e80fb048444c6ab07"
-        }
-      ]
-    },
     "serve": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -5610,70 +4189,6 @@
         }
       ]
     },
-    "sha256": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "tools/copy_eval_fixtures.py",
-          "ordinal": 1,
-          "ast_sha256": "15d27d164b56654a6364699ad65460ad10960c559d159597d22b1690eb13d8a9"
-        },
-        {
-          "module": "tools/ui_integrity_evidence.py",
-          "ordinal": 1,
-          "ast_sha256": "15d27d164b56654a6364699ad65460ad10960c559d159597d22b1690eb13d8a9"
-        }
-      ]
-    },
-    "shared_child_abs": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "32dc5ad53b8ccbe42f71211e8666988e12fa3714647d19d90da5309d8ceedca9"
-        },
-        {
-          "module": "app/routers/api_shared_folders.py",
-          "ordinal": 1,
-          "ast_sha256": "32dc5ad53b8ccbe42f71211e8666988e12fa3714647d19d90da5309d8ceedca9"
-        }
-      ]
-    },
-    "shared_folder_abs": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "7a3e22f4c1038bfee77881a3190fe9ee4ad91929fc122aa857033806d88cb503"
-        },
-        {
-          "module": "app/routers/api_shared_folders.py",
-          "ordinal": 1,
-          "ast_sha256": "7a3e22f4c1038bfee77881a3190fe9ee4ad91929fc122aa857033806d88cb503"
-        }
-      ]
-    },
-    "shared_folder_by_id": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/routers/api_shared_folders.py",
-          "ordinal": 1,
-          "ast_sha256": "e0d3715cdb50c606708da02889f4cbc6e51d48fd2b1d2b3c9e3be46096fad086"
-        },
-        {
-          "module": "app/services/shared.py",
-          "ordinal": 1,
-          "ast_sha256": "e0d3715cdb50c606708da02889f4cbc6e51d48fd2b1d2b3c9e3be46096fad086"
-        }
-      ]
-    },
     "shared_folders_load": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -5703,22 +4218,6 @@
           "module": "app/services/shared.py",
           "ordinal": 1,
           "ast_sha256": "9c48304e5616c0c44d36444d951c4e7355c9faa1df84289ffdc20d7aebc04a3a"
-        }
-      ]
-    },
-    "shared_resolve_register": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "5905404ab97987edc3162035cabb0495aef5d5e38b2a8014ec48a02c50ecfa82"
-        },
-        {
-          "module": "app/routers/api_shared_folders.py",
-          "ordinal": 1,
-          "ast_sha256": "5905404ab97987edc3162035cabb0495aef5d5e38b2a8014ec48a02c50ecfa82"
         }
       ]
     },
@@ -5839,22 +4338,6 @@
         }
       ]
     },
-    "state": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "tests/history_delete_save_conflict_native_browser.py",
-          "ordinal": 1,
-          "ast_sha256": "622799f4a22029c5b38199d6f496f0e1576c9474d5953fcc3e3fffbae1c72dab"
-        },
-        {
-          "module": "tests/issue189_gate_flush_native_browser.py",
-          "ordinal": 1,
-          "ast_sha256": "622799f4a22029c5b38199d6f496f0e1576c9474d5953fcc3e3fffbae1c72dab"
-        }
-      ]
-    },
     "static_guards": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -5868,38 +4351,6 @@
           "module": "tests/ws_stats_reconnect_browser.py",
           "ordinal": 1,
           "ast_sha256": "c4d1fe43e3cf2a0e8ec57b6f96f09114ced6513ae6cf7c1aa069dc2542af023a"
-        }
-      ]
-    },
-    "static_runninghub_thumbnail_url": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "13768ce8e4b3f939a1d5eb548e30cd369806f96b8b62625dd25a326fd3c8d3cb"
-        },
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "13768ce8e4b3f939a1d5eb548e30cd369806f96b8b62625dd25a326fd3c8d3cb"
-        }
-      ]
-    },
-    "storage_file_item": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "028c63ab0bea22aa745c3482d41770d3b29845e1d69f8e832d5964ba3de0299b"
-        },
-        {
-          "module": "app/routers/api_storage_files.py",
-          "ordinal": 1,
-          "ast_sha256": "028c63ab0bea22aa745c3482d41770d3b29845e1d69f8e832d5964ba3de0299b"
         }
       ]
     },
@@ -6199,38 +4650,6 @@
         }
       ]
     },
-    "upstream_model_headers": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "c978d22332f1832efd9e398c24ef08ea5b9b2b9ffa79c20ae28a0768e6cb2727"
-        },
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "c978d22332f1832efd9e398c24ef08ea5b9b2b9ffa79c20ae28a0768e6cb2727"
-        }
-      ]
-    },
-    "upstream_models_url": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "d0e8a15abee01eb106686395b7e73ebe0ce14bbbed0ce52b1410e728c21ae1b9"
-        },
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "d0e8a15abee01eb106686395b7e73ebe0ce14bbbed0ce52b1410e728c21ae1b9"
-        }
-      ]
-    },
     "validate": {
       "category": "逻辑已经分叉",
       "basis": "存在 4 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -6254,22 +4673,6 @@
           "module": "tools/ui_integrity_evidence.py",
           "ordinal": 1,
           "ast_sha256": "193397fe12f6c9e71ed606419dae86d43cef09152524254e6dbb82e43571f0a5"
-        }
-      ]
-    },
-    "validate_project_media_source": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "bd1f2e0815e4718862c092cb086ab8d1be3066d50a965c5b35b0e0e0d6c07999"
-        },
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "bd1f2e0815e4718862c092cb086ab8d1be3066d50a965c5b35b0e0e0d6c07999"
         }
       ]
     },
@@ -6302,22 +4705,6 @@
           "module": "app/services/providers.py",
           "ordinal": 1,
           "ast_sha256": "874b4e983b243a6d3d7dc2d48072f50fb17045c4be5e5e27bbff356edc2729fb"
-        }
-      ]
-    },
-    "volcengine_default_model_payload": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "abfd5ab753e4997fde1c335711a8b220a3bf28b1b6fb89ee14b39fcb498c472b"
-        },
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "abfd5ab753e4997fde1c335711a8b220a3bf28b1b6fb89ee14b39fcb498c472b"
         }
       ]
     },
@@ -6369,38 +4756,6 @@
         }
       ]
     },
-    "volcengine_sign_v4_headers": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "b62224e7ca16384945beb16b8d4edeffc871601adc757f2b04dd14c4935f79d6"
-        },
-        {
-          "module": "app/routers/api_asset_library.py",
-          "ordinal": 1,
-          "ast_sha256": "b62224e7ca16384945beb16b8d4edeffc871601adc757f2b04dd14c4935f79d6"
-        }
-      ]
-    },
-    "volcengine_task_probe_url": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "app/core.py",
-          "ordinal": 1,
-          "ast_sha256": "7e599e4054a4db7b6a99dbc78270689b050d28c07b57e3c4c3ed534938f84685"
-        },
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "7e599e4054a4db7b6a99dbc78270689b050d28c07b57e3c4c3ed534938f84685"
-        }
-      ]
-    },
     "wait_node_clickable": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -6430,22 +4785,6 @@
           "module": "tests/issue189_gate_flush_native_browser.py",
           "ordinal": 1,
           "ast_sha256": "c96db80b3406a380068dd5b292d056cc956d69e7eba7a103d1f43e2c4c82c95a"
-        }
-      ]
-    },
-    "wait_state": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "tests/history_delete_save_conflict_native_browser.py",
-          "ordinal": 1,
-          "ast_sha256": "58a7a34335031123c853710fd5e626ee24aac4c1b6625ec671d314133c345152"
-        },
-        {
-          "module": "tests/issue189_gate_flush_native_browser.py",
-          "ordinal": 1,
-          "ast_sha256": "58a7a34335031123c853710fd5e626ee24aac4c1b6625ec671d314133c345152"
         }
       ]
     },
@@ -6580,22 +4919,6 @@
           "module": "tools/ui_integrity_evidence.py",
           "ordinal": 1,
           "ast_sha256": "160af685d708eb84a662fb911eb5c17c19491eb2b6c2b9e3137c4b35d41588a7"
-        }
-      ]
-    },
-    "write_jsonl": {
-      "category": "完全相同",
-      "basis": "函数 AST（含签名/装饰器/文档字符串/类型注释，不含位置和普通注释）一致；不证明模块全局绑定或运行时语义相同。",
-      "members": [
-        {
-          "module": "tests/history_delete_save_conflict_native_browser.py",
-          "ordinal": 1,
-          "ast_sha256": "b66ae44162424dda57b58d748def3167d59153d4318eb2329a6e15be830a6823"
-        },
-        {
-          "module": "tests/issue189_gate_flush_native_browser.py",
-          "ordinal": 1,
-          "ast_sha256": "b66ae44162424dda57b58d748def3167d59153d4318eb2329a6e15be830a6823"
         }
       ]
     },

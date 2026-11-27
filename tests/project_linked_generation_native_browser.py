@@ -46,8 +46,9 @@ if str(ROOT) not in sys.path:
 
 from firefly_projects import ProjectStore
 from tests import conversation_browser as harness
+from tests.image_test_support import rgba_png
 from tests.native_browser import AsgiBrowserServer, NativeBrowser, find_browser
-from tests.provider_contract import ProviderContractCapture, normalize_captured_request
+from tests.provider_contract import ProviderContractCapture, gemini_image_response, normalize_captured_request
 
 VIEWPORT = (1424, 900)
 EXPECTED_UI_PROMPT = "upstream first\n\nupstream second\n\nown prompt"
@@ -69,36 +70,10 @@ STEP_NAMES = (
 )
 
 
-def rgba_png(color: tuple[int, int, int, int]) -> bytes:
-    image = Image.new("RGBA", (1, 1), color)
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    return buffer.getvalue()
-
-
 PNG_FIRST = rgba_png((255, 0, 0, 255))  # red reference asset
 PNG_SECOND = rgba_png((0, 0, 255, 255))  # blue reference asset
 PNG_UI_RESULT = rgba_png((0, 255, 0, 255))  # green result for the UI run
 PNG_DUP_RESULT = rgba_png((255, 215, 0, 255))  # gold result for the duplicate run
-
-
-def gemini_image_response(png: bytes) -> dict:
-    return {
-        "candidates": [
-            {
-                "content": {
-                    "parts": [
-                        {
-                            "inlineData": {
-                                "mimeType": "image/png",
-                                "data": base64.b64encode(png).decode("ascii"),
-                            }
-                        }
-                    ]
-                }
-            }
-        ]
-    }
 
 
 def provider_fixture() -> dict:

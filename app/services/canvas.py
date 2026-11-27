@@ -57,13 +57,6 @@ def load_canvas(canvas_id):
         raise HTTPException(status_code=404, detail='画布已在回收站')
     return canvas
 
-def load_canvas_any(canvas_id):
-    path = canvas_path(canvas_id)
-    if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail='画布不存在')
-    with open(path, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
 def iter_canvas_records(include_deleted=False):
     _svc.cleanup_expired_canvas_trash()
     records = []
@@ -80,14 +73,6 @@ def iter_canvas_records(include_deleted=False):
             continue
         records.append(canvas_record(data))
     return records
-
-def list_canvases():
-    records = iter_canvas_records(include_deleted=False)
-    return sorted(records, key=lambda item: (0 if item.get('pinned') else 1, -int(item.get('updated_at') or item.get('created_at') or 0)))
-
-def list_deleted_canvases():
-    records = iter_canvas_records(include_deleted=True)
-    return sorted(records, key=lambda item: item['deleted_at'], reverse=True)
 
 def canvas_assets_index():
     canvases = []

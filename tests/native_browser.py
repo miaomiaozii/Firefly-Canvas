@@ -29,6 +29,28 @@ VIEWPORTS = ((1920, 1080), (1440, 900), (1280, 720), (1024, 768), (800, 600))
 BROWSER_PORT_RANGE = range(49152, 65536)
 
 
+def relative(path: Path, root: Path) -> str:
+    return path.resolve().relative_to(root.resolve()).as_posix()
+
+
+def state(browser: NativeBrowser, expression: str):
+    return browser.evaluate(expression)
+
+
+def wait_state(browser: NativeBrowser, expression: str, timeout: float, what: str) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if browser.evaluate(expression):
+            return
+        time.sleep(0.2)
+    raise TimeoutError(f"timed out waiting for {what}: {expression}")
+
+
+def write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(item, ensure_ascii=False) + "\n" for item in rows), encoding="utf-8")
+
+
 def browser_process_environment() -> dict[str, str]:
     environment = os.environ.copy()
     browser_userprofile = environment.get("FIREFLY_QUALITY_GATE_BROWSER_USERPROFILE", "").strip()

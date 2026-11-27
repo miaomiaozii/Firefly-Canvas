@@ -30,6 +30,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:  # 直接 `python tools/ui_integrity_evidence.py` 跑时仓库根不在路径上
     sys.path.insert(0, str(ROOT))
 import firefly_json_io  # noqa: E402  # #383：证据 JSON 走公共原子写，不再截断式 write_text
+from tools.copy_eval_fixtures import sha256  # noqa: E402
+
 DEFAULT_BASELINES = ROOT / "tests" / "baselines" / "ui-integrity"
 EXPECTED_VIEWPORTS = ((1920, 1080), (1440, 900), (1280, 720), (1024, 768), (800, 600))
 EXPECTED_SCENES = (
@@ -124,14 +126,6 @@ def write_json(path: Path, value) -> None:
     # #383：原来是 `path.write_text(json.dumps(...))`——打开那一刻旧证据就没了，写一半断
     # 就留下一份读不通的证据（门拿到的就是坏 JSON）。换 #345 的公共实现。
     firefly_json_io.write_json_atomic(path, value)
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def sha256_bytes(value: bytes) -> str:

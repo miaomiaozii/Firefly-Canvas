@@ -24,18 +24,15 @@ runAll 逐条转化（下一票，本票只预留 status 字段）；③批注�
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+from firefly_opsdb import ops_utc_now_iso as _now_iso
 
 # 批注文本上限（防滥用撑爆气泡列表；与 ADR 0021「ops.db 只存画布对象级内容」同口径）。
 ANNOTATION_MAX_TEXT_LEN = 500
 
 # 状态机取值（#259 产品决策：pending→converted；converted 由 runAll 票写入）。
 ANNOTATION_STATUSES = ("pending", "converted")
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _validate_annotation_fields(

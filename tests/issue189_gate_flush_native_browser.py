@@ -58,7 +58,7 @@ if str(ROOT) not in sys.path:
 
 from firefly_projects import ProjectStore  # noqa: E402
 from tests import conversation_browser as harness  # noqa: E402
-from tests.native_browser import AsgiBrowserServer, NativeBrowser, find_browser  # noqa: E402
+from tests.native_browser import AsgiBrowserServer, NativeBrowser, find_browser, state, wait_state, write_jsonl  # noqa: E402
 
 VIEWPORT = (1424, 900)
 NODE_ID = "img-189"
@@ -361,27 +361,9 @@ class RequestLogger:
                 })
 
 
-def write_jsonl(path: pathlib.Path, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(json.dumps(item, ensure_ascii=False) + "\n" for item in rows), encoding="utf-8")
-
-
 def write_json(path: pathlib.Path, value) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-
-
-def state(browser: NativeBrowser, expression: str):
-    return browser.evaluate(expression)
-
-
-def wait_state(browser: NativeBrowser, expression: str, timeout: float, what: str) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if browser.evaluate(expression):
-            return
-        time.sleep(0.2)
-    raise TimeoutError(f"timed out waiting for {what}: {expression}")
 
 
 def wait_state_soft(browser: NativeBrowser, expression: str, timeout: float) -> bool:

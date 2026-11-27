@@ -10,7 +10,7 @@ from pathlib import Path as _bootstrap_Path
 _REPO_ROOT = str(_bootstrap_Path(__file__).resolve().parents[1])
 if _REPO_ROOT not in _bootstrap_sys.path:
     _bootstrap_sys.path.insert(0, _REPO_ROOT)
-from tools.browser_process import browser_popen
+from tools.browser_process import browser_popen, remove_profile
 from tools.process_tree import kill_process_tree
 
 import asyncio
@@ -19,7 +19,6 @@ import importlib.util
 import json
 import os
 import queue
-import shutil
 import struct
 import subprocess
 import sys
@@ -158,6 +157,10 @@ def audio_bytes() -> bytes:
         stream.setframerate(8_000)
         stream.writeframes(b"\x00\x00" * 800)
     return output.getvalue()
+
+
+def canvas_nodes(store: ProjectStore, project_id: str) -> list:
+    return store.open_project(project_id)["canvas"].get("nodes") or []
 
 
 def seed_store(store: ProjectStore) -> dict[str, str]:
@@ -555,14 +558,6 @@ class ConversationBrowserServer:
                     )
                 self.condition.wait(remaining)
             return self.results[start_count]
-
-
-def remove_profile(profile: Path):
-    for _attempt in range(20):
-        shutil.rmtree(profile, ignore_errors=True)
-        if not profile.exists():
-            return
-        time.sleep(0.15)
 
 
 def load_production_app(root: Path, store: ProjectStore, *, runtime_root: Path | None = None, projects_root: Path | None = None):

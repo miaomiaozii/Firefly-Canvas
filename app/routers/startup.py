@@ -314,13 +314,6 @@ def migrate_double_extension_uploads():
     if renamed:
         logger.info(f'修复双重扩展名素材: {renamed} 个')
 
-def _sniff_image_ext(path):
-    try:
-        with open(path, 'rb') as f:
-            return _sniff_image_ext_bytes(f.read(16))
-    except OSError:
-        return None
-
 def migrate_mislabeled_image_extensions():
     """有些采集来的图片内容与扩展名不符（例如 WebP 内容却叫 .png），导致服务端按错误 content-type 返回、
     严格的客户端（PS UXP）解不出来。这里按真实魔数纠正扩展名，并同步重命名 caption/classification 旁车。"""
@@ -405,12 +398,6 @@ def recover_project_agent_tasks() -> int:
                         recovered += 1
     return recovered
 
-def project_conversation_ready_result(project_id: str, node_id: str, request_id: str) -> Optional[Dict[str, Any]]:
-    task_key = (str(project_id), str(node_id), str(request_id))
-    with PROJECT_CONVERSATION_TASKS_LOCK:
-        ready = PROJECT_CONVERSATION_READY_RESULTS.get(task_key)
-        return copy.deepcopy(ready) if ready is not None else None
-
 def load_project_conversation_durable(project_id: str, node_id: str, request_id: str) -> Optional[Dict[str, Any]]:
     with project_lifecycle_lock(str(project_id)):
         path = project_conversation_durable_path(project_id, node_id, request_id)
@@ -456,11 +443,6 @@ def persist_project_conversation_uncertain(project_id: str, node_id: str, reques
         return True
     except (ProjectNotFound, ProjectStoreError, OSError, ValueError):
         return False
-
-def remember_project_conversation_ready_result(project_id: str, node_id: str, request_id: str, ready: Dict[str, Any]) -> None:
-    task_key = (str(project_id), str(node_id), str(request_id))
-    with PROJECT_CONVERSATION_TASKS_LOCK:
-        PROJECT_CONVERSATION_READY_RESULTS[task_key] = copy.deepcopy(ready)
 
 async def run_project_conversation_task(project_id: str, node_id: str, request_id: str, *, adapter=None) -> bool:
     user_message_id = ''

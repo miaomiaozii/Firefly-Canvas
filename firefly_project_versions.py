@@ -17,10 +17,9 @@ import copy
 import hashlib
 import json
 import sys
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from firefly_opsdb import OpsDb
+from firefly_opsdb import OpsDb, ops_utc_now_iso as _now_iso
 from firefly_projects import _clean_project_id
 from firefly_withdrawn_refs import preserve_withdrawals
 
@@ -29,10 +28,6 @@ RUNTIME_NODE_KEYS = {"prompt", "modelId", "provider", "engine", "pendingTasks", 
 
 # 版本树保留上限（对照上游 ComfyUI KEEP_VERSIONS=30）
 KEEP_VERSIONS = 30
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _sha256(text: str) -> str:

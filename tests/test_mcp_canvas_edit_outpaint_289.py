@@ -27,6 +27,7 @@ from fastapi import HTTPException
 from app.routers import api_mcp
 from app.services.agent_host import agent_host_manager
 from tests.fake_agent_host import FakeAgentProcess
+from tests.image_test_support import open_canvas_asset as _open_asset
 from tests.test_mcp_endpoint import McpTestBase, run_async
 
 #: 与前端 applyImageOutpaint 一致的高饱和红（#ff0044）
@@ -37,12 +38,6 @@ def _png_bytes(size=(16, 16), color=(200, 30, 30)):
     buf = io.BytesIO()
     Image.new("RGB", size, color).save(buf, format="PNG")
     return buf.getvalue()
-
-
-def _open_asset(store, project_id, asset_id):
-    record = store.media_record(project_id, asset_id)
-    with open(record["path"], "rb") as f:
-        return Image.open(io.BytesIO(f.read()))
 
 
 class OutpaintPillTests(unittest.TestCase):

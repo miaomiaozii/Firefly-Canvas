@@ -31,7 +31,6 @@ contacted (fixture base URL is the unroutable ``https://provider.invalid``).
 from __future__ import annotations
 
 import argparse
-import base64
 import io
 import json
 import pathlib
@@ -52,8 +51,9 @@ if str(ROOT) not in sys.path:
 
 from firefly_projects import ProjectStore
 from tests import conversation_browser as harness
+from tests.conversation_browser import canvas_nodes
 from tests.native_browser import AsgiBrowserServer, NativeBrowser, find_browser
-from tests.provider_contract import ProviderContractCapture
+from tests.provider_contract import ProviderContractCapture, gemini_image_response
 
 VIEWPORT = (1424, 900)
 MODEL = "gemini-2.5-flash-image"
@@ -81,25 +81,6 @@ def solid_png(color: tuple[int, int, int, int], size: tuple[int, int]) -> bytes:
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue()
-
-
-def gemini_image_response(png: bytes) -> dict:
-    return {
-        "candidates": [
-            {
-                "content": {
-                    "parts": [
-                        {
-                            "inlineData": {
-                                "mimeType": "image/png",
-                                "data": base64.b64encode(png).decode("ascii"),
-                            }
-                        }
-                    ]
-                }
-            }
-        ]
-    }
 
 
 def provider_fixture() -> dict:
@@ -159,10 +140,6 @@ def seed(store: ProjectStore) -> str:
     )
     store.flush(project_id)
     return project_id
-
-
-def canvas_nodes(store: ProjectStore, project_id: str) -> list:
-    return store.open_project(project_id)["canvas"].get("nodes") or []
 
 
 def wait_node_images(store: ProjectStore, project_id: str, timeout: float, *, expect_name_part: str | None = None, forbid_name_part: str | None = None) -> dict:

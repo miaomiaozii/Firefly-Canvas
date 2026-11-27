@@ -1,11 +1,31 @@
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import httpx
 import json
 from pathlib import Path
 from typing import Any
+
+
+def gemini_image_response(png: bytes) -> dict:
+    return {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {
+                            "inlineData": {
+                                "mimeType": "image/png",
+                                "data": base64.b64encode(png).decode("ascii"),
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    }
 
 
 def load_provider_contract(path: Path) -> dict[str, Any]:

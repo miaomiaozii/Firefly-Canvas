@@ -26,6 +26,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from firefly_opsdb import ops_utc_now_iso as _now_iso
+
 USAGE_CANONICAL_KEYS = (
     "input_tokens",
     "output_tokens",
@@ -62,10 +64,6 @@ USAGE_KEY_ALIASES = {
     "cacheWrite1h": "cache_creation_input_tokens",
     "totalTokens": "total_tokens",
 }
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _is_number(value: Any) -> bool:

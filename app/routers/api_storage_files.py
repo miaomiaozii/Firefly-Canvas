@@ -18,20 +18,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-def storage_file_item(kind, root, path):
-    rel = os.path.relpath(path, root).replace('\\', '/')
-    try:
-        stat = os.stat(path)
-    except OSError:
-        return None
-    item = {'id': f'{kind}:{rel}', 'kind': kind, 'rel': rel, 'name': os.path.basename(path), 'folder': os.path.dirname(rel).replace('\\', '/'), 'url': f"/api/storage-files/{kind}/{urllib.parse.quote(rel, safe='/')}", 'size': stat.st_size, 'created_at': stat.st_mtime}
-    try:
-        with Image.open(path) as img:
-            item['width'], item['height'] = img.size
-    except Exception:
-        pass
-    return item
-
 @router.get('/api/storage-files')
 async def list_storage_files(kind: str='generated', offset: int=0, limit: int=80):
     root = storage_kind_dir(kind)

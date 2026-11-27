@@ -61,14 +61,6 @@ router = APIRouter()
 PROJECT_EXPORTS_LOCK = Lock()
 PROJECT_ACTIVE_EXPORTS: Dict[str, int] = {}
 
-async def acquire_fly_import_slot() -> None:
-    while not FLY_IMPORT_UPLOAD_LOCK.acquire(blocking=False):
-        await asyncio.sleep(0.05)
-
-def public_project_media_import_task(task: Dict[str, Any]) -> Dict[str, Any]:
-    return {key: value for key, value in task.items() if key not in {'project_id', 'source_key'}}
-
-
 class ProjectTrashRestoreRequest(BaseModel):
     asset_id: str
     base_revision: int = Field(ge=0)
@@ -153,11 +145,6 @@ def project_video_references(project_id: str, asset_ids: List[str], kind: str) -
 def project_video_all_references(project_id: str, payload: ProjectVideoGenerationRequest) -> List[Dict[str, Any]]:
     return [*project_video_references(project_id, payload.image_reference_asset_ids, 'image'), *project_video_references(project_id, payload.video_reference_asset_ids, 'video'), *project_video_references(project_id, payload.audio_reference_asset_ids, 'audio')]
 
-def project_agent_execution_lock(project_id: str, node_id: str) -> Lock:
-    key = (str(project_id), str(node_id))
-    with PROJECT_AGENT_EXECUTION_LOCKS_GUARD:
-        return PROJECT_AGENT_EXECUTION_LOCKS.setdefault(key, Lock())
-
 def project_agent_connected_inputs(project_id: str, canvas: Mapping[str, Any], node_id: str) -> Dict[str, Any]:
     """Read only prompt/media nodes on direct incoming input edges.
 
@@ -212,64 +199,6 @@ def project_agent_connected_inputs(project_id: str, canvas: Mapping[str, Any], n
             seen_assets.add(asset_id)
             media.append({'asset_id': asset_id, 'kind': actual_kind, 'name': str(record.get('name') or item.get('name') or asset_id)[:160]})
     return {'prompt': '\n\n'.join(prompts).strip(), 'prompts': prompts, 'prompt_node_ids': prompt_node_ids, 'media': media}
-
-def _agent_forbidden_value(value: Any) -> bool:
-    """Reject operation/path-like values recursively, including nested lists."""
-    if isinstance(value, dict):
-        for key, item in value.items():
-            key_text = str(key or '').strip().lower().replace('-', '_')
-            if key_text in {'operation', 'action', 'command', 'target', 'engine', 'projectid', 'project_id', 'workspace_id', 'canvas_id'}:
-                return True
-            if any((token in key_text for token in ('api_key', 'apikey', 'secret', 'password', 'token', 'url', 'uri', 'path', 'file', 'href', 'locator', 'project_library', 'photoshop', 'comfy', 'local_runtime'))):
-                return True
-            if _agent_forbidden_value(item):
-                return True
-    elif isinstance(value, list):
-        return any((_agent_forbidden_value(item) for item in value))
-    elif isinstance(value, str):
-        text = value.strip().lower()
-        if any((token in text for token in _AGENT_FORBIDDEN_VALUE_TOKENS)) or text.startswith(('file:', '\\\\', '/', '../', '..\\', 'http://', 'https://')) or re.match('^[a-z]:[\\\\/]', text) or ('\\' in text) or ('://' in text):
-            return True
-    return False
-
-def _agent_clean_params(value: Any, kind: str='') -> Dict[str, Any]:
-    if value is None:
-        return {}
-    if not isinstance(value, dict):
-        raise HTTPException(status_code=400, detail='Agent 任务参数必须是对象')
-    if _agent_forbidden_value(value):
-        raise HTTPException(status_code=400, detail={'code': 'agent_forbidden_operation', 'message': 'Agent 参数包含被禁止的删除、全局、跨项目、PS、本地运行时或路径操作'})
-    schema = _AGENT_PROMPT_PARAM_SCHEMA if kind == 'prompt' else _AGENT_VIDEO_PARAM_SCHEMA if kind == 'video' else _AGENT_IMAGE_PARAM_SCHEMA
-    params: Dict[str, Any] = {}
-    for key, item in value.items():
-        key_text = str(key)
-        if key_text not in schema:
-            raise HTTPException(status_code=400, detail={'code': 'agent_parameter_unknown', 'message': f'Agent 不允许参数字段: {key_text}'})
-        expected_types = schema[key_text]
-        if not isinstance(item, expected_types) or (int in expected_types and isinstance(item, bool)):
-            raise HTTPException(status_code=400, detail={'code': 'agent_parameter_type', 'message': f'Agent 参数 {key_text} 类型无效'})
-        if isinstance(item, str) and len(item) > 2000:
-            raise HTTPException(status_code=400, detail=f'Agent 参数 {key_text} 过长')
-        if key_text in {'width', 'height'} and (not 1 <= int(item) <= 16384):
-            raise HTTPException(status_code=400, detail=f'Agent 参数 {key_text} 超出范围')
-        if key_text == 'duration' and (not 1 <= int(item) <= 60):
-            raise HTTPException(status_code=400, detail='Agent 视频时长必须在 1 到 60 秒之间')
-        if key_text == 'n' and (not 1 <= int(item) <= 8):
-            raise HTTPException(status_code=400, detail='Agent 参数 n 超出范围')
-        if key_text == 'reference_asset_ids':
-            if any((not isinstance(asset_id, str) or not re.fullmatch('[A-Za-z0-9._-]{1,200}', asset_id) for asset_id in item)):
-                raise HTTPException(status_code=400, detail='Agent 参考素材标识无效')
-        params[key_text] = copy.deepcopy(item)
-    try:
-        encoded = json.dumps(params, ensure_ascii=False)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=400, detail='Agent 任务参数必须可序列化') from exc
-    if len(encoded.encode('utf-8')) > 64 * 1024:
-        raise HTTPException(status_code=400, detail='Agent 任务参数超过 64KB 限制')
-    return params
-
-def _agent_public_task(task: Mapping[str, Any]) -> Dict[str, Any]:
-    return {key: copy.deepcopy(value) for key, value in task.items() if key not in {'adapter_request', 'raw_result'}}
 
 def _agent_active_counts(project_id: str, agent_id: str='') -> Tuple[int, int, int]:
     global_count = project_count = node_count = 0
@@ -2609,29 +2538,6 @@ async def cancel_project_video_task(project_id: str, task_id: str, request: Requ
     }
 
 
-def project_canvas_video_payload(request: VideoGenerationRequest, provider_id: str, model: str, references: List[Dict[str, Any]]) -> CanvasVideoRequest:
-    image_refs = [AIReference(url=item['adapter_url'], name=item.get('name') or 'reference', kind='image', mime=item.get('mime') or '') for item in references if item.get('kind') == 'image']
-    video_refs = [item['adapter_url'] for item in references if item.get('kind') == 'video']
-    audio_refs = [item['adapter_url'] for item in references if item.get('kind') == 'audio']
-    # T8 归一化把未指定的 size/aspect_ratio/resolution 置为 None（供路由识别「未指定」），
-    # 但 CanvasVideoRequest 这三个字段是 str 契约（空串=未指定，与归一化前行为一致）——None 会触发 pydantic 400。
-    return CanvasVideoRequest(prompt=request.prompt, provider_id=provider_id, model=model, duration=request.duration, width=request.width, height=request.height, aspect_ratio=request.aspect_ratio or '', resolution=request.resolution or '', size=request.size or '', quality=request.quality, media_type=request.media_type, images=image_refs, videos=video_refs, audios=audio_refs, enhance_prompt=request.enhance_prompt, enable_upsample=request.enable_upsample, watermark=request.watermark, seed=request.seed, camera_fixed=request.camera_fixed, return_last_frame=request.return_last_frame, generate_audio=request.generate_audio, multimodal=bool(video_refs or audio_refs or len(image_refs) > 1))
-
-def project_video_mark_candidate_incompatible(provider: Dict[str, Any], model: str, parameters: List[str]) -> None:
-    if not parameters:
-        return
-    candidates = provider.setdefault(PROJECT_VIDEO_CANDIDATE_INCOMPATIBLE_KEY, {})
-    current = candidates.setdefault(str(model or ''), [])
-    current.extend((str(name).strip() for name in parameters if str(name).strip()))
-    candidates[str(model or '')] = list(dict.fromkeys(current))
-
-def project_video_candidate_preflight_incompatible_parameters(provider: Mapping[str, Any], model: str) -> List[str]:
-    candidates = provider.get(PROJECT_VIDEO_CANDIDATE_INCOMPATIBLE_KEY)
-    if not isinstance(candidates, Mapping):
-        return []
-    values = candidates.get(str(model or ''))
-    return [str(name).strip() for name in values or [] if str(name).strip()]
-
 def project_video_candidate_inline_reference_kinds(provider: Mapping[str, Any], model: str) -> set[str]:
     if is_runninghub_provider(provider) or is_apimart_provider(provider) or is_yuli_provider(provider) or is_agnes_provider(provider, model):
         return set()
@@ -2800,24 +2706,6 @@ def reserve_project_media_import(project_id: str, source_key: str):
             PROJECT_MEDIA_IMPORT_TASKS[task_id] = task
             return (executor, task, True)
 
-def validate_project_media_source(source_path: str, expected_kind: str, declared_mime: str) -> str:
-    """Return a verified MIME for media that has an explicit expected kind."""
-    kind = str(expected_kind or '').strip().lower()
-    if not kind:
-        return declared_mime
-    if kind == 'image':
-        _width, _height, verified_mime = validate_generated_image(source_path)
-        return verified_mime
-    if kind == 'video':
-        _width, _height, verified_mime = validate_generated_video(source_path)
-        return verified_mime
-    if kind == 'audio':
-        mime = str(declared_mime or content_type_for_path(source_path)).split(';', 1)[0].strip().lower()
-        if not mime.startswith('audio/'):
-            raise ProjectStoreError('媒体内容不是有效音频')
-        return mime
-    raise ProjectStoreError('媒体预期类型不受支持')
-
 @router.post('/api/project-library/{project_id}/media/import')
 async def import_project_media(project_id: str, payload: ProjectMediaImportRequest, request: Request):
     ensure_same_origin_request(request)
@@ -2968,19 +2856,11 @@ async def copy_project_media_to_global(project_id: str, asset_id: str):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {'item': item, 'files': [item], 'count': 1}
 
-def project_has_active_media_import(project_id: str) -> bool:
-    with PROJECT_MEDIA_IMPORT_TASKS_LOCK:
-        return any((task.get('project_id') == project_id and task.get('status') == 'pending' for task in PROJECT_MEDIA_IMPORT_TASKS.values()))
-
 def project_has_active_image_generation(project_id: str) -> bool:
     with CANVAS_TASK_LOCK:
         return any(task.get('type') == 'project-online-image' and task.get('project_id') == project_id
                    and (task.get('status') in {'registering', 'queued', 'running'} or task.get('agent_settled') is False)
                    for task in CANVAS_TASKS.values())
-
-def project_has_active_video_generation(project_id: str) -> bool:
-    with CANVAS_TASK_LOCK:
-        return any((task.get('type') == 'project-online-video' and task.get('project_id') == project_id and (task.get('status') in {'queued', 'running'}) for task in CANVAS_TASKS.values()))
 
 def project_has_pending_generation_handoff(project_id: str) -> bool:
     with CANVAS_TASK_LOCK:
@@ -2988,64 +2868,6 @@ def project_has_pending_generation_handoff(project_id: str) -> bool:
             PROJECT_IMAGE_GENERATION_ORPHANS.get(str(project_id))
             or PROJECT_VIDEO_GENERATION_ORPHANS.get(str(project_id))
         )
-
-def canvas_has_pending_conversation(canvas: Dict[str, Any]) -> bool:
-    return any((node.get('type') == NODE_TYPE_CONVERSATION and any((isinstance(message, dict) and message.get('role') == 'user' and (message.get('status') == 'pending') for message in node.get('messages') or [])) for node in canvas.get('nodes') or [] if isinstance(node, dict)))
-
-def project_has_recoverable_conversation_sidecars(store: ProjectStore, project_dir: Path, project_id: str, canvas: Dict[str, Any]) -> bool:
-    sidecar_root = store._safe_project_path(project_dir, '.conversation-tasks')
-    if not sidecar_root.is_dir():
-        return False
-    active = False
-    for entry in list(sidecar_root.iterdir()):
-        try:
-            path = store._safe_project_path(project_dir, f'.conversation-tasks/{entry.name}')
-            if entry.name.lower().endswith('.tmp'):
-                if path.is_file():
-                    path.unlink()
-                elif path.exists():
-                    active = True
-                continue
-            if not path.is_file():
-                active = True
-                continue
-            payload = json.loads(path.read_text(encoding='utf-8'))
-            if not isinstance(payload, dict) or str(payload.get('project_id') or '') != str(project_id):
-                active = True
-                continue
-            node_id = str(payload.get('node_id') or '')
-            request_id = str(payload.get('request_id') or '')
-            ready = payload.get('ready')
-            if payload.get('state') != 'ready' or not node_id or (not request_id) or (not isinstance(ready, dict)):
-                active = True
-                continue
-            snapshot = conversation_task_snapshot(canvas, node_id, request_id)
-            if not snapshot or snapshot.get('status') not in {'completed', 'failed'}:
-                active = True
-                continue
-            expected_user_id = str(ready.get('user_message_id') or '')
-            actual_user_id = str((snapshot.get('message') or {}).get('id') or '')
-            if expected_user_id and expected_user_id != actual_user_id:
-                active = True
-                continue
-            ready_assistant = ready.get('assistant')
-            actual_assistant = snapshot.get('assistant')
-            if isinstance(ready_assistant, dict):
-                if not isinstance(actual_assistant, dict) or any((str(ready_assistant.get(key) or '') != str(actual_assistant.get(key) or '') for key in ('id', 'request_id'))):
-                    active = True
-                    continue
-            elif not ready.get('error') or snapshot.get('status') != 'failed':
-                active = True
-                continue
-            path.unlink()
-            forget_project_conversation_ready_result(project_id, node_id, request_id)
-        except (ProjectStoreError, OSError, ValueError, json.JSONDecodeError):
-            active = True
-    try:
-        sidecar_root.rmdir()
-    except OSError:
-        pass
-    return active
 
 def project_has_active_conversation(project_id: str, *, trashed: bool=False) -> bool:
     """Conservatively block lifecycle moves while a paid turn can still be recovered."""
@@ -3691,13 +3513,6 @@ def _photoshop_request_snapshot(request_id: str) -> Optional[Dict[str, Any]]:
         result.pop('expires_at_ms', None)
         return result
 
-def _photoshop_public_request(record: Dict[str, Any]) -> Dict[str, Any]:
-    result = copy.deepcopy(record)
-    if result.get('state') == 'processing':
-        result['state'] = 'pending'
-    result.pop('expires_at_ms', None)
-    return result
-
 def _photoshop_mark_returned(request_id: str, committed: Dict[str, Any]) -> Dict[str, Any]:
     """Publish the one-time result after durable project commit."""
     with PHOTOSHOP_ROUND_TRIP_LOCK:
@@ -3708,26 +3523,6 @@ def _photoshop_mark_returned(request_id: str, committed: Dict[str, Any]) -> Dict
         # issue #95：终态落盘，重启后 PS 端重试会得到明确的 DUPLICATE_RETURN 而不是 404。
         _app_main._photoshop_persist_table_locked(str(current.get('project_id') or ''))
         return _photoshop_public_request(current)
-
-def _photoshop_reset_processing(request_id: str) -> None:
-    with PHOTOSHOP_ROUND_TRIP_LOCK:
-        current = PHOTOSHOP_ROUND_TRIP_REQUESTS.get(str(request_id or ''))
-        if current and current.get('state') == 'processing':
-            current['state'] = 'pending'
-
-def _photoshop_validate_display_name(value: str) -> str:
-    name = str(value or '').strip()
-    if not name or name in {'.', '..'} or any((char in name for char in ('/', '\\', '\x00', ':'))):
-        raise _photoshop_protocol_error(400, 'INVALID_RETURN_PATH', '返回文件名必须是纯显示名称')
-    if Path(name).name != name:
-        raise _photoshop_protocol_error(400, 'INVALID_RETURN_PATH', '返回文件名不能包含路径')
-    return name[:240]
-
-def _photoshop_validate_media_type(value: str) -> str:
-    mime_type = str(value or '').split(';', 1)[0].strip().lower()
-    if not re.fullmatch('image/[a-z0-9.+-]+', mime_type):
-        raise _photoshop_protocol_error(400, 'INVALID_IDENTIFIER', 'Photoshop 返回必须是图片媒体')
-    return mime_type
 
 @router.post('/api/project-library/{project_id}/photoshop/round-trips')
 @router.post('/api/project-library/{project_id}/photoshop-round-trips')
@@ -4063,9 +3858,6 @@ async def persist_project_conversation_pending(project_id: str, node_id: str, us
         except RevisionConflict:
             continue
     raise agent_error(409, 'CANVAS_CONFLICT', '项目持续被修改，对话任务尚未登记', '刷新画布并查询原请求回执，保留原待发意图和请求标识。')
-
-def conversation_task_response(canvas: Dict[str, Any], snapshot: Dict[str, Any]) -> Dict[str, Any]:
-    return {'ok': True, 'canvas': canvas, 'status': snapshot['status'], 'request_id': snapshot['request_id'], 'message': snapshot['message'], 'assistant': snapshot.get('assistant'), 'saved': True}
 
 async def finalize_visible_project_conversation_terminal(project_id: str, node_id: str, request_id: str) -> None:
     """Make terminal API visibility include all recovery-state cleanup."""

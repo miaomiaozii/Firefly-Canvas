@@ -12,7 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPExceptio
 from pydantic import BaseModel, Field
 from app.core import (BaseModel, File, Form, HTTPException, List, LocalAssetCaptionRequest, LocalAssetCaptionSaveRequest, LocalAssetClassifyRequest, LocalAssetFolderRequest, LocalAssetRenameRequest, LocalAssetUrlImportItem, LocalAssetUrlImportRequest, Request, UploadFile, _local_upload_folder_node, _local_upload_kind_ext, _local_upload_rel_path, _local_upload_safe_file_stem, _local_upload_safe_folder_name, _os, _sniff_image_ext_bytes, _sys, base64, ensure_same_origin_request, httpx, json, os, re, sanitize_asset_name, urllib, uuid)
 from app.core import _local_upload_folder_node, _local_upload_kind_ext, _local_upload_rel_path, _local_upload_safe_file_stem, _local_upload_safe_folder_name, _sniff_image_ext_bytes
-_from_main_names = ['LOCAL_UPLOAD_DIR', '_local_upload_abs', '_local_upload_caption_path', '_local_upload_classification_path', '_local_upload_item', '_local_upload_safe_folder', '_local_upload_safe_path', '_local_upload_tree_and_items', '_write_local_upload_classification', 'caption_image_with_provider', 'classify_asset_image_best_effort', 'classify_image_with_provider', 'normalize_asset_classification']
+_from_main_names = ['LOCAL_UPLOAD_DIR', '_local_upload_abs', '_local_upload_caption_path', '_local_upload_classification_path', '_local_upload_item', '_local_upload_tree_and_items', '_write_local_upload_classification', 'caption_image_with_provider', 'classify_asset_image_best_effort', 'classify_image_with_provider', 'normalize_asset_classification']
 import app.services as _svc
 for _nm in _from_main_names:
     _v = getattr(_app_main, _nm, None)
@@ -49,25 +49,6 @@ def _local_upload_safe_path(name):
 def _local_upload_safe_folder(path_value):
     rel, path = _local_upload_abs(path_value)
     return (rel, path)
-
-def _local_upload_safe_folder_name(name):
-    cleaned = sanitize_asset_name(os.path.basename(str(name or '').strip()), '')
-    cleaned = re.sub('[\\\\/]+', '_', cleaned).strip(' ._')
-    if not cleaned:
-        raise HTTPException(status_code=400, detail='文件夹名称不能为空')
-    return cleaned[:60]
-
-def _local_upload_safe_file_stem(name):
-    raw = os.path.splitext(os.path.basename(str(name or '').strip()))[0]
-    cleaned = sanitize_asset_name(raw, '')
-    cleaned = re.sub('[\\\\/]+', '_', cleaned).strip(' ._')
-    if not cleaned:
-        raise HTTPException(status_code=400, detail='文件名称不能为空')
-    return cleaned[:120]
-
-def _local_upload_folder_node(path='', name='全部上传'):
-    rel = _local_upload_rel_path(path)
-    return {'id': rel or '__root__', 'path': rel, 'name': name if not rel else os.path.basename(rel), 'items': [], 'children': []}
 
 def _local_upload_tree_and_items():
     root_node = _local_upload_folder_node('', '全部上传')
