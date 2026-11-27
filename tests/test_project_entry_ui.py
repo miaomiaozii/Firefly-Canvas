@@ -136,7 +136,7 @@ class ProjectEntryUiTests(unittest.TestCase):
         self.assertIn("candidate.source_category", script)
         preview_flow = script[
             script.index("async function showCleanupPreview"):
-            script.index("function cardBase(project)")
+            script.index("function addProjectCover(")
         ]
         self.assertIn("method:'GET'", preview_flow)
         self.assertNotIn("method:'DELETE'", preview_flow)

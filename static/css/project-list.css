@@ -342,20 +342,47 @@ input:focus-visible {
   aspect-ratio: var(--ratio-project-thumb);
   border-radius: var(--radius-panel) var(--radius-panel) 0 0;
   background: var(--soft);
-  background-image: radial-gradient(var(--grid) var(--space-1), var(--transparent) var(--space-1));
-  background-size: var(--space-12) var(--space-12);
+  background-image:
+    radial-gradient(var(--grid) var(--space-1), var(--transparent) var(--space-1)),
+    radial-gradient(ellipse at center, var(--accent-soft), var(--transparent) 74%);
+  background-size: var(--space-12) var(--space-12), 100% 100%;
 }
 
-.project-thumb span {
+.project-thumb-mark {
   position: absolute;
-  border: var(--space-1) solid var(--line);
-  border-radius: var(--radius-utility);
-  background: var(--raised);
+  inset: 0;
+  inline-size: min(44%, calc(var(--space-24) * 5));
+  block-size: 100%;
+  margin-inline: auto;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  fill: none;
 }
 
-.project-thumb span:nth-child(1) { inset: 14% 68% 55% 8%; }
-.project-thumb span:nth-child(2) { inset: 44% 40% 16% 32%; }
-.project-thumb span:nth-child(3) { inset: 18% 12% 46% 63%; }
+.project-thumb-frame {
+  stroke-opacity: .45;
+}
+
+.project-thumb-mark circle {
+  fill: var(--soft);
+}
+
+.project-cover {
+  position: absolute;
+  inset: 0;
+  inline-size: 100%;
+  block-size: 100%;
+  object-fit: cover;
+  background: var(--soft);
+  pointer-events: none;
+  /* 保留懒加载所需的布局尺寸，加载完成前只显示占位。 */
+  opacity: 0;
+}
+
+.project-cover.is-loaded {
+  opacity: 1;
+}
 
 .project-meta {
   display: grid;

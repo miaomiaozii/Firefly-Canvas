@@ -3114,8 +3114,9 @@ async def archive_project_generated_image(project_id: str, image_data: Dict[str,
                 temporary_path.unlink(missing_ok=True)
         else:
             raise ProjectStoreError('在线模型没有返回可归档的图片')
-    node_image = {'asset_id': record['asset_id'], 'kind': 'image', 'name': record.get('name') or filename, 'natural_w': width, 'natural_h': height}
-    return node_image
+    store = _svc._main('FIREFLY_PROJECT_STORE')
+    await asyncio.to_thread(store.prewarm_project_cover, project_id, record['asset_id'])
+    return {'asset_id': record['asset_id'], 'kind': 'image', 'name': record.get('name') or filename, 'natural_w': width, 'natural_h': height}
 
 async def archive_project_generated_video(project_id: str, video_data: Dict[str, Any], index: int) -> Dict[str, Any]:
     """Verify and atomically archive one online-video result as project media."""

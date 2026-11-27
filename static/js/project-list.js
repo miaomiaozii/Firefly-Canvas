@@ -188,11 +188,40 @@
       if(!cleanupConfirmButton.hidden) cleanupConfirmButton.textContent = tr('projectList.cleanupConfirm');
     }
   });
-  function cardBase(project){
+  function addProjectCover(thumb, project, inTrash){
+    const url = project.cover_thumbnail_url;
+    const prefix = `/api/project-library/${inTrash ? 'trash/' : ''}${encodeURIComponent(project.id)}/cover/`;
+    // 只加载卡片所属项目在当前列表中的封面路由。
+    if(typeof url !== 'string' || !url.startsWith(prefix)) return;
+    const assetId = url.slice(prefix.length);
+    if(!/^[a-zA-Z0-9._-]+$/.test(assetId) || assetId === '.' || assetId === '..') return;
+
+    const cover = document.createElement('img');
+    cover.className = 'project-cover';
+    cover.alt = '';
+    cover.loading = 'lazy';
+    cover.decoding = 'async';
+    cover.addEventListener('load', () => cover.classList.add('is-loaded'), {once:true});
+    cover.addEventListener('error', () => cover.remove(), {once:true});
+    cover.src = url;
+    thumb.appendChild(cover);
+  }
+  function cardBase(project, inTrash = false){
     const card = document.createElement('article');
     card.className = 'project-card';
     card.dataset.projectId = project.id;
-    card.innerHTML = `<div class="project-thumb" aria-hidden="true"><span></span><span></span><span></span></div><div class="project-meta"><h2></h2><time hidden></time></div>`;
+    card.innerHTML = `
+      <div class="project-thumb" aria-hidden="true">
+        <svg class="project-thumb-mark" viewBox="0 0 96 64">
+          <path class="project-thumb-frame" d="M29 12H16v11m51-11h13v11M16 41v11h13m51-11h13V41"/>
+          <path d="M29 39c9 0 10-11 19-11s10 8 19 8"/>
+          <circle cx="29" cy="39" r="4"/>
+          <circle cx="48" cy="28" r="6"/>
+          <circle cx="67" cy="36" r="4"/>
+        </svg>
+      </div>
+      <div class="project-meta"><h2></h2><time hidden></time></div>`;
+    addProjectCover(card.querySelector('.project-thumb'), project, inTrash);
     const title = card.querySelector('h2');
     title.textContent = project.name;
     title.title = project.name;
@@ -397,7 +426,7 @@
     await refreshLibrary();
   }
   function trashCard(project){
-    const card = cardBase(project);
+    const card = cardBase(project, true);
     card.classList.add('trash-card');
     card.insertAdjacentHTML('beforeend', `<div class="trash-actions"><button class="project-action restore" type="button"></button><button class="project-action danger purge" type="button"></button></div>`);
     const restore = card.querySelector('.restore');

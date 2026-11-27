@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, BinaryIO, Callable, Dict, Iterable, List
 
 from firefly_diagnostics import emit as _diag_emit
+from firefly_project_cover import COVER_ERRORS, cover_live_image_path, first_live_project_image, warm_project_cover
 import firefly_json_io
 
 
@@ -639,7 +640,91 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                 except OSError:
                     pass
 
-    def list_projects(self) -> List[Dict[str, Any]]:
+    def _cover_source(self, directory: Path, *, trashed: bool):
+        # A derived listing must not open/repair a project or consult a trashed project's old live cache.
+        if (directory / ORIGINAL_MEDIA_TRANSACTION_NAME).exists():
+            return None
+        try:
+            if self._is_path_redirect(directory.parent) or self._is_path_redirect(directory):
+                return None
+
+            def local_path(relative):
+                # These paths are fixed by the cover reader or have one validated media basename.
+                current = directory
+                for part in relative.split('/'):
+                    current = current / part
+                    if self._is_path_redirect(current):
+                        raise ProjectStoreError('项目封面路径不能经过符号链接或重解析点')
+                return current
+
+            ident = directory.name
+            canvas = None if trashed else self._canvases.get(ident)
+            history = None if trashed else self._histories.get(ident)
+            if history is None:
+                history_path = directory / 'history.json'
+                if not history_path.is_file():
+                    return None
+                history = _read_json(local_path('history.json')).get('records')
+            if not isinstance(history, list) or not history:
+                return None
+            if canvas is None:
+                canvas = _read_json(local_path('canvas.json'))
+            if canvas.get('id') != ident or canvas.get('project_id') != ident:
+                return None
+            items = _read_json(local_path('media/index.json')).get('items')
+            if not isinstance(items, dict):
+                return None
+            def source(asset):
+                try:
+                    return cover_live_image_path(lambda _base, name: local_path(name), directory, asset, items)
+                except ProjectStoreError:
+                    return None  # #508: a nonlocal/invalid media path is not a surviving original.
+            return first_live_project_image(canvas, history, source)
+        except (ProjectStoreError, OSError, ValueError, TypeError, AttributeError):
+            return None  # #508: unreadable cover metadata must not hide the project card.
+
+    def _cover_thumbnail_url(self, directory: Path, *, trashed: bool) -> str:
+        with self._lock:
+            selected = self._cover_source(directory, trashed=trashed)
+        if not selected:
+            return ''
+        prefix = '/api/project-library/trash' if trashed else '/api/project-library'
+        return f'{prefix}/{urllib.parse.quote(directory.name, safe="")}/cover/{urllib.parse.quote(selected[0], safe="")}'
+
+    def read_project_cover(self, project_id: str, asset_id: str, *, trashed: bool) -> bytes:
+        project_id = _clean_project_id(project_id)
+        root = self.project_trash_root if trashed else self.root
+        directory = root / project_id
+        with self._project_operation_lock(project_id):
+            with self._lock:
+                selected = self._cover_source(directory, trashed=trashed)
+                if not selected or selected[0] != asset_id:
+                    raise ProjectNotFound('项目封面不存在')
+            try:
+                source = self._safe_project_path(directory, f'media/{selected[1].name}')
+                thumbnail = warm_project_cover(self._safe_project_path, source, asset_id)
+                with self._lock:
+                    if self._cover_source(directory, trashed=trashed) != selected:
+                        raise ProjectNotFound('项目封面已更改')
+                    return thumbnail.read_bytes()
+            except COVER_ERRORS as exc:
+                raise ProjectNotFound('项目封面不可用') from exc
+
+    def prewarm_project_cover(self, project_id: str, asset_id: str) -> None:
+        project_id = _clean_project_id(project_id)
+        with self._project_operation_lock(project_id):
+            try:
+                with self._lock:
+                    directory = self._project_directory(project_id)
+                    items = self._load_media_index(project_id)['items']
+                    source = cover_live_image_path(self._safe_project_path, directory, asset_id, items)
+                if source:
+                    warm_project_cover(self._safe_project_path, source, asset_id)
+            except (ProjectStoreError, *COVER_ERRORS) as exc:
+                _diag_emit('project_cover_prewarm_failed', level='warning', project_id=project_id,
+                           error_type=type(exc).__name__)
+
+    def list_projects(self, *, include_cover: bool = False) -> List[Dict[str, Any]]:
         if not self.root.exists():
             return []
         projects: List[Dict[str, Any]] = []
@@ -650,7 +735,10 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                 metadata = _read_json(directory / "project.json")
                 if metadata.get("id") != directory.name:
                     continue
-                projects.append(self._project_record(metadata))
+                project = self._project_record(metadata)
+                if include_cover:
+                    project['cover_thumbnail_url'] = self._cover_thumbnail_url(directory, trashed=False)
+                projects.append(project)
             except (OSError, ValueError, json.JSONDecodeError):
                 continue
         return sorted(projects, key=lambda item: (int(item.get("updated_at") or 0) * -1, item["id"]))
@@ -867,7 +955,7 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
     def project_trash_root(self) -> Path:
         return self.root / ".project-trash"
 
-    def list_trashed_projects(self) -> List[Dict[str, Any]]:
+    def list_trashed_projects(self, *, include_cover: bool = False) -> List[Dict[str, Any]]:
         with self._lock:
             if not self.project_trash_root.is_dir():
                 return []
@@ -886,6 +974,8 @@ class ProjectStore(ProjectDeletionMixin, ProjectCleanupMixin, ProjectVersionsMix
                         continue
                     item = self._project_record(metadata)
                     item["deleted_at"] = int(trash.get("deleted_at") or 0)
+                    if include_cover:
+                        item['cover_thumbnail_url'] = self._cover_thumbnail_url(directory, trashed=True)
                     items.append(item)
                 except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
                     continue
