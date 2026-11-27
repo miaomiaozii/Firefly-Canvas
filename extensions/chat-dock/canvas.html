@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Firefly · 对话面板</title>
+  <link rel="stylesheet" href="studio-foundation.css">
+  <link rel="stylesheet" href="dock-shell.css">
+  <script src="protocol.js" defer></script>
+  <script src="dock-embed.js" defer></script>
+  <script src="dock-shell.js" defer></script>
+</head>
+<body>
+  <svg class="dock-symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="dock-left" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></symbol>
+    <symbol id="dock-right" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></symbol>
+    <symbol id="dock-float" viewBox="0 0 24 24"><path d="M14 14H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v2"/><rect x="8" y="9" width="13" height="12" rx="2"/></symbol>
+    <symbol id="dock-external" viewBox="0 0 24 24"><path d="M15 3h6v6m0-6-9 9m7 1v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h6"/></symbol>
+    <symbol id="dock-hide" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+    <symbol id="dock-move" viewBox="0 0 24 24"><path d="M12 3v18M3 12h18M9 6l3-3 3 3m-6 12 3 3 3-3M6 9l-3 3 3 3m12-6 3 3-3 3"/></symbol>
+    <symbol id="dock-resize" viewBox="0 0 24 24"><path d="M20 9 9 20m11-5-5 5"/></symbol>
+  </svg>
+  <main id="dock-shell" data-mode="right">
+    <div id="firefly-surface">
+      <iframe id="firefly-frame" title="Firefly 画布" referrerpolicy="no-referrer"
+        sandbox="allow-scripts allow-same-origin allow-forms allow-downloads allow-modals allow-popups" hidden></iframe>
+      <p id="firefly-problem" role="status" hidden>无法打开配置的 Firefly 地址。<a href="options.html" target="_blank" rel="noopener">检查扩展选项</a></p>
+    </div>
+    <div id="dock-divider" role="separator" tabindex="0" aria-label="调整停靠面板宽度"
+      aria-orientation="vertical" aria-controls="chat-dock-panel"></div>
+    <aside id="chat-dock-panel" aria-labelledby="chat-dock-heading">
+      <header class="dock-heading">
+        <button id="move-panel" type="button" title="移动对话面板" aria-label="移动对话面板" hidden><svg aria-hidden="true"><use href="#dock-move"/></svg></button>
+        <h1 id="chat-dock-heading">对话面板</h1>
+        <a class="dock-open" id="open-chat" target="_blank" rel="noopener noreferrer">
+          <svg aria-hidden="true"><use href="#dock-external"/></svg><span>在新标签页打开</span>
+        </a>
+        <button id="hide-panel" type="button" title="收起对话面板" aria-label="收起对话面板"><svg aria-hidden="true"><use href="#dock-hide"/></svg></button>
+      </header>
+      <div class="dock-controls">
+        <select id="chat-site" aria-label="对话站点"></select>
+        <div class="dock-modes" role="group" aria-label="对话面板布局">
+          <button type="button" data-mode="left" title="左侧停靠" aria-label="左侧停靠" aria-pressed="false"><svg aria-hidden="true"><use href="#dock-left"/></svg></button>
+          <button type="button" data-mode="right" title="右侧停靠" aria-label="右侧停靠" aria-pressed="true"><svg aria-hidden="true"><use href="#dock-right"/></svg></button>
+          <button type="button" data-mode="float" title="浮动" aria-label="浮动" aria-pressed="false"><svg aria-hidden="true"><use href="#dock-float"/></svg></button>
+        </div>
+      </div>
+      <div id="chat-view">
+        <div id="chat-unavailable">
+          <p class="dock-site-heading" id="chat-site-heading"></p>
+          <p>此站点未启用面板内嵌。</p>
+          <p>请在新标签页继续。如需采集内容，请同时打开普通标签页中的 Firefly 画布。</p>
+        </div>
+        <p id="chat-frame-note" hidden>如果站点拒绝在此显示，请在新标签页打开。</p>
+      </div>
+      <button id="resize-panel" type="button" title="调整浮动面板尺寸" aria-label="调整浮动面板尺寸" hidden><svg aria-hidden="true"><use href="#dock-resize"/></svg></button>
+    </aside>
+    <button id="show-panel" type="button" aria-controls="chat-dock-panel" aria-expanded="false" aria-label="展开对话面板" hidden>展开对话</button>
+  </main>
+</body>
+</html>

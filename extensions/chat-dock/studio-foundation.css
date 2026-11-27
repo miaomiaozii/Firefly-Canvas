@@ -1,0 +1,153 @@
+/* #346：`hidden` 属性的语义必须压过作者样式。各页样式里大量 `display:flex/grid`，
+   而浏览器 UA 的 `[hidden]{display:none}` 是普通声明，被作者样式直接赢掉——带 hidden 的元素照样显示。
+   实测：画布页 24 个 `[hidden]` 元素里 13 个仍在显示（含 #337 的跨项目搜索面板：× 和 Esc 都置了 hidden，面板还挂着）。
+   页面级计算样式断言见 tests/canvas_hidden_visibility_browser.py。
+   要反过来覆盖这条必须自己写 `!important`——那就是一次显式决定，不会再悄悄发生。 */
+[hidden] {
+  display: none !important;
+}
+
+.service-version-notice {
+  position: fixed;
+  top: 64px;
+  right: 16px;
+  z-index: 10001;
+  display: grid;
+  gap: 8px;
+  max-width: min(560px, calc(100vw - 32px));
+  max-height: calc(100vh - 96px);
+  overflow: auto;
+  padding: 14px 16px;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-panel);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow-overlay);
+  font: 400 13px/1.55 var(--font-sans);
+}
+.service-version-notice strong { color: var(--danger); }
+.service-version-notice button {
+  justify-self: start;
+  padding: 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-utility);
+  background: var(--card);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+
+:root {
+  --page: #f5f5f5;
+  --panel: #fafaf8;
+  --card: #ffffff;
+  --soft: #fafafa;
+  --raised: #ebebe7;
+  --text: #1f1f1e;
+  --muted: #555552;
+  --faint: #686864;
+  --line: #e4e4e0;
+  --line-strong: #d2d2cd;
+  --accent: #865500;
+  --accent-text: #ffffff;
+  --danger: #b4233a;
+  --grid: rgba(85, 85, 85, .1);
+  --shadow: rgba(0, 0, 0, .16);
+  --shadow-node: 0 2px 8px var(--shadow);
+  --shadow-control: 0 1px 4px var(--shadow);
+  --shadow-overlay: 0 6px 18px var(--shadow);
+  --modal-backdrop: rgba(0, 0, 0, .7);
+  --shadow-color: #000000;
+  --transparent: transparent;
+  --icon-ink: currentColor;
+  --minimap-node: #777777;
+  --connection-cascade: #16a34a;
+  --connection: color-mix(in srgb, var(--line) 62%, var(--transparent));
+  --connection-input: color-mix(in srgb, var(--muted) 62%, var(--transparent));
+  --connection-history: color-mix(in srgb, var(--muted) 46%, var(--transparent));
+  --connection-pending: color-mix(in srgb, var(--muted) 92%, var(--transparent));
+  --accent-soft: color-mix(in srgb, var(--accent) 13%, transparent);
+  --bg: var(--page);
+  --bg-base: var(--page);
+  --card-solid: var(--card);
+  --soft-2: var(--soft);
+  --line-2: var(--line);
+  --text-main: var(--text);
+
+  --radius-panel: 12px;
+  --radius-card: 8px;
+  --radius-input: 8px;
+  --radius-utility: 6px;
+  --radius-pill: 999px;
+
+  --space-1: 1px;
+  --space-2: 2px;
+  --space-3: 3px;
+  --space-4: 4px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-24: 24px;
+
+  --height-utility: 30px;
+  --height-control: 34px;
+  --height-input: 34px;
+  --height-composer: 32px;
+  --min-height-textarea: 90px;
+  --size-icon: 14px;
+  --layout-wide: 1280px;
+  --layout-card-min: 232px;
+  --layout-search: 240px;
+  --layout-popover: 168px;
+  --layout-dialog-compact: 460px;
+  --layout-dialog-versions: 640px;
+  --layout-dialog-media: 680px;
+  --height-dialog-media-list: min(420px, 55vh);
+  --height-dialog-version-list: min(280px, 38vh);
+  --height-dialog-diff-list: 180px;
+  --ratio-project-thumb: 16 / 10;
+
+  --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --font-micro: 10px;
+  --font-caption: 11px;
+  --font-control: 12px;
+  --font-body: 13px;
+  --font-card-title: 14px;
+  --font-component-title: 16px;
+  --font-section-title: 20px;
+  --font-page-title: clamp(32px, 4vw, 48px);
+  --tracking-eyebrow: .14em;
+
+  --line-control: 1;
+  --line-compact: 1.3;
+  --line-body: 1.5;
+  --line-title: 1.15;
+
+  --weight-regular: 500;
+  --weight-medium: 600;
+  --weight-strong: 700;
+  --weight-title: 800;
+}
+
+html.studio-theme-dark {
+  --page: #232326;
+  --panel: #2b2b2e;
+  --card: #343438;
+  --soft: #1d1d20;
+  --raised: #3f3f44;
+  --text: #f4f4f2;
+  --muted: #cbcbc7;
+  --faint: #acaca7;
+  --line: #424247;
+  --line-strong: #55555b;
+  --accent: #edbd62;
+  --accent-text: #121212;
+  --danger: #ff7a6e;
+  --grid: rgba(185, 185, 185, .12);
+  --shadow: rgba(0, 0, 0, .44);
+  --shadow-node: 0 4px 14px var(--shadow);
+  --shadow-control: 0 3px 10px var(--shadow);
+  --shadow-overlay: 0 12px 32px var(--shadow);
+}
