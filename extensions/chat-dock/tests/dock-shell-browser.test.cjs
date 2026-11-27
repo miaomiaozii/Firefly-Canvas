@@ -9,6 +9,11 @@ const extension = resolve(__dirname, '..');
 const shell = 'chrome-extension://ecbjgicacjhegoijmnkijlgeagafgogf/canvas.html';
 const mockURL = 'https://chatgpt.com/firefly-local-fixture';
 const denyURL = 'https://gemini.google.com/firefly-local-fixture';
+const nativeDocks = new Map([
+  ['www.doubao.com', 'https://www.doubao.com/chat/'],
+  ['www.kimi.com', 'https://www.kimi.com/'],
+  ['yuanbao.tencent.com', 'https://yuanbao.tencent.com/'],
+]);
 const edge = process.env.FIREFLY_EDGE_EXECUTABLE;
 const screenshotDir = process.env.FIREFLY_DOCK_SCREENSHOTS;
 
@@ -21,8 +26,8 @@ async function withDockBrowser(run, {mock = false} = {}) {
       await cp(extension, loadedExtension, {recursive: true});
       const path = join(loadedExtension, 'dock-embed.js');
       const implementation = await readFile(path, 'utf8');
-      const approval = 'const approvedPages = Object.freeze({});';
-      assert.equal(implementation.split(approval).length, 2);
+      const approval = /const approvedPages = Object\.freeze\(\{[^}]*\}\);/g;
+      assert.equal([...implementation.matchAll(approval)].length, 1);
       // Only the copied approval table changes; fixtures exercise the shipped loader with intact headers.
       await writeFile(path, implementation.replace(approval, `const approvedPages = Object.freeze(${JSON.stringify({
         'chatgpt.com': mockURL, 'gemini.google.com': denyURL,
@@ -43,7 +48,7 @@ async function withDockBrowser(run, {mock = false} = {}) {
         <h1>Firefly · 离线测试工作区</h1><section>示例项目<a href="/static/smart-canvas.html?id=fixture">打开画布</a></section>`});
       if (url === 'http://127.0.0.1:3000/static/smart-canvas.html?id=fixture') return route.fulfill({contentType: 'text/html; charset=utf-8', body:
         '<h1>示例画布</h1><label>提示词 <textarea></textarea></label>'});
-      if ([mockURL, denyURL, 'https://chatgpt.com/'].includes(url)) {
+      if ([mockURL, denyURL, 'https://chatgpt.com/', ...nativeDocks.values()].includes(url)) {
         return route.fulfill({contentType: 'text/html; charset=utf-8', headers: url === denyURL ? {
           'x-frame-options': 'DENY', 'content-security-policy': "frame-ancestors 'none'",
         } : {'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'"}, body: `<!doctype html>
@@ -69,7 +74,7 @@ async function shot(page, name) {
   await page.screenshot({path: join(screenshotDir, `${edge ? 'edge' : 'chromium'}-${name}.png`)});
 }
 
-test('packaged shell opens Firefly and offers seven ordinary-tab destinations without loading chat frames', {timeout: 60_000}, () =>
+test('packaged shell docks only the three confirmed sites and keeps every ordinary-tab destination', {timeout: 60_000}, () =>
   withDockBrowser(async ({page, context, requested}) => {
     const options = await context.newPage();
     await options.goto(new URL('options.html', shell).href);
@@ -89,9 +94,17 @@ test('packaged shell opens Firefly and offers seven ordinary-tab destinations wi
     for (const site of expected) {
       await sites.selectOption(site);
       assert.equal(await link.getAttribute('href'), `https://${site}/`);
-      assert.equal(await page.locator('#chat-view iframe').count(), 0);
+      const dock = page.locator('#chat-view iframe');
+      const dockURL = nativeDocks.get(site);
+      if (dockURL) {
+        assert.equal(await dock.count(), 1, `${site} should dock`);
+        assert.equal(await dock.getAttribute('src'), dockURL);
+        await dock.contentFrame().getByRole('heading', {name: '离线对话示例'}).waitFor();
+      } else {
+        assert.equal(await dock.count(), 0, `${site} must remain ordinary-tab only`);
+      }
     }
-    assert.equal(requested.some(url => url.startsWith('https:')), false);
+    assert.deepEqual(requested.filter(url => url.startsWith('https:')), [...nativeDocks.values()]);
     await sites.selectOption('chatgpt.com');
     await shot(page, 'site-fallback');
     const tabPromise = context.waitForEvent('page');

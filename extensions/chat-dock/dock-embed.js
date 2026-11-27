@@ -10,8 +10,12 @@
     'www.kimi.com': 'Kimi',
     'yuanbao.tencent.com': '元宝',
   });
-  // A regular website URL is not evidence of permission to embed it.
-  const approvedPages = Object.freeze({});
+  // #515: only pages verified to render without modifying site protections belong here.
+  const approvedPages = Object.freeze({
+    'www.doubao.com': 'https://www.doubao.com/chat/',
+    'www.kimi.com': 'https://www.kimi.com/',
+    'yuanbao.tencent.com': 'https://yuanbao.tencent.com/',
+  });
 
   function mount({view, link, unavailable, heading, note}) {
     let activeFrame;

@@ -13,7 +13,7 @@
 
 从扩展「选项」点击「打开画布与对话面板」。Firefly 从已授权的服务地址打开项目列表；选择项目即可进入画布。对话面板可左停靠、右停靠或浮动。浮动使用移动和缩放按钮，停靠时可拖动分隔线；这些手柄也支持方向键。收起即可让画布使用全宽。扩展按站点记住位置、尺寸和收起状态。
 
-这版七个站点都仅通过「在新标签页打开」访问，不加载站点 iframe。在普通对话标签页采集时，还需在普通标签页打开 Firefly 画布；扩展面板内的画布不是采集目标。
+豆包、Kimi 和元宝的公开入口可直接显示在面板内。站点策略可能变化，登录状态不保证可在面板中使用。其他四站仅在普通标签页打开；所有站点均保留「在新标签页打开」。采集仍需在普通标签页打开对话和 Firefly 画布，面板内不启用采集。
 
 ## 边界和隐私
 
@@ -43,4 +43,4 @@ node --test extensions/chat-dock/tests/protocol.test.cjs
 node --test extensions/chat-dock/tests/browser.test.cjs extensions/chat-dock/tests/dock-shell-browser.test.cjs
 ```
 
-浏览器测试需要项目 Playwright 依赖和其 Chromium 二进制（也可用 `FIREFLY_PLAYWRIGHT` 指向已安装的 Playwright 模块）。测试拦截浏览器请求并用本地 fixture 响应，不访问实际对话网站或 Firefly 服务。自定义站点的授权拒绝/撤销走模拟 API；浏览器测试用已授权回环主机的另一端口验证真实选项页和动态转发注册。面板测试分别验证正式包的七个普通标签入口，以及离线 fixture 上的允许嵌入和浏览器拒绝两种结果；拒绝用的安全头保持原样。可设置 `FIREFLY_DOCK_SCREENSHOTS` 保存面板截图。
+浏览器测试需要项目 Playwright 依赖和其 Chromium 二进制（也可用 `FIREFLY_PLAYWRIGHT` 指向已安装的 Playwright 模块）。测试拦截浏览器请求并用本地 fixture 响应，不访问实际对话网站或 Firefly 服务。自定义站点的授权拒绝/撤销走模拟 API；浏览器测试用已授权回环主机的另一端口验证真实选项页和动态转发注册。面板测试验证正式包的三个停靠入口、七个普通标签入口，以及离线 fixture 上的允许嵌入和浏览器拒绝两种结果；拒绝用的安全头保持原样。可设置 `FIREFLY_DOCK_SCREENSHOTS` 保存面板截图。
