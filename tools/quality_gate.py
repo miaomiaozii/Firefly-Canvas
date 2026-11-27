@@ -4024,6 +4024,7 @@ def main(argv: list[str] | None = None) -> int:
     ) as temporary:
         run_root = Path(temporary)
         workspace_root = run_root / "workspace"
+        # #361：开跑先清上轮孤儿，并从首个子进程起纳入作业；实际挂载状态在收尾时读取。
         process_lifecycle = dict(reap_leftover_runs(run_root.name))
         try:
             workspace_info["copied_files"] = create_execution_workspace(repo_root, workspace_root)

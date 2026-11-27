@@ -76,6 +76,7 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
                 )
             with process:
                 try:
+                    # 单文件必须限时：门被杀后，无超时的 node --check 曾留下 12 个孤儿（2026-11-14）。
                     _, stderr = process.communicate(timeout=30)
                 except subprocess.TimeoutExpired:
                     process.kill()
