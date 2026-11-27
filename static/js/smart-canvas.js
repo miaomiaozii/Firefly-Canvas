@@ -7189,7 +7189,7 @@ registerSmartPendingActionRebuilder('conversation', (entry, live) => async (targ
     }
 });
 registerSmartPendingActionRebuilder('photoshop', (entry, live) => (target) => psSendRoundTrip(target, (entry.payload || {}).assetId, (entry.payload || {}).projectId));
-registerSmartPendingActionRebuilder('local-edit', (entry, live) => (target) => submitLocalEditRequest(target));
+registerSmartPendingActionRebuilder('local-edit', (entry, live) => (target) => submitLocalEditRequest(target, entry.payload?.originalAssetId));
 // #197: shared video-result apply, used by BOTH pending-action replay paths:
 // - in-session closure (canvas-generation-tasks.js, runApiVideoGeneration's gate branch)
 // - this reload-time rebuilder right below.
@@ -8260,24 +8260,19 @@ function downloadNameForMediaItem(item, fallbackPrefix='canvas-output'){
 function downloadPreviewImage(){
     const node = canvasState.nodes.find(n => n.id === previewNavState.nodeId);
     const image = node?.images?.[previewNavState.index];
-    if(!image?.url) return;
-    const name = downloadNameForMediaItem(image, 'image');
-    const link = document.createElement('a');
-    link.href = `/api/download-output?url=${encodeURIComponent(image.url)}&name=${encodeURIComponent(name)}`;
-    link.download = name;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    return downloadPreviewFile(image);
 }
-function downloadPreviewFile(item){
-    if(!item?.url) return;
+async function downloadPreviewFile(item){
+    if(!item?.url){ toast(tr('smart.noExportableMedia')); return; }
     const name = downloadNameForMediaItem(item, 'output');
-    const link = document.createElement('a');
-    link.href = `/api/download-output?url=${encodeURIComponent(item.url)}&name=${encodeURIComponent(name)}`;
-    link.download = name;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
+    try{
+        const response = await fetch(`/api/download-output?url=${encodeURIComponent(item.url)}&name=${encodeURIComponent(name)}`);
+        const {blob} = await canvasReceiveBlob(response);
+        canvasSaveBlobAsFile(blob, name);
+    }catch(error){
+        console.warn('[canvas] preview download failed', error);
+        toast(tr('smart.previewDownloadFailed'));
+    }
 }
 function previewDownloadGroupItems(){
     // 分组预览：整组所有成员图片按阅读顺序打包。
@@ -9215,25 +9210,37 @@ function smartGroupBodyHtml(node){
         ${members.length ? '' : `<div class="smart-group-empty"><svg class="ico" aria-hidden="true"><use href="#i-plus"/></svg><span>${escapeHtml(tr('smart.groupDropHint'))}</span></div>`}
     </div>`;
 }
-// #98：局部编辑节点默认尺寸——表单内容（模式/角色/选区舞台/参数/结果）需要高度，
-// 360x330 会溢出外框；卡片内部可滚动，用户仍可拖右下角调整。
+function localEditOriginalItem(node){
+    const source = canvasState.nodes.find(item => item.id === node.localEditInputRoles?.originalNode);
+    const items = source?.images || [];
+    if(Object.hasOwn(node, 'source_media_id')){
+        return items.find(item => item?.asset_id === node.source_media_id && isLocalEditOriginalItem(item));
+    }
+    return items.find(isLocalEditOriginalItem);
+}
+function localEditOriginalUnavailableText(node){
+    return tr(Object.hasOwn(node, 'source_media_id') ? 'smart.localEditPinnedOriginalUnavailable' : 'smart.localEditNeedOriginal');
+}
 function syncLocalEditInputRoles(node){
-    if(!node || node.type !== NODE_TYPE_LOCAL_EDIT) return node?.localEditInputRoles || {originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]};
-    if(!Array.isArray(canvas?.connections)) return node.localEditInputRoles || {originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]};
     const map = {originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]};
-    const edges = canvas.connections.filter(edge => edge?.to === node.id && edge?.kind === 'input' && ['original','references','prompt'].includes(edge?.role));
+    if(!node || node.type !== NODE_TYPE_LOCAL_EDIT) return node?.localEditInputRoles || map;
+    const edges = (canvas?.connections || []).filter(edge => edge?.to === node.id && edge?.kind === 'input' && ['original','references','prompt'].includes(edge?.role));
+    const originalEdges = edges.filter(edge => edge.role === 'original');
+    if(originalEdges.length === 1) map.originalNode = originalEdges[0].from;
     edges.forEach(edge => {
-        if(edge.role === 'original') map.originalNode = edge.from;
-        else if(edge.role === 'references' && !map.referenceNodes.includes(edge.from)) map.referenceNodes.push(edge.from);
+        if(edge.role === 'references' && !map.referenceNodes.includes(edge.from)) map.referenceNodes.push(edge.from);
         else if(edge.role === 'prompt' && !map.promptNodes.includes(edge.from)) map.promptNodes.push(edge.from);
     });
     map.promptNode = map.promptNodes[0] || '';
     node.localEditInputRoles = map;
     node.inputNodeIds = Array.from(new Set(edges.map(edge => edge.from).filter(Boolean)));
-    if(map.originalNode){
-        const originalNode = canvasState.nodes.find(item => item.id === map.originalNode);
-        node.original_asset_id = (originalNode?.images || []).map(image => image?.asset_id).find(Boolean) || '';
-    } else node.original_asset_id = '';
+    const selectionAsset = node._leSelectionAsset || node.original_asset_id;
+    node.original_asset_id = localEditOriginalItem(node)?.asset_id || '';
+    if(selectionAsset && selectionAsset !== node.original_asset_id){
+        // Saved pixel coordinates belong to the previous original, not the original role.
+        node.selection = [];
+        delete node._leSelectionAsset;
+    }
     node.reference_asset_ids = map.referenceNodes.flatMap(id => {
         const referenceNode = canvasState.nodes.find(item => item.id === id);
         return (referenceNode?.images || []).map(image => image?.asset_id).filter(Boolean);
@@ -9249,36 +9256,35 @@ function localEditFullImageRect(imageW, imageH, ratio){
     const left = Math.round((imageW - w) / 2), top = Math.round((imageH - h) / 2);
     return [left, top, Math.min(imageW, Math.round(left + w)), Math.min(imageH, Math.round(top + h))];
 }
+function localEditHasSelection(node){
+    return node.mode === 'modify'
+        ? (Array.isArray(node.selection) && node.selection.length === 4 && node.selection[2] > node.selection[0] && node.selection[3] > node.selection[1])
+        : (Array.isArray(node.selection) && node.selection.length >= (node.selectionType === 'polygon' ? 3 : 2));
+}
 function localEditBodyHtml(node){
     const roleMap = syncLocalEditInputRoles(node);
     const promptNodeIds = Array.from(new Set([...(roleMap.promptNodes || []), roleMap.promptNode].filter(Boolean)));
     const originalNode = canvasState.nodes.find(item => item.id === roleMap.originalNode);
-    const originalItem = (originalNode?.images || []).find(item => item?.asset_id || item?.url);
-    const originalPreviewUrl = originalItem?.url || (originalItem?.asset_id ? projectMediaUrl(originalItem.asset_id) : '');
+    const originalPreviewUrl = node.original_asset_id ? projectMediaUrl(node.original_asset_id) : '';
     const promptConnected = promptNodeIds.length > 0;
     const connectedPrompt = promptNodeIds.map(id => canvasState.nodes.find(item => item.id === id))
         .map(item => String(item?.text || item?.prompt || '').trim()).filter(Boolean).join('\n\n');
     const promptValue = promptConnected ? connectedPrompt : (node.prompt || '');
-    const selectionOk = node.mode === 'modify'
-        ? (Array.isArray(node.selection) && node.selection.length === 4 && node.selection[2] > node.selection[0] && node.selection[3] > node.selection[1])
-        : (Array.isArray(node.selection) && node.selection.length >= (node.selectionType === 'polygon' ? 3 : 2));
-    const selState = !roleMap.originalNode || !node.original_asset_id
+    const selState = !node.original_asset_id
         ? 'needOriginal'
-        : !selectionOk ? 'needSelection'
+        : !localEditHasSelection(node) ? 'needSelection'
         : !String(node.prompt || '').trim() ? 'needPrompt'
         : node._leBusy ? 'busy'
         : node.output_asset_id ? 'done'
         : 'ready';
     const selStateText = {
-        needOriginal: tr('smart.localEditNeedOriginal'),
+        needOriginal: localEditOriginalUnavailableText(node),
         needSelection: tr('smart.localEditNeedSelection'),
         needPrompt: tr('smart.localEditNeedPrompt'),
         busy: tr('smart.localEditGenerating'),
         done: tr('smart.localEditResultReady'),
         ready: tr('smart.localEditReady')
     }[selState];
-    // 三轮 UI 精修：角色行从「3 行标签+芯片」压缩为「单行 3 芯片」（图标+角色名+状态），
-    // 节点高度显著下降，4:3 原图下默认高度不再出现内部滚条。
     const roleChip = (role, icon, label, filled, statusText) =>
         `<button type="button" class="local-edit-role-chip${node.localEditActiveRole === role ? ' active' : ''}${filled ? ' filled' : ''}" data-local-edit-connect-role="${role}" title="${escapeAttr(tr('smart.localEditRoleHint') + ' ' + statusText)}">${ico(icon)}<span class="local-edit-role-name">${escapeHtml(label)}</span><span class="local-edit-role-status">${escapeHtml(statusText)}</span></button>`;
     const notConnectedText = tr('smart.localEditRoleNotConnected');
@@ -9288,7 +9294,7 @@ function localEditBodyHtml(node){
     const promptStatus = promptConnected ? trf('smart.localEditRolePromptCount', {n: promptNodeIds.length}) : notConnectedText;
     const stage = originalPreviewUrl
         ? '<div class="local-edit-selection-stage" data-local-edit-stage><img data-local-edit-preview src="' + escapeAttr(originalPreviewUrl) + '" alt="' + escapeHtml(tr('smart.originalSelectionPreview')) + '" draggable="false"><canvas data-local-edit-selection-canvas aria-label="' + escapeHtml(tr('smart.localEditSelection')) + '"></canvas></div>'
-        : '<div class="local-edit-selection-empty">' + escapeHtml(tr('smart.localEditConnectHint')) + '</div>';
+        : '<div class="local-edit-selection-empty">' + escapeHtml(Object.hasOwn(node, 'source_media_id') ? localEditOriginalUnavailableText(node) : tr('smart.localEditConnectHint')) + '</div>';
     const stageHint = !originalPreviewUrl ? ''
         : node.mode === 'modify' ? tr('smart.localEditHintModify')
         : node.selectionType === 'polygon' ? tr('smart.localEditHintPolygon')
@@ -9694,7 +9700,7 @@ function smartNodeToolbarHtml(node){
         {key:'local-edit', icon:'inpaint', label:tr('smart.localEditTitle'), enabled:canEditImage},
         {key:'brush', icon:'paintbrush', label:tr('smart.nodeToolbarBrush'), enabled:canEditImage},
         {key:'grid', icon:'grid-3x3', label:gridLabel, enabled:canEditImage},
-        {key:'send-ps', icon:'send', label:tr('smart.nodeToolbarSendPs'), enabled:canEditImage || Boolean(source?.asset_id)},
+        {key:'send-ps', icon:'send', label:tr('smart.nodeToolbarSendPs'), enabled:canEditImage && Boolean(source?.asset_id)},
         {key:'download', icon:'download', label:tr('smart.nodeDownload'), enabled:true}
     ];
     return `<div class="smart-node-floating-menu" data-smart-node-menu="1">${actions.map(action => `
@@ -9733,7 +9739,10 @@ async function sendSmartNodeImageToPhotoshop(node, imageIndex){
     const item = node?.images?.[imageIndex];
     const assetId = String(item?.asset_id || '').trim();
     const projectId = canvas?.project_id || canvas?.project || canvasId || '';
-    if(!projectId || !node?.id || !assetId){ toast(tr('smart.noProjectMediaOriginal')); return; }
+    if(!projectId || !node?.id || !assetId || mediaKindForItem(imageForDisplay(item) || item) !== 'image'){
+        toast(tr('smart.noProjectMediaOriginal'));
+        return;
+    }
     try{
         if(typeof flushProjectCanvasBeforeGeneration === 'function' && !await flushProjectCanvasBeforeGeneration()){
             // #189 gate (m03364/m03420): do not cancel the request. Queue a single-shot
@@ -10593,6 +10602,23 @@ function updatePortDragVisual(){
         targetNodeEl?.querySelector(`.node-port[data-port="${portDragState.hoverPort}"]`)?.classList.add('is-active');
     }
 }
+function localEditOriginalRewirePin(from, to, imageIndex){
+    const images = from.images || [];
+    if(imageIndex != null){
+        const picked = images[imageIndex];
+        return isLocalEditOriginalItem(picked) ? picked.asset_id : false;
+    }
+    const previousEdges = (canvas?.connections || []).filter(edge => edge.to === to.id && edge.kind === 'input' && edge.role === 'original');
+    if(previousEdges.length === 1 && previousEdges[0].from === from.id) return undefined;
+    // A port names a node, not a thumbnail. Don't replace the original with a guess.
+    const ids = [...new Set(images.filter(isLocalEditOriginalItem).map(item => item.asset_id))];
+    return ids.length === 1 ? ids[0] : images.length ? false : null;
+}
+function applyLocalEditOriginalRewirePin(node, pin){
+    if(pin === null) delete node.source_media_id;
+    else if(pin !== undefined) node.source_media_id = pin;
+    syncLocalEditInputRoles(node);
+}
 function handlePortDrop(drag, e){
     const {targetId, targetPort, hit} = (() => {
         const hitEl = document.elementFromPoint(e.clientX, e.clientY);
@@ -10615,20 +10641,25 @@ function handlePortDrop(drag, e){
         if(!compatible){ discardPendingUndo(); render(); return; }
         const fromId = drag.fromPort === 'out' ? drag.fromId : targetId;
         const toId = drag.fromPort === 'out' ? targetId : drag.fromId;
-        const action = beginSmartNodeInputEdit([canvasState.nodes.find(node => node.id === toId)]);
-        if(connectInputNode(fromId, toId)){
+        const toNode = canvasState.nodes.find(n => n.id === toId);
+        const fromNode = canvasState.nodes.find(n => n.id === fromId);
+        const rewiresOriginal = isLocalEditOriginalPort(toNode);
+        const imageIndex = canvasState.selectedImage?.nodeId === fromId && canvasState.selectedImage.index >= 0 ? canvasState.selectedImage.index : null;
+        const pin = rewiresOriginal && fromNode ? localEditOriginalRewirePin(fromNode, toNode, imageIndex) : undefined;
+        const action = beginSmartNodeInputEdit([toNode], rewiresOriginal ? ['source_media_id','original_asset_id','selection','_leSelectionAsset'] : []);
+        if(pin !== false && connectInputNode(fromId, toId)){
+            if(rewiresOriginal) applyLocalEditOriginalRewirePin(toNode, pin);
             finishSmartNodeHumanEdit(action);
             commitPendingUndo();
             render();
             scheduleSave();
         } else {
-            // #149 C6: 连线被拒时 toast 提示原因（不再静默）。
-            // C8 的 agent-task / prompt→conversation 已在 connectInputNode 内 toast，此处跳过避免重复。
-            const toNode = canvasState.nodes.find(n => n.id === toId);
-            const fromNode = canvasState.nodes.find(n => n.id === fromId);
+            // #149: connectInputNode already reports these two refusals.
             const c8Handled = Boolean(toNode) && (toNode.type === NODE_TYPE_TASK || (fromNode?.type === NODE_TYPE_PROMPT && toNode.type === NODE_TYPE_CONVERSATION));
             if(toNode && !c8Handled){
-                if(toNode.type === NODE_TYPE_LOCAL_EDIT && !toNode.localEditActiveRole){
+                if(pin === false){
+                    toast(tr('smart.localEditPickOriginalThumbnail'));
+                } else if(toNode.type === NODE_TYPE_LOCAL_EDIT && !toNode.localEditActiveRole){
                     toast(tr('smart.connectLocalEditNoRole'));
                 } else if(toNode.type === NODE_TYPE_LOOP && !toNode.imageInput && !toNode.showPrompt){
                     toast(tr('smart.connectLoopNoInput'));
@@ -10646,13 +10677,15 @@ function handlePortDrop(drag, e){
         discardPendingUndo(); render(); return;
     }
     const p = screenToWorld(e);
-    const action = beginSmartNodeInputEdit(drag.fromPort === 'in' ? [canvasState.nodes.find(node => node.id === drag.fromId)] : []);
+    const target = drag.fromPort === 'in' ? canvasState.nodes.find(node => node.id === drag.fromId) : null;
+    const rewiresOriginal = isLocalEditOriginalPort(target);
+    const action = beginSmartNodeInputEdit([target], rewiresOriginal ? ['source_media_id','original_asset_id','selection','_leSelectionAsset'] : []);
     undoSuppressed = true;
     const newNode = createImageNodeAt(p, [], {select:true, skipUndo:true});
     undoSuppressed = false;
     const fromId = drag.fromPort === 'out' ? drag.fromId : newNode.id;
     const toId = drag.fromPort === 'out' ? newNode.id : drag.fromId;
-    connectInputNode(fromId, toId);
+    if(connectInputNode(fromId, toId) && rewiresOriginal) applyLocalEditOriginalRewirePin(target, null);
     finishSmartNodeHumanEdit(action);
     commitPendingUndo();
     render();
@@ -11274,19 +11307,14 @@ function bindConversationNodeControls(el, node){
     });
 }
 
-// #197: module-scope local-edit submit so the reload rebuilder
-// (registerSmartPendingActionRebuilder('local-edit')) can call the very same function
-// after a page reload. It used to be a closure local inside the submit click handler
-// below, so the rebuilder's bare reference threw "submitLocalEditRequest is not defined"
-// after a reload and the pending mark was never re-sent (#197 local-edit/refresh red).
-// The request is fully described by node fields (original_asset_id/prompt/mode/
-// selection/feather/...), so the persisted payload is empty and the rebuilder just calls
-// submitLocalEditRequest(live) against the reloaded node. projectId is re-derived from
-// the live canvas state at call time — the same expression the click handler used to
-// capture.
-async function submitLocalEditRequest(live){
+// #197: live submission and reload replay must enforce the same original-image preconditions.
+async function submitLocalEditRequest(live, expectedAssetId=live.original_asset_id){
     const projectId = canvas?.project_id || canvas?.project || canvasId;
     try {
+        syncLocalEditInputRoles(live);
+        if(!live.original_asset_id) throw new Error(localEditOriginalUnavailableText(live));
+        if(expectedAssetId && expectedAssetId !== live.original_asset_id) throw new Error(tr('smart.localEditOriginalChanged'));
+        if(!localEditHasSelection(live)) throw new Error(tr('smart.localEditNeedSelection'));
         const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/local-edit`, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({
             original_asset_id:live.original_asset_id, reference_asset_ids:live.reference_asset_ids || [], prompt:live.prompt,
             mode:live.mode, aspect_ratio:live.aspect_ratio || '', size:live.generation_size || '1024x1024', resolution:live.generation_resolution || '1k', selection:live.mode === 'modify' ? live.selection : {type:live.selectionType || 'freehand', points:live.selection}, feather_radius:live.feather_radius, result_node_id:live.id, base_revision:Number(canvas?.revision || 0)
@@ -11324,13 +11352,13 @@ function bindLocalEditNodeControls(el, node){
             const nextMode = btn.dataset.localEditMode === 'retain' ? 'retain' : 'modify';
             if(nextMode === node.mode) return;
             const size = sourceImageSize();
-            const action = beginSmartNodeHumanEdit([node], ['mode', 'selection']);
+            const action = beginSmartNodeHumanEdit([node], ['mode', 'selection', '_leSelectionAsset']);
             node.mode = nextMode;
             if(nextMode === 'modify'){
-                const isRect = Array.isArray(node.selection) && node.selection.length === 4 && node.selection[2] > node.selection[0];
-                const ratioValue = String(node.aspect_ratio || '1:1').split(':').map(Number);
-                const ratio = ratioValue.length === 2 && ratioValue[0] > 0 && ratioValue[1] > 0 ? ratioValue[0] / ratioValue[1] : 1;
-                if(!isRect) node.selection = localEditFullImageRect(size.width, size.height, ratio) || [];
+                if(!localEditHasSelection(node)){
+                    node.selection = size ? (localEditFullImageRect(size.width, size.height, selectionAspect()) || []) : [];
+                    if(node.selection.length) node._leSelectionAsset = previewAssetId;
+                }
             } else if(Array.isArray(node.selection) && node.selection.length && !Array.isArray(node.selection[0])){
                 // 矩形选区无法直接转点列：清空，等用户按新形状重画。
                 node.selection = [];
@@ -11347,15 +11375,13 @@ function bindLocalEditNodeControls(el, node){
     const feather = el.querySelector('[data-local-edit-feather]');
     const selectionCanvas = el.querySelector('[data-local-edit-selection-canvas]');
     const selectionPreview = el.querySelector('[data-local-edit-preview]');
+    const previewAssetId = node.original_asset_id;
     let selectionDrag = null;
-    let lastOriginalAsset = node.original_asset_id || '';
+    let previewFailed = false;
     const sourceImageSize = () => {
-        const sourceNode = canvasState.nodes.find(item => item.id === (node.localEditInputRoles?.originalNode || ''));
-        const sourceItem = (sourceNode?.images || []).find(item => item?.asset_id || item?.url) || {};
-        return {
-            width: Math.max(1, Number(selectionPreview?.naturalWidth || sourceItem.natural_w || sourceItem.width || 1)),
-            height: Math.max(1, Number(selectionPreview?.naturalHeight || sourceItem.natural_h || sourceItem.height || 1))
-        };
+        // Draw in the served original's pixel space, not thumbnail dimensions or stale DOM.
+        if(!previewAssetId || previewAssetId !== localEditOriginalItem(node)?.asset_id || !selectionPreview?.naturalWidth || !selectionPreview.naturalHeight) return null;
+        return {width:selectionPreview.naturalWidth, height:selectionPreview.naturalHeight};
     };
     const displayPoint = event => {
         const bounds = selectionCanvas?.getBoundingClientRect();
@@ -11365,9 +11391,8 @@ function bindLocalEditNodeControls(el, node){
             y: Math.max(0, Math.min(bounds.height, event.clientY - bounds.top))
         };
     };
-    const sourcePoint = point => {
+    const sourcePoint = (point, size) => {
         const bounds = selectionCanvas?.getBoundingClientRect() || {width:1, height:1};
-        const size = sourceImageSize();
         return [
             Math.max(0, Math.min(size.width - 1, Math.round(point.x * size.width / Math.max(1, bounds.width)))),
             Math.max(0, Math.min(size.height - 1, Math.round(point.y * size.height / Math.max(1, bounds.height))))
@@ -11420,6 +11445,8 @@ function bindLocalEditNodeControls(el, node){
         if(!ctx) return;
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         ctx.clearRect(0, 0, width, height);
+        const size = sourceImageSize();
+        if(!size) return;
         const selectionStyles = getComputedStyle(selectionCanvas);
         ctx.fillStyle = selectionStyles.getPropertyValue('--accent-soft').trim();
         ctx.strokeStyle = selectionStyles.getPropertyValue('--accent').trim();
@@ -11433,7 +11460,6 @@ function bindLocalEditNodeControls(el, node){
             }
             const rect = Array.isArray(node.selection) && node.selection.length === 4 ? node.selection : null;
             if(!rect) return;
-            const size = sourceImageSize();
             const x = Number(rect[0]) * width / size.width;
             const y = Number(rect[1]) * height / size.height;
             const w = Math.max(1, (Number(rect[2]) - Number(rect[0])) * width / size.width);
@@ -11441,9 +11467,7 @@ function bindLocalEditNodeControls(el, node){
             ctx.fillRect(x, y, w, h); ctx.strokeRect(x, y, w, h);
             return;
         }
-        // retain：freehand / polygon / curve 三种可视化与后端 rasterize 语义对齐
-        // （freehand 与 curve 是描边笔迹、polygon 是填充多边形，线宽 12 原图像素）。
-        const size = sourceImageSize();
+        // Match the backend rasterizer's 12-original-pixel stroke for freehand and curve.
         let displayPts;
         if(Array.isArray(draft?.points) && draft.points.length) displayPts = draft.points;
         else displayPts = (Array.isArray(node.selection) ? node.selection : []).map(p => ({
@@ -11474,13 +11498,13 @@ function bindLocalEditNodeControls(el, node){
         ctx.stroke();
     };
     const commitSelection = displayPoints => {
-        if(!selectionCanvas) return;
+        const size = sourceImageSize();
+        if(!selectionCanvas || !size) return;
         const action = beginSmartNodeHumanEdit([node], ['selection', '_leSelectionAsset']);
         if(node.mode === 'modify'){
             const displayRect = displayRectFromDrag(selectionDrag);
             if(!displayRect || displayRect.w < 2 || displayRect.h < 2) return;
             const bounds = selectionCanvas.getBoundingClientRect();
-            const size = sourceImageSize();
             let left = Math.round(displayRect.x * size.width / Math.max(1, bounds.width));
             let top = Math.round(displayRect.y * size.height / Math.max(1, bounds.height));
             let w = Math.round(displayRect.w * size.width / Math.max(1, bounds.width));
@@ -11492,18 +11516,17 @@ function bindLocalEditNodeControls(el, node){
             top = Math.max(0, Math.min(size.height - h, top));
             node.selection = [left, top, left + w, top + h];
         } else {
-            const points = (displayPoints || []).map(sourcePoint);
+            const points = (displayPoints || []).map(point => sourcePoint(point, size));
             const min = node.selectionType === 'polygon' ? 3 : 2;
             if(points.length < min) return;
             node.selection = points;
         }
-        node._leSelectionAsset = node.original_asset_id || '';
+        node._leSelectionAsset = previewAssetId;
         finishSmartNodeHumanEdit(action);
         sync();
-        drawSelection();
     };
     const beginSelectionPointer = event => {
-        if(event.button !== 0 || !selectionCanvas) return;
+        if(event.button !== 0 || !selectionCanvas || !sourceImageSize()) return;
         event.preventDefault(); event.stopPropagation();
         try { selectionCanvas.setPointerCapture?.(event.pointerId); } catch (_) { /* #348: 防御性——setPointerCapture 失败不影响选择框绘制 */ }
         const point = displayPoint(event);
@@ -11570,52 +11593,41 @@ function bindLocalEditNodeControls(el, node){
     });
     selectionCanvas?.addEventListener('dblclick', doubleClickSelection);
     const resetSelection = () => {
-        const action = beginSmartNodeHumanEdit([node], ['selection', '_leSelectionAsset']);
         const size = sourceImageSize();
-        if(node.mode === 'modify'){
-            const ratioValue = String(node.aspect_ratio || '1:1').split(':').map(Number);
-            const ratio = ratioValue.length === 2 && ratioValue[0] > 0 && ratioValue[1] > 0 ? ratioValue[0] / ratioValue[1] : 1;
-            node.selection = localEditFullImageRect(size.width, size.height, ratio) || [0, 0, size.width, size.height];
-        } else node.selection = [];
-        node._leSelectionAsset = node.original_asset_id || '';
+        if(!size) return;
+        const action = beginSmartNodeHumanEdit([node], ['selection', '_leSelectionAsset']);
+        node.selection = node.mode === 'modify' ? (localEditFullImageRect(size.width, size.height, selectionAspect()) || []) : [];
+        node._leSelectionAsset = previewAssetId;
         finishSmartNodeHumanEdit(action);
         sync();
-        drawSelection();
     };
     el.querySelector('[data-local-edit-reset-selection]')?.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); resetSelection(); });
-    selectionPreview?.addEventListener('load', () => {
-        // 舞台盒锁定为原图比例，消除 object-fit 信箱化造成的 display→原图像素映射误差。
-        const stage = selectionPreview.closest('[data-local-edit-stage]');
+    const previewLoaded = () => {
         const size = sourceImageSize();
+        if(!size) return;
+        previewFailed = false;
+        // Prevent object-fit letterboxing from skewing selection coordinates.
+        const stage = selectionPreview.closest('[data-local-edit-stage]');
         if(stage) stage.style.aspectRatio = `${size.width} / ${size.height}`;
-        const currentAsset = node.original_asset_id || '';
-        if(lastOriginalAsset && currentAsset && lastOriginalAsset !== currentAsset){
-            // 原图被换成另一张：旧选区像素坐标失效，重置（modify=全图按比例，retain=清空）。
-            const ratioValue = String(node.aspect_ratio || '1:1').split(':').map(Number);
-            const ratio = ratioValue.length === 2 && ratioValue[0] > 0 && ratioValue[1] > 0 ? ratioValue[0] / ratioValue[1] : 1;
-            node.selection = node.mode === 'modify' ? (localEditFullImageRect(size.width, size.height, ratio) || []) : [];
+        if(node.mode === 'modify' && !localEditHasSelection(node)){
+            node.selection = localEditFullImageRect(size.width, size.height, selectionAspect()) || [];
+            node._leSelectionAsset = previewAssetId;
             sync();
+        } else {
+            updateSubmitState();
+            drawSelection();
         }
-        lastOriginalAsset = currentAsset;
-        if(node.mode === 'modify' && !(Array.isArray(node.selection) && node.selection.length === 4 && node.selection[2] > node.selection[0])){
-            const ratioValue = String(node.aspect_ratio || '1:1').split(':').map(Number);
-            const ratio = ratioValue.length === 2 && ratioValue[0] > 0 && ratioValue[1] > 0 ? ratioValue[0] / ratioValue[1] : 1;
-            node.selection = localEditFullImageRect(size.width, size.height, ratio) || [];
-            sync();
-        }
-        drawSelection();
-    });
-    requestAnimationFrame(() => drawSelection());
+    };
+    const previewUnavailable = () => {
+        previewFailed = true;
+        updateSubmitState();
+    };
+    selectionPreview?.addEventListener('load', previewLoaded);
+    selectionPreview?.addEventListener('error', previewUnavailable);
     const sync = (fields=[]) => {
         const action = fields.length ? beginSmartNodeHumanEdit([node], fields, fields.includes('prompt')) : null;
         syncLocalEditInputRoles(node);
         const roleMap = node.localEditInputRoles || {};
-        const originalNode = canvasState.nodes.find(item => item.id === roleMap.originalNode);
-        node.original_asset_id = ((originalNode?.images || []).find(img => img?.asset_id) || {})?.asset_id || '';
-        node.reference_asset_ids = (roleMap.referenceNodes || []).flatMap(id => {
-            const item = canvasState.nodes.find(candidate => candidate.id === id);
-            return (item?.images || []).map(img => img?.asset_id).filter(Boolean);
-        }).filter((v, i, arr) => arr.indexOf(v) === i);
         const promptNodeIds = Array.from(new Set([...(roleMap.promptNodes || []), roleMap.promptNode].filter(Boolean)));
         const promptTexts = promptNodeIds.map(id => canvasState.nodes.find(item => item.id === id))
             .map(item => String(item?.text || item?.prompt || '').trim()).filter(Boolean);
@@ -11631,18 +11643,14 @@ function bindLocalEditNodeControls(el, node){
         scheduleSave();
     };
     const updateSubmitState = () => {
-        const roleMap = node.localEditInputRoles || {};
-        const selOk = node.mode === 'modify'
-            ? (Array.isArray(node.selection) && node.selection.length === 4 && node.selection[2] > node.selection[0] && node.selection[3] > node.selection[1])
-            : (Array.isArray(node.selection) && node.selection.length >= (node.selectionType === 'polygon' ? 3 : 2));
-        const state = !roleMap.originalNode || !node.original_asset_id ? 'needOriginal'
-            : !selOk ? 'needSelection'
+        const state = !node.original_asset_id || previewFailed ? 'needOriginal'
+            : !localEditHasSelection(node) ? 'needSelection'
             : !String(node.prompt || '').trim() ? 'needPrompt'
             : node._leBusy ? 'busy'
             : node.output_asset_id ? 'done'
             : 'ready';
         const texts = {
-            needOriginal: tr('smart.localEditNeedOriginal'),
+            needOriginal: localEditOriginalUnavailableText(node),
             needSelection: tr('smart.localEditNeedSelection'),
             needPrompt: tr('smart.localEditNeedPrompt'),
             busy: tr('smart.localEditGenerating'),
@@ -11662,9 +11670,10 @@ function bindLocalEditNodeControls(el, node){
     [[ratio, 'aspect_ratio'], [shape, 'selectionType'], [generationSize, 'generation_size'], [generationResolution, 'generation_resolution']].forEach(([input, field]) => input?.addEventListener('change', () => syncHumanInput(input, field)));
     el.querySelector('[data-local-edit-submit]')?.addEventListener('click', async e => {
         e.preventDefault(); e.stopPropagation(); sync();
-        const roleMap = node.localEditInputRoles || {};
-        if(!roleMap.originalNode || !node.original_asset_id){ toast(tr('smart.localEditNeedOriginal')); return; }
+        if(!sourceImageSize() || previewFailed){ toast(localEditOriginalUnavailableText(node)); return; }
+        if(!localEditHasSelection(node)){ toast(tr('smart.localEditNeedSelection')); return; }
         if(!String(node.prompt || '').trim()){ toast(tr('smart.localEditNeedPrompt')); return; }
+        const originalAssetId = node.original_asset_id;
         const button = e.currentTarget;
         node._leBusy = true;
         button.disabled = true;
@@ -11672,24 +11681,23 @@ function bindLocalEditNodeControls(el, node){
         if(statusEl) statusEl.textContent = tr('smart.localEditGenerating');
         try {
             if(typeof flushProjectCanvasBeforeGeneration === 'function' && !await flushProjectCanvasBeforeGeneration()){
-                // #189 gate (m03364/m03420): do not cancel the request. Keep the node in its
-                // visible busy state and queue a single-shot replay (the local-edit endpoint
-                // has no server-side dedup); the canvas is still dirty, so the queued save
-                // settles and markAutosaveSaved replays it.
-                // #197: the request is fully described by node fields (prompt/mode/
-                // selection/feather/...), so the payload is empty — the reload rebuilder
-                // just calls submitLocalEditRequest(live) against the reloaded node.
-                queueSmartPendingActionResume('local-edit', node.id, live => submitLocalEditRequest(live), {});
+                // #197: save the clicked original so an intervening rewire cannot change the replay.
+                queueSmartPendingActionResume('local-edit', node.id, live => submitLocalEditRequest(live, originalAssetId), {originalAssetId});
                 toast(tr('smart.canvasLocalEditPendingAfterSave'));
                 render();
                 const freshButton = document.querySelector(`.local-edit-node[data-id="${node.id}"] [data-local-edit-submit]`);
                 if(freshButton) freshButton.disabled = true;
                 return;
             }
-            await submitLocalEditRequest(node);
+            const live = canvasState.nodes.find(item => item.id === node.id);
+            if(live) await submitLocalEditRequest(live, originalAssetId);
         } finally { button.disabled = false; }
     });
     sync();
+    if(selectionPreview?.complete){
+        if(selectionPreview.naturalWidth) previewLoaded();
+        else previewUnavailable();
+    }
 }
 function bindNodeEvents(){
     window.canvasResultRetrieval?.bind(world);
@@ -12676,8 +12684,10 @@ function openImagePreview(nodeId, imageIndex=0){
 async function uploadImageBlobs(blobs){
     const form = new FormData();
     blobs.forEach(item => form.append('files', item.blob, item.name));
-    const data = await fetch('/api/ai/upload', {method:'POST', body:form}).then(r => r.json());
-    return data.files || [];
+    const response = await fetch('/api/ai/upload', {method:'POST', body:form});
+    if(!response.ok) throw new Error(await responseErrorMessage(response, tr('smart.gridSplitUploadFailed')));
+    const data = await response.json();
+    return Array.isArray(data.files) ? data.files : [];
 }
 function savePromptDraftForCurrent({human=false, nodeId}={}){
     if(promptInput?.dataset?.promptLocked === '1') return;
@@ -17442,10 +17452,7 @@ imageEditModal.addEventListener('mousemove', event => {
     if(previewPanDrag || previewCompareDrag || imageEditPanDrag || cropDrag) return;
     event.stopPropagation();
 });
-imageEditModal.addEventListener('click', event => {
-    event.stopPropagation();
-    if(event.target === imageEditModal) closeImageEditor();
-});
+imageEditModal.addEventListener('click', event => closeImageEditor(event));
 imageEditModal.addEventListener('wheel', event => {
     event.stopPropagation();
 }, {passive:false});

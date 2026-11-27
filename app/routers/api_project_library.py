@@ -4178,6 +4178,42 @@ async def mutate_firefly_canvas(project_id: str, payload: CanvasMutationBatch):
     result['saved_revision'] = int(status.get('saved_revision') or 0)
     return result
 
+def _resolve_local_edit_original(project_id: str, target: dict, connected: dict, requested_id: str) -> dict:
+    items = [item for item in (connected.get('images') or []) if isinstance(item, dict)]
+    # 只有旧节点（字段缺失）可以按顺序取图；显式固定的资源失效时不能换图发单。
+    if 'source_media_id' in target:
+        pinned_id = target['source_media_id']
+        if not isinstance(pinned_id, str) or not re.fullmatch(r'[A-Za-z0-9._-]{1,200}', pinned_id):
+            raise ProjectStoreError('局部编辑选定的原图资源标识无效，请重新选择原图')
+        matching = [item for item in items if item.get('asset_id') == pinned_id]
+        if not matching:
+            raise ProjectStoreError('局部编辑选定的原图不在原图角色连线上，请重新选择原图')
+        if all(item.get('role') == 'mask' for item in matching):
+            raise ProjectStoreError('局部编辑选定的原图是遮罩，不能作为原图')
+        try:
+            original = _app_main.project_store_call('media_record', project_id, pinned_id)
+        except ProjectNotFound as exc:
+            raise ProjectStoreError('局部编辑选定的原图资源不存在，请重新选择原图') from exc
+        if original.get('kind') != 'image':
+            raise ProjectStoreError('局部编辑选定的原图资源不是图片')
+        if requested_id != pinned_id:
+            raise ProjectStoreError('请求原图与节点选定的原图不一致')
+        return original
+    for item in items:
+        asset_id = item.get('asset_id')
+        if item.get('role') == 'mask' or not isinstance(asset_id, str) or not re.fullmatch(r'[A-Za-z0-9._-]{1,200}', asset_id):
+            continue
+        try:
+            original = _app_main.project_store_call('media_record', project_id, asset_id)
+        except ProjectNotFound:
+            continue
+        if original.get('kind') == 'image':
+            if requested_id != asset_id:
+                raise ProjectStoreError('未固定原图的局部编辑节点必须使用原图连线的首张非遮罩图片')
+            return original
+    raise ProjectStoreError('原图角色连线上没有可用的非遮罩项目图片')
+
+
 @router.post('/api/project-library/{project_id}/local-edit')
 @router.post('/api/project-library/{project_id}/local-edit-tasks')
 async def create_project_local_edit(project_id: str, payload: ProjectLocalEditRequest):
@@ -4189,6 +4225,8 @@ async def create_project_local_edit(project_id: str, payload: ProjectLocalEditRe
     started_at = _app_main.now_ms()
     try:
         opened = await asyncio.to_thread(_app_main.project_store_call, 'open_project', project_id)
+        if payload.base_revision != opened['canvas']['revision']:
+            raise RevisionConflict(opened['canvas'])
         target = next((item for item in opened['canvas'].get('nodes', []) if str(item.get('id')) == payload.result_node_id), None)
         if not target or target.get('type') != NODE_TYPE_LOCAL_EDIT:
             raise ProjectStoreError('局部编辑结果节点必须先存在于当前项目')
@@ -4197,11 +4235,7 @@ async def create_project_local_edit(project_id: str, payload: ProjectLocalEditRe
         if len(role_edges['original']) != 1:
             raise ProjectStoreError('局部编辑必须连接恰好一个原图输入')
         connected_original = next((item for item in opened['canvas'].get('nodes', []) if str(item.get('id')) == str(role_edges['original'][0].get('from'))), None)
-        connected_assets = [str(image.get('asset_id')) for image in (connected_original or {}).get('images', []) if image.get('asset_id')]
-        if len(connected_assets) != 1:
-            raise ProjectStoreError('原图角色必须来自恰好一个图片资源')
-        if payload.original_asset_id not in connected_assets:
-            raise ProjectStoreError('原图资源必须来自局部编辑的原图角色连线')
+        original = await asyncio.to_thread(_resolve_local_edit_original, project_id, target, connected_original or {}, payload.original_asset_id)
         connected_reference_assets = []
         for edge in role_edges['references']:
             source = next((item for item in opened['canvas'].get('nodes', []) if str(item.get('id')) == str(edge.get('from'))), None)
@@ -4214,9 +4248,6 @@ async def create_project_local_edit(project_id: str, payload: ProjectLocalEditRe
         composed_prompt = '\n\n'.join(prompt_texts)
         if composed_prompt and payload.prompt.strip() != composed_prompt:
             raise ProjectStoreError('提示词必须按直接连接的提示词节点顺序组合，或在没有提示词连线时显式输入')
-        original = await asyncio.to_thread(_app_main.project_store_call, 'media_record', project_id, payload.original_asset_id)
-        if original.get('kind') != 'image':
-            raise ProjectStoreError('原图必须是项目图片媒体')
         original_bytes = await asyncio.to_thread(Path(original['path']).read_bytes)
         references: List[Tuple[str, bytes]] = []
         for asset_id in payload.reference_asset_ids:

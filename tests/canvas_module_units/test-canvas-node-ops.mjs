@@ -153,7 +153,7 @@ function loadNodeOpsModule({ nodes = [], connections = [] } = {}) {
 
     // #392 human actions require the real production storage projector, not an ownership stub.
     evaluate(ctx, declarations('smart-canvas.js').split(/(?=^(?:async )?function )/m)
-        .filter(source => /^(?:async )?function (?:canvasForStorage|isProjectCanvasData)\(/.test(source)).join('\n'));
+        .filter(source => /^(?:async )?function (?:canvasForStorage|isProjectCanvasData|mediaKindForItem|is(?:File|Text|Audio|Video)MediaItem)\(/.test(source)).join('\n'));
     ctx.SMART_LOG_PREVIEW_NODE_ID = '__preview__';
 
     // --- 3 个单行契约镜像（loadModules 之后定义：引用 context 内的真实常量/函数） ---
@@ -641,7 +641,7 @@ test('createLocalEditNodeFromImage: 节点缺失/无素材/索引越界 → toas
     assert.deepEqual(harness.connectCalls, [], '不连线');
     assert.deepEqual(calls, [], '不 render/save');
 
-    evaluate(ctx, 'canvasState.nodes[0].images = [{ url: "i0" }]');
+    evaluate(ctx, 'canvasState.nodes[0].images = [{ asset_id: "i0" }]');
     f('N', 5);
     assert.equal(fromContext(evaluate(ctx, 'canvasState.nodes.length')), 1, '索引越界 → 仍是 noExportableMedia，不创建节点');
     assert.deepEqual(harness.connectCalls, []);
@@ -649,7 +649,7 @@ test('createLocalEditNodeFromImage: 节点缺失/无素材/索引越界 → toas
 
 test('createLocalEditNodeFromImage: 位置公式（源右缘+140、y 下限 40）+ original 角色 + connectInputNode 调用 + toast 分支', () => {
     const { ctx, harness, calls } = loadNodeOpsModule({
-        nodes: [{ id: 'N', x: 0, y: 0, images: [{ url: 'i0' }, { url: 'i1' }] }],
+        nodes: [{ id: 'N', x: 0, y: 0, images: [{ asset_id: 'i0' }, { asset_id: 'i1' }] }],
     });
     const f = globalFunction(ctx, 'createLocalEditNodeFromImage');
 
@@ -667,17 +667,46 @@ test('createLocalEditNodeFromImage: 位置公式（源右缘+140、y 下限 40�
 
     // 高节点：y 不再触下限（55 → 300-260=40 正值加到 500 上）。
     harness.layout = { width: 200, height: 600 };
-    evaluate(ctx, 'canvasState.nodes.push({ id: "N2", x: 100, y: 500, images: [{ url: "a" }] })');
+    evaluate(ctx, 'canvasState.nodes.push({ id: "N2", x: 100, y: 730, images: [{ asset_id: "a" }] })');
     f('N2', 0);
     const created2 = fromContext(evaluate(ctx, `canvasState.nodes.find(n => n.id !== '${created.id}' && n.type === "local-edit")`));
     assert.equal(created2.x, 100 + 200 + 140, 'x = 100+200+140');
-    assert.equal(created2.y, 500 + Math.max(0, 300 - 260), 'y = 500 + (300-260) = 540');
+    assert.equal(created2.y, 730 + Math.max(0, 300 - 260), 'y = 730 + (300-260)');
 
     // 连线失败分支。
     harness.connectResult = false;
-    evaluate(ctx, 'canvasState.nodes.push({ id: "N3", x: 0, y: 0, images: [{ url: "b" }] })');
+    evaluate(ctx, 'canvasState.nodes.push({ id: "N3", x: 0, y: 0, images: [{ asset_id: "b" }] })');
     f('N3');
     assert.equal(harness.element('toast').textContent, 'smart.localEditConnectHint', '连线失败 toast 分支');
+});
+
+test('createLocalEditNodeFromImage: pins the selected original through storage and skips occupied placement', () => {
+    const { ctx } = loadNodeOpsModule({ nodes: [
+        { id: 'src', x: 0, y: 0, images: [
+            { asset_id: 'mask', role: 'mask' }, { asset_id: 'image-a' }, { asset_id: 'image-b' },
+        ] },
+        { id: 'obstacle', x: 320, y: 40 },
+    ] });
+    const f = globalFunction(ctx, 'createLocalEditNodeFromImage');
+    f('src', 2);
+    const stored = fromContext(evaluate(ctx, 'canvasForStorage().nodes.find(n => n.type === "local-edit")'));
+    assert.equal(stored.source_media_id, 'image-b');
+    assert.ok(stored.x >= 320 + 180 + 40, 'avoids the obstacle at the old anchor');
+});
+
+test('createLocalEditNodeFromImage: rejects explicit mask/non-image picks, defaults to the first eligible image', () => {
+    const { ctx, harness } = loadNodeOpsModule({ nodes: [
+        { id: 'src', x: 0, y: 0, images: [
+            { asset_id: 'mask', role: 'mask' }, { asset_id: 'video', kind: 'video' },
+            { url: 'https://example.invalid/no-project-asset.png' }, { asset_id: 'image-a' }, { asset_id: 'image-b' },
+        ] },
+    ] });
+    const f = globalFunction(ctx, 'createLocalEditNodeFromImage');
+    [0, 1, 2].forEach(index => f('src', index));
+    assert.deepEqual(harness.connectCalls, []);
+    f('src');
+    const stored = fromContext(evaluate(ctx, 'canvasForStorage().nodes.find(n => n.type === "local-edit")'));
+    assert.equal(stored.source_media_id, 'image-a');
 });
 
 // ---------- 新建节点菜单 ----------

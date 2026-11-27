@@ -189,21 +189,78 @@ class LocalEditApiTests(unittest.TestCase):
         local_log = next(item for item in self.store.open_project(self.project["id"])["canvas"]["history"] if item.get("type") == "local-edit")
         self.assertEqual(local_log["selection"], [1, 1, 10, 7])
 
-    def test_original_role_must_contain_exactly_one_image_resource(self):
-        second = self.store.import_media(self.project["id"], png(Image.new("RGBA", (3, 3), (8, 9, 10, 11))), "second.png", "image/png")
-        revision = self.store.open_project(self.project["id"])["canvas"]["revision"]
-        self.store.apply_mutations(self.project["id"], [{"op": "upsert_node", "node": {
-            "id": "source-node", "type": "smart-image", "images": [
-                {"asset_id": self.source["asset_id"]}, {"asset_id": second["asset_id"]}
-            ]
-        }}], base_revision=revision)
-        revision = self.store.open_project(self.project["id"])["canvas"]["revision"]
-        response = self.client.post(f"/api/project-library/{self.project['id']}/local-edit", json={
-            "original_asset_id": self.source["asset_id"], "reference_asset_ids": [], "prompt": "explicit prompt",
-            "mode": "modify", "selection": [2, 1, 9, 6], "result_node_id": "local-1", "base_revision": revision,
+    def _set_original_items(self, images, **target_fields):
+        canvas = self.store.open_project(self.project["id"])["canvas"]
+        target = next(node for node in canvas["nodes"] if node["id"] == "local-1")
+        self.store.apply_mutations(self.project["id"], [
+            {"op": "upsert_node", "node": {"id": "source-node", "type": "smart-image", "images": images}},
+            {"op": "upsert_node", "node": {**target, **target_fields}},
+        ], base_revision=canvas["revision"])
+
+    def _post_original(self, asset_id):
+        return self.client.post(f"/api/project-library/{self.project['id']}/local-edit", json={
+            "original_asset_id": asset_id, "prompt": "explicit prompt", "mode": "modify",
+            "selection": [1, 1, 3, 3], "result_node_id": "local-1",
+            "base_revision": self.store.open_project(self.project["id"])["canvas"]["revision"],
         })
-        self.assertEqual(response.status_code, 400, response.text)
-        self.assertIn("恰好一个图片资源", response.text)
+
+    def test_saved_pin_selects_second_image_ignoring_mask_and_dispatches_its_pixels(self):
+        selected = self.reference["asset_id"]
+        self._set_original_items([
+            {"asset_id": self.source["asset_id"], "role": "mask"},
+            {"asset_id": self.source["asset_id"]}, {"asset_id": selected},
+        ], source_media_id=selected)
+        with patch.object(main, "local_edit_adapter", side_effect=lambda request: request["image"]) as adapter:
+            response = self._post_original(selected)
+        self.assertEqual(response.status_code, 200, response.text)
+        request = adapter.call_args.args[0]
+        self.assertEqual(request["source_size"], [4, 4])
+        self.assertEqual(Image.open(io.BytesIO(request["image"])).getpixel((0, 0)), (1, 2, 3, 4))
+        persisted = next(node for node in self.store.open_project(self.project["id"])["canvas"]["nodes"] if node["id"] == "local-1")
+        self.assertEqual(persisted["source_media_id"], selected)
+        self.assertEqual(persisted["original_asset_id"], selected)
+
+    def test_legacy_uses_first_non_mask_image_and_cannot_submit_a_different_one(self):
+        first = self.source["asset_id"]
+        second = self.reference["asset_id"]
+        video = self.store.import_media(self.project["id"], b"video", "sample.mp4", "video/mp4")["asset_id"]
+        self._set_original_items([{"asset_id": second, "role": "mask"}, {"asset_id": video},
+                                  {"asset_id": first}, {"asset_id": second}])
+        with patch.object(main, "local_edit_adapter", side_effect=lambda request: request["image"]) as adapter:
+            mismatch = self._post_original(second)
+            self.assertEqual(mismatch.status_code, 400, mismatch.text)
+            self.assertIn("首张", mismatch.json()["detail"])
+            adapter.assert_not_called()
+            response = self._post_original(first)
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(adapter.call_args.args[0]["source_size"], [12, 8])
+
+    def test_explicit_bad_pins_or_mismatched_payload_never_dispatch(self):
+        first = self.source["asset_id"]
+        second = self.reference["asset_id"]
+        video = self.store.import_media(self.project["id"], b"video", "sample.mp4", "video/mp4")["asset_id"]
+        cases = [
+            (None, [{"asset_id": first}], first, "标识无效"),
+            ("", [{"asset_id": first}], first, "标识无效"),
+            ("bad/id", [{"asset_id": first}], first, "标识无效"),
+            (second, [{"asset_id": first}], first, "不在原图角色连线"),
+            (second, [{"asset_id": first}, {"asset_id": second, "role": "mask"}], first, "遮罩"),
+            (video, [{"asset_id": first}, {"asset_id": video}], first, "不是图片"),
+            (second, [{"asset_id": first}, {"asset_id": second}], first, "与节点选定的原图不一致"),
+        ]
+        with patch.object(main, "local_edit_adapter", side_effect=lambda request: request["image"]) as adapter:
+            for pin, items, requested, detail in cases:
+                with self.subTest(pin=pin, detail=detail):
+                    self._set_original_items(items, source_media_id=pin)
+                    response = self._post_original(requested)
+                    self.assertEqual(response.status_code, 400, response.text)
+                    self.assertIn(detail, response.json()["detail"])
+            self._set_original_items([{"asset_id": first}, {"asset_id": second}], source_media_id=second)
+            Path(self.store.media_record(self.project["id"], second)["path"]).unlink()
+            response = self._post_original(second)
+            self.assertEqual(response.status_code, 400, response.text)
+            self.assertIn("选定的原图资源不存在", response.json()["detail"])
+            adapter.assert_not_called()
 
     def test_retain_adapter_gets_full_source_and_mask_is_never_uploaded(self):
         seen = {}

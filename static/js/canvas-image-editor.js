@@ -5,7 +5,8 @@
 
 const imageEditModal = document.getElementById('imageEditModal');
 
-let releaseImageEditorEscape = () => {}; // #249：Escape 栈登记释放（openImageEditor push，closeImageEditor release）
+let releaseImageEditorEscape = () => {};
+let imageEditorSession = null;
 
 let cropState = null;
 
@@ -18,8 +19,6 @@ let cropAspectRatio = null;
 let outpaintAspectPreset = 'free';
 
 let imageEditMode = 'crop';
-
-let imageEditModeTouched = false;
 
 let imageResizeScale = 0.5;
 
@@ -487,21 +486,43 @@ function resizeEditDrawCanvas(){
     const display = cropImageDisplaySize();
     const w = Math.max(1, img.naturalWidth || img.clientWidth || 1);
     const h = Math.max(1, img.naturalHeight || img.clientHeight || 1);
-    if(canvasEl.width !== w || canvasEl.height !== h){ canvasEl.width = w; canvasEl.height = h; }
+    const changed = canvasEl.width !== w || canvasEl.height !== h;
+    const snapshot = changed && isImageDrawingMode(imageEditMode) && (editDrawUndoStack.length || editTextItems.length)
+        ? editDrawSnapshot() : null;
+    if(changed){ canvasEl.width = w; canvasEl.height = h; }
     canvasEl.style.width = `${display.w}px`;
     canvasEl.style.height = `${display.h}px`;
     resizeEditTextCanvas();
+    if(snapshot) restoreEditDrawSnapshot(snapshot);
     if(imageEditMode === 'grid') refreshGridSplitPreview();
 }
 
-function setImageEditMode(mode, userTouched=false){
-    const editKind = canvasCore.mediaKindForItem(currentEditImage().image || {});
-    const isVideoPreview = editKind === 'video';
-    if(isVideoPreview && mode !== 'preview') mode = 'preview';
-    if(userTouched) imageEditModeTouched = true;
+function setImageEditMode(mode, _userTouched=false){
+    const session = imageEditorSession;
+    if(session?.applying || session?.discarding) return;
+    const isVideoPreview = canvasCore.mediaKindForItem(currentEditImage().image || {}) === 'video';
+    const next = !isVideoPreview && ['preview','crop','outpaint','mask','brush','resize','grid','layers'].includes(mode) ? mode : 'preview';
     const prev = imageEditMode;
-    if(mode !== 'brush') removeEditTextInlineEditor(true);
-    imageEditMode = ['preview','crop','outpaint','mask','brush','resize','grid','layers'].includes(mode) ? mode : 'preview';
+    if(session && prev !== next){
+        if(cropState.w && (prev === 'crop' || prev === 'outpaint')) session.boxes[prev] = imageEditorBoxFractions();
+        if(isImageDrawingMode(prev)){
+            removeEditTextInlineEditor(true);
+            if(editDrawState) endEditDraw({pointerId:editDrawState.pointerId});
+            if(editTextDrag) endEditText();
+            if(editDrawUndoStack.length || editDrawRedoStack.length || editTextItems.length){
+                const snapshot = editDrawSnapshot();
+                session.drawings[prev] = {snapshot, dirty:editImageDataHasPixels(snapshot.imageData) || editTextHasContent(), undo:editDrawUndoStack, redo:editDrawRedoStack};
+            }
+        }
+        if(isImageDrawingMode(prev) || prev === 'grid'){
+            clearEditDrawing(true);
+            resetEditDrawingHistory();
+        }
+        cropDrag = null;
+        Object.assign(cropState, {x:0, y:0, w:0, h:0});
+    }
+    imageEditMode = next;
+    if(prev !== next && prev === 'outpaint') renderCropBox();
     const cropCanvasEl = document.getElementById('cropCanvas');
     const previewStageEl = document.getElementById('previewStage');
     const editStageEl = document.getElementById('imageEditStage');
@@ -555,8 +576,11 @@ function setImageEditMode(mode, userTouched=false){
         applyBtn.style.display = 'none';
         refreshComparePanel();
     } else {
-        ensureImageEditBaseSize(true);
-        applyImageEditZoom();
+        if(session?.loaded){
+            ensureImageEditBaseSize(true);
+            applyImageEditZoom();
+            if(prev !== next) initializeImageEditorBox();
+        }
         applyBtn.style.display = '';
         if(imageEditMode === 'resize'){
             document.getElementById('imageEditTitle').textContent = tr('smart.zoomImage');
@@ -577,21 +601,17 @@ function setImageEditMode(mode, userTouched=false){
             const applyLabel = imageEditMode === 'grid' && gridOperationMode === 'join' ? tr('smart.outputGridJoin') : tr(labelKey);
             applyBtn.innerHTML = `${ico(icon, 'w-4 h-4')}<span>${applyLabel}</span>`;
         }
-        if(imageEditMode === 'crop'){
-            requestAnimationFrame(() => {
-                resetCropBox();
-                syncImageEditOverflow();
-            });
-        } else if(imageEditMode === 'outpaint'){
-            requestAnimationFrame(() => {
-                resetOutpaintBox();
-                syncImageEditOverflow();
-            });
+    }
+    if(prev !== next && isImageDrawingMode(next)){
+        const saved = session?.drawings[next];
+        if(saved){
+            restoreEditDrawSnapshot(saved.snapshot);
+            editDrawUndoStack = saved.undo;
+            editDrawRedoStack = saved.redo;
+            delete session.drawings[next];
         }
     }
-    resizeEditDrawCanvas();
-    if(imageEditMode === 'grid') refreshGridSplitPreview();
-    else if(imageEditMode === 'crop' || imageEditMode === 'resize' || imageEditMode === 'outpaint' || prev === 'grid') clearEditDrawing(true);
+    syncImageEditApplyState();
     syncEditDrawingHistoryButtons();
     syncBrushToolButtons();
     syncTextToolState(true);
@@ -600,6 +620,8 @@ function setImageEditMode(mode, userTouched=false){
     // #255 图层面板钩子：layers 模式时初始化 store + 渲染列表（纯接线，逻辑在 canvas-layers.js）。
     window.CanvasLayers?.onEditMode?.(imageEditMode);
 }
+
+function isImageDrawingMode(mode){ return mode === 'mask' || mode === 'brush'; }
 
 function editDrawSnapshot(){
     const canvasEl = editDrawCanvas();
@@ -614,9 +636,25 @@ function editDrawSnapshot(){
 function restoreEditDrawSnapshot(snapshot){
     if(!snapshot) return;
     removeEditTextInlineEditor(false);
-    editDrawCanvas().getContext('2d').putImageData(snapshot.imageData || snapshot, 0, 0);
+    const canvasEl = editDrawCanvas();
+    const ctx = canvasEl.getContext('2d');
+    const pixels = snapshot.imageData || snapshot;
+    const scaleX = canvasEl.width / pixels.width, scaleY = canvasEl.height / pixels.height;
+    if(scaleX === 1 && scaleY === 1){
+        ctx.putImageData(pixels, 0, 0);
+    } else {
+        // Undo/redo snapshots retain their original resolution until restored.
+        const source = document.createElement('canvas');
+        source.width = pixels.width; source.height = pixels.height;
+        source.getContext('2d').putImageData(pixels, 0, 0);
+        ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(source, 0, 0, canvasEl.width, canvasEl.height);
+        ctx.restore();
+    }
     if(snapshot.labelCounter) brushLabelCounter = snapshot.labelCounter;
-    editTextItems = (snapshot.textItems || []).map(item => ({...item}));
+    editTextItems = (snapshot.textItems || []).map(item => ({...item, x:item.x * scaleX, y:item.y * scaleY, size:item.size * scaleY}));
     editTextSelectedId = snapshot.textSelectedId || '';
     renderEditTextCanvas();
     syncTextToolState(true);
@@ -1274,15 +1312,17 @@ function applyImageEditZoom(scaleOverride=null){
     ensureImageEditBaseSize();
     if(!imageEditBaseW) return;
     const img = document.getElementById('cropImage');
-    const oldW = cropImageDisplaySize().w;
+    const box = cropState && (imageEditMode === 'crop' || imageEditMode === 'outpaint') ? cropImageDisplaySize() : null;
     img.style.maxWidth = 'none'; img.style.maxHeight = 'none';
     img.style.width = Math.round(imageEditBaseW * imageEditZoom) + 'px';
     img.style.height = Math.round(imageEditBaseH * imageEditZoom) + 'px';
     resizeEditDrawCanvas();
-    if(cropState){
-        const scale = Number(scaleOverride) || (oldW > 0 ? cropImageDisplaySize().w / oldW : 1);
-        cropState.x = Math.round(cropState.x * scale); cropState.y = Math.round(cropState.y * scale);
-        cropState.w = Math.round(cropState.w * scale); cropState.h = Math.round(cropState.h * scale);
+    if(box && cropState.w){
+        const nextSize = cropImageDisplaySize();
+        const sx = Number(scaleOverride) || nextSize.w / box.w;
+        const sy = Number(scaleOverride) || nextSize.h / box.h;
+        cropState.x *= sx; cropState.y *= sy;
+        cropState.w *= sx; cropState.h *= sy;
         clampCrop(); renderCropBox();
     }
     if(imageEditMode === 'grid') refreshGridSplitPreview();
@@ -1296,8 +1336,9 @@ function ensureImageEditBaseSize(force=false){
     const naturalW = img.naturalWidth || img.clientWidth || 0;
     const naturalH = img.naturalHeight || img.clientHeight || 0;
     if(!naturalW || !naturalH) return;
-    const maxW = Math.max(1, Math.min(1300, window.innerWidth - 100));
-    const maxH = Math.max(1, Math.min(840, window.innerHeight - 200));
+    const stage = document.getElementById('imageEditStage');
+    const maxW = Math.max(1, Math.min(1300, stage?.clientWidth ? stage.clientWidth - 36 : window.innerWidth - 100));
+    const maxH = Math.max(1, Math.min(840, stage?.clientHeight ? stage.clientHeight - 36 : window.innerHeight - 200));
     const fit = Math.min(1, maxW / naturalW, maxH / naturalH);
     imageEditBaseW = Math.max(1, Math.round(naturalW * fit));
     imageEditBaseH = Math.max(1, Math.round(naturalH * fit));
@@ -1307,9 +1348,9 @@ function syncImageEditOverflow(){
     const stage = document.getElementById('imageEditStage');
     const crop = document.getElementById('cropCanvas');
     if(!stage || !crop) return;
-    const rect = crop.getBoundingClientRect(), pad = 36;
-    stage.classList.toggle('overflow-x', rect.width + pad > stage.clientWidth);
-    stage.classList.toggle('overflow-y', rect.height + pad > stage.clientHeight);
+    const pad = 36;
+    stage.classList.toggle('overflow-x', crop.offsetWidth + pad > stage.clientWidth);
+    stage.classList.toggle('overflow-y', crop.offsetHeight + pad > stage.clientHeight);
 }
 
 function resetImageEditZoom(){
@@ -1618,11 +1659,27 @@ function resetCropBox(){
     cropState.x = rect.x; cropState.y = rect.y; cropState.w = rect.w; cropState.h = rect.h;
     if(cropAspectRatio) fitCropRectToAspect(cropAspectRatio, rect);
     renderCropBox();
+    if(imageEditorSession && cropAspectPreset === 'free') imageEditorSession.cropBaseline = imageEditorBoxFractions();
 }
 
-// 双击组内图片时按整组预览；非分组成员退回单节点预览。
-// 打开整组图片预览：以被双击图片为起点，左右切换遍历分组内所有图片。
+function imageEditorBoxFractions(){
+    const {w, h} = cropBounds();
+    return {x:cropState.x / w, y:cropState.y / h, w:cropState.w / w, h:cropState.h / h};
+}
+
+function initializeImageEditorBox(){
+    const saved = imageEditorSession.boxes[imageEditMode];
+    if(saved){
+        const {w, h} = cropBounds();
+        Object.assign(cropState, {x:saved.x * w, y:saved.y * h, w:saved.w * w, h:saved.h * h});
+        renderCropBox();
+    } else if(imageEditMode === 'crop') resetCropBox();
+    else if(imageEditMode === 'outpaint') resetOutpaintBox();
+    syncImageEditOverflow();
+}
+
 function openImageEditor(nodeId, imageIndex=0){
+    if(imageEditorSession?.applying || imageEditorSession?.discarding) return;
     const node = canvasState.nodes.find(n => n.id === nodeId);
     const image = canvasCore.imageForDisplay(node?.images?.[imageIndex]);
     if(!image?.url) return;
@@ -1634,13 +1691,18 @@ function openImageEditor(nodeId, imageIndex=0){
     canvasState.selectedId = nodeId;
     canvasState.selectedImage = {nodeId, index:imageIndex};
     previewNavState = {nodeId, index:imageIndex, count:(node.images || []).filter(img => img?.url).length};
+    imageEditorSession?.stageObserver?.disconnect();
+    const session = imageEditorSession = {loaded:false, applying:false, discarding:false, boxes:Object.create(null), drawings:Object.create(null), cropBaseline:null, stageObserver:null};
     cropState = {nodeId, imageIndex, x:0, y:0, w:0, h:0};
+    imageEditMode = 'preview';
+    cropDrag = null; editDrawState = null;
+    clearEditDrawing(true);
+    resetEditDrawingHistory();
     gridCustomMode = false; gridCustomLines = []; gridCustomHistory = []; gridCustomDrag = null; gridCustomOrientation = 'h';
     gridOperationMode = 'split'; gridJoinLayout = null; gridJoinDrag = null; gridJoinImageCache = new Map(); gridJoinUserMoved = false; gridJoinGroupId = '';
-    imageEditZoom = 1.0; imageEditBaseW = 0; imageEditBaseH = 0; imageResizeScale = 0.5; imageEditModeTouched = false;
+    imageEditZoom = 1.0; imageEditBaseW = 0; imageEditBaseH = 0; imageResizeScale = 0.5;
     cropAspectPreset = 'free'; cropAspectRatio = null; syncCropRatioButtons();
     outpaintAspectPreset = 'free'; syncOutpaintRatioButtons();
-    editTextItems = []; editTextSelectedId = ''; editTextDrag = null; editTextDirty = false;
     const toggle = document.getElementById('gridCustomToggle');
     if(toggle){ toggle.classList.add('secondary'); toggle.classList.remove('primary'); }
     syncGridCustomControls();
@@ -1652,21 +1714,26 @@ function openImageEditor(nodeId, imageIndex=0){
     syncGridCustomUndoBtn(); updateZoomLabel();
     const img = document.getElementById('cropImage');
     img.style.width = ''; img.style.height = ''; img.style.maxWidth = ''; img.style.maxHeight = '';
+    img.onload = null; img.onerror = null; img.removeAttribute('src');
+    renderCropBox();
     imageEditModal.classList.add('open');
-    // #249：Escape 栈——图片编辑器是最顶层全局层，Escape 只关它，不再穿透到画布。
+    releaseImageEditorEscape();
     releaseImageEditorEscape = window.FireflyEscapeStack?.push(() => closeImageEditor(), 'image-editor') || (() => {});
     previewCompareOn = false;
     previewCompareIndex = -1;
     resetPreviewTransform();
-    if(kind === 'video'){
-        img.onload = null;
-        img.onerror = null;
-        img.removeAttribute('src');
-        delete img.dataset.proxyFallbackTried;
-        setImageEditMode('preview');
-        updatePreviewNavButtons();
-        canvasCore.refreshIcons();
-        return;
+    setImageEditMode('preview');
+    if(kind === 'video') return;
+    const stage = document.getElementById('imageEditStage');
+    if(stage && typeof ResizeObserver === 'function'){
+        // A toolbar can wrap after its translated labels or grid count have been rendered.
+        session.stageObserver = new ResizeObserver(() => {
+            if(imageEditorSession !== session || !session.loaded || imageEditMode === 'preview') return;
+            const w = imageEditBaseW, h = imageEditBaseH;
+            ensureImageEditBaseSize(true);
+            if(w !== imageEditBaseW || h !== imageEditBaseH) applyImageEditZoom();
+        });
+        session.stageObserver.observe(stage, {box:'border-box'});
     }
     // 原图加载失败时的兜底链：依次尝试 download-output 代理、缩略图同款的 media-preview 代理（PIL 渲染，
     // 对截断/半下载的文件比浏览器宽容，所以缩略图能显示而原图破损时它仍能出图）。兜底时去掉 crossOrigin——
@@ -1676,53 +1743,104 @@ function openImageEditor(nodeId, imageIndex=0){
         .filter(Boolean)
         .filter((u, i, arr) => u !== primaryEditorSrc && arr.indexOf(u) === i);
     let editorFallbackIndex = 0;
-    const editorSrcToken = `${nodeId}:${imageIndex}:${Date.now()}`;
-    img.dataset.editorSrcToken = editorSrcToken;
-    img.dataset.editorQuick = '';
-    img.onload = () => {
-        const targetImage = node.images?.[imageIndex];
-        // 兜底用的是代理/缩放图，naturalWidth 不是原图真实尺寸，别污染节点的 natural_w/h。
-        const loadedPrimary = img.dataset.editorQuick !== '1' && img.getAttribute('src') === primaryEditorSrc;
-        if(loadedPrimary && editorFallbackIndex === 0 && targetImage && img.naturalWidth && img.naturalHeight && (!targetImage.natural_w || !targetImage.natural_h)){
-            targetImage.natural_w = img.naturalWidth;
-            targetImage.natural_h = img.naturalHeight;
-            canvasCore.scheduleStateSave();
-        }
-        imageEditBaseW = img.clientWidth; imageEditBaseH = img.clientHeight;
-        updateZoomLabel(); syncImageResizeControls(); resizeEditDrawCanvas(); resetEditDrawingHistory(); clearEditDrawing(true); resetCropBox();
-        if(!imageEditModeTouched) setImageEditMode('preview');
-        else refreshComparePanel();
-        updatePreviewMetaHint();
-        syncImageEditOverflow(); canvasCore.refreshIcons();
+    let request = null;
+    let primaryRequested = false;
+    const loadPrimary = () => {
+        if(primaryRequested || imageEditorSession !== session) return;
+        primaryRequested = true;
+        loadEditorSource(primaryEditorSrc, true);
     };
-    img.onerror = () => {
-        if(editorFallbackIndex >= editorFallbackUrls.length) return;
-        img.src = editorFallbackUrls[editorFallbackIndex++];
+    const loadEditorSource = (src, primary=false) => {
+        if(imageEditorSession !== session) return;
+        const token = request = {};
+        let settled = false;
+        img.onload = () => {
+            if(imageEditorSession !== session || request !== token || settled || !img.complete || img.currentSrc !== img.src || !img.naturalWidth) return;
+            settled = true;
+            // Preview and fallback sizes are not the source media's dimensions.
+            const targetImage = node.images?.[imageIndex];
+            if(primary && targetImage && (!targetImage.natural_w || !targetImage.natural_h)){
+                targetImage.natural_w = img.naturalWidth;
+                targetImage.natural_h = img.naturalHeight;
+                canvasCore.scheduleStateSave();
+            }
+            const first = !session.loaded;
+            session.loaded = true;
+            if(editTextInlineEditor) removeEditTextInlineEditor(true);
+            if(editDrawState) endEditDraw({pointerId:editDrawState.pointerId});
+            if(editTextDrag) endEditText();
+            cropDrag = null;
+            ensureImageEditBaseSize(true);
+            applyImageEditZoom();
+            if(first && !cropState.w) initializeImageEditorBox();
+            syncImageEditApplyState();
+            updatePreviewMetaHint();
+        };
+        img.onerror = () => {
+            if(imageEditorSession !== session || request !== token || settled || !img.complete) return;
+            settled = true;
+            if(!primaryRequested) loadPrimary();
+            else if(editorFallbackIndex < editorFallbackUrls.length) loadEditorSource(editorFallbackUrls[editorFallbackIndex++]);
+        };
+        img.src = src;
     };
     // 不设 crossOrigin：displayMediaUrl 已把所有地址收敛为同源（http 走本地代理），同源图片不会污染画布，
     // 裁剪/涂抹等导出操作照常可用。而带 crossOrigin 会让浏览器对“缩略图已无 CORS 缓存的同源图”重新发起
     // CORS 请求并失败——表现就是预览先闪一下（命中缓存）随即变成破损图。
     img.removeAttribute('crossorigin');
     const quickEditorSrc = smartMediaPreviewUrl(image, 2048);
-    const loadFullEditorImage = () => {
-        if(!cropState || cropState.nodeId !== nodeId || cropState.imageIndex !== imageIndex) return;
-        if(!imageEditModal.classList.contains('open') || img.dataset.editorSrcToken !== editorSrcToken) return;
-        img.dataset.editorQuick = '';
-        if(img.getAttribute('src') !== primaryEditorSrc) img.src = primaryEditorSrc;
-    };
     if(quickEditorSrc && quickEditorSrc !== primaryEditorSrc){
-        img.dataset.editorQuick = '1';
-        img.src = quickEditorSrc;
-        requestAnimationFrame(() => setTimeout(loadFullEditorImage, 120));
-    } else {
-        img.src = primaryEditorSrc;
-    }
-    setImageEditMode('preview');
-    updatePreviewNavButtons();
-    canvasCore.refreshIcons();
+        loadEditorSource(quickEditorSrc);
+        requestAnimationFrame(() => setTimeout(loadPrimary, 120));
+    } else loadPrimary();
 }
 
-function closeImageEditor(){
+function imageEditorHasDraft(session){
+    if(editTextInlineEditor) removeEditTextInlineEditor(true);
+    if(isImageDrawingMode(imageEditMode) && editCanvasHasPixels()) return true;
+    if(Object.values(session.drawings).some(drawing => drawing.dirty)) return true;
+    if(imageResizeScale !== 0.5 || gridCustomLines.length || gridJoinUserMoved) return true;
+    const {w, h} = cropBounds();
+    const differs = (box, baseline) => box && baseline && ['x', 'y', 'w', 'h'].some(key => {
+        const dimension = key === 'x' || key === 'w' ? w : h;
+        return Math.abs(box[key] - baseline[key]) * dimension > 0.5;
+    });
+    const crop = imageEditMode === 'crop' && cropState.w ? imageEditorBoxFractions() : session.boxes.crop;
+    const outpaint = imageEditMode === 'outpaint' && cropState.w ? imageEditorBoxFractions() : session.boxes.outpaint;
+    return !!(crop && (cropAspectPreset !== 'free' || differs(crop, session.cropBaseline)))
+        || !!differs(outpaint, {x:0, y:0, w:1, h:1});
+}
+
+async function closeImageEditor(backdropEvent){
+    if(backdropEvent){
+        backdropEvent.stopPropagation();
+        if(backdropEvent.target !== imageEditModal) return;
+    }
+    const session = imageEditorSession;
+    // Dialog has its own document Escape listener; do not replace it or dismiss both layers.
+    if(!session || session.applying || session.discarding || document.querySelector('.ff-dialog-backdrop')) return;
+    if(imageEditorHasDraft(session)){
+        session.discarding = true;
+        try {
+            const confirmed = await window.ffDialog.ask({
+                title:tr('smart.discardImageEditsTitle'),
+                message:tr('smart.discardImageEditsMessage'),
+                confirmText:tr('smart.discardImageEditsConfirm'),
+                cancelText:tr('common.cancel'),
+                danger:true
+            });
+            if(!confirmed || imageEditorSession !== session) return;
+        } finally {
+            session.discarding = false;
+        }
+    }
+    dismissImageEditor();
+}
+
+function dismissImageEditor(){
+    imageEditorSession?.stageObserver?.disconnect();
+    imageEditorSession = null;
+    syncImageEditApplyState();
     releaseImageEditorEscape();
     releaseImageEditorEscape = () => {};
     cleanupSmartHistoryPreviewNode();
@@ -1730,7 +1848,7 @@ function closeImageEditor(){
     document.querySelector('.image-edit-panel')?.classList.remove('video-preview-mode');
     const img = document.getElementById('cropImage');
     const previewVideo = document.getElementById('previewCurrentVideo');
-    img.onload = null; img.onerror = null; img.removeAttribute('src'); delete img.dataset.proxyFallbackTried; delete img.dataset.editorSrcToken; delete img.dataset.editorQuick; img.style.width = ''; img.style.height = ''; img.style.maxWidth = ''; img.style.maxHeight = '';
+    img.onload = null; img.onerror = null; img.removeAttribute('src'); img.style.width = ''; img.style.height = ''; img.style.maxWidth = ''; img.style.maxHeight = '';
     img.style.position = ''; img.style.left = ''; img.style.top = '';
     if(previewVideo){
         previewVideo.pause?.();
@@ -1743,7 +1861,7 @@ function closeImageEditor(){
     clearEditDrawing(true);
     cropState = null; cropDrag = null; editDrawState = null; resetEditDrawingHistory(); gridCustomDrag = null; gridJoinDrag = null; gridJoinLayout = null; gridJoinImageCache = new Map(); gridJoinUserMoved = false; gridOperationMode = 'split'; gridJoinGroupId = '';
     previewNavState = {nodeId:'', index:0, count:0};
-    imageEditZoom = 1.0; imageEditBaseW = 0; imageEditBaseH = 0; imageResizeScale = 0.5; imageEditModeTouched = false;
+    imageEditZoom = 1.0; imageEditBaseW = 0; imageEditBaseH = 0; imageResizeScale = 0.5;
     cropAspectPreset = 'free'; cropAspectRatio = null; syncCropRatioButtons();
     outpaintAspectPreset = 'free'; syncOutpaintRatioButtons();
     previewPanDrag = null; previewCompareDrag = false; imageEditPanDrag = null; resetPreviewTransform();
@@ -1965,7 +2083,6 @@ async function applyImageOutpaint(){
     const editTarget = captureImageEditTarget();
     const aspectPreset = outpaintAspectPreset;
     const defaultSettings = cloneSmartSettings(node.runSettings || settings);
-    const draftBefore = [node.promptDraftHtml, node.promptDraftText, node.promptDraftTouched];
     const canvasEl = document.createElement('canvas');
     canvasEl.width = outW; canvasEl.height = outH;
     const ctx = canvasEl.getContext('2d');
@@ -1976,37 +2093,24 @@ async function applyImageOutpaint(){
     ctx.drawImage(img, dx, dy, img.naturalWidth, img.naturalHeight);
     const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/png'));
     const base = (image.name || 'image').replace(/\.[^.]+$/, '');
-    // 添加时间戳确保每次上传都有唯一文件名，避免浏览器缓存旧版本（无红底）的图片
-    const timestamp = Date.now();
-    const file = blob ? await uploadCroppedBlob(blob, `${base}_outpaint_${timestamp}.png`) : null;
-    if(!file) return;
-    // 把扩图底图（红底+原图合成图）归档为项目媒体，拿到 asset_id。
-    // 保存时节点媒体若只有原始 URL 而没有 asset_id，后端会报"项目节点只能引用项目媒体资源ID"。
-    // 保留 file.url 用于即时显示，asset_id 用于持久化（存储时 mediaItemForStorage 会去掉 url）。
-    if(!liveImageEditTarget(editTarget)) return;
-    let owned;
-    try {
-        owned = await importProjectMediaReference(file);
-    } catch(error) {
-        toast(error.message);
-        return;
+    const file = blob ? await uploadCroppedBlob(blob, `${base}_outpaint_${Date.now()}.png`) : null;
+    if(!file || !liveImageEditTarget(editTarget)) return;
+    const owned = await importProjectMediaReference(file);
+    const live = liveImageEditTarget(editTarget);
+    if(!owned?.asset_id || !live) return;
+    // The composite is an input for a later manual run, never a replacement for the source (#513).
+    const rect = canvasCore.nodeRect(live.node);
+    const select = cropState === editTarget.editor;
+    const output = createNode(rect.x + rect.width + 40, rect.y, [{
+        url:file.url, name:file.name, kind:'image', asset_id:owned.asset_id, natural_w:outW, natural_h:outH
+    }], {select});
+    if(select){
+        canvasState.selectedIds = [];
+        canvasState.selectedImage = {nodeId:output.id, index:0};
     }
-    const assetId = owned.asset_id;
-    // 传递合成图的自然尺寸，让预览能正确显示扩图后的比例
-    const extra = {natural_w:outW, natural_h:outH};
-    if(assetId) extra.asset_id = assetId;
-    if(replaceEditedImage(editTarget, file, extra)){
-        const live = canvasState.nodes.find(item => item.id === editTarget.nodeId);
-        // The suggestion is automatic, not a human prompt edit. Do not replace
-        // a draft edited while the upload was pending, or set P.
-        applyOutpaintSizeToSmartParams(outW, outH, live, aspectPreset, defaultSettings);
-        if(JSON.stringify([live.promptDraftHtml, live.promptDraftText, live.promptDraftTouched]) === JSON.stringify(draftBefore)){
-            setPromptDraftForNode(live, 'Remove red area and fill the scene');
-            const subject = activeSettingsSubject();
-            if(subject && subject.id === live.id) canvasCore.promptInput.dataset.preserveDraftOnce = '1';
-        }
-        finishImageEdit(editTarget);
-    }
+    applyOutpaintSizeToSmartParams(outW, outH, output, aspectPreset, defaultSettings);
+    setPromptDraftForNode(output, tr('smart.outpaintPromptSuggestion'));
+    finishImageEdit(editTarget);
 }
 
 async function applyImageMask(){
@@ -2095,23 +2199,30 @@ async function applyImageGridSplit(){
     // Canvas.toBlob explicitly returns null when encoding fails. Do not drop
     // that tile and silently upload a partial grid with shifted cell indexes.
     if(blobs.some(item => item.blob === null)){
-        toast('图片编码失败，未切分。');
-        return;
+        toast(tr('smart.gridSplitEncodeFailed'));
+        return false;
     }
-    const files = await uploadImageBlobs(blobs);
-    if(files.length){
-        const live = liveImageEditTarget(editTarget);
-        if(!live) return;
-        const source = live.node;
-        const layout = gridLayoutFromRects(rects);
-        const outputNode = createNode((source.x || 0) + canvasCore.imageLayout(source.images, nodeScale(source), source).width + 40, source.y || 0, files.map((file, i) => ({
-            url:file.url,
-            name:file.name,
-            grid:{...layout, row:rects[i]?.row || 0, col:rects[i]?.col || 0, w:rects[i]?.w || 1, h:rects[i]?.h || 1}
-        })));
-        outputNode.title = 'Grid';
-        finishImageEdit(editTarget);
+    let files;
+    try {
+        files = await uploadImageBlobs(blobs);
+    } catch(error) {
+        console.warn('[image-editor] grid split upload failed', error);
+        toast(tr('smart.gridSplitUploadFailed'));
+        return false;
     }
+    if(files?.length !== rects.length || files.some(file => !file?.url)){
+        toast(tr('smart.gridSplitUploadFailed'));
+        return false;
+    }
+    const live = liveImageEditTarget(editTarget);
+    if(!live) return false;
+    const source = live.node;
+    const layout = gridLayoutFromRects(rects);
+    createNode((source.x || 0) + canvasCore.imageLayout(source.images, nodeScale(source), source).width + 40, source.y || 0, files.map((file, i) => ({
+        url:file.url, name:file.name,
+        grid:{...layout, row:rects[i].row, col:rects[i].col, w:rects[i].w, h:rects[i].h}
+    })), {title:tr('canvas.gridSplit')});
+    finishImageEdit(editTarget);
 }
 
 function loadGridJoinImage(entry){
@@ -2159,14 +2270,23 @@ async function applyImageGridJoin(){
     const canvasEl = document.createElement('canvas');
     canvasEl.width = Math.max(1, Math.round(size.w * outputScale));
     canvasEl.height = Math.max(1, Math.round(size.h * outputScale));
+    const loaded = new Map(await Promise.all(items.map(async entry => [entry.index, await loadGridJoinImage(entry)])));
+    const tiles = layout.items.map(item => ({
+        img:loaded.get(item.index), x:Math.round(item.x * outputScale), y:Math.round(item.y * outputScale),
+        w:Math.max(1, Math.round(item.w * outputScale)), h:Math.max(1, Math.round(item.h * outputScale))
+    }));
+    if(tiles.some(({img, w, h}) => {
+        const scale = Math.max(w / img.naturalWidth, h / img.naturalHeight);
+        return img.naturalWidth * scale - w > 1 || img.naturalHeight * scale - h > 1;
+    }) && !await window.ffDialog.ask({
+        title:tr('smart.gridJoinCropTitle'), message:tr('smart.gridJoinCropMessage'),
+        confirmText:tr('smart.outputGridJoin'), cancelText:tr('common.cancel')
+    })) return false;
+    if(!liveImageEditTarget(editTarget) || sources.some(source => !liveImageEditTarget(source))) return false;
     const ctx = canvasEl.getContext('2d');
     ctx.fillStyle = '#ffffff';
     ctx.fillRect(0, 0, canvasEl.width, canvasEl.height);
-    const loaded = new Map(await Promise.all(items.map(async entry => [entry.index, await loadGridJoinImage(entry)])));
-    for(const item of layout.items || []){
-        const img = loaded.get(item.index);
-        drawImageCover(ctx, img, Math.round(item.x * outputScale), Math.round(item.y * outputScale), Math.round(item.w * outputScale), Math.round(item.h * outputScale));
-    }
+    for(const {img, x, y, w, h} of tiles) drawImageCover(ctx, img, x, y, w, h);
     const blob = await new Promise(resolve => canvasEl.toBlob(resolve, 'image/png'));
     const base = safeExportFileName((downloadNameForMediaItem(image || items[0]?.item, 'image') || 'image').replace(/\.[^.]+$/, ''), 'image');
     const file = blob ? await uploadCroppedBlob(blob, `${base}_join.png`) : null;
@@ -2174,14 +2294,13 @@ async function applyImageGridJoin(){
         const live = liveImageEditTarget(editTarget);
         if(!live || sources.some(source => !liveImageEditTarget(source))) return;
         const rect = canvasCore.nodeRect(live.node);
-        const outputNode = createImageNodeAt({x:rect.x + rect.width + 240, y:rect.y + rect.height / 2}, [{
+        createImageNodeAt({x:rect.x + rect.width + 240, y:rect.y + rect.height / 2}, [{
             url:file.url,
             name:file.name,
             kind:'image',
             natural_w:canvasEl.width,
             natural_h:canvasEl.height
-        }], {select:true});
-        outputNode.title = 'Grid Join';
+        }], {select:true, title:tr('canvas.gridJoin')});
         finishImageEdit(editTarget);
         toast(tr('smart.gridJoinOutputDone'));
     }
@@ -2210,14 +2329,60 @@ async function applyImageResize(){
     finishImageEdit(editTarget);
 }
 
-function applyImageEdit(){
-    if(imageEditMode === 'preview') return;
-    if(imageEditMode === 'outpaint') return applyImageOutpaint();
-    if(imageEditMode === 'mask') return applyImageMask();
-    if(imageEditMode === 'brush') return applyImageBrush();
-    if(imageEditMode === 'resize') return applyImageResize();
-    if(imageEditMode === 'grid') return applyImageGridSplit();
-    return applyImageCrop();
+function syncImageEditApplyState(){
+    const applying = !!imageEditorSession?.applying;
+    const applyBtn = document.getElementById('imageEditApplyBtn');
+    if(applyBtn){
+        applyBtn.disabled = applying || !imageEditorSession?.loaded;
+        if(applying){
+            applyBtn.setAttribute('aria-busy', 'true');
+            applyBtn.setAttribute('aria-label', tr('smart.imageEditApplying'));
+        } else {
+            applyBtn.removeAttribute('aria-busy');
+            applyBtn.removeAttribute('aria-label');
+        }
+    }
+    const head = document.querySelector('.image-edit-head');
+    if(head) head.inert = applying;
+    const editLocked = applying || (imageEditMode !== 'preview' && !imageEditorSession?.loaded);
+    for(const control of document.querySelectorAll('.image-edit-tools, .image-edit-stage')) control.inert = editLocked;
+    const cancelBtn = document.getElementById('imageEditCancelBtn');
+    if(cancelBtn) cancelBtn.disabled = applying;
+}
+
+async function applyImageEdit(){
+    const session = imageEditorSession;
+    if(!session?.loaded || session.applying || session.discarding) return;
+    const worker = {
+        crop:applyImageCrop, outpaint:applyImageOutpaint, mask:applyImageMask,
+        brush:applyImageBrush, resize:applyImageResize, grid:applyImageGridSplit
+    }[imageEditMode];
+    if(!worker) return;
+    session.applying = true;
+    let needsError = false;
+    try {
+        if(isImageDrawingMode(imageEditMode)){
+            if(editTextInlineEditor) removeEditTextInlineEditor(true);
+            if(editDrawState) endEditDraw({pointerId:editDrawState.pointerId});
+            if(!editCanvasHasPixels()) return;
+        }
+        syncImageEditApplyState();
+        // Workers finish the session on success. False denotes user cancellation.
+        needsError = (await worker()) !== false;
+    } catch(error) {
+        console.warn('[image-editor] apply failed', error);
+        needsError = true;
+    } finally {
+        if(imageEditorSession === session){
+            session.applying = false;
+            syncImageEditApplyState();
+            if(needsError){
+                const message = tr('smart.imageEditApplyFailed');
+                if(window.ffToast?.error) window.ffToast.error(message);
+                else toast(message);
+            }
+        }
+    }
 }
 
 function cropDragModeFromPointer(event){
@@ -2306,7 +2471,9 @@ function resetPreviewTransform(){
 function editCanvasHasPixels(){
     if(editTextHasContent()) return true;
     const canvasEl = editDrawCanvas();
-    const data = canvasEl.getContext('2d').getImageData(0, 0, canvasEl.width, canvasEl.height).data;
+    return editImageDataHasPixels(canvasEl.getContext('2d').getImageData(0, 0, canvasEl.width, canvasEl.height));
+}
+function editImageDataHasPixels({data}){
     for(let i = 3; i < data.length; i += 4) if(data[i] > 0) return true;
     return false;
 }
@@ -2347,14 +2514,14 @@ function liveImageEditTarget(target){
         ? node.images.map((image, index) => ({image, index})).filter(({image}) => image
             && ['output_id', 'id', 'asset_id', 'url'].every(key => image[key] === target.image[key])) : [];
     if(matches.length !== 1){
-        toast('图片编辑目标已变化，请重新打开图片后再试。');
+        toast(tr('smart.imageEditTargetChanged'));
         return null;
     }
     return {node, index:matches[0].index};
 }
 function finishImageEdit(target){
     finalizePendingCanvasUndo();
-    if(cropState === target.editor) closeImageEditor();
+    if(cropState && cropState === target.editor) dismissImageEditor();
     canvasCore.render();
     canvasCore.scheduleSave();
 }
@@ -2362,15 +2529,9 @@ function replaceEditedImage(target, file, extra={}){
     const live = liveImageEditTarget(target);
     if(!live) return false;
     const {node, index} = live;
-    // #205：星标（marked）按具体图片资源记录（#89 规格）。裁剪/笔刷/扩图/调整尺寸把当前图
-    // 替换成一张全新的上传图（另一个资源）——asset_id 只取调用方显式绑定的新 asset
-    // （extra.asset_id / file.asset_id），不得回退旧图的 asset_id，否则旧 asset 的星标
-    // （canvas.markedAssetIds）仍会挂在新图条目上，星标状态看起来被「搬」到新图
-    // （保存/刷新后固化）。新图的新 asset 由落盘时 materializeProjectMediaReferences
-    // 按 url 导入项目媒体得到（与候选池等 url 条目同一路径）。
+    // #205: Keep the star on the original asset; an edit must not inherit its asset ID.
     const assetId = (extra && extra.asset_id) || file.asset_id || '';
     const next = {...(node.images[index] || {}), url:file.url, name:file.name, kind:file.kind || canvasCore.mediaKindForItem(file), natural_w:0, natural_h:0, asset_id:assetId, ...extra};
-    // 新图是新资源，不得继承旧图的星标（旧 asset 的星标仍在 canvas.markedAssetIds）。
     delete next.marked;
     const action = beginMediaHumanEdit([node], ['images', 'curated', 'w', 'h']);
     pushUndo();
@@ -2402,9 +2563,8 @@ function setPromptDraftForNode(node, text){
     const value = String(text || '');
     node.promptDraftHtml = escapeHtml(value);
     node.promptDraftText = value;
-    node.promptDraftTouched = true;
     if(activeSettingsSubject()?.id === node.id && canvasCore.promptInput){
         canvasCore.promptInput.textContent = value;
-        delete canvasCore.promptInput.dataset.preserveDraftOnce;
+        canvasCore.promptInput.dataset.preserveDraftOnce = '1';
     }
 }

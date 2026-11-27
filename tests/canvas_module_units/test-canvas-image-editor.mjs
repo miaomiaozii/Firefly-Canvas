@@ -1,4 +1,4 @@
-// #199 轨道 4：canvas-image-editor.js 独立单测 —— 只测纯计算核心。
+// canvas-image-editor.js 独立单测：计算、绘图历史和弹窗会话；不验证栅格渲染。
 //
 // 实测规模：2301 行 / 139 个顶层 function；其中 65 个顶层函数的自身函数体不碰 DOM/canvas。
 // 本文件覆盖这 65 个里的纯计算/参数整形切片（窄而实，不是全覆盖）：
@@ -64,15 +64,15 @@
 //   - 指针拖拽链：beginGridJoinDrag / moveGridJoinDrag / beginCropDrag / beginEditDraw 等
 //     （setPointerCapture / host.querySelector + CSS.escape）；纯几何的 gridJoinDragTarget
 //     已单独覆盖。
-//   - 编辑器开/关全流程：openImageEditor / closeImageEditor（modal/快图/兜底链/定时器/
-//     video 分支）。
 //
 // 有效性证据：4 处互相独立的变异（worktree 内改产品行为，红绿原文见 #199 评论与
 // C:/Users/Administrator/fix199g-evidence/）。
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
-import { createCanvasContext, loadModules, globalFunction, evaluate, fromContext } from './harness.mjs';
+import { createCanvasContext, loadModules, globalFunction, evaluate, fromContext, JS_DIR } from './harness.mjs';
 
 // 假 2D 上下文：最小像素容器（历史栈快照需要真实可读写的 getImageData/putImageData）。
 // 只用于状态存/还原，不用于断言渲染。measureText 只返回 {width}（不返回
@@ -109,7 +109,7 @@ function makeFakeCtx2d() {
         getImageData(x, y, w, h) {
             syncPixels(Math.max(0, Math.round(Number(w) || 0)), Math.max(0, Math.round(Number(h) || 0)));
             rec.push(['getImageData', x, y]);
-            return { data: pixels, width: w, height: h };
+            return { data: new Uint8ClampedArray(pixels), width: w, height: h };
         },
         putImageData(data, x, y) {
             if (data && data.data) pixels = new Uint8ClampedArray(data.data);
@@ -1097,7 +1097,7 @@ test('pushEditDrawHistory: MAX=40 截断（shift 丢最旧）+ 每次清 redo + 
     const canvas = harness.element('editDrawCanvas', 'canvas');
     canvas.width = 10; canvas.height = 10;
     let n = 0;
-    canvas.getContext = () => ({ getImageData: () => ({ n: n++ }), putImageData: () => {} });
+    canvas.getContext = () => ({ getImageData: (_x, _y, width, height) => ({ n: n++, width, height }), putImageData: () => {} });
 
     for (let i = 0; i < 45; i++) f();
     assert.equal(evaluate(ctx, 'editDrawUndoStack.length'), 40, '45 次 → 截 40（EDIT_DRAW_HISTORY_MAX）');
@@ -1131,7 +1131,7 @@ test('undo/redoEditDrawing: 栈转移语义 + restore 回滚 labelCounter（0 �
     let n = 0;
     let lastPut = null;
     canvas.getContext = () => ({
-        getImageData: () => ({ n: n++ }),
+        getImageData: (_x, _y, width, height) => ({ n: n++, width, height }),
         putImageData: (img) => { lastPut = img; },
     });
     const undoLen = () => evaluate(ctx, 'editDrawUndoStack.length');
@@ -1204,7 +1204,7 @@ test('resetEditDrawingHistory: 清栈/清文本/计数器归 1 + 历史按钮 di
     const canvas = harness.element('editDrawCanvas', 'canvas');
     canvas.width = 10; canvas.height = 10;
     let n = 0;
-    canvas.getContext = () => ({ getImageData: () => ({ n: n++ }), putImageData: () => {} });
+    canvas.getContext = () => ({ getImageData: (_x, _y, width, height) => ({ n: n++, width, height }), putImageData: () => {} });
 
     for (const id of ['maskUndoBtn', 'brushUndoBtn', 'maskRedoBtn', 'brushRedoBtn']) harness.element(id, 'button');
     const btn = (id) => harness.element(id);
@@ -1240,6 +1240,243 @@ test('resetEditDrawingHistory: 清栈/清文本/计数器归 1 + 历史按钮 di
     }
 });
 
+
+function editorSessionFixture() {
+    const { ctx, harness, E, D, editDrawCtx } = loadImageEditorModule();
+    const stage = E('imageEditStage');
+    stage.clientWidth = 1100;
+    stage.clientHeight = 600;
+    harness.querySelectorAll('.image-edit-tools, .image-edit-stage', [stage]);
+    for (const id of ['previewStage', 'imagePreviewTools', 'imageMaskTools', 'imageBrushTools',
+        'imageGridTools', 'imageEditApplyBtn', 'compareToggleBtn', 'compareThumbs', 'imageEditTitle', 'imageEditSub']) E(id);
+    const images = [{ url: '/primary.png', kind: 'image' }, { url: '/second.png', kind: 'image' }];
+    const node = { id: 'edit-node', images };
+    evaluate(ctx, 'let previewZoom, previewPan, previewComparePos');
+    evaluate(ctx, 'canvasState.nodes').push(node);
+    for (const name of ['applyPreviewTransform', 'refreshComparePanel', 'updateZoomLabel', 'updatePreviewMetaHint',
+        'refreshIcons', 'scheduleStateSave', 'cleanupSmartHistoryPreviewNode', 'finalizePendingCanvasUndo', 'render', 'scheduleSave']) ctx[name] = () => {};
+    ctx.previewDownloadGroupItems = () => [];
+    ctx.imageForDisplay = image => image;
+    ctx.mediaKindForItem = image => image.kind;
+    ctx.displayMediaUrl = image => image.url;
+    ctx.proxiedMediaUrl = () => '';
+    ctx.smartMediaPreviewUrl = image => `/quick${image.url}`;
+    const img = E('cropImage');
+    Object.defineProperties(img, {
+        src: { get: () => img.getAttribute('src') || '', set: value => { img.complete = false; img.setAttribute('src', value); } },
+        clientWidth: { get: () => parseFloat(img.style.width) || img.naturalWidth || 0 },
+        clientHeight: { get: () => parseFloat(img.style.height) || img.naturalHeight || 0 },
+    });
+    function load(w, h) {
+        Object.assign(img, { naturalWidth: w, naturalHeight: h, complete: true, currentSrc: img.src });
+        img.onload();
+        harness.flushRafs();
+    }
+    // Only record the browser resampling call. This context does not model rendering.
+    ctx.document.createElement = tag => {
+        const el = harness.makeElement(tag);
+        if (tag === 'canvas') el.getContext = () => makeFakeCtx2d();
+        return el;
+    };
+    editDrawCtx.drawImage = (source, ...coords) => editDrawCtx.calls.push(['drawImage', source.width, source.height, ...coords]);
+    const modal = E('imageEditModal');
+    function open(index = 0) {
+        D.currentEdit = { node, index, image: images[index] };
+        ctx.openImageEditor(node.id, index);
+    }
+    function mode(name) {
+        ctx.setImageEditMode(name, true);
+        harness.flushRafs();
+    }
+    function stroke(value) {
+        ctx.pushEditDrawHistory();
+        const bytes = new Uint8ClampedArray(E('editDrawCanvas').width * E('editDrawCanvas').height * 4);
+        bytes.set([value, 0, 0, 255]);
+        editDrawCtx.setPixels(bytes);
+    }
+    const pixel = () => editDrawCtx.getImageData(0, 0, E('editDrawCanvas').width, E('editDrawCanvas').height).data[0];
+    return { ctx, harness, E, modal, img, open, mode, load, stroke, pixel, editDrawCtx, images };
+}
+
+function deferred() {
+    let resolve, reject;
+    const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+}
+
+test('#513 Apply is single-flight, shows busy, and leaves the draft on errors', async () => {
+    const { ctx, harness, E, modal, open, mode, load, stroke, pixel } = editorSessionFixture();
+    open(); mode('brush');
+    const btn = E('imageEditApplyBtn');
+    const stage = E('imageEditStage');
+    assert.equal(btn.disabled, true, 'Apply waits for an editable image');
+    assert.equal(stage.inert, true);
+    load(100, 80); stroke(9);
+    assert.equal(stage.inert, false);
+    const failure = deferred();
+    let calls = 0;
+    ctx.applyImageBrush = () => { calls++; return failure.promise; };
+    const pending = ctx.applyImageEdit();
+    try {
+        assert.equal(btn.disabled, true);
+        assert.equal(btn.getAttribute('aria-busy'), 'true');
+        assert.equal(stage.inert, true);
+        await ctx.applyImageEdit();
+        await ctx.closeImageEditor({ target: modal, stopPropagation() {} });
+        assert.equal(calls, 1);
+        assert.equal(modal.classList.contains('open'), true);
+    } finally {
+        failure.reject(new Error('upload rejected'));
+        await Promise.allSettled([pending]);
+    }
+    assert.equal(btn.disabled, false);
+    assert.equal(stage.inert, false);
+    assert.notEqual(btn.getAttribute('aria-busy'), 'true');
+    assert.equal(pixel(), 9);
+    assert.equal(harness.toasts.at(-1)?.type, 'error');
+    ctx.applyImageBrush = async () => {};
+    await ctx.applyImageEdit();
+    assert.equal(harness.toasts.length, 2, 'silent worker failure also reports');
+    assert.equal(pixel(), 9);
+    ctx.applyImageBrush = async () => false;
+    await ctx.applyImageEdit();
+    assert.equal(modal.classList.contains('open'), true);
+    assert.equal(harness.toasts.length, 2, 'explicit cancellation is not a failure');
+    ctx.applyImageBrush = async () => ctx.finishImageEdit({ editor: evaluate(ctx, 'cropState') });
+    await ctx.applyImageEdit();
+    assert.equal(modal.classList.contains('open'), false);
+    assert.equal(harness.toasts.length, 2);
+});
+
+test('#513 crop, outpaint and hidden drawing drafts confirm before dismissing', async () => {
+    const { ctx, modal, open, mode, load, stroke, pixel } = editorSessionFixture();
+    const prompts = [];
+    ctx.ffDialog = { ask: () => { const result = deferred(); prompts.push(result); return result.promise; } };
+    open(); load(100, 80); mode('crop');
+    ctx.setCropAspectPreset('1:1');
+    mode('preview');
+    const cancelCrop = ctx.closeImageEditor();
+    assert.equal(prompts.length, 1);
+    prompts[0].resolve(false);
+    await cancelCrop;
+    assert.equal(modal.classList.contains('open'), true);
+    mode('crop');
+    assert.equal(evaluate(ctx, 'cropState.w === cropState.h'), true);
+    ctx.setCropAspectPreset('free');
+    ctx.resetCropBox();
+    mode('outpaint');
+    ctx.beginCropDrag({ clientX: 0, clientY: 0, preventDefault() {}, stopPropagation() {} }, 'outpaint-corner');
+    ctx.resizeOutpaintFromDrag(16, 8);
+    const backdrop = { target: modal, stopPropagation() {} };
+    await ctx.closeImageEditor({ ...backdrop, target: {} });
+    assert.equal(prompts.length, 1);
+    const cancelOutpaint = ctx.closeImageEditor(backdrop);
+    assert.equal(prompts.length, 2);
+    prompts[1].resolve(false);
+    await cancelOutpaint;
+    assert.equal(modal.classList.contains('open'), true);
+    ctx.setOutpaintAspectPreset('source');
+    mode('mask'); stroke(7);
+    mode('brush');
+    const discard = ctx.closeImageEditor();
+    assert.equal(prompts.length, 3);
+    prompts[2].resolve(false);
+    await discard;
+    mode('mask');
+    assert.equal(pixel(), 7);
+    const confirm = ctx.closeImageEditor();
+    prompts[3].resolve(true);
+    await confirm;
+    assert.equal(modal.classList.contains('open'), false);
+    open(); load(100, 80); mode('crop');
+    await ctx.closeImageEditor();
+    assert.equal(prompts.length, 4, 'a default crop is clean');
+    assert.equal(modal.classList.contains('open'), false);
+});
+
+test('#513 Escape cancels the discard dialog without closing the editor or lower layers', async () => {
+    const { ctx, harness, modal, open, mode, load, stroke } = editorSessionFixture();
+    for (const name of ['escape-stack.js', 'ui-dialog.js']) evaluate(ctx, readFileSync(path.join(JS_DIR, name), 'utf8'));
+    ctx.document.removeEventListener = (event, fn) => {
+        harness.documentListeners.set(event, harness.documentListeners.get(event).filter(item => item !== fn));
+    };
+    for (const el of [ctx.document.body, ctx.document.head]) {
+        el.appendChild = child => { el.children.push(child); child.remove = () => el.removeChild(child); return child; };
+    }
+    const query = ctx.document.querySelector;
+    ctx.document.querySelector = selector => query(selector) || ctx.document.body.children.find(el => `.${el.className}` === selector);
+    const escape = () => {
+        const event = { key: 'Escape', stopped: false, preventDefault() {}, stopPropagation() { this.stopped = true; } };
+        for (const fn of [...harness.documentListeners.get('keydown')]) fn(event);
+        assert.equal(event.stopped, true);
+    };
+    let lower = 0;
+    ctx.FireflyEscapeStack.push(() => { lower++; }, 'under-editor');
+    open(0); open(1); load(100, 80); mode('brush'); stroke(2);
+    assert.equal(ctx.FireflyEscapeStack.size, 2, 're-opening replaces the editor stack entry');
+    escape();
+    assert.ok(ctx.document.querySelector('.ff-dialog-backdrop'));
+    const extraClose = ctx.closeImageEditor();
+    escape();
+    await extraClose;
+    assert.equal(ctx.document.querySelector('.ff-dialog-backdrop'), undefined);
+    assert.equal(modal.classList.contains('open'), true);
+    assert.equal(lower, 0);
+    ctx.clearEditDrawing();
+    escape();
+    assert.equal(modal.classList.contains('open'), false);
+    assert.equal(lower, 0);
+    escape();
+    assert.equal(lower, 1);
+});
+
+test('#513 mask and brush keep independent pixels and undo/redo across modes', () => {
+    const { ctx, open, load, mode, stroke, pixel } = editorSessionFixture();
+    open(); load(100, 80);
+    mode('mask'); stroke(1); stroke(2); ctx.undoEditDrawing();
+    mode('brush');
+    assert.equal(pixel(), 0);
+    stroke(3); stroke(4); ctx.undoEditDrawing();
+    mode('crop'); mode('mask');
+    assert.equal(pixel(), 1);
+    ctx.redoEditDrawing(); assert.equal(pixel(), 2);
+    mode('brush');
+    assert.equal(pixel(), 3);
+    ctx.redoEditDrawing(); assert.equal(pixel(), 4);
+});
+
+test('#513 preview-to-HD preserves normalized crop, zoom and drawing history; stale requests are ignored', () => {
+    const { ctx, harness, E, img, open, load, mode, stroke, editDrawCtx, images } = editorSessionFixture();
+    open();
+    const quickOnload = img.onload;
+    load(100, 80); mode('crop');
+    ctx.beginCropDrag({ clientX: 0, clientY: 0, preventDefault() {}, stopPropagation() {} }, 'crop-se');
+    ctx.resizeCropFromDrag(-10, -8);
+    evaluate(ctx, 'imageEditZoom = 1.5'); ctx.applyImageEditZoom();
+    const cropFractions = () => fromContext(evaluate(ctx, '[cropState.x / cropBounds().w, cropState.y / cropBounds().h, cropState.w / cropBounds().w, cropState.h / cropBounds().h]'));
+    const before = cropFractions();
+    mode('brush'); stroke(5); stroke(6); ctx.undoEditDrawing();
+    harness.advanceTimers();
+    assert.equal(img.src, '/primary.png');
+    quickOnload();
+    assert.equal(E('editDrawCanvas').width, 100);
+    load(200, 160);
+    assert.equal(E('editDrawCanvas').width, 200);
+    assert.equal(img.clientWidth, 300);
+    assert.ok(editDrawCtx.calls.some(call => call.join(',') === 'drawImage,100,80,0,0,200,160'));
+    assert.equal(E('brushRedoBtn').disabled, false);
+    ctx.redoEditDrawing();
+    assert.equal(E('brushUndoBtn').disabled, false);
+    mode('crop');
+    cropFractions().forEach((value, i) => assert.ok(Math.abs(value - before[i]) < 0.01));
+    const staleOnload = img.onload;
+    open(1); load(96, 72); mode('crop');
+    const secondCrop = cropFractions();
+    staleOnload();
+    assert.deepEqual(cropFractions(), secondCrop);
+    assert.equal(images[1].natural_w, undefined);
+    assert.equal(E('editDrawCanvas').width, 96);
+});
 
 // #255：显示像素 → 原图像素统一走分数坐标骨架（editScaleRectToNatural）。
 // 防的回归：接线后换算行为与旧「直连缩放」同构；骨架模块缺失时回退路径结果一致。

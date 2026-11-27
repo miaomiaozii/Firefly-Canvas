@@ -549,9 +549,9 @@
                     <button class="preview-icon-btn" type="button" onclick="closeImageEditor()" title="关闭" data-i18n-title="common.close"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-x"/></svg></button>
                 </div>
                 <div id="imageCropTools" class="image-edit-tools crop-ratio-tools">
-                    <span class="image-edit-sub">比例</span>
-                    <button class="crop-ratio-btn active" type="button" data-crop-ratio="free">自由</button>
-                    <button class="crop-ratio-btn" type="button" data-crop-ratio="source">原图</button>
+                    <span class="image-edit-sub" data-i18n="canvas.videoAspect">比例</span>
+                    <button class="crop-ratio-btn active" type="button" data-crop-ratio="free" data-i18n="canvas.ratioFree">自由</button>
+                    <button class="crop-ratio-btn" type="button" data-crop-ratio="source" data-i18n="canvas.ratioSource">原图</button>
                     <button class="crop-ratio-btn" type="button" data-crop-ratio="1:1">1:1</button>
                     <button class="crop-ratio-btn" type="button" data-crop-ratio="4:3">4:3</button>
                     <button class="crop-ratio-btn" type="button" data-crop-ratio="3:4">3:4</button>
@@ -580,32 +580,32 @@
                 </div>
                 <div id="imageMaskTools" class="image-edit-tools">
                     <label><span data-i18n="canvas.brushSize">笔刷</span> <input id="maskBrushSize" type="range" min="4" max="160" value="42"></label>
-                    <button id="maskUndoBtn" class="image-edit-btn secondary" type="button" onclick="undoEditDrawing()" title="撤销"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-undo-2"/></svg></button>
-                    <button id="maskRedoBtn" class="image-edit-btn secondary" type="button" onclick="redoEditDrawing()" title="恢复"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-redo-2"/></svg></button>
+                    <button id="maskUndoBtn" class="image-edit-btn secondary" type="button" onclick="undoEditDrawing()" data-i18n-title="canvas.editUndo" title="撤销"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-undo-2"/></svg></button>
+                    <button id="maskRedoBtn" class="image-edit-btn secondary" type="button" onclick="redoEditDrawing()" data-i18n-title="canvas.editRedo" title="恢复"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-redo-2"/></svg></button>
                     <button class="image-edit-btn secondary" type="button" onclick="clearEditDrawing()"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-eraser"/></svg><span data-i18n="canvas.clear">清空</span></button>
                     <span class="image-edit-sub" data-i18n="canvas.maskHint">白色区域为要编辑的遮罩</span>
                 </div>
                 <div id="imageBrushTools" class="image-edit-tools">
-                    <button class="image-edit-btn primary" type="button" data-brush-tool="free" onclick="setBrushTool('free')" title="自由画笔"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-paintbrush"/></svg></button>
-                    <button class="image-edit-btn secondary" type="button" data-brush-tool="rect" onclick="setBrushTool('rect')" title="矩形"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-square"/></svg></button>
-                    <button class="image-edit-btn secondary" type="button" data-brush-tool="ellipse" onclick="setBrushTool('ellipse')" title="椭圆"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-circle"/></svg></button>
-                    <button class="image-edit-btn secondary" type="button" data-brush-tool="label" onclick="setBrushTool('label')" title="数字标签"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-list-ordered"/></svg></button>
-                    <button class="image-edit-btn secondary" type="button" data-brush-tool="text" onclick="setBrushTool('text')" title="文字标签"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-scan-line"/></svg></button>
+                    <button class="image-edit-btn primary" type="button" data-brush-tool="free" onclick="setBrushTool('free')" data-i18n-title="canvas.editBrushFree" title="自由画笔"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-paintbrush"/></svg></button>
+                    <button class="image-edit-btn secondary" type="button" data-brush-tool="rect" onclick="setBrushTool('rect')" data-i18n-title="canvas.editBrushRect" title="矩形"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-square"/></svg></button>
+                    <button class="image-edit-btn secondary" type="button" data-brush-tool="ellipse" onclick="setBrushTool('ellipse')" data-i18n-title="canvas.editBrushEllipse" title="椭圆"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-circle"/></svg></button>
+                    <button class="image-edit-btn secondary" type="button" data-brush-tool="label" onclick="setBrushTool('label')" data-i18n-title="canvas.editBrushLabel" title="数字标签"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-list-ordered"/></svg></button>
+                    <button class="image-edit-btn secondary" type="button" data-brush-tool="text" onclick="setBrushTool('text')" data-i18n-title="canvas.editBrushText" title="文字标签"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-scan-line"/></svg></button>
                     <label><span data-i18n="canvas.color">颜色</span> <input id="paintBrushColor" type="color" value="#ff2d55"></label>
                     <label><span data-i18n="canvas.brushSize">笔刷</span> <input id="paintBrushSize" type="range" min="2" max="80" value="14"></label>
-                    <button id="brushUndoBtn" class="image-edit-btn secondary" type="button" onclick="undoEditDrawing()" title="撤销"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-undo-2"/></svg></button>
-                    <button id="brushRedoBtn" class="image-edit-btn secondary" type="button" onclick="redoEditDrawing()" title="恢复"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-redo-2"/></svg></button>
+                    <button id="brushUndoBtn" class="image-edit-btn secondary" type="button" onclick="undoEditDrawing()" data-i18n-title="canvas.editUndo" title="撤销"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-undo-2"/></svg></button>
+                    <button id="brushRedoBtn" class="image-edit-btn secondary" type="button" onclick="redoEditDrawing()" data-i18n-title="canvas.editRedo" title="恢复"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-redo-2"/></svg></button>
                     <button class="image-edit-btn secondary" type="button" onclick="clearEditDrawing()"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-eraser"/></svg><span data-i18n="canvas.clear">清空</span></button>
                 </div>
                 <div id="imageResizeTools" class="image-edit-tools image-resize-tools">
-                    <label><span>倍数</span> <input id="imageResizeScaleRange" type="range" min="0.05" max="1" step="0.05" value="0.5"></label>
+                    <label><span data-i18n="canvas.editScale">倍数</span> <input id="imageResizeScaleRange" type="range" min="0.05" max="1" step="0.05" value="0.5"></label>
                     <label><input id="imageResizeScaleInput" type="number" min="0.05" max="1" step="0.05" value="0.5"><span>×</span></label>
                     <span id="imageResizeResolution" class="image-edit-sub image-resize-resolution">-</span>
                 </div>
                 <div id="imageGridTools" class="image-edit-tools">
                     <div class="grid-operation-toggle">
-                        <button id="gridSplitModeBtn" class="image-edit-btn primary" type="button" onclick="setGridOperationMode('split')">宫格切分</button>
-                        <button id="gridJoinModeBtn" class="image-edit-btn secondary" type="button" onclick="setGridOperationMode('join')">宫格拼接</button>
+                        <button id="gridSplitModeBtn" class="image-edit-btn primary" type="button" onclick="setGridOperationMode('split')" data-i18n="canvas.gridSplit">宫格切分</button>
+                        <button id="gridJoinModeBtn" class="image-edit-btn secondary" type="button" onclick="setGridOperationMode('join')" data-i18n="canvas.gridJoin">宫格拼接</button>
                     </div>
                     <button id="gridCustomToggle" class="image-edit-btn secondary grid-split-control" type="button" onclick="toggleGridCustomMode()" data-i18n="canvas.gridCustom" data-i18n-title="canvas.gridCustomTitle" title="自由放置切割线">自定义</button>
                     <div class="grid-preset-row grid-split-control">
@@ -618,17 +618,17 @@
                         <button class="grid-preset-btn" type="button" onclick="applyGridPreset(3, 3)">3×3</button>
                     </div>
                     <div id="gridJoinPresetRow" class="grid-preset-row grid-join-control" style="display:none">
-                        <span class="image-edit-sub">拼接</span>
+                        <span class="image-edit-sub" data-i18n="canvas.gridJoin">拼接</span>
                         <button class="grid-preset-btn" type="button" onclick="applyGridJoinPreset(1, 2)">1×2</button>
                         <button class="grid-preset-btn" type="button" onclick="applyGridJoinPreset(2, 1)">2×1</button>
                         <button class="grid-preset-btn" type="button" onclick="applyGridJoinPreset(2, 2)">2×2</button>
                         <button class="grid-preset-btn" type="button" onclick="applyGridJoinPreset(2, 3)">2×3</button>
                         <button class="grid-preset-btn" type="button" onclick="applyGridJoinPreset(3, 2)">3×2</button>
                         <button class="grid-preset-btn" type="button" onclick="applyGridJoinPreset(3, 3)">3×3</button>
-                        <button class="grid-preset-btn" type="button" onclick="resetGridJoinLayout()">自动</button>
+                        <button class="grid-preset-btn" type="button" onclick="resetGridJoinLayout()" data-i18n="canvas.editAuto">自动</button>
                     </div>
                     <div id="gridJoinSizeRow" class="grid-preset-row grid-join-control" style="display:none">
-                        <span class="image-edit-sub">尺寸</span>
+                        <span class="image-edit-sub" data-i18n="canvas.editSize">尺寸</span>
                         <button class="grid-preset-btn" type="button" data-grid-join-size="1024" onclick="setGridJoinOutputSize(1024)">1K</button>
                         <button class="grid-preset-btn active" type="button" data-grid-join-size="2048" onclick="setGridJoinOutputSize(2048)">2K</button>
                         <button class="grid-preset-btn" type="button" data-grid-join-size="4096" onclick="setGridJoinOutputSize(4096)">4K</button>
@@ -653,8 +653,8 @@
                     <button id="layerExportBtn" class="image-edit-btn primary" type="button" onclick="CanvasLayers.exportCompositePng()"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-download"/></svg><span data-i18n="canvas.layersExport">导出合成 PNG</span></button>
                 </div>
                 <div id="imageEditStage" class="image-edit-stage">
-                    <button id="previewPrevBtn" class="preview-nav-btn prev" type="button" onclick="navigatePreviewImage(-1)" title="上一张"><svg class="ico" aria-hidden="true"><use href="#i-chevron-left"/></svg></button>
-                    <button id="previewNextBtn" class="preview-nav-btn next" type="button" onclick="navigatePreviewImage(1)" title="下一张"><svg class="ico" aria-hidden="true"><use href="#i-chevron-right"/></svg></button>
+                    <button id="previewPrevBtn" class="preview-nav-btn prev" type="button" onclick="navigatePreviewImage(-1)" data-i18n-title="canvas.editPrevious" title="上一张"><svg class="ico" aria-hidden="true"><use href="#i-chevron-left"/></svg></button>
+                    <button id="previewNextBtn" class="preview-nav-btn next" type="button" onclick="navigatePreviewImage(1)" data-i18n-title="canvas.editNext" title="下一张"><svg class="ico" aria-hidden="true"><use href="#i-chevron-right"/></svg></button>
                     <div class="image-edit-stage-inner">
                         <div id="previewStage" class="preview-stage" style="display:none">
                             <div id="previewFrame" class="preview-frame">
@@ -694,7 +694,7 @@
                     </div>
                     <div class="preview-download-overlay">
                         <button id="previewDownloadBtn" class="compare-toggle" type="button" onclick="downloadPreviewImage()"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-download"/></svg><span data-i18n="canvas.download">Download</span></button>
-                        <button id="previewDownloadAllBtn" class="compare-toggle" type="button" onclick="downloadPreviewGroup()" style="display:none"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-download"/></svg><span>下载全部</span></button>
+                        <button id="previewDownloadAllBtn" class="compare-toggle" type="button" onclick="downloadPreviewGroup()" style="display:none"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-download"/></svg><span data-i18n="canvas.editDownloadAll">下载全部</span></button>
                     </div>
                     <div class="preview-tools-overlay">
                         <div id="compareThumbs" class="compare-thumbs" style="display:none"></div>
@@ -704,11 +704,11 @@
                     </div>
                 </div>
                 <div class="image-edit-actions">
-                    <span id="imageEditZoomLabel" style="color:var(--muted);font-size:11px;font-weight:800;padding:0 4px;margin-right:auto;cursor:pointer;user-select:none" title="双击重置缩放" ondblclick="resetImageEditZoom()">100%</span>
+                    <span id="imageEditZoomLabel" style="color:var(--muted);font-size:11px;font-weight:800;padding:0 4px;margin-right:auto;cursor:pointer;user-select:none" data-i18n-title="canvas.editResetZoom" title="双击重置缩放" ondblclick="resetImageEditZoom()">100%</span>
                     <div id="videoFrameTools" class="video-frame-tools" style="display:none">
-                        <button class="image-edit-btn secondary" type="button" onclick="exportVideoFrame('first')"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-skip-back"/></svg><span>导出首帧</span></button>
-                        <button class="image-edit-btn primary" type="button" onclick="exportVideoFrame('current')"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-download"/></svg><span>导出当前帧</span></button>
-                        <button class="image-edit-btn secondary" type="button" onclick="exportVideoFrame('last')"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-skip-forward"/></svg><span>导出尾帧</span></button>
+                        <button class="image-edit-btn secondary" type="button" onclick="exportVideoFrame('first')"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-skip-back"/></svg><span data-i18n="canvas.editExportFirstFrame">导出首帧</span></button>
+                        <button class="image-edit-btn primary" type="button" onclick="exportVideoFrame('current')"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-download"/></svg><span data-i18n="canvas.editExportCurrentFrame">导出当前帧</span></button>
+                        <button class="image-edit-btn secondary" type="button" onclick="exportVideoFrame('last')"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-skip-forward"/></svg><span data-i18n="canvas.editExportLastFrame">导出尾帧</span></button>
                     </div>
                     <button id="imageEditCancelBtn" class="image-edit-btn secondary" type="button" onclick="closeImageEditor()" data-i18n="common.cancel">取消</button>
                     <button id="imageEditApplyBtn" class="image-edit-btn primary" type="button" onclick="applyImageEdit()"><svg class="ico w-4 h-4" aria-hidden="true"><use href="#i-crop"/></svg><span data-i18n="canvas.applyCrop">应用裁剪</span></button>

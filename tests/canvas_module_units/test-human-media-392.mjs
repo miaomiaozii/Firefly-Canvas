@@ -21,7 +21,8 @@ function mediaEditor(nodes){
     ctx.document.createElement=tag=>{const el=create(tag);if(tag==='canvas'){el.getContext=()=>pixels;el.toBlob=resolve=>resolve({});}return el;};
     Object.assign(harness.element('cropImage'),{naturalWidth:100,naturalHeight:100,width:100,height:100,clientWidth:100,clientHeight:100});
     harness.element('imageEditModal').classList.add('open');
-    loadModules(ctx,['canvas-node-types.js','canvas-core.js','canvas-state.js','project-canvas-mutations.js','canvas-layout-utils.js','canvas-connections.js','canvas-media-history.js','canvas-undo.js','canvas-node-ops.js','canvas-geometry.js','canvas-placement.js','canvas-image-editor.js','canvas-generation-cascade.js','canvas-generation-tasks.js']);
+    loadModules(ctx,['i18n-core.js','canvas-node-types.js','canvas-core.js','canvas-state.js','project-canvas-mutations.js','canvas-layout-utils.js','canvas-connections.js','canvas-media-history.js','canvas-undo.js','canvas-node-ops.js','canvas-geometry.js','canvas-placement.js','canvas-image-editor.js','canvas-generation-cascade.js','canvas-generation-tasks.js']);
+    vm.runInContext(readFileSync(path.join(JS_DIR,'i18n','smart-canvas.js'),'utf8'),ctx);
     const constants=readFileSync(path.join(JS_DIR,'smart-canvas.js'),'utf8').split(/\r?\n/).filter(line=>/^const (?:PROMPT_|MEDIA_|ZOOM_PREVIEW_NODE_|SMART_GROUP_)\w+ = (?:[\d]|')/.test(line)).join('\n');
     const sizes=readFileSync(path.join(JS_DIR,'smart-canvas.js'),'utf8').match(/^const (?:SIZE_MAP|IMAGE_RATIO_PRESETS|RES_LONG_SIDE|RES_PIXEL_LIMIT) = [\s\S]*?;\r?$/gm).join('\n');
     vm.runInContext(constants+'\n'+sizes+'\n'+declarations('smart-canvas.js'),ctx);
@@ -113,7 +114,7 @@ test('resize apply stamps T only and restores original dimensions/media together
     assert.deepEqual(ownership(e.node('a')),{...identity,created_at:12});
 });
 
-test('outpaint applies captured media/settings and an automatic prompt suggestion without P in one undo',async()=>{
+test('outpaint creates a separate input and automatic prompt suggestion without P in one undo',async()=>{
     const e=mediaEditor([imageNode('a',{promptDraftText:'old draft',promptDraftHtml:'old draft'})]);
     evaluate(e.ctx,`imageEditMode='outpaint';cropState={nodeId:'a',imageIndex:0,x:10,y:10,w:120,h:120};`);
     e.ctx.fetch=async url=>{
@@ -121,15 +122,19 @@ test('outpaint applies captured media/settings and an automatic prompt suggestio
         assert.equal(url,'/api/project-library/unit-392/media/import');
         return {ok:true,json:async()=>({media:{asset_id:'outpaint-asset',kind:'image'}})};
     };
+    const before=e.stored();
     await e.ctx.applyImageOutpaint();
-    assert.equal(e.node('a').images[0].asset_id,'outpaint-asset');
-    assert.equal(e.node('a').promptDraftText,'Remove red area and fill the scene');
-    assert.deepEqual(ownership(e.node('a')),{...identity,userTouchedAt:1234,created_at:12});
+    const outputId=evaluate(e.ctx,'canvasState.selectedId');
+    const output=e.node(outputId);
+    assert.notEqual(output.id,'a');
+    assert.equal(output.images[0].asset_id,'outpaint-asset');
+    assert.equal(output.promptDraftText,'移除红色区域并自然延展原图场景');
+    assert.deepEqual(ownership(output),{createdBy:'user',agentNodeId:null,userTouchedAt:null,promptEditedByUser:false,created_at:1234});
+    assert.deepEqual(e.stored().find(node=>node.id==='a'),before[0]);
+    assert.equal(evaluate(e.ctx,'undoStack.length'),1);
     await e.ctx.performUndo();
-    assert.equal(e.node('a').promptDraftText,'old draft');
-    assert.equal(e.node('a').images[0].url,'/original.png');
-    assert.equal(e.node('a').outpaintSize,undefined);
-    assert.deepEqual(ownership(e.node('a')),{...identity,created_at:12});
+    assert.equal(e.node(outputId),undefined);
+    assert.deepEqual(e.stored(),before);
 });
 
 test('human shared-asset mark stamps only changed targets, couples curated/T undo, and same mark preserves redo',async()=>{
@@ -444,7 +449,11 @@ test('outpaint keeps the original default settings context when another editor b
     const pending=e.ctx.applyImageOutpaint();await Promise.resolve();await Promise.resolve();
     evaluate(e.ctx,`settings={engine:'api',model:'model-b'};canvasState.selectedId='b';cropState={nodeId:'b',imageIndex:0};`);
     release();await pending;
-    assert.equal(e.node('a').runSettings.model,'model-a');
+    const output=e.stored().find(node=>!['a','b'].includes(node.id));
+    assert.equal(output.runSettings.model,'model-a');
+    assert.equal(output.images[0].asset_id,'outpaint-asset');
+    assert.equal(e.node('a').runSettings,undefined);
+    assert.equal(evaluate(e.ctx,'canvasState.selectedId'),'b');
     assert.equal(evaluate(e.ctx,'settings.model'),'model-b');
     assert.equal(e.node('b').userTouchedAt,null);
 });

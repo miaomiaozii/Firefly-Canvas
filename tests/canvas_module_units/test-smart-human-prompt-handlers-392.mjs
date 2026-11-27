@@ -351,7 +351,11 @@ test('dynamic parameter DOM changes compare normalized durable settings only; au
 });
 
 test('local-edit pointercancel discards draft; prompt and persisted active role are human edits, default fills are not',()=>{
-    const e=editor([{id:'local',type:'local-edit',...identity,mode:'modify',prompt:'before',selection:[0,0,20,20],localEditActiveRole:'original'}]);
+    const e=editor([
+        {id:'local',type:'local-edit',...identity,mode:'modify',prompt:'before',selection:[0,0,20,20],localEditActiveRole:'original',source_media_id:'original'},
+        {id:'source',type:'smart-image',images:[{asset_id:'original',kind:'image'}]},
+    ]);
+    evaluate(e.ctx,"canvas.connections=[{from:'source',to:'local',kind:'input',role:'original'}]");
     const canvas=e.harness.makeElement('canvas');canvas.getContext=()=>null;canvas.getBoundingClientRect=()=>({left:0,top:0,width:100,height:100});
     const preview=e.harness.makeElement('img');preview.naturalWidth=100;preview.naturalHeight=100;preview.closest=()=>null;
     const prompt=e.harness.makeElement();prompt.value='before';const role=e.harness.makeElement();role.dataset.localEditConnectRole='reference';

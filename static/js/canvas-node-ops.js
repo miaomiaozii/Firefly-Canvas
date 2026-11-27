@@ -113,24 +113,25 @@ function createLocalEditNode(x, y, options={}){
     if(!options.skipUndo) pushUndo();
     const node = {...ownership, id:uid('local-edit'), type:NODE_TYPE_LOCAL_EDIT, x, y, w:LOCAL_EDIT_NODE_W, h:LOCAL_EDIT_NODE_H, title:'', mode:'modify',
         original_asset_id:'', reference_asset_ids:[], prompt:'', localEditInputRoles:{originalNode:'', referenceNodes:[], promptNode:'', promptNodes:[]}, localEditActiveRole:'original', aspect_ratio:'1:1', generation_size:'1024x1024', generation_resolution:'1k', selectionType:'polygon', selection:[], feather_radius:8, images:[]};
+    if(options.sourceMediaId) node.source_media_id = options.sourceMediaId;
     canvasState.nodes.push(node);
     if(options.select !== false) canvasState.selectedId = node.id;
     canvasCore.render();
     canvasCore.scheduleSave();
     return node;
 }
-// 工具排「局部编辑」：在图片节点旁创建 local-edit 节点并自动连好原图角色，
-// 用户只需要画选区+写提示词，不需要先学端口连线。
 
 function createLocalEditNodeFromImage(nodeId, imageIndex=null){
     const node = canvasState.nodes.find(n => n.id === nodeId);
     if(!node) return;
-    const source = imageIndex == null ? (node.images || [])[0] : (node.images || [])[imageIndex];
-    if(!source){ toast(tr('smart.noExportableMedia')); return; }
-    const rect = canvasCore.nodeRect(node);
-    const point = {x:rect.x + rect.width + 140, y:Math.max(40, rect.y + Math.max(0, rect.height / 2 - LOCAL_EDIT_NODE_H / 2))};
-    const created = createLocalEditNode(point.x, point.y, {select:true});
-    created.localEditActiveRole = 'original';
+    const images = node.images || [];
+    const source = imageIndex == null ? images.find(isLocalEditOriginalItem) : images[imageIndex];
+    if(!isLocalEditOriginalItem(source)){ toast(tr('smart.noExportableMedia')); return; }
+    const boxes = canvasState.nodes.map(n => canvasCore.nodeRect(n));
+    const rect = boxes[canvasState.nodes.indexOf(node)];
+    const anchor = {x:rect.x + rect.width + 140, y:Math.max(40, rect.y + Math.max(0, rect.height / 2 - LOCAL_EDIT_NODE_H / 2))};
+    const point = CanvasPlacement.findFreeSpot(anchor, {w:LOCAL_EDIT_NODE_W, h:LOCAL_EDIT_NODE_H}, boxes, {maxSteps:boxes.length});
+    const created = createLocalEditNode(point.x, point.y, {sourceMediaId:source.asset_id});
     const connected = connectInputNode(nodeId, created.id);
     canvasCore.render();
     canvasCore.scheduleSave();

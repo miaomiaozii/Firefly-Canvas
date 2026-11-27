@@ -226,6 +226,112 @@ test('human port connection stamps only its input target, repeats and automatic 
     assert.equal(e.node('target').userTouchedAt,700);
 });
 
+test('local-edit original rewire pins the selected thumbnail and clears the old pixel selection', async()=>{
+    const e=editor([
+        {id:'old',type:'smart-image',images:[{asset_id:'old-image'}]},
+        {id:'source',type:'smart-image',images:[{asset_id:'first'},{asset_id:'mask',role:'mask'}, {asset_id:'picked'}]},
+        {id:'target',type:'local-edit',mode:'modify',localEditActiveRole:'original',source_media_id:'old-image',
+            original_asset_id:'old-image',selection:[0,0,4,4],prompt:'edit'},
+    ]);
+    loadModules(e.ctx,['canvas-node-ops.js']);
+    evaluate(e.ctx,"canvas.connections=[{from:'old',to:'target',kind:'input',role:'original'}]; canvasState.selectedImage={nodeId:'source',index:2}");
+    const nodeEl={dataset:{id:'target'}};
+    const port={dataset:{port:'in'},closest:()=>nodeEl};
+    e.ctx.document.elementFromPoint=()=>({closest:s=>s==='.node-port'?port:nodeEl});
+    e.ctx.capturePendingUndo();
+    e.ctx.handlePortDrop({fromId:'source',fromPort:'out',moved:true},{clientX:100,clientY:0});
+    const target=e.node('target');
+    assert.equal(target.source_media_id,'picked');
+    assert.deepEqual(fromContext(target.selection),[]);
+    const html=e.ctx.localEditBodyHtml(target);
+    assert.match(html,/data-local-edit-preview src="\/api\/project-library\/unit-392\/media\/picked"/);
+    assert.equal(target.original_asset_id,'picked');
+    await e.ctx.performUndo();
+    assert.equal(e.node('target').source_media_id,'old-image');
+    assert.deepEqual(fromContext(e.node('target').selection),[0,0,4,4]);
+});
+
+test('local-edit original rewire with no selected thumbnail does not guess between several originals',()=>{
+    const e=editor([
+        {id:'old',type:'smart-image',images:[{asset_id:'old-image'}]},
+        {id:'source',type:'smart-image',images:[{asset_id:'first'},{asset_id:'second'}]},
+        {id:'target',type:'local-edit',mode:'modify',localEditActiveRole:'original',source_media_id:'old-image',
+            original_asset_id:'old-image',selection:[0,0,4,4],prompt:'edit'},
+    ]);
+    loadModules(e.ctx,['canvas-node-ops.js']);
+    evaluate(e.ctx,"canvas.connections=[{from:'old',to:'target',kind:'input',role:'original'}]");
+    const nodeEl={dataset:{id:'target'}};
+    const port={dataset:{port:'in'},closest:()=>nodeEl};
+    e.ctx.document.elementFromPoint=()=>({closest:s=>s==='.node-port'?port:nodeEl});
+    const drop=()=>e.ctx.handlePortDrop({fromId:'source',fromPort:'out',moved:true},{clientX:100,clientY:0});
+    drop();
+    assert.equal(e.harness.toasts.at(-1),'smart.localEditPickOriginalThumbnail');
+    assert.equal(e.node('target').source_media_id,'old-image');
+    assert.equal(evaluate(e.ctx,'canvas.connections[0].from'),'old');
+    e.node('source').images.pop();
+    drop();
+    assert.equal(e.node('target').source_media_id,'first');
+    assert.equal(evaluate(e.ctx,'canvas.connections[0].from'),'source');
+});
+
+test('local-edit preview and request share the saved original, and a missing pin blocks replay',async()=>{
+    const e=editor([
+        {id:'source',type:'smart-image',images:[{asset_id:'mask',role:'mask'}, {asset_id:'other'}, {asset_id:'picked',url:'https://example.invalid/wrong.png'}]},
+        {id:'target',type:'local-edit',mode:'modify',source_media_id:'picked',original_asset_id:'picked',selection:[0,0,4,4],prompt:'edit'},
+    ]);
+    loadModules(e.ctx,['canvas-node-ops.js']);
+    evaluate(e.ctx,"canvas.connections=[{from:'source',to:'target',kind:'input',role:'original'}]");
+    const target=e.node('target');
+    const requests=[];
+    e.ctx.fetch=async(url,opts)=>{
+        requests.push(JSON.parse(opts.body));
+        return {ok:true,json:async()=>({assets:{}})};
+    };
+    assert.match(e.ctx.localEditBodyHtml(target),/data-local-edit-preview src="\/api\/project-library\/unit-392\/media\/picked"/);
+    await e.ctx.submitLocalEditRequest(target);
+    assert.equal(requests[0].original_asset_id,'picked');
+    target.source_media_id='other';
+    await e.ctx.submitLocalEditRequest(target,'picked');
+    assert.equal(requests.length,1);
+    assert.equal(e.harness.toasts.at(-1),'smart.localEditOriginalChanged');
+    target.source_media_id='picked';
+    e.node('source').images.pop();
+    assert.doesNotMatch(e.ctx.localEditBodyHtml(target),/data-local-edit-preview/);
+    await e.ctx.submitLocalEditRequest(target);
+    assert.equal(requests.length,1);
+    assert.equal(target.source_media_id,'picked');
+    assert.equal(e.harness.toasts.at(-1),'smart.localEditPinnedOriginalUnavailable');
+});
+
+test('local-edit pointer selection is measured in the pinned preview’s original pixels',async()=>{
+    const e=editor([
+        {id:'source',type:'smart-image',images:[{asset_id:'other',width:40,height:20},{asset_id:'picked'}]},
+        {id:'target',type:'local-edit',mode:'retain',selectionType:'polygon',source_media_id:'picked',selection:[],prompt:'edit'},
+    ]);
+    loadModules(e.ctx,['canvas-node-ops.js']);
+    evaluate(e.ctx,"canvas.connections=[{from:'source',to:'target',kind:'input',role:'original'}]");
+    const preview=e.harness.makeElement(), drawing=e.harness.makeElement(), prompt=e.harness.makeElement();
+    preview.naturalWidth=400;
+    preview.naturalHeight=200;
+    drawing.getBoundingClientRect=()=>({left:0,top:0,width:200,height:100});
+    drawing.getContext=()=>null;
+    prompt.value='edit';
+    const form=e.form({'[data-local-edit-preview]':[preview],'[data-local-edit-selection-canvas]':[drawing],'[data-local-edit-role="prompt"]':[prompt]});
+    const target=e.node('target');
+    e.ctx.bindLocalEditNodeControls(form,target);
+    [[20,10],[100,30],[120,80]].forEach(([clientX,clientY])=>
+        drawing.dispatchEvent(event(drawing,{type:'pointerdown',button:0,clientX,clientY})));
+    drawing.dispatchEvent(event(drawing,{type:'dblclick'}));
+    const requests=[];
+    e.ctx.fetch=async(url,opts)=>{
+        requests.push(JSON.parse(opts.body));
+        return {ok:true,json:async()=>({assets:{}})};
+    };
+    await e.ctx.submitLocalEditRequest(target);
+    assert.equal(requests[0].original_asset_id,'picked');
+    assert.deepEqual(requests[0].selection.points,[[40,20],[200,60],[240,160]]);
+});
+
 test('inserting a loop touches the two changed incoming-edge targets, not the outgoing source',()=>{
     const e=editor([{id:'source',type:'smart-image',...identity,images:[]},{id:'loop',type:'smart-loop',...identity,imageInput:true},{...original(),id:'target',inputNodeIds:['source'],promptEditedByUser:false}]);
     evaluate(e.ctx,"canvas.connections=[{from:'source',to:'target',kind:'flow'}]");

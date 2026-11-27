@@ -85,6 +85,18 @@ function isSmartImageNode(node){
     return Boolean(node && (node.type === NODE_TYPE_IMAGE || !node.type));
 }
 
+function isLocalEditOriginalPort(node){
+    return node?.type === NODE_TYPE_LOCAL_EDIT && node.localEditActiveRole === 'original';
+}
+
+function isLocalEditOriginalItem(item){
+    const id = item?.asset_id;
+    if(typeof id !== 'string' || !/^[A-Za-z0-9._-]{1,200}$/.test(id) || item.role === 'mask') return false;
+    if(item.kind) return item.kind === 'image';
+    if(item.mime_type && item.mime_type !== 'application/octet-stream') return /^image\//i.test(item.mime_type);
+    return !/\.(mp4|webm|mov|m4v|avi|mkv|mp3|wav|m4a|aac|ogg|flac|txt|json|csv|srt|vtt|md)([?#]|$)/i.test(item.url || '');
+}
+
 function isSmartGroupNode(node){
     return Boolean(node && node.type === NODE_TYPE_GROUP);
 }
