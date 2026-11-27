@@ -17,26 +17,35 @@
     'yuanbao.tencent.com': 'https://yuanbao.tencent.com/',
   });
 
-  function mount({view, link, unavailable, heading, note}) {
+  function pageFor(site, framed) {
+    if (Object.hasOwn(approvedPages, site)) return approvedPages[site];
+    // A user-enabled framing rule (framing.js) is the only other permission to embed.
+    return framed?.[site] === true && Object.hasOwn(FireflyChatFraming.SITES, site) ? `https://${site}/` : undefined;
+  }
+
+  function mount({view, link, unavailable, heading, note, framingHint}) {
     let activeFrame;
-    return function show(site) {
+    return function show(site, framed) {
       activeFrame?.remove();
       activeFrame = null;
       if (!Object.hasOwn(names, site)) return;
       const name = names[site];
       link.href = `https://${site}/`;
       heading.textContent = name;
-      const url = approvedPages[site];
+      const url = pageFor(site, framed);
       const allowed = FireflyChatProtocol.chatSite(url) === site;
       unavailable.hidden = allowed;
       note.hidden = !allowed;
+      framingHint.hidden = allowed || !Object.hasOwn(FireflyChatFraming.SITES, site);
       // Cross-origin iframe load is also fired for browser-blocked documents.
       // Keep the ordinary-tab path available without claiming the site loaded.
       if (!allowed) return;
       const frame = document.createElement('iframe');
       frame.title = `${name} 对话`;
       frame.referrerPolicy = 'no-referrer';
-      frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms');
+      frame.allow = `clipboard-write https://${site}`;
+      // Popups let sign-in and outbound links leave the panel instead of failing silently.
+      frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-popups allow-popups-to-escape-sandbox');
       frame.src = url;
       view.prepend(frame);
       activeFrame = frame;

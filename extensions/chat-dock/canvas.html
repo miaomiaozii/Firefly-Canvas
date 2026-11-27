@@ -7,6 +7,7 @@
   <link rel="stylesheet" href="studio-foundation.css">
   <link rel="stylesheet" href="dock-shell.css">
   <script src="protocol.js" defer></script>
+  <script src="framing.js" defer></script>
   <script src="dock-embed.js" defer></script>
   <script src="dock-shell.js" defer></script>
 </head>
@@ -50,8 +51,9 @@
           <p class="dock-site-heading" id="chat-site-heading"></p>
           <p>此站点未启用面板内嵌。</p>
           <p>请在新标签页继续。如需采集内容，请同时打开普通标签页中的 Firefly 画布。</p>
+          <p id="chat-framing-hint" hidden>可在<a href="options.html" target="_blank" rel="noopener">扩展选项</a>里为此站点开启面板内显示，开启前请先看清安全代价。</p>
         </div>
-        <p id="chat-frame-note" hidden>如果站点拒绝在此显示，请在新标签页打开。</p>
+        <p id="chat-frame-note" hidden>如果站点拒绝在此显示，或显示未登录，请在新标签页打开或登录后，回到这里重新选择站点。</p>
       </div>
       <button id="resize-panel" type="button" title="调整浮动面板尺寸" aria-label="调整浮动面板尺寸" hidden><svg aria-hidden="true"><use href="#dock-resize"/></svg></button>
     </aside>

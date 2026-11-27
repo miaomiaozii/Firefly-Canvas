@@ -78,14 +78,28 @@
     modeButtons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.mode === value.mode)));
   }
 
-  const showSite = embed.mount({
+  const mounted = embed.mount({
     view: byId('chat-view'), link: byId('open-chat'), unavailable: byId('chat-unavailable'),
-    heading: byId('chat-site-heading'), note: byId('chat-frame-note'),
+    heading: byId('chat-site-heading'), note: byId('chat-frame-note'), framingHint: byId('chat-framing-hint'),
   });
+  let framed = {};
+  const showSite = key => mounted(key, framed);
   sites.forEach(key => sitePicker.add(new Option(embed.names[key], key)));
   sites.forEach(layoutFor);
   sitePicker.value = site;
   showSite(site);
+  chrome.storage.local.get(FireflyChatFraming.KEY).then(stored => {
+    framed = FireflyChatFraming.flags(stored);
+    if (framed[site] === true) showSite(site);
+  }, () => {});
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !Object.hasOwn(changes, FireflyChatFraming.KEY)) return;
+    const next = FireflyChatFraming.flags({[FireflyChatFraming.KEY]: changes[FireflyChatFraming.KEY].newValue});
+    const changed = (framed[site] === true) !== (next[site] === true);
+    framed = next;
+    // Reloading an unaffected site would discard the conversation the user is looking at.
+    if (changed) showSite(site);
+  });
   sitePicker.addEventListener('change', () => {
     if (!sites.includes(sitePicker.value)) return;
     site = sitePicker.value;

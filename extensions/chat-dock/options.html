@@ -12,6 +12,20 @@
   <p id="origin-help">例如 http://127.0.0.1:3000。只填写服务地址，不含路径。改动后请刷新画布标签页。</p>
   <p id="result" role="status"></p>
 </form>
+<section aria-labelledby="framing-heading">
+  <h2 id="framing-heading">在对话面板内显示（默认关闭）</h2>
+  <p id="framing-cost">这几个站点会拒绝被嵌入。为某个站点开启后，扩展只在自己的画布与对话面板页里去掉该站点的防嵌入限制，让它带着浏览器里的登录状态显示在面板内。普通标签页和其他网页不受影响。</p>
+  <p>代价：ChatGPT、DeepSeek、通义在面板内会失去站点自带的整套内容安全策略（包括防跨站脚本的一层），只保留“只允许本扩展嵌入”；Gemini 只去掉防嵌入头。这样使用可能不符合站点条款。随时可以关闭，关闭后立即恢复站点原有限制。</p>
+  <fieldset>
+    <legend>逐站开启</legend>
+    <label><input type="checkbox" data-framing-site="chatgpt.com"> ChatGPT</label>
+    <label><input type="checkbox" data-framing-site="gemini.google.com"> Gemini</label>
+    <label><input type="checkbox" data-framing-site="chat.deepseek.com"> DeepSeek</label>
+    <label><input type="checkbox" data-framing-site="chat.qwen.ai"> 通义</label>
+  </fieldset>
+  <p id="framing-result" role="status"></p>
+</section>
 <script src="protocol.js"></script>
+<script src="framing.js"></script>
 <script src="options.js"></script>
 </html>

@@ -4,8 +4,14 @@
   "version": "0.1.0",
   "description": "手动把选中的对话文字或悬停图片送到已打开的 Firefly 画布。",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAt9kr/Buy8e9O3hHeSPqaaNbRUUXYLYfkXMtMWRt9zknQGZfCochTCs565eZY4Qeo/sDNatNKL69wrRFgpkScf5AjThta8zL2OP2Bhdi53ALOThLD64pPRSOpIjO5UrcaLUNWkADJYlnqAUX0j8XPSvSHd5VwLhLUPIa1hFlY04bAV9jrLiN5xgNc99pIT3zvPwGTO37f1yF/8PpnXY106TvlRUFN62h53iUarH936eBmn58vGbWIUPjWT3n4l+sDEOmeo1b/QdThc1f2yJnFOKvMmIFFxQQz6RsfMqk9/iG9sMsAXebJnLjbM+0bKMSDtZq/OrK/yBoxtAfQUsucsQIDAQAB",
-  "permissions": ["storage", "scripting"],
-  "host_permissions": ["http://127.0.0.1/*"],
+  "permissions": ["storage", "scripting", "declarativeNetRequest"],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "https://chatgpt.com/*",
+    "https://gemini.google.com/*",
+    "https://chat.deepseek.com/*",
+    "https://chat.qwen.ai/*"
+  ],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "background": {"service_worker": "background.js"},
   "options_ui": {"page": "options.html", "open_in_tab": true},

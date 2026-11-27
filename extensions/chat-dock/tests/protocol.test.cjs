@@ -7,7 +7,10 @@ const vm = require('node:vm');
 
 const read = name => readFileSync(join(__dirname, '..', name), 'utf8');
 require('../protocol.js');
+require('../framing.js');
 const P = globalThis.FireflyChatProtocol;
+const F = globalThis.FireflyChatFraming;
+const framingSites = ['chatgpt.com', 'gemini.google.com', 'chat.deepseek.com', 'chat.qwen.ai'];
 const manifest = JSON.parse(read('manifest.json'));
 const extensionId = 'ecbjgicacjhegoijmnkijlgeagafgogf';
 const sites = ['chatgpt.com', 'gemini.google.com', 'chat.deepseek.com', 'chat.qwen.ai', 'www.doubao.com', 'www.kimi.com', 'yuanbao.tencent.com'];
@@ -18,8 +21,9 @@ test('manifest has the stable ID, exact provider patterns, and no external messa
   const digest = createHash('sha256').update(Buffer.from(manifest.key, 'base64')).digest('hex').slice(0, 32);
   assert.equal(digest.replace(/./g, digit => String.fromCharCode(97 + parseInt(digit, 16))), extensionId);
   assert.deepEqual(manifest.content_scripts[0].matches, sites.map(site => `https://${site}/*`));
-  assert.deepEqual(manifest.permissions, ['storage', 'scripting']);
-  assert.deepEqual(manifest.host_permissions, ['http://127.0.0.1/*']);
+  assert.deepEqual(manifest.permissions, ['storage', 'scripting', 'declarativeNetRequest']);
+  // DNR modifyHeaders needs explicit host permissions; content-script matches alone do not apply it.
+  assert.deepEqual(manifest.host_permissions, ['http://127.0.0.1/*', ...framingSites.map(site => `https://${site}/*`)]);
   assert.equal(manifest.externally_connectable, undefined);
   assert.equal(manifest.declarative_net_request, undefined);
 });
@@ -69,6 +73,8 @@ test('only one exact canvas, with unique active preference and no arbitrary fall
   assert.equal(P.chooseCanvas([tab(1, true, {pendingUrl: 'https://example.test/'})], P.DEFAULT_ORIGIN).id, undefined);
 });
 
+const plain = value => JSON.parse(JSON.stringify(value));
+
 function listeners() {
   const event = {addListener(listener) { event.run = listener; }};
   return event;
@@ -76,14 +82,20 @@ function listeners() {
 
 function sandboxChrome() {
   const context = vm.createContext({URL, setTimeout, clearTimeout});
-  context.importScripts = name => vm.runInContext(read(name), context);
-  const state = {stored: {}, grants: new Set(manifest.host_permissions), sent: [], registrations: [], tabs: []};
+  context.importScripts = (...names) => names.forEach(name => vm.runInContext(read(name), context));
+  const state = {stored: {}, grants: new Set(manifest.host_permissions), sent: [], registrations: [], tabs: [], rules: [], failRules: false};
   context.chrome = {
     runtime: {
       id: extensionId, getURL: path => `chrome-extension://${extensionId}/${path}`,
       onMessage: listeners(), onInstalled: listeners(), onStartup: listeners(),
     },
-    storage: {local: {get: async () => state.stored, set: async data => { state.stored = {...data}; }}},
+    storage: {local: {get: async () => state.stored, set: async data => { state.rulesAtSet = state.rules.map(rule => rule.id); state.stored = {...state.stored, ...data}; }}},
+    declarativeNetRequest: {
+      updateDynamicRules: async ({removeRuleIds = [], addRules = []}) => {
+        if (state.failRules) throw new Error('rule limit');
+        state.rules = [...state.rules.filter(rule => !removeRuleIds.includes(rule.id)), ...JSON.parse(JSON.stringify(addRules))];
+      },
+    },
     permissions: {
       contains: async ({origins}) => origins.every(origin => state.grants.has(origin)),
       remove: async ({origins}) => origins.every(origin => state.grants.delete(origin)),
@@ -176,4 +188,53 @@ test('isolated relay checks sender and exact origin before transferring a same-o
   assert.deepEqual(context.posts[0].data, capture());
   assert.equal(context.posts[0].ports.length, 1);
   context.posts[0].ports[0].close();
+});
+
+test('framing rules exist only for switched-on sites, only for sub frames under this extension', async () => {
+  const {context, state} = sandboxChrome();
+  vm.runInContext(read('background.js'), context);
+  const option = {id: extensionId, frameId: 0, url: context.chrome.runtime.getURL('options.html')};
+  const command = (site, enabled) => ({action: F.SET_FRAMING, site, enabled});
+  assert.deepEqual(Object.keys(F.SITES), framingSites);
+  for (const [data, sender] of [[command('chatgpt.com', true), chatSender], [command('claude.ai', true), option],
+    [command('www.kimi.com', true), option], [command('chatgpt.com', 'yes'), option],
+    [{...command('chatgpt.com', true), extra: 1}, option], [command('chatgpt.com', true), {...option, frameId: 2}],
+    [command('chatgpt.com', true), {...option, url: context.chrome.runtime.getURL('canvas.html')}]]) {
+    assert.equal(await receive(context, data, sender), undefined);
+  }
+  assert.deepEqual(state.rules, []);
+  state.stored[P.ORIGIN_KEY] = 'http://127.0.0.1:3000';
+  assert.deepEqual(await receive(context, command('chatgpt.com', true), option), {ok: true});
+  // The panel reloads on the storage change, so the rule must already exist when the switch is stored.
+  assert.deepEqual(plain(state.rulesAtSet), [5151]);
+  assert.deepEqual(await receive(context, command('gemini.google.com', true), option), {ok: true});
+  assert.equal(state.stored[P.ORIGIN_KEY], 'http://127.0.0.1:3000');
+  assert.deepEqual(plain(state.stored[F.KEY]), {'chatgpt.com': true, 'gemini.google.com': true});
+  const [chat, gemini] = state.rules;
+  assert.deepEqual(chat, {id: 5151, priority: 1,
+    action: {type: 'modifyHeaders', responseHeaders: [{header: 'x-frame-options', operation: 'remove'},
+      {header: 'content-security-policy', operation: 'set', value: `frame-ancestors chrome-extension://${extensionId}`}]},
+    condition: {urlFilter: '|https://chatgpt.com/', requestDomains: ['chatgpt.com'], resourceTypes: ['sub_frame'], topDomains: [extensionId]}});
+  // Gemini only blocks with X-Frame-Options; its own CSP stays in force.
+  assert.deepEqual(gemini.action.responseHeaders, [{header: 'x-frame-options', operation: 'remove'}]);
+  assert.deepEqual(gemini.condition.topDomains, [extensionId]);
+  assert.deepEqual(await receive(context, command('chatgpt.com', false), option), {ok: true});
+  assert.deepEqual(state.rules.map(rule => rule.id), [5152]);
+  assert.deepEqual(plain(state.stored[F.KEY]), {'gemini.google.com': true});
+});
+
+test('a failed rule update leaves the switch off and startup rebuilds rules from stored switches only', async () => {
+  const {context, state} = sandboxChrome();
+  vm.runInContext(read('background.js'), context);
+  const option = {id: extensionId, frameId: 0, url: context.chrome.runtime.getURL('options.html')};
+  state.failRules = true;
+  assert.deepEqual(await receive(context, {action: F.SET_FRAMING, site: 'chat.qwen.ai', enabled: true}, option),
+    {ok: false, error: 'CAPTURE_FAILED'});
+  assert.equal(state.stored[F.KEY], undefined);
+  state.failRules = false;
+  state.stored[F.KEY] = {'chat.deepseek.com': true, 'claude.ai': true, 'chat.qwen.ai': 'true'};
+  state.rules = [{id: 5151, stale: true}, {id: 5154, stale: true}];
+  context.chrome.runtime.onStartup.run();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.deepEqual(state.rules.map(rule => rule.id), [5153]);
 });

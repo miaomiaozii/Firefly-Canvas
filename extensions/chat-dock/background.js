@@ -1,9 +1,10 @@
 'use strict';
 
-importScripts('protocol.js');
+importScripts('protocol.js', 'framing.js');
 
 (() => {
   const P = FireflyChatProtocol;
+  const F = FireflyChatFraming;
   // Serialize settings writes with grant-revocation reconciliation.
   let settings = Promise.resolve();
   function updateSettings(work) {
@@ -50,12 +51,40 @@ importScripts('protocol.js');
     return {ok: true};
   }
 
+  async function applyFraming(enabled) {
+    await chrome.declarativeNetRequest.updateDynamicRules({
+      removeRuleIds: [...F.RULE_IDS],
+      addRules: Object.keys(enabled).map(site => F.rule(site, chrome.runtime.id)),
+    });
+  }
+
+  async function syncFraming() {
+    await applyFraming(F.flags(await chrome.storage.local.get(F.KEY)));
+  }
+
+  async function setFraming(site, enabled) {
+    const previous = F.flags(await chrome.storage.local.get(F.KEY));
+    const next = {...previous};
+    if (enabled) next[site] = true;
+    else delete next[site];
+    // Rules first: the panel reloads the site on the storage change, and must not load it before the rule exists.
+    await applyFraming(next);
+    try {
+      await chrome.storage.local.set({[F.KEY]: next});
+    } catch (error) {
+      await applyFraming(previous).catch(() => {});
+      throw error;
+    }
+    return {ok: true};
+  }
+
   function reconcile() {
     updateSettings(async () => {
       const origin = await storedOrigin();
       // Do not silently redirect captures to a different machine if a grant is revoked.
       await syncRelay(await permitted(origin) ? origin : P.DEFAULT_ORIGIN);
     }).catch(() => {});
+    updateSettings(syncFraming).catch(() => {});
   }
   chrome.runtime.onInstalled.addListener(reconcile);
   chrome.runtime.onStartup.addListener(reconcile);
@@ -81,6 +110,11 @@ importScripts('protocol.js');
       const origin = P.exactKeys(data, ['action', 'origin']) && P.parseOrigin(data.origin);
       if (!origin) return;
       updateSettings(() => setOrigin(origin)).then(sendResponse, () => sendResponse(P.failure('CAPTURE_FAILED')));
+      return true;
+    }
+    if (sender.url === chrome.runtime.getURL('options.html') && data?.action === F.SET_FRAMING) {
+      if (!F.validCommand(data)) return;
+      updateSettings(() => setFraming(data.site, data.enabled)).then(sendResponse, () => sendResponse(P.failure('CAPTURE_FAILED')));
       return true;
     }
     const site = P.chatSite(sender.url);
