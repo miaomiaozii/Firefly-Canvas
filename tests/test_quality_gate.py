@@ -3088,6 +3088,114 @@ class GateProcessRuleTests(GateTempPaths):
         self.assertEqual(sleep.call_count, 1)
 
 
+class CanvasSyntaxExecutionTests(unittest.TestCase):
+    @staticmethod
+    def run_canvas_syntax(root, names):
+        from tests import test_canvas_frontend_sources as sources
+
+        case = sources.CanvasFrontendSourceListTests("test_every_canvas_module_passes_node_syntax_check")
+        with mock.patch.multiple(sources, ROOT=root, CANVAS_SCRIPTS=names):
+            return case.run(unittest.TestResult())
+
+    def test_syntax_checks_overlap_without_waiting_for_the_first_process(self):
+        from threading import Event
+        from tests import test_canvas_frontend_sources as sources
+
+        sibling_started = Event()
+        actual_popen = subprocess.Popen
+        started = []
+
+        def spawn(command, *args, **kwargs):
+            name = Path(command[-1]).name
+            started.append(name)
+            process = actual_popen(command, *args, **kwargs)
+            if name == "first.js":
+                communicate = process.communicate
+
+                def wait_for_sibling(*args, **kwargs):
+                    if not sibling_started.wait(3):
+                        raise AssertionError("second syntax process did not start while first was outstanding")
+                    return communicate(*args, **kwargs)
+
+                process.communicate = wait_for_sibling
+            elif name == "second.js":
+                sibling_started.set()
+            return process
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "static/js").mkdir(parents=True)
+            names = ("first.js", "second.js")
+            for name in names:
+                (root / "static/js" / name).write_text("const valid = true;", encoding="utf-8")
+            with mock.patch.object(sources.subprocess, "Popen", side_effect=spawn):
+                result = self.run_canvas_syntax(root, names)
+        self.assertTrue(result.wasSuccessful(), result.failures + result.errors)
+        self.assertCountEqual(started, names)
+
+    def test_syntax_rejects_broken_files_with_first_path_in_source_order(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "static/js").mkdir(parents=True)
+            names = ("valid.js", "z-first-broken.js", "a-second-broken.js")
+            for name in names:
+                body = "const valid = true;" if name == "valid.js" else "const broken = ;"
+                (root / "static/js" / name).write_text(body, encoding="utf-8")
+            result = self.run_canvas_syntax(root, names)
+        self.assertEqual(len(result.failures), 1, result.errors)
+        self.assertIn("static/js/z-first-broken.js:", result.failures[0][1])
+        self.assertIn("SyntaxError", result.failures[0][1])
+
+    def test_syntax_rejects_missing_node_without_spawning(self):
+        from tests import test_canvas_frontend_sources as sources
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with (
+                mock.patch.object(sources, "trusted_node_executable", return_value=str(root / "missing-node")),
+                mock.patch.object(sources.shutil, "which", return_value=None),
+                mock.patch.object(sources.subprocess, "Popen") as spawn,
+            ):
+                result = self.run_canvas_syntax(root, ("valid.js",))
+        spawn.assert_not_called()
+        self.assertEqual(len(result.failures), 1, result.errors)
+        self.assertIn("javascript-syntax 门必须真跑，不能静默跳过", result.failures[0][1])
+
+    def test_syntax_timeout_reaps_its_child(self):
+        from tests import test_canvas_frontend_sources as sources
+
+        actual_popen = subprocess.Popen
+        children = []
+
+        def slow_spawn(command, *args, **kwargs):
+            self.assertEqual(command[1], "--check")
+            process = actual_popen([sys.executable, "-c", "import time; time.sleep(8)"], *args, **kwargs)
+            children.append(process)
+            communicate = process.communicate
+
+            def short_deadline(input=None, timeout=None):
+                self.assertIn(timeout, (None, 30))
+                return communicate(input, timeout=0.2 if timeout is not None else None)
+
+            process.communicate = short_deadline
+            return process
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(sources.subprocess, "Popen", side_effect=slow_spawn):
+                result = self.run_canvas_syntax(root, ("slow.js",))
+        try:
+            self.assertEqual(len(result.failures), 1, result.errors)
+            self.assertIn("static/js/slow.js: node --check 30 秒还没返回", result.failures[0][1])
+            self.assertEqual(len(children), 1)
+            self.assertIsNotNone(children[0].poll())
+        finally:
+            for process in children:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+
+
 class GateRetryIntegrationTests(GateFixture):
     def test_late_retry_evidence_cannot_arrive_after_a_green_step_decision(self):
         (self.fixture_root / "tests" / "test_product_surface_behavior.py").write_text(

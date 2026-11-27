@@ -9,7 +9,9 @@ import re
 import shutil
 import subprocess
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Lock
 
 from tests.canvas_frontend_sources import CANVAS_SCRIPTS, ROOT, is_canvas_module
 from tools.quality_gate import trusted_node_executable
@@ -55,26 +57,42 @@ class CanvasFrontendSourceListTests(unittest.TestCase):
         self.assertEqual(sorted(set(CANVAS_SCRIPTS)), sorted(set(listed)))
 
     def test_every_canvas_module_passes_node_syntax_check(self):
-        # #167：这条测试就是质量门的 javascript-syntax 步骤（fast/domain 都跑），
-        # 所以不能因为 PATH 上没 node 就静默跳过，否则门会变成假绿。
+        # #167: a missing Node must fail the gate, not skip coverage.
         node = _node_for_syntax_check()
         self.assertTrue(
             Path(node).is_file(),
             f"node 不可用（{node}）：javascript-syntax 门必须真跑，不能静默跳过",
         )
-        for name in CANVAS_SCRIPTS:
-            try:
-                # 必须有超时：node 挂在某个文件上时，整个测试进程会被Ctrl+C / 门杀掉，
-                # 没超时的 node --check 就变成孤儿留在后台（2026-11-14 那 12 个 node --check 就是这么来的）。
-                result = subprocess.run(
+        launch_lock = Lock()
+
+        def check(name):
+            # #512: the guard records child launches in one step log; only the waits need to overlap.
+            with launch_lock:
+                process = subprocess.Popen(
                     [node, "--check", str(ROOT / "static" / "js" / name)],
-                    capture_output=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                     text=True,
-                    timeout=30,
                 )
-            except subprocess.TimeoutExpired:
-                self.fail(f"static/js/{name}: node --check 30 秒还没返回，语法检查不能这样挂着")
-            self.assertEqual(result.returncode, 0, f"static/js/{name}: {result.stderr.strip()}")
+            with process:
+                try:
+                    _, stderr = process.communicate(timeout=30)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.communicate()
+                    return f"static/js/{name}: node --check 30 秒还没返回，语法检查不能这样挂着"
+                except BaseException:
+                    process.kill()
+                    raise
+            return f"static/js/{name}: {stderr.strip()}" if process.returncode else None
+
+        pool = ThreadPoolExecutor(max_workers=2)
+        try:
+            for failure in pool.map(check, CANVAS_SCRIPTS):
+                if failure is not None:
+                    self.fail(failure)
+        finally:
+            pool.shutdown(cancel_futures=True)
 
     def test_agent_refs_selection_notifications_use_the_owning_module_event_boundary(self):
         source = (ROOT / "static" / "js" / "smart-canvas.js").read_text(encoding="utf-8")
