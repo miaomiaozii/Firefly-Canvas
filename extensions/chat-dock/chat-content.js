@@ -1,9 +1,14 @@
-(() => {
+(async () => {
   'use strict';
 
   const P = FireflyChatProtocol;
   const site = P.chatSite(location.href);
-  if (!site || window !== window.top) return;
+  if (!site) return;
+  if (window !== window.top) {
+    if (!P.dockCaptureSite(site) || !P.dockChild() ||
+        !await chrome.runtime.sendMessage({action: P.DOCK_READY}).catch(() => false)) return;
+    P.listenForDockProof('chat');
+  }
 
   const host = document.createElement('div');
   host.id = 'firefly-chat-capture-host';

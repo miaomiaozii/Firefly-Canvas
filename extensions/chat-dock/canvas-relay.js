@@ -2,8 +2,11 @@
   'use strict';
 
   const P = FireflyChatProtocol;
-  if (window !== window.top || location.pathname !== '/static/smart-canvas.html' || globalThis.FireflyChatRelayInstalled) return;
+  if (location.pathname !== '/static/smart-canvas.html' || globalThis.FireflyChatRelayInstalled) return;
+  const docked = window !== window.top;
+  if (docked && !P.dockChild()) return;
   globalThis.FireflyChatRelayInstalled = true;
+  if (docked) P.listenForDockProof('canvas');
 
   const RESPONSE_TIMEOUT = 15_000;
   function forward(data) {

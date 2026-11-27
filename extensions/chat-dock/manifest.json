@@ -26,11 +26,13 @@
         "https://www.kimi.com/*",
         "https://yuanbao.tencent.com/*"
       ],
-      "js": ["protocol.js", "chat-content.js"]
+      "js": ["protocol.js", "chat-content.js"],
+      "all_frames": true
     },
     {
       "matches": ["http://127.0.0.1/static/smart-canvas.html*"],
-      "js": ["protocol.js", "canvas-relay.js"]
+      "js": ["protocol.js", "canvas-relay.js"],
+      "all_frames": true
     }
   ]
 }

@@ -16,6 +16,9 @@ const nativeDocks = new Map([
 ]);
 const edge = process.env.FIREFLY_EDGE_EXECUTABLE;
 const screenshotDir = process.env.FIREFLY_DOCK_SCREENSHOTS;
+const sampleGif = 'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+const fixtureCanvas = 'http://127.0.0.1:3000/static/smart-canvas.html?id=fixture';
+const captureChannel = 'firefly.chat-capture.v1';
 
 async function withDockBrowser(run, {mock = false} = {}) {
   const work = await mkdtemp(join(tmpdir(), 'firefly-dock-515-'));
@@ -39,21 +42,41 @@ async function withDockBrowser(run, {mock = false} = {}) {
         `--disable-extensions-except=${loadedExtension}`, `--load-extension=${loadedExtension}`],
     });
     const requested = [];
+    await context.addInitScript(channel => {
+      window.receivedCaptures = [];
+      window.addEventListener('message', event => {
+        if (!event.isTrusted || event.source !== window || event.origin !== location.origin ||
+            event.data?.channel !== channel || event.ports.length !== 1) return;
+        window.receivedCaptures.push(event.data);
+        event.ports[0].postMessage({ok: true, canAppend: true});
+        event.ports[0].close();
+      });
+    }, captureChannel);
     await context.route('**/*', async route => {
       const url = route.request().url();
       if (url.startsWith('chrome-extension:')) return route.continue();
       requested.push(url);
-      if (url === 'http://127.0.0.1:3000/') return route.fulfill({contentType: 'text/html; charset=utf-8', body: `<!doctype html>
+      if (/^http:\/\/127\.0\.0\.1:300[01]\/$/.test(url)) return route.fulfill({contentType: 'text/html; charset=utf-8', body: `<!doctype html>
         <style>body{font:16px system-ui;margin:24px} section{border:1px solid #aaa;border-radius:10px;padding:18px} a{display:block;margin-top:14px}</style>
         <h1>Firefly · 离线测试工作区</h1><section>示例项目<a href="/static/smart-canvas.html?id=fixture">打开画布</a></section>`});
-      if (url === 'http://127.0.0.1:3000/static/smart-canvas.html?id=fixture') return route.fulfill({contentType: 'text/html; charset=utf-8', body:
-        '<h1>示例画布</h1><label>提示词 <textarea></textarea></label>'});
+      if (url === fixtureCanvas || url === fixtureCanvas.replace(':3000', ':3001')) {
+        return route.fulfill({contentType: 'text/html; charset=utf-8', body:
+          '<h1>示例画布</h1><label>提示词 <textarea></textarea></label>'});
+      }
+      if (url === 'https://unrelated.invalid/embedded') {
+        return route.fulfill({contentType: 'text/html', body: `<iframe src="${nativeDocks.get('www.kimi.com')}"></iframe>`});
+      }
       if ([mockURL, denyURL, 'https://chatgpt.com/', ...nativeDocks.values()].includes(url)) {
         return route.fulfill({contentType: 'text/html; charset=utf-8', headers: url === denyURL ? {
           'x-frame-options': 'DENY', 'content-security-policy': "frame-ancestors 'none'",
-        } : {'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'"}, body: `<!doctype html>
+        } : {'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:; frame-src https://www.kimi.com"}, body: `<!doctype html>
           <style>:root{color-scheme:light dark}body{font:15px system-ui;margin:16px}section{padding:14px;border:1px solid #888;border-radius:8px}textarea{box-sizing:border-box;width:100%;margin-top:10px}</style>
-          <h1>离线对话示例</h1><section>此页面允许正常嵌入。<textarea aria-label="示例对话输入"></textarea></section>`});
+          <h1>离线对话示例</h1><section>此页面允许正常嵌入。<textarea aria-label="示例对话输入"></textarea></section>
+          <p id="capture-word" style="font: 24px sans-serif">Firefly</p>
+          <img id="capture-image" width="100" height="70" src="data:image/gif;base64,${sampleGif}">`});
+      }
+      if (url === 'https://www.kimi.com/nested') {
+        return route.fulfill({contentType: 'text/html', body: '<p>Nested chat frame</p>'});
       }
       return route.abort();
     });
@@ -116,6 +139,116 @@ test('packaged shell docks only the three confirmed sites and keeps every ordina
     assert.equal(await firefly.getByRole('textbox', {name: '提示词'}).inputValue(), 'canvas is independently usable');
   }));
 
+test('manual dock capture stays in its one Firefly document, including after a site switch', {timeout: 60_000}, () =>
+  withDockBrowser(async ({page, context}) => {
+    const outside = await context.newPage();
+    await outside.goto(fixtureCanvas);
+    const anotherDock = await context.newPage();
+    await anotherDock.goto(shell);
+    const otherCanvas = anotherDock.frameLocator('#firefly-frame');
+    await otherCanvas.getByRole('link', {name: '打开画布'}).click();
+    await page.bringToFront();
+    const canvas = page.frameLocator('#firefly-frame');
+    const site = page.getByLabel('对话站点');
+    const chat = page.frameLocator('#chat-view iframe');
+    const host = chat.locator('#firefly-chat-capture-host');
+    const chip = host.locator('#selection-chip');
+    async function openCaptureMenu() {
+      await chat.locator('#capture-word').dblclick({position: {x: 24, y: 12}});
+      await chip.click();
+    }
+    await site.selectOption('www.doubao.com');
+    await openCaptureMenu();
+    await host.getByText('请打开并刷新 Firefly 画布，确认项目已加载。').waitFor();
+    assert.deepEqual(await outside.evaluate(() => window.receivedCaptures), []);
+    await canvas.getByRole('link', {name: '打开画布'}).click();
+    await openCaptureMenu();
+    await host.locator('#new-text').waitFor();
+    await shot(page, 'capture-menu');
+    await host.locator('#new-text').click();
+    await host.getByText('已复制到画布。').waitFor();
+    await site.selectOption('www.kimi.com');
+    await openCaptureMenu();
+    await host.locator('#append-prompt').click();
+    await host.getByText('已复制到画布。').waitFor();
+    await site.selectOption('yuanbao.tencent.com');
+    const image = chat.locator('#capture-image');
+    await image.waitFor();
+    const bounds = await image.boundingBox();
+    await page.mouse.move(bounds.x + 8, bounds.y + 8);
+    await host.locator('#image-chip').click();
+    await host.getByText('已复制到画布。').waitFor();
+    const expected = [
+      {site: 'www.doubao.com', action: 'status'},
+      {site: 'www.doubao.com', action: 'new-text', text: 'Firefly'},
+      {site: 'www.kimi.com', action: 'status'},
+      {site: 'www.kimi.com', action: 'append-prompt', text: 'Firefly'},
+      {site: 'yuanbao.tencent.com', action: 'new-image', mime: 'image/gif', bytes: sampleGif},
+    ].map(data => ({channel: captureChannel, ...data}));
+    const received = frame => frame.locator('body').evaluate(() => window.receivedCaptures);
+    assert.deepEqual(await received(canvas), expected);
+    assert.deepEqual(await received(otherCanvas), []);
+    assert.deepEqual(await outside.evaluate(() => window.receivedCaptures), []);
+    const ordinary = await context.newPage();
+    await ordinary.goto('https://unrelated.invalid/embedded');
+    const unrelatedChat = ordinary.frameLocator('iframe');
+    await unrelatedChat.locator('#capture-word').dblclick();
+    assert.equal(await unrelatedChat.locator('#firefly-chat-capture-host').count(), 0);
+    await ordinary.close();
+    await page.bringToFront();
+    await site.selectOption('www.kimi.com');
+    await chat.locator('body').evaluate(() => {
+      const frame = document.createElement('iframe');
+      frame.src = 'https://www.kimi.com/nested';
+      document.body.append(frame);
+    });
+    const nested = chat.frameLocator('iframe');
+    await nested.getByText('Nested chat frame').dblclick();
+    assert.equal(await nested.locator('#firefly-chat-capture-host').count(), 0);
+    assert.deepEqual(await received(canvas), expected);
+    const duplicate = await page.evaluateHandle(url => {
+      const frame = document.createElement('iframe');
+      frame.src = url;
+      document.body.append(frame);
+      return frame;
+    }, fixtureCanvas);
+    await page.locator('body > iframe').contentFrame().getByRole('heading', {name: '示例画布'}).waitFor();
+    await openCaptureMenu();
+    await host.getByText('请打开并刷新 Firefly 画布，确认项目已加载。').waitFor();
+    assert.deepEqual(await received(canvas), expected);
+    await duplicate.evaluate(frame => frame.remove());
+    const wrongOrigin = fixtureCanvas.replace(':3000', ':3001');
+    const changed = page.waitForEvent('framenavigated', frame => frame.url() === wrongOrigin);
+    await page.locator('#firefly-frame').evaluate((frame, url) => { frame.src = url; }, wrongOrigin);
+    await changed;
+    await canvas.getByRole('heading', {name: '示例画布'}).waitFor();
+    await openCaptureMenu();
+    await host.getByText('请打开并刷新 Firefly 画布，确认项目已加载。').waitFor();
+    assert.deepEqual(await received(canvas), []);
+    assert.deepEqual(await received(otherCanvas), []);
+    assert.deepEqual(await outside.evaluate(() => window.receivedCaptures), []);
+
+    const options = await context.newPage();
+    await options.goto(new URL('options.html', shell).href);
+    await options.locator('#firefly-origin').fill('http://127.0.0.1:3001');
+    await options.getByRole('button', {name: '授权并保存'}).click();
+    await options.getByText('已保存，请刷新 Firefly 画布标签页。').waitFor();
+    await options.close();
+    await page.bringToFront();
+    await page.reload();
+    await canvas.getByRole('link', {name: '打开画布'}).click();
+    await openCaptureMenu();
+    await host.locator('#new-text').click();
+    await host.getByText('已复制到画布。').waitFor();
+    assert.deepEqual(await received(canvas), [
+      {channel: captureChannel, site: 'www.kimi.com', action: 'status'},
+      {channel: captureChannel, site: 'www.kimi.com', action: 'new-text', text: 'Firefly'},
+    ]);
+    assert.equal(await canvas.locator('body').evaluate(() => location.port), '3001');
+    assert.deepEqual(await received(otherCanvas), []);
+    assert.deepEqual(await outside.evaluate(() => window.receivedCaptures), []);
+  }));
+
 test('allowed mock stays loaded across docks and float drag/resize; restores each site and keeps the browser-denied page blocked', {timeout: 75_000}, () =>
   withDockBrowser(async ({page, context}) => {
     const panel = page.locator('#chat-dock-panel');
@@ -124,6 +257,8 @@ test('allowed mock stays loaded across docks and float drag/resize; restores eac
     const input = mock.getByLabel('示例对话输入');
     const sites = page.getByLabel('对话站点');
     await input.fill('the iframe is not reloaded by layout changes');
+    await mock.locator('#capture-word').dblclick();
+    assert.equal(await mock.locator('#firefly-chat-capture-host').count(), 0);
     const pressMode = name => page.getByRole('button', {name, exact: true}).click();
     const drag = async (locator, dx, dy) => {
       const box = await locator.boundingBox();

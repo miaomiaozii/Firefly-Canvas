@@ -177,6 +177,29 @@
   setTheme();
   render();
 
+  function probeCapture(data) {
+    const chatFrame = byId('chat-view').querySelector('iframe');
+    const canvasFrame = byId('firefly-frame');
+    // The shell owns exactly these two direct frames. Do not pick a destination if another frame appears.
+    if (!P.dockCaptureSite(site) || data.site !== site || window.length !== 2 ||
+        !chatFrame?.contentWindow || !canvasFrame.contentWindow) return false;
+    for (const [role, frame, origin] of [
+      ['chat', chatFrame, `https://${site}`], ['canvas', canvasFrame, data.origin],
+    ]) {
+      frame.contentWindow.postMessage({action: P.DOCK_PROBE, role, nonce: data.nonce}, origin);
+    }
+    return true;
+  }
+
+  chrome.tabs.getCurrent().then(tab => {
+    if (!tab || window !== window.top) return;
+    chrome.runtime.onMessage.addListener((data, sender, respond) => {
+      if (sender.id !== chrome.runtime.id || sender.tab || sender.url !== chrome.runtime.getURL('background.js') ||
+          data?.action !== P.DOCK_PROBE || data.tabId !== tab.id) return;
+      respond(probeCapture(data));
+    });
+  });
+
   async function openFirefly() {
     const origin = P.originSetting(await chrome.storage.local.get(P.ORIGIN_KEY));
     if (!(await chrome.permissions.contains({origins: [P.canvasPatterns(origin).permission]}))) return false;

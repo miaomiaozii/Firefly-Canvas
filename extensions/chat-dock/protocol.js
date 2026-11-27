@@ -13,6 +13,10 @@
     'chatgpt.com', 'gemini.google.com', 'chat.deepseek.com', 'chat.qwen.ai',
     'www.doubao.com', 'www.kimi.com', 'yuanbao.tencent.com',
   ]);
+  const DOCK_CAPTURE_SITES = new Set(['www.doubao.com', 'www.kimi.com', 'yuanbao.tencent.com']);
+  const DOCK_READY = 'firefly.chat-dock.capture-ready';
+  const DOCK_PROBE = 'firefly.chat-dock.capture-probe';
+  const DOCK_PROOF = 'firefly.chat-dock.capture-proof';
   const MIMES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
   const ERRORS = new Set([
     'SELECT_ONE_IMAGE', 'CANVAS_NOT_READY', 'PROJECT_CHANGED', 'CAPTURE_FAILED',
@@ -98,6 +102,21 @@
     }
   }
 
+  function dockChild() {
+    return window !== window.top && window.parent === window.top &&
+      location.ancestorOrigins?.length === 1 && location.ancestorOrigins[0] === `chrome-extension://${chrome.runtime.id}`;
+  }
+
+  function listenForDockProof(role) {
+    window.addEventListener('message', event => {
+      if (!event.isTrusted || event.source !== window.parent || event.origin !== `chrome-extension://${chrome.runtime.id}`) return;
+      const data = event.data;
+      if (!exactKeys(data, ['action', 'role', 'nonce']) || data.action !== DOCK_PROBE || data.role !== role ||
+          typeof data.nonce !== 'string') return;
+      chrome.runtime.sendMessage({action: DOCK_PROOF, role, nonce: data.nonce}).catch(() => {});
+    });
+  }
+
   function failure(error) { return {ok: false, error}; }
 
   function response(value) {
@@ -107,7 +126,8 @@
   }
 
   globalThis.FireflyChatProtocol = Object.freeze({
-    CHANNEL, DEFAULT_ORIGIN, ORIGIN_KEY, RELAY_ID, SET_ORIGIN, MAX_TEXT, MAX_BYTES,
+    CHANNEL, DEFAULT_ORIGIN, ORIGIN_KEY, RELAY_ID, SET_ORIGIN, MAX_TEXT, MAX_BYTES, DOCK_READY, DOCK_PROBE, DOCK_PROOF,
+    dockChild, listenForDockProof, dockCaptureSite: site => DOCK_CAPTURE_SITES.has(site),
     chatSite, parseOrigin, originSetting, isCanvasURL, canvasPatterns, chooseCanvas, exactKeys, validCapture,
     failure, response, supportedMime: mime => MIMES.has(mime), errorText: error => STRINGS[error] ?? STRINGS.CAPTURE_FAILED,
   });

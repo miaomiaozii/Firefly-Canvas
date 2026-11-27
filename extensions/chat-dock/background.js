@@ -1,10 +1,11 @@
 'use strict';
 
-importScripts('protocol.js', 'framing.js');
+importScripts('protocol.js', 'framing.js', 'dock-capture-router.js');
 
 (() => {
   const P = FireflyChatProtocol;
   const F = FireflyChatFraming;
+  const dock = FireflyDockCaptureRouter;
   // Serialize settings writes with grant-revocation reconciliation.
   let settings = Promise.resolve();
   function updateSettings(work) {
@@ -22,12 +23,12 @@ importScripts('protocol.js', 'framing.js');
   async function syncRelay(origin) {
     const [relay] = await chrome.scripting.getRegisteredContentScripts({ids: [P.RELAY_ID]});
     const match = origin === P.DEFAULT_ORIGIN ? null : P.canvasPatterns(origin).match;
-    if (relay && match && relay.matches.length === 1 && relay.matches[0] === match) return;
+    if (relay?.allFrames === true && match && relay.matches.length === 1 && relay.matches[0] === match) return;
     if (relay) await chrome.scripting.unregisterContentScripts({ids: [P.RELAY_ID]});
     if (match) {
       await chrome.scripting.registerContentScripts([{
         id: P.RELAY_ID, matches: [match], js: ['protocol.js', 'canvas-relay.js'], runAt: 'document_idle',
-        allFrames: false, persistAcrossSessions: true, world: 'ISOLATED',
+        allFrames: true, persistAcrossSessions: true, world: 'ISOLATED',
       }]);
     }
   }
@@ -104,8 +105,38 @@ importScripts('protocol.js', 'framing.js');
     }
   }
 
+  async function routeDock(data, sender) {
+    await settings;
+    const origin = await storedOrigin();
+    if (!(await permitted(origin))) return P.failure('PERMISSION_DENIED');
+    const documentId = await dock.target(data, sender, origin);
+    if (!documentId || origin !== await storedOrigin()) return P.failure('CANVAS_NOT_READY');
+    if (!(await permitted(origin))) return P.failure('PERMISSION_DENIED');
+    try {
+      return P.response(await chrome.tabs.sendMessage(sender.tab.id, data, {documentId}));
+    } catch {
+      return P.failure('CANVAS_NOT_READY');
+    }
+  }
+
   chrome.runtime.onMessage.addListener((data, sender, sendResponse) => {
-    if (sender.id !== chrome.runtime.id || (sender.frameId !== 0 && sender.frameId !== undefined)) return;
+    if (sender.id !== chrome.runtime.id) return;
+    if (dock.activeChild(sender)) {
+      if (data?.action === P.DOCK_PROOF) {
+        dock.acceptProof(data, sender);
+        return;
+      }
+      const site = P.chatSite(sender.url);
+      if (!P.dockCaptureSite(site)) return;
+      if (data?.action === P.DOCK_READY && P.exactKeys(data, ['action'])) {
+        dock.shellContext(sender.tab.id).then(id => sendResponse(Boolean(id)), () => sendResponse(false));
+        return true;
+      }
+      if (!P.validCapture(data, site)) return;
+      routeDock(data, sender).then(sendResponse, () => sendResponse(P.failure('CANVAS_NOT_READY')));
+      return true;
+    }
+    if (sender.frameId !== 0 && sender.frameId !== undefined) return;
     if (sender.url === chrome.runtime.getURL('options.html') && data?.action === P.SET_ORIGIN) {
       const origin = P.exactKeys(data, ['action', 'origin']) && P.parseOrigin(data.origin);
       if (!origin) return;
