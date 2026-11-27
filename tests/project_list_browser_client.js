@@ -144,13 +144,25 @@
     ];
     check('project typography follows foundation', typography.every(([el, token]) => px(getComputedStyle(el).fontSize) === tokenPx(token)));
     const dock = document.querySelector('#projectDock');
-    const dockBounds = dock.getBoundingClientRect();
     const headerStyle = getComputedStyle(dock.parentElement);
     check('dock uses canvas inset, padding, and utility height', px(headerStyle.paddingLeft) === tokenPx('--space-16') && px(headerStyle.paddingTop) === tokenPx('--space-16') &&
       px(getComputedStyle(dock).paddingTop) === tokenPx('--space-3') &&
       dock.offsetHeight === tokenPx('--height-utility') + 2 * (tokenPx('--space-3') + tokenPx('--space-1')) &&
       [...dock.querySelectorAll(':scope > .tool-button')].every(el => el.offsetHeight === tokenPx('--height-utility')));
-    check('project grid aligns with dock', document.querySelector('#projectGrid').getBoundingClientRect().left === dockBounds.left);
+    const expectedColumns = window.innerWidth <= 520 ? 2 : window.innerWidth < 850 ? 3 :
+      window.innerWidth < 1080 ? 4 : window.innerWidth < 1320 ? 5 : 6;
+    function checkCenteredGrid(grid, heading, prefix){
+      const {left, right} = grid.getBoundingClientRect();
+      const columns = getComputedStyle(grid).gridTemplateColumns.trim().split(/\s+/).length;
+      check(`${prefix} grid has the expected centered columns and aligned heading`, columns === expectedColumns &&
+        Math.abs(left - (document.documentElement.clientWidth - right)) < 1 &&
+        Math.abs(heading.getBoundingClientRect().left - left) < 1,
+        `columns=${columns} left=${left} right=${right} client=${document.documentElement.clientWidth}`);
+      check(`${prefix} grid caps card width and starts each row at the left edge`,
+        [...grid.children].filter(el => !el.hidden).every((el, index) => el.offsetWidth <= 260 &&
+          (index % columns !== 0 || Math.abs(el.getBoundingClientRect().left - left) < 1)));
+    }
+    checkCenteredGrid(document.querySelector('#projectGrid'), pageTitle, 'project');
     check('cards use the shared panel radius', px(getComputedStyle(visibleSeed).borderRadius) === tokenPx('--radius-panel'));
     check('placeholder is a decorative 16:10 dot matrix', (() => {
       const thumb = visibleSeed.querySelector('.project-thumb');
@@ -172,8 +184,7 @@
 
     check('project list stays inside viewport', document.documentElement.scrollWidth <= window.innerWidth + 1, `viewport=${window.innerWidth} scroll=${document.documentElement.scrollWidth}`);
     if (window.innerWidth <= 520) {
-      const gridColumns = getComputedStyle(document.querySelector('#projectGrid')).gridTemplateColumns.trim().split(/\s+/).length;
-      check('narrow project list uses two columns and icon-only create', gridColumns === 2 &&
+      check('narrow project list keeps the icon-only create control',
         getComputedStyle(document.querySelector('#projectCreateLabel')).display === 'none' &&
         createButton.getAttribute('aria-labelledby') === 'projectCreateLabel');
     }
@@ -222,6 +233,7 @@
     check('trash is a separate view with safety copy and active count', document.querySelector('#projectLibrary').hidden &&
       !document.querySelector('.trash-note').hidden && document.querySelector('#showTrash').getAttribute('aria-expanded') === 'true' &&
       document.querySelector('#projectTrashLabel').textContent.includes('1') && document.querySelector('#trashSummary').textContent.includes('1'));
+    checkCenteredGrid(document.querySelector('#trashGrid'), document.querySelector('#trashTitle'), 'trash');
     trashCard().querySelector('.restore').click();
     await waitFor('restore refreshes the list and trash count', () => cardForId(seedId) && !trashCard() && trashCount() === '0');
     document.querySelector('#closeTrash').click();
