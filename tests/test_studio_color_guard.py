@@ -271,6 +271,13 @@ class StudioColorGuardTests(unittest.TestCase):
         self.assertTrue(scan('static/js/studio-foundation.js', 'el.style.color = "red"'))
         self.assertTrue(scan('static/css/other.CSS', 'a{color:red}'))
 
+    def test_chat_dock_studio_tokens_match_source(self):
+        extension_copy = 'extensions/chat-dock/studio-foundation.css'
+        self.assertTrue(
+            (ROOT / extension_copy).read_text(encoding='utf-8') == (ROOT / TOKEN_FILE).read_text(encoding='utf-8'),
+            f'#515: {extension_copy} differs from {TOKEN_FILE}. Sync the extension copy from {TOKEN_FILE}.',
+        )
+
     def test_fast_gate_wiring(self):
         from tools.quality_gate import MODE_STEPS, STEP_DEFINITIONS
         self.assertIn('studio-color-guard', MODE_STEPS['fast'])
