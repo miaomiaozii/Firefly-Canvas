@@ -38,12 +38,6 @@ def _png_bytes(size=(8, 8), color=(200, 30, 30)):
     return buf.getvalue()
 
 
-def _decode_data_url(data_url):
-    prefix, b64 = data_url.split(",", 1)
-    assert prefix == "data:image/png;base64", prefix
-    return base64.b64decode(b64)
-
-
 def _image_blocks(result):
     return [b for b in result["content"] if b.get("type") == "image"]
 

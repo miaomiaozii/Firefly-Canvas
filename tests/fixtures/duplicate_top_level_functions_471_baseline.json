@@ -1,38 +1,6 @@
 {
   "schema_version": 1,
   "groups": {
-    "_agent_active_counts": {
-      "category": "逻辑已经分叉",
-      "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
-      "members": [
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "7a87a9c3e26ae6ead962764482af38039b148b40a9fb2954586cf002f98aa716"
-        },
-        {
-          "module": "app/services/agents.py",
-          "ordinal": 1,
-          "ast_sha256": "e47b3cb6fd6d47f2cc11a68ee63be02bbdf78b5a8b167dd5a130691308fec508"
-        }
-      ]
-    },
-    "_atomic_copy": {
-      "category": "逻辑已经分叉",
-      "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
-      "members": [
-        {
-          "module": "firefly_json_io.py",
-          "ordinal": 1,
-          "ast_sha256": "56e29e42b766ade5a22ca88ff4e700c60fd4f5ca3bda20dcba60a0bc74f3b412"
-        },
-        {
-          "module": "firefly_projects.py",
-          "ordinal": 1,
-          "ast_sha256": "2a90d5355b8b3c1c959cc7e7fc87249e540e6b0194c2e12fea58f3e0020d5838"
-        }
-      ]
-    },
     "_count": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -62,22 +30,6 @@
           "module": "tests/test_dependency_preflight.py",
           "ordinal": 1,
           "ast_sha256": "0541d711f5db82a2c72883cecbb9f8bc50b4a34c983d7e05ba63a818d472c6ca"
-        }
-      ]
-    },
-    "_decode_data_url": {
-      "category": "逻辑已经分叉",
-      "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
-      "members": [
-        {
-          "module": "app/routers/api_ocr.py",
-          "ordinal": 1,
-          "ast_sha256": "27368fee600a0638fa4985ff3f9c7afe1fb4702aeb51f0036996e0b4124db69c"
-        },
-        {
-          "module": "tests/test_mcp_canvas_view_266.py",
-          "ordinal": 1,
-          "ast_sha256": "f7f6de79526e83231e9a7390a40bb0166e88177bf02b39fc701aa763da947ede"
         }
       ]
     },

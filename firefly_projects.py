@@ -130,14 +130,6 @@ def _read_json(path: Path) -> Dict[str, Any]:
     return value
 
 
-# #345：写临时文件 + fsync + os.replace 这套写法以前在这里和全局配置的各个保存点各存了一份
-# （三份已经开始不一致：只有这份 fsync 了）。现在只有 firefly_json_io 一份实现，
-# 项目库和全局配置共用；名字保留成别名，调用点和测试都不用改。
-def _atomic_copy(src: Path, dst: Path) -> None:
-    """Copy ``src`` to ``dst`` with a tmp+rename atomic commit (issue #94)."""
-    firefly_json_io._atomic_copy(src, dst)
-
-
 def _write_json_atomic(
     path: Path, value: Dict[str, Any], *, keep_backup: bool, backup_count: int = 1,
     on_replaced: Callable[[], None] | None = None,

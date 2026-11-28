@@ -204,43 +204,6 @@ def project_agent_connected_inputs(project_id: str, canvas: Mapping[str, Any], n
             media.append({'asset_id': asset_id, 'kind': actual_kind, 'name': str(record.get('name') or item.get('name') or asset_id)[:160]})
     return {'prompt': '\n\n'.join(prompts).strip(), 'prompts': prompts, 'prompt_node_ids': prompt_node_ids, 'media': media}
 
-def _agent_active_counts(project_id: str, agent_id: str='') -> Tuple[int, int, int]:
-    global_count = project_count = node_count = 0
-    with PROJECT_AGENT_TASKS_LOCK:
-        for task in PROJECT_AGENT_TASKS.values():
-            if task.get('status') not in {'queued', 'running'}:
-                continue
-            global_count += 1
-            if str(task.get('project_id') or '') == str(project_id):
-                project_count += 1
-                if str(task.get('agent_id') or '') == str(agent_id):
-                    node_count += 1
-    try:
-        projects = _app_main.project_store_call('list_projects')
-    except Exception:
-        projects = []
-    for project in projects:
-        candidate_project = str(project.get('id') or '')
-        try:
-            opened = _app_main.project_store_call('open_project', candidate_project)
-        except Exception:
-            continue
-        for node in opened['canvas'].get('nodes') or []:
-            if not isinstance(node, dict) or str(node.get('type') or '') != NODE_TYPE_TASK:
-                continue
-            if str(node.get('status') or '') not in {'queued', 'running'}:
-                continue
-            task_id = str(node.get('task_id') or node.get('id') or '')
-            with PROJECT_AGENT_TASKS_LOCK:
-                if task_id in PROJECT_AGENT_TASKS:
-                    continue
-            global_count += 1
-            if candidate_project == str(project_id):
-                project_count += 1
-                if str(node.get('agent_id') or '') == str(agent_id):
-                    node_count += 1
-    return (global_count, project_count, node_count)
-
 async def generate_project_video(request_snapshot: VideoGenerationRequest, route, references: List[Dict[str, Any]], provider: Optional[Mapping[str, Any]]=None, on_provider_task=None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """Adapt project-owned references to the existing online video adapters."""
     legacy_payload = project_canvas_video_payload(request_snapshot, route.provider_id, route.model, references)
