@@ -157,4 +157,3 @@ button svg, .dock-open svg { width: var(--size-icon); height: var(--size-icon); 
   box-shadow: var(--shadow-control);
 }
 [data-dragging] iframe, [data-layout-changing] iframe { pointer-events: none; }
-[data-direct] #chat-framing-hint { display: none; }

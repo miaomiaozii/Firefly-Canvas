@@ -98,10 +98,11 @@
   });
   let framed = {};
   let shown;
-  function showSite(key) {
-    if (directMode && (layoutFor(key).collapsed || shown === key)) return;
-    // Same-tab project navigation uses only sites the browser already permits embedding.
-    mounted(key, directMode ? {} : framed);
+  function showSite(key, reload = false) {
+    // The same-tab shell starts collapsed and must not load or reload a chat site the user is not looking at.
+    if (directMode && (layoutFor(key).collapsed || (shown === key && !reload))) return;
+    // #515 "AC": the per-site framing switches apply to every shell entry, including the same-tab one (#520).
+    mounted(key, framed);
     shown = key;
   }
   sites.forEach(key => sitePicker.add(new Option(embed.names[key], key)));
@@ -115,20 +116,18 @@
   }
   sitePicker.value = site;
   showSite(site);
-  if (!directMode) {
-    chrome.storage.local.get(FireflyChatFraming.KEY).then(stored => {
-      framed = FireflyChatFraming.flags(stored);
-      if (framed[site] === true) showSite(site);
-    }, () => {});
-    chrome.storage.onChanged.addListener((changes, area) => {
-      if (area !== 'local' || !Object.hasOwn(changes, FireflyChatFraming.KEY)) return;
-      const next = FireflyChatFraming.flags({[FireflyChatFraming.KEY]: changes[FireflyChatFraming.KEY].newValue});
-      const changed = (framed[site] === true) !== (next[site] === true);
-      framed = next;
-      // Reloading an unaffected site would discard the conversation the user is looking at.
-      if (changed) showSite(site);
-    });
-  }
+  chrome.storage.local.get(FireflyChatFraming.KEY).then(stored => {
+    framed = FireflyChatFraming.flags(stored);
+    if (framed[site] === true) showSite(site, true);
+  }, () => {});
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== 'local' || !Object.hasOwn(changes, FireflyChatFraming.KEY)) return;
+    const next = FireflyChatFraming.flags({[FireflyChatFraming.KEY]: changes[FireflyChatFraming.KEY].newValue});
+    const changed = (framed[site] === true) !== (next[site] === true);
+    framed = next;
+    // Reloading an unaffected site would discard the conversation the user is looking at.
+    if (changed) showSite(site, true);
+  });
   sitePicker.addEventListener('change', () => {
     if (!sites.includes(sitePicker.value)) return;
     site = sitePicker.value;

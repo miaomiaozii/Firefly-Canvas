@@ -138,3 +138,30 @@ test('per-site switch embeds a blocking site only inside the extension and switc
     });
     assert.equal(await frameState(settings, 'chatgpt.com'), 'blocked', 'switched off: extension pages are blocked again');
   }));
+
+test('#520 same-tab shell honors the per-site switches and starts collapsed without loading a chat site', {timeout: 90_000}, () =>
+  withFramingBrowser(async ({context, page, worker}) => {
+    const settings = await context.newPage();
+    await settings.goto(options);
+    await settings.getByRole('checkbox', {name: 'ChatGPT'}).check();
+    await settings.locator('#framing-result').getByText('已开启 ChatGPT', {exact: false}).waitFor();
+    assert.deepEqual(await ruleIds(worker), [5151]);
+
+    await page.bringToFront();
+    const direct = `${shell}?id=c1&project=p1&project_mode=1&direct=1`;
+    await page.goto(direct);
+    await page.waitForTimeout(800);
+    assert.equal(await page.locator('#chat-dock-panel').isHidden(), true, 'same-tab shell starts collapsed');
+    assert.equal(await page.locator('#chat-view iframe').count(), 0, 'collapsed: no chat site loaded');
+
+    await page.goto(`${direct}&expand=1`);
+    await page.getByLabel('对话站点').selectOption('chatgpt.com');
+    await page.locator('#chat-view iframe').waitFor();
+    assert.equal(await frameState(page, 'chatgpt.com'), 'scripted', 'switched-on site embeds in the same-tab shell');
+
+    await settings.getByRole('checkbox', {name: 'ChatGPT'}).uncheck();
+    await settings.locator('#framing-result').getByText('已关闭 ChatGPT', {exact: false}).waitFor();
+    await page.bringToFront();
+    await page.locator('#chat-framing-hint').waitFor();
+    assert.equal(await page.locator('#chat-view iframe').count(), 0, 'switching off removes the frame in the same-tab shell');
+  }));
