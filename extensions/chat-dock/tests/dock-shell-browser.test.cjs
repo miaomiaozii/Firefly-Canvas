@@ -257,14 +257,23 @@ test('allowed mock stays loaded across docks and float drag/resize; restores eac
     const input = mock.getByLabel('示例对话输入');
     const sites = page.getByLabel('对话站点');
     await input.fill('the iframe is not reloaded by layout changes');
-    await mock.locator('#capture-word').dblclick();
+    const word = mock.locator('#capture-word');
+    await word.dblclick({position: {x: 24, y: 12}});
+    assert.equal(await word.evaluate(element => element.ownerDocument.getSelection().toString()), 'Firefly');
     assert.equal(await mock.locator('#firefly-chat-capture-host').count(), 0);
     const pressMode = name => page.getByRole('button', {name, exact: true}).click();
     const drag = async (locator, dx, dy) => {
       const box = await locator.boundingBox();
       const x = box.x + box.width / 2;
       const y = box.y + box.height / 2;
-      await page.mouse.move(x, y);
+      // After a dock switch, DOM geometry can settle before native hit testing stops routing to the old iframe bounds.
+      const deadline = performance.now() + 3000;
+      for (;;) {
+        await page.mouse.move(x, y);
+        if (await locator.evaluate(handle => handle.matches(':hover'))) break;
+        assert.ok(performance.now() < deadline, 'Native pointer did not reach the drag handle');
+        await page.evaluate(() => new Promise(requestAnimationFrame));
+      }
       await page.mouse.down();
       await page.mouse.move(x + dx, y + dy, {steps: 5});
       await page.mouse.up();
