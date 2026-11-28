@@ -3430,22 +3430,6 @@
         }
       ]
     },
-    "save_asset_classification_prompt": {
-      "category": "逻辑已经分叉",
-      "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
-      "members": [
-        {
-          "module": "app/routers/api_asset_classification_prompt.py",
-          "ordinal": 1,
-          "ast_sha256": "37c72f237d058b23961b080a011699ff9a49397d901d90f7e8b32095f351b592"
-        },
-        {
-          "module": "app/services/assets.py",
-          "ordinal": 1,
-          "ast_sha256": "297ee8b4b4cde9b162e27aeb0412927290de15dcb8a1b77ffff0fd368ea07e63"
-        }
-      ]
-    },
     "save_canvas": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
