@@ -745,8 +745,9 @@ class AgentHostManager:
             raise RuntimeError("Agent runtime is stopping")
         if session.is_running:
             return True
-        # A stop or replacement can retire this admission while the version probe runs.
+        # Snapshot before any await/adapter callback; requests may change later.
         spawn_model, spawn_effort = model or session.model, session.reasoning_effort
+        # A stop or replacement can retire this admission while the version probe runs.
         observed_generation = session.generation
 
         # Codex remains per-turn and read-only (ADR 0024); no Pi workspace setup.
