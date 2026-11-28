@@ -15,9 +15,11 @@ const option = name => args[args.indexOf(name) + 1];
 assert.ok(args.includes('--sdk-entry'), 'Provide an explicit installed SDK dist/index.js fixture');
 const sdkEntry = path.resolve(option('--sdk-entry'));
 const sdk = await import(pathToFileURL(sdkEntry).href);
-assert.equal(sdk.VERSION, '1.5.1', 'This conformance suite requires the reviewed SDK 1.5.1');
 const extensionPath = fileURLToPath(new URL('../app/agent_extensions/canvas-tools.ts', import.meta.url));
 const selected = args.includes('--case') ? option('--case') : undefined;
+const incompatible = selected === 'incompatible-sdk';
+if (incompatible) assert.notEqual(sdk.VERSION, '1.6.1');
+else assert.equal(sdk.VERSION, '1.6.1', 'This conformance suite requires the reviewed fork SDK 1.6.1');
 const tests = [];
 const limits = [];
 const test = (name, run) => tests.push({ name, run });
@@ -67,6 +69,21 @@ async function snapshot(dir) {
     }
     return entries;
 }
+
+if (incompatible) test('incompatible-sdk', async f => {
+    const errors = [];
+    const original = console.error;
+    console.error = (...messages) => errors.push(messages.map(String).join(' '));
+    try {
+        const { tools } = await load(f);
+        assert.ok(tools.has('canvas.list_nodes'));
+        for (const name of ['read', 'write', 'edit']) assert.equal(tools.has(name), false, name);
+    } finally {
+        console.error = original;
+    }
+    assert.equal(errors.length, 1);
+    assert.match(errors[0], /\[session-file-tools\] Unavailable: incompatible Pi SDK \(requires 1\.6\.1\)$/);
+});
 
 test('registration', async f => {
     const { tools, extension } = await load(f);

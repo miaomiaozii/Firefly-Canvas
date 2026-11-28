@@ -55,10 +55,11 @@ async function inspect(absolute: string, allowMissing: boolean, directory = fals
 export function registerSessionFileTools(pi: ExtensionAPI) {
     const configuredRoot = process.env.FIREFLY_AGENT_WORKSPACE_ROOT;
     if (!configuredRoot) return;
-    // #445: pin the reviewed path/media/operations contract; never downgrade to bare tools.
-    if (VERSION !== "1.5.1" || [createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition]
+    // #445/#476: pin the reviewed fork's path/media/operations contract; never downgrade to bare tools.
+    const requiredVersion = "1.6.1";
+    if (VERSION !== requiredVersion || [createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition]
         .some(factory => typeof factory !== "function")) {
-        throw new Error("[session-file-tools] Unavailable: incompatible Pi SDK (requires 1.5.1)");
+        throw new Error(`[session-file-tools] Unavailable: incompatible Pi SDK (requires ${requiredVersion})`);
     }
     const root = path.resolve(configuredRoot);
     async function target(input: unknown, mutation = false, directory = false) {
@@ -112,10 +113,9 @@ export function registerSessionFileTools(pi: ExtensionAPI) {
             ...tool,
             async execute(id, params, signal, onUpdate, ctx) {
                 const absolute = await target(params.path, tool.name !== "read");
-                // Operations are replacement objects, not merged with SDK defaults. Read keeps the complete
-                // native media/streaming backend behind preflight; SDK 1.5.1 only probes fallback spellings
-                // for missing files, whereas read preflight requires an existing checked absolute regular file.
-                // This rejects stable links, NOT hostile concurrent reparse swaps or other OS actors.
+                // SDK operations are replacements: keep native read media/streaming after preflight.
+                // The fork probes alternate spellings only when the checked path is absent.
+                // Preflight rejects stable links, not concurrent filesystem swaps or other OS actors.
                 return tool.execute(id, { ...params, path: absolute }, signal, onUpdate, { ...ctx, cwd: root });
             },
         });
