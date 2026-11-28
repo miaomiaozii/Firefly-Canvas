@@ -12,7 +12,8 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPExceptio
 from pydantic import BaseModel, Field
 from app.core import (BaseModel, File, Form, HTTPException, List, LocalAssetCaptionRequest, LocalAssetCaptionSaveRequest, LocalAssetClassifyRequest, LocalAssetFolderRequest, LocalAssetRenameRequest, LocalAssetUrlImportItem, LocalAssetUrlImportRequest, Request, UploadFile, _local_upload_folder_node, _local_upload_kind_ext, _local_upload_rel_path, _local_upload_safe_file_stem, _local_upload_safe_folder_name, _os, _sniff_image_ext_bytes, _sys, base64, ensure_same_origin_request, httpx, json, os, re, sanitize_asset_name, urllib, uuid)
 from app.core import _local_upload_folder_node, _local_upload_kind_ext, _local_upload_rel_path, _local_upload_safe_file_stem, _local_upload_safe_folder_name, _sniff_image_ext_bytes
-_from_main_names = ['LOCAL_UPLOAD_DIR', '_local_upload_abs', '_local_upload_caption_path', '_local_upload_classification_path', '_local_upload_item', '_local_upload_tree_and_items', '_write_local_upload_classification', 'caption_image_with_provider', 'classify_asset_image_best_effort', 'classify_image_with_provider', 'normalize_asset_classification']
+from app.services.local_assets import _local_upload_abs, _local_upload_tree_and_items
+_from_main_names = ['LOCAL_UPLOAD_DIR', '_local_upload_caption_path', '_local_upload_classification_path', '_local_upload_item', '_write_local_upload_classification', 'caption_image_with_provider', 'classify_asset_image_best_effort', 'classify_image_with_provider', 'normalize_asset_classification']
 import app.services as _svc
 for _nm in _from_main_names:
     _v = getattr(_app_main, _nm, None)
@@ -28,18 +29,6 @@ def _write_local_upload_classification(filename, classification):
     # #374 起只薄一层到 services 的原子实现：两边行为再也拆不开。
     return _svc._write_local_upload_classification(filename, classification)
 
-def _local_upload_abs(rel):
-    rel_path = _local_upload_rel_path(rel)
-    path = os.path.abspath(os.path.join(_app_main.LOCAL_UPLOAD_DIR, rel_path))
-    root = os.path.abspath(_app_main.LOCAL_UPLOAD_DIR)
-    try:
-        common = os.path.commonpath([root, path])
-    except ValueError:
-        raise HTTPException(status_code=400, detail='非法路径')
-    if common != root:
-        raise HTTPException(status_code=400, detail='非法路径')
-    return (rel_path, path)
-
 def _local_upload_safe_path(name):
     filename, path = _local_upload_abs(name)
     if not filename:
@@ -49,45 +38,6 @@ def _local_upload_safe_path(name):
 def _local_upload_safe_folder(path_value):
     rel, path = _local_upload_abs(path_value)
     return (rel, path)
-
-def _local_upload_tree_and_items():
-    root_node = _local_upload_folder_node('', '全部上传')
-    folder_map = {'': root_node}
-    items = []
-    for current, dirs, files in os.walk(_app_main.LOCAL_UPLOAD_DIR):
-        dirs[:] = sorted([d for d in dirs if not d.startswith('.') and (not d.startswith('._'))], key=str.lower)
-        rel_dir = os.path.relpath(current, _app_main.LOCAL_UPLOAD_DIR).replace('\\', '/')
-        if rel_dir == '.':
-            rel_dir = ''
-        node = folder_map.get(rel_dir)
-        if node is None:
-            node = _local_upload_folder_node(rel_dir)
-            folder_map[rel_dir] = node
-        for dirname in dirs:
-            child_rel = f'{rel_dir}/{dirname}'.lstrip('/')
-            child = _local_upload_folder_node(child_rel)
-            folder_map[child_rel] = child
-            node['children'].append(child)
-        for name in sorted(files, key=str.lower):
-            if name.startswith('.') or name.startswith('._'):
-                continue
-            rel_file = f'{rel_dir}/{name}'.lstrip('/')
-            kind, _ = _local_upload_kind_ext(name, '')
-            if kind is None:
-                continue
-            item = _local_upload_item(rel_file)
-            node['items'].append(item)
-            items.append(item)
-
-    def fill_counts(node):
-        total = len(node.get('items') or [])
-        for child in node.get('children') or []:
-            total += fill_counts(child)
-        node['count'] = total
-        return total
-    fill_counts(root_node)
-    items.sort(key=lambda it: it.get('created_at') or 0, reverse=True)
-    return (root_node, items)
 
 @router.post('/api/local-assets/upload')
 async def upload_local_assets(files: List[UploadFile]=File(...), folder: str=Form('')):

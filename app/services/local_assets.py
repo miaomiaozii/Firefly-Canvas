@@ -2,6 +2,7 @@
 from ._base import *  # noqa: F401,F403
 import firefly_json_io  # noqa: E402  # #374：sidecar 走原子写/隔离读
 import app.services as _svc  # noqa: E402
+from . import storage as _storage
 from app.core import _local_upload_display_name, _local_upload_folder_node, _local_upload_kind_ext, _local_upload_rel_path  # noqa: E402,F401
 
 def _local_upload_classification_path(filename):
@@ -24,8 +25,8 @@ def _write_local_upload_classification(filename, classification):
 
 def _local_upload_abs(rel):
     rel_path = _local_upload_rel_path(rel)
-    path = os.path.abspath(os.path.join(_svc._main('LOCAL_UPLOAD_DIR'), rel_path))
     root = os.path.abspath(_svc._main('LOCAL_UPLOAD_DIR'))
+    path = os.path.abspath(os.path.join(root, rel_path))
     try:
         common = os.path.commonpath([root, path])
     except ValueError:
@@ -82,9 +83,10 @@ def _local_upload_tree_and_items():
     root_node = _local_upload_folder_node('', '全部上传')
     folder_map = {'': root_node}
     items = []
-    for current, dirs, files in os.walk(_svc._main('LOCAL_UPLOAD_DIR')):
+    upload_dir = _svc._main('LOCAL_UPLOAD_DIR')
+    for current, dirs, files in os.walk(upload_dir):
         dirs[:] = sorted([d for d in dirs if not d.startswith('.') and (not d.startswith('._'))], key=str.lower)
-        rel_dir = os.path.relpath(current, _svc._main('LOCAL_UPLOAD_DIR')).replace('\\', '/')
+        rel_dir = os.path.relpath(current, upload_dir).replace('\\', '/')
         if rel_dir == '.':
             rel_dir = ''
         node = folder_map.get(rel_dir)
@@ -137,9 +139,9 @@ def import_local_image_file(path):
     except Exception:
         raise HTTPException(status_code=400, detail='文件不是可识别的图片')
     filename = f'ai_ref_{uuid.uuid4().hex[:12]}{ext}'
-    dest = _svc.output_path_for(filename, 'input')
+    dest = _storage.output_path_for(filename, 'input')
     try:
         shutil.copyfile(path, dest)
     except OSError:
         raise HTTPException(status_code=500, detail='导入本地图片失败')
-    return {'url': _svc.output_url_for(filename, 'input'), 'name': os.path.basename(path) or filename, 'kind': 'image'}
+    return {'url': _storage.output_url_for(filename, 'input'), 'name': os.path.basename(path) or filename, 'kind': 'image'}

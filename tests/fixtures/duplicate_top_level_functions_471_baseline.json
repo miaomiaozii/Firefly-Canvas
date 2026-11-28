@@ -150,38 +150,6 @@
         }
       ]
     },
-    "_local_upload_abs": {
-      "category": "逻辑已经分叉",
-      "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
-      "members": [
-        {
-          "module": "app/routers/api_local_assets.py",
-          "ordinal": 1,
-          "ast_sha256": "8c700153326911fba5b72aea995e340e1c989c692d137350adabb2afe8b83210"
-        },
-        {
-          "module": "app/services/local_assets.py",
-          "ordinal": 1,
-          "ast_sha256": "897d2dff687c91c7d4579be32774eb4b4a9e484fb9a8cb8ec6bb5c51f8aec3d9"
-        }
-      ]
-    },
-    "_local_upload_tree_and_items": {
-      "category": "逻辑已经分叉",
-      "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
-      "members": [
-        {
-          "module": "app/routers/api_local_assets.py",
-          "ordinal": 1,
-          "ast_sha256": "c34ec1621d92fe4ed6c0ad35122416eb3a4d83826964f7c348f415a17a3db803"
-        },
-        {
-          "module": "app/services/local_assets.py",
-          "ordinal": 1,
-          "ast_sha256": "f0aa3ed52a00e8c472c6e504ae0ca918d7a08c6536c3859e4a4b8d7c67c3b3b8"
-        }
-      ]
-    },
     "_node_executable": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -1302,22 +1270,6 @@
           "module": "tests/node_replace_browser.py",
           "ordinal": 1,
           "ast_sha256": "89fea65e81752a45b225ab5ddbf4e8601b4a3e2b812c88c89dddd1a7618c8681"
-        }
-      ]
-    },
-    "import_local_image_file": {
-      "category": "逻辑已经分叉",
-      "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
-      "members": [
-        {
-          "module": "app/routers/api_ai.py",
-          "ordinal": 1,
-          "ast_sha256": "7e0db88dc1d224eaa0656c0e7c9005fcb48f9d667860e694d858bec3905a60a8"
-        },
-        {
-          "module": "app/services/local_assets.py",
-          "ordinal": 1,
-          "ast_sha256": "82cdf02975a537adee692054952035ada57161ce4f4183eab16aa879edcb101a"
         }
       ]
     },

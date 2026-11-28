@@ -13,7 +13,9 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPExceptio
 from pydantic import BaseModel, Field
 from app.core import (Base64UploadRequest, BaseModel, Field, File, HTTPException, Image, LOCAL_IMAGE_IMPORT_EXTS, LOCAL_IMAGE_IMPORT_MAX_BYTES, List, LocalImageImportRequest, Request, UploadFile, _local_upload_kind_ext, _os, _sys, base64, ensure_same_origin_request, mimetypes, normalize_local_image_path, os, re, shutil, urllib, uuid)
 from app.core import _local_upload_kind_ext
-_from_main_names = ['import_local_image_file', 'output_path_for', 'output_url_for']
+from app.services import local_assets as _local_assets
+from app.services.local_assets import import_local_image_file
+_from_main_names = ['output_path_for', 'output_url_for']
 import app.services as _svc
 for _nm in _from_main_names:
     _v = getattr(_app_main, _nm, None)
@@ -23,33 +25,6 @@ for _nm in _from_main_names:
 
 router = APIRouter()
 
-
-def import_local_image_file(path):
-    ext = os.path.splitext(path)[1].lower()
-    if ext not in LOCAL_IMAGE_IMPORT_EXTS:
-        raise HTTPException(status_code=400, detail='仅支持 PNG、JPG、JPEG、WEBP、GIF 图片')
-    if not os.path.isfile(path):
-        raise HTTPException(status_code=404, detail='本地图片不存在或无法读取')
-    try:
-        size = os.path.getsize(path)
-    except OSError:
-        raise HTTPException(status_code=404, detail='本地图片不存在或无法读取')
-    if size <= 0:
-        raise HTTPException(status_code=400, detail='本地图片为空')
-    if size > LOCAL_IMAGE_IMPORT_MAX_BYTES:
-        raise HTTPException(status_code=413, detail='本地图片过大，请使用 50MB 以内的图片')
-    try:
-        with Image.open(path) as img:
-            img.verify()
-    except Exception:
-        raise HTTPException(status_code=400, detail='文件不是可识别的图片')
-    filename = f'ai_ref_{uuid.uuid4().hex[:12]}{ext}'
-    dest = output_path_for(filename, 'input')
-    try:
-        shutil.copyfile(path, dest)
-    except OSError:
-        raise HTTPException(status_code=500, detail='导入本地图片失败')
-    return {'url': output_url_for(filename, 'input'), 'name': os.path.basename(path) or filename, 'kind': 'image'}
 
 @router.post('/api/ai/upload')
 async def upload_ai_reference(files: List[UploadFile]=File(...)):
@@ -131,4 +106,4 @@ async def import_local_ai_reference(payload: LocalImageImportRequest, request: R
     requested = [p for p in requested if str(p or '').strip()][:20]
     if not requested:
         raise HTTPException(status_code=400, detail='没有可导入的本地图片')
-    return {'files': [import_local_image_file(normalize_local_image_path(path)) for path in requested]}
+    return {'files': [_local_assets.import_local_image_file(normalize_local_image_path(path)) for path in requested]}
