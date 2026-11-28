@@ -59,7 +59,8 @@ if (_os_boot.environ.get("FIREFLY_RUNTIME_ROOT", "").strip()
         "FIREFLY_PROJECTS_ROOT=<隔离路径> 再启动（Refs #329）。\n")
     _sys_boot.exit(2)
 
-import app.services as _svc  # W1c services layer
+import app.services as _svc
+from app.services import assets as _asset_services  # W1c services layer
 from app.services import *
 from app.services import agent_host as _agent_host_boot
 
@@ -376,12 +377,12 @@ async def startup_event():
         logger.warning(f"全局资源库分组整理失败: {exc}")
     # 修复历史遗留的双重扩展名素材（foo.png.png → foo.png），否则这些卡片无法显示
     try:
-        await asyncio.to_thread(migrate_double_extension_uploads)
+        await asyncio.to_thread(_asset_services.migrate_double_extension_uploads)
     except Exception as exc:
         logger.warning(f"修复双重扩展名素材失败: {exc}")
     # 纠正内容与扩展名不符的图片（如 WebP 内容却叫 .png），否则严格客户端解不出来
     try:
-        await asyncio.to_thread(migrate_mislabeled_image_extensions)
+        await asyncio.to_thread(_asset_services.migrate_mislabeled_image_extensions)
     except Exception as exc:
         logger.warning(f"纠正图片扩展名失败: {exc}")
     await PROJECT_CONVERSATION_RUNNER.start()

@@ -16,6 +16,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from app.core import (Any, Dict, LLM_MESSAGE_MAX_LENGTH, List, NODE_TYPE_AGENT, NODE_TYPE_TASK, Optional, PROJECT_AGENT_RECOVERY_LOCK, PROJECT_CONVERSATION_READY_RESULTS, PROJECT_CONVERSATION_TASKS, PROJECT_CONVERSATION_TASKS_LOCK, ProjectNotFound, ProjectStoreError, Tuple, _DOUBLE_EXT_MEDIA, _DOUBLE_EXT_RE, _agent_recovery_payload, _os, _sniff_image_ext, _sniff_image_ext_bytes, _sys, asyncio, conversation_error_message, conversation_node_by_id, conversation_task_snapshot, copy, forget_project_conversation_ready_result, forget_project_conversation_task, json, logging, os, project_conversation_ready_result, project_lifecycle_lock, re, remember_project_conversation_ready_result, shutil, urllib, uuid)
 from app.core import _DOUBLE_EXT_MEDIA, _DOUBLE_EXT_RE, _agent_recovery_payload, _sniff_image_ext, _sniff_image_ext_bytes, is_registered_conversation_user_message
+from app.services.assets import migrate_double_extension_uploads, migrate_mislabeled_image_extensions
 _from_main_names = ['ASSET_LIBRARY_DIR', 'LOCAL_UPLOAD_DIR', 'PROJECT_CONVERSATION_MAX_PENDING', 'PROJECT_CONVERSATION_MAX_PER_NODE', 'PROJECT_CONVERSATION_MAX_PER_PROJECT', '_agent_mark_recovered_uncertain', '_agent_submit_task', 'conversation_pending_task_keys', 'forget_project_conversation_durable', 'load_asset_library', 'merge_project_conversation_result', 'now_ms', 'project_conversation_adapter', 'project_conversation_durable_path', 'project_store_call', 'save_asset_library', 'schedule_project_conversation_task', 'unique_asset_category_dir']
 import app.services as _svc
 for _nm in _from_main_names:
@@ -281,77 +282,6 @@ def migrate_asset_library_into_dirs():
             save_asset_library(lib)
         except Exception as exc:
             logger.warning(f'全局资源库分组整理：保存失败 {exc}')
-
-def migrate_double_extension_uploads():
-    """修复历史遗留的双重扩展名（如 foo.png.png）：去掉重复的一层，并同步重命名 caption/classification 旁车文件。
-    旧版 URL 导入会把自带扩展名的 entry.name 又拼一次 ext，导致文件名重复后缀、URL 对不上而无法显示。"""
-    if not os.path.isdir(_app_main.LOCAL_UPLOAD_DIR):
-        return
-    renamed = 0
-    for current, _dirs, files in os.walk(_app_main.LOCAL_UPLOAD_DIR):
-        for name in files:
-            m = _DOUBLE_EXT_RE.search(name)
-            if not m or m.group(1).lower() not in _DOUBLE_EXT_MEDIA:
-                continue
-            old_path = os.path.join(current, name)
-            new_path = os.path.join(current, name[:-len(m.group(1))])
-            if os.path.exists(new_path):
-                continue
-            try:
-                os.rename(old_path, new_path)
-            except OSError:
-                continue
-            renamed += 1
-            old_base = os.path.splitext(old_path)[0]
-            new_base = os.path.splitext(new_path)[0]
-            for suffix in ('.classification.json', '.txt'):
-                src_side, dst_side = (old_base + suffix, new_base + suffix)
-                if os.path.exists(src_side) and (not os.path.exists(dst_side)):
-                    try:
-                        os.rename(src_side, dst_side)
-                    except OSError:
-                        pass
-    if renamed:
-        logger.info(f'修复双重扩展名素材: {renamed} 个')
-
-def migrate_mislabeled_image_extensions():
-    """有些采集来的图片内容与扩展名不符（例如 WebP 内容却叫 .png），导致服务端按错误 content-type 返回、
-    严格的客户端（PS UXP）解不出来。这里按真实魔数纠正扩展名，并同步重命名 caption/classification 旁车。"""
-    if not os.path.isdir(_app_main.LOCAL_UPLOAD_DIR):
-        return
-    img_exts = {'.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp'}
-    fixed = 0
-    for current, _dirs, files in os.walk(_app_main.LOCAL_UPLOAD_DIR):
-        for name in files:
-            ext = os.path.splitext(name)[1].lower()
-            if ext not in img_exts:
-                continue
-            path = os.path.join(current, name)
-            real = _sniff_image_ext(path)
-            if not real:
-                continue
-            if real == ext or (real == '.jpg' and ext == '.jpeg'):
-                continue
-            new_name = os.path.splitext(name)[0] + real
-            new_path = os.path.join(current, new_name)
-            if os.path.exists(new_path):
-                continue
-            try:
-                os.rename(path, new_path)
-            except OSError:
-                continue
-            fixed += 1
-            old_base = os.path.splitext(path)[0]
-            new_base = os.path.splitext(new_path)[0]
-            for suffix in ('.classification.json', '.txt'):
-                src_side, dst_side = (old_base + suffix, new_base + suffix)
-                if os.path.isfile(src_side) and (not os.path.exists(dst_side)):
-                    try:
-                        os.rename(src_side, dst_side)
-                    except OSError:
-                        pass
-    if fixed:
-        logger.info(f'纠正图片扩展名(内容与后缀不符): {fixed} 个')
 
 def recover_project_agent_tasks() -> int:
     """Rehydrate confirmed queued Agent tasks after an app reload.

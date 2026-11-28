@@ -2350,38 +2350,6 @@
         }
       ]
     },
-    "migrate_double_extension_uploads": {
-      "category": "逻辑已经分叉",
-      "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
-      "members": [
-        {
-          "module": "app/routers/startup.py",
-          "ordinal": 1,
-          "ast_sha256": "139d7d835f7e605975a5e564ba562814591fe4f88c49ef23b911e49c3a31d567"
-        },
-        {
-          "module": "app/services/assets.py",
-          "ordinal": 1,
-          "ast_sha256": "57ff27e8199173b56e43cec2f0f079230050bd5a25e9e85076a1d77b4ad96315"
-        }
-      ]
-    },
-    "migrate_mislabeled_image_extensions": {
-      "category": "逻辑已经分叉",
-      "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
-      "members": [
-        {
-          "module": "app/routers/startup.py",
-          "ordinal": 1,
-          "ast_sha256": "50dbe6ade7ba863a2e26e7b4a82aa5db01fef3cc7e4a1666f5387fb717b78cf7"
-        },
-        {
-          "module": "app/services/assets.py",
-          "ordinal": 1,
-          "ast_sha256": "a9aaf076d6d1a09a9c1a34d48e1b8371daf04640a2d3a45de73bddff938197aa"
-        }
-      ]
-    },
     "node": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",

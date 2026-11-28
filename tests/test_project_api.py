@@ -1103,11 +1103,14 @@ class ProjectApiContractTests(unittest.TestCase):
         project = self.store.create_project("重复 lifespan 后导入")
         source = Path(self.temp_dir.name) / "after-lifespan.png"
         source.write_bytes(b"after-lifespan")
+        from app.services import assets as asset_services
+
+        migration_order = []
         startup_side_effects = (
             patch.object(main, "sync_static_html_versions"),
             patch.object(main, "migrate_asset_library_into_dirs"),
-            patch.object(main, "migrate_double_extension_uploads"),
-            patch.object(main, "migrate_mislabeled_image_extensions"),
+            patch.object(asset_services, "migrate_double_extension_uploads", side_effect=lambda: migration_order.append("double")),
+            patch.object(asset_services, "migrate_mislabeled_image_extensions", side_effect=lambda: migration_order.append("magic")),
         )
         for mocked in startup_side_effects:
             mocked.start()
@@ -1118,6 +1121,7 @@ class ProjectApiContractTests(unittest.TestCase):
             for mocked in reversed(startup_side_effects):
                 mocked.stop()
 
+        self.assertEqual(migration_order, ["double", "magic"])
         with patch.object(main, "project_media_source_path", return_value=str(source)):
             response = self.client.post(
                 f"/api/project-library/{project['id']}/media/import",
