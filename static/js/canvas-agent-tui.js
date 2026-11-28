@@ -4719,6 +4719,7 @@ function bindAgentDockWidth(el, nodeId){
     });
 }
 
+// bindNodeEvents only covers nodes inside #world; the dock slot binds its own.
 function bindAgentDockNodeControls(el, node){
     if(!el || !node) return;
     bindAgentNodeControls(el, node);
@@ -4955,6 +4956,7 @@ function removeAgentDockElement(el){
     el.remove();
 }
 
+// syncAgentDock after render() would also remove it; unmounting here keeps the deleted node out of the deletion frame.
 function agentDockUnmount(nodeId){
     if(!document.getElementById('agentDock')) return;
     const el = agentDockElement(nodeId);
