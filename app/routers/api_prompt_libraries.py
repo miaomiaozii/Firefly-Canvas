@@ -1,96 +1,34 @@
 """Router: /api/prompt-libraries domain (auto-split from main.py)."""
 from __future__ import annotations
-import sys as _sys
-import os as _os
-_app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys.modules.get('main') or _sys.modules['__main__']
-import os
-import json
-import re
 import uuid
-import firefly_json_io
-from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, Field
-from app.core import (BaseModel, HTTPException, List, PROMPT_BUILTIN_CATEGORY_IDS, PromptLibraryBatchDeleteRequest, PromptLibraryCategoryRequest, PromptLibraryItemRequest, PromptLibraryRequest, _os, _sys, builtin_prompt_templates, defaultPromptTemplateCategories, find_prompt_library, json, normalize_prompt_category_id, normalize_prompt_template_categories, os, re, sanitize_asset_name, seed_system_prompt_library, uuid)
-_from_main_names = ['DATA_DIR', 'PROMPT_LIBRARY_PATH', 'default_prompt_libraries', 'load_prompt_libraries', 'normalize_prompt_libraries', 'normalize_prompt_library_item', 'now_ms', 'public_prompt_libraries', 'save_prompt_libraries']
+
+from fastapi import APIRouter, HTTPException
+
+from app.core import (
+    PROMPT_BUILTIN_CATEGORY_IDS,
+    PromptLibraryBatchDeleteRequest,
+    PromptLibraryCategoryRequest,
+    PromptLibraryItemRequest,
+    PromptLibraryRequest,
+    defaultPromptTemplateCategories,
+    find_prompt_library,
+    normalize_prompt_category_id,
+    normalize_prompt_template_categories,
+    sanitize_asset_name,
+    seed_system_prompt_library,
+)
 import app.services as _svc
-for _nm in _from_main_names:
-    _v = getattr(_app_main, _nm, None)
-    if _v is None:
-        _v = getattr(_svc, _nm, None)
-    globals()[_nm] = _v
+from app.services.assets import (
+    default_prompt_libraries,
+    load_prompt_libraries,
+    normalize_prompt_libraries,
+    normalize_prompt_library_item,
+    public_prompt_libraries,
+    save_prompt_libraries,
+)
 
 router = APIRouter()
 
-
-def normalize_prompt_library_item(item):
-    if not isinstance(item, dict):
-        item = {}
-    name = sanitize_asset_name(item.get('name') or '提示词', '提示词')
-    positive = str(item.get('positive') or item.get('text') or '').strip()
-    return {'id': re.sub('[^A-Za-z0-9_-]+', '_', str(item.get('id') or item.get('item_id') or f'tpl_{uuid.uuid4().hex[:12]}'))[:60], 'name': name, 'category': normalize_prompt_category_id(item.get('category') or 'custom'), 'scene': str(item.get('scene') or '').strip()[:500], 'positive': positive, 'negative': str(item.get('negative') or '').strip(), 'params': item.get('params') if isinstance(item.get('params'), dict) else {}, 'created_at': int(item.get('created_at') or _app_main.now_ms()), 'updated_at': int(item.get('updated_at') or item.get('created_at') or _app_main.now_ms())}
-
-def default_prompt_libraries():
-    return {'active_library_id': 'system', 'libraries': [seed_system_prompt_library()], 'updated_at': _app_main.now_ms()}
-
-def normalize_prompt_libraries(data):
-    if not isinstance(data, dict):
-        data = default_prompt_libraries()
-    raw_libraries = data.get('libraries') if isinstance(data.get('libraries'), list) else []
-    raw_libraries = [lib for lib in raw_libraries if isinstance(lib, dict)]
-    if not any((lib.get('id') == 'system' for lib in raw_libraries)):
-        raw_libraries = [seed_system_prompt_library()] + raw_libraries
-    libraries = []
-    seen_lib_ids = set()
-    for raw in raw_libraries:
-        is_system = raw.get('id') == 'system'
-        if is_system:
-            lib_id = 'system'
-        else:
-            lib_id = re.sub('[^A-Za-z0-9_-]+', '_', str(raw.get('id') or f'lib_{uuid.uuid4().hex[:12]}'))[:60] or f'lib_{uuid.uuid4().hex[:12]}'
-        if lib_id in seen_lib_ids:
-            continue
-        seen_lib_ids.add(lib_id)
-        items = []
-        seen_items = set()
-        for raw_item in raw.get('items') if isinstance(raw.get('items'), list) else []:
-            if not isinstance(raw_item, dict):
-                continue
-            item = normalize_prompt_library_item(raw_item)
-            item_id = item.get('id') or f'tpl_{uuid.uuid4().hex[:12]}'
-            if item_id in seen_items:
-                continue
-            seen_items.add(item_id)
-            items.append(item)
-        default_name = '系统提示词库' if is_system else '提示词库'
-        raw_categories = raw.get('categories') if isinstance(raw.get('categories'), list) else []
-        if not is_system:
-            builtin_ids = {'view', 'storyboard', 'character', 'product', 'lighting', 'custom'}
-            raw_categories = [c for c in raw_categories if isinstance(c, dict) and normalize_prompt_category_id(c.get('id') or c.get('name') or '') not in builtin_ids]
-        libraries.append({'id': lib_id, 'name': sanitize_asset_name(raw.get('name') or default_name, default_name), 'type': 'prompt', 'readonly': False, 'system': is_system, 'categories': normalize_prompt_template_categories(raw_categories, include_defaults=is_system), 'items': items})
-    active = str(data.get('active_library_id') or 'system')
-    if not any((lib['id'] == active for lib in libraries)):
-        active = 'system' if any((lib['id'] == 'system' for lib in libraries)) else libraries[0]['id'] if libraries else 'system'
-    return {'active_library_id': active, 'libraries': libraries, 'updated_at': int(data.get('updated_at') or _app_main.now_ms())}
-
-def load_prompt_libraries():
-    data = firefly_json_io.read_global_json(PROMPT_LIBRARY_PATH, dict)
-    if data is None:
-        return save_prompt_libraries(default_prompt_libraries())
-    normalized = normalize_prompt_libraries(data)
-    if normalized.get('active_library_id') != data.get('active_library_id') or normalized.get('libraries') != data.get('libraries'):
-        return save_prompt_libraries(normalized)
-    return normalized
-
-def save_prompt_libraries(data):
-    data = normalize_prompt_libraries(data)
-    data['updated_at'] = _app_main.now_ms()
-    firefly_json_io.read_global_json(PROMPT_LIBRARY_PATH, dict)
-    firefly_json_io.write_json_atomic(PROMPT_LIBRARY_PATH, data)
-    return data
-
-def public_prompt_libraries(data=None):
-    data = normalize_prompt_libraries(data or load_prompt_libraries())
-    return {'active_library_id': data.get('active_library_id') or (data.get('libraries') or [{}])[0].get('id') or 'system', 'libraries': data.get('libraries') or [], 'updated_at': data.get('updated_at') or _app_main.now_ms()}
 
 @router.get('/api/prompt-libraries')
 async def get_prompt_libraries():
@@ -139,7 +77,7 @@ async def add_prompt_library_item(payload: PromptLibraryItemRequest):
         raise HTTPException(status_code=404, detail='提示词库不存在')
     if not str(payload.positive or '').strip():
         raise HTTPException(status_code=400, detail='提示词内容不能为空')
-    item = normalize_prompt_library_item({'id': f'tpl_{uuid.uuid4().hex[:12]}', 'name': payload.name, 'category': payload.category, 'positive': payload.positive, 'negative': payload.negative, 'scene': payload.scene, 'created_at': _app_main.now_ms(), 'updated_at': _app_main.now_ms()})
+    item = normalize_prompt_library_item({'id': f'tpl_{uuid.uuid4().hex[:12]}', 'name': payload.name, 'category': payload.category, 'positive': payload.positive, 'negative': payload.negative, 'scene': payload.scene, 'created_at': _svc._main('now_ms')(), 'updated_at': _svc._main('now_ms')()})
     library.setdefault('items', []).insert(0, item)
     data['active_library_id'] = library.get('id') or data.get('active_library_id')
     data = save_prompt_libraries(data)
@@ -153,7 +91,7 @@ async def update_prompt_library_item(item_id: str, payload: PromptLibraryItemReq
             continue
         for index, item in enumerate(library.get('items', []) or []):
             if item.get('id') == item_id:
-                next_item = normalize_prompt_library_item({**item, 'name': payload.name or item.get('name'), 'category': payload.category or item.get('category'), 'positive': payload.positive or item.get('positive'), 'negative': payload.negative, 'scene': payload.scene, 'updated_at': _app_main.now_ms()})
+                next_item = normalize_prompt_library_item({**item, 'name': payload.name or item.get('name'), 'category': payload.category or item.get('category'), 'positive': payload.positive or item.get('positive'), 'negative': payload.negative, 'scene': payload.scene, 'updated_at': _svc._main('now_ms')()})
                 library['items'][index] = next_item
                 data = save_prompt_libraries(data)
                 return {'library': public_prompt_libraries(data), 'item': next_item}

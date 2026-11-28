@@ -185,8 +185,7 @@ class GlobalConfigLivePathTests(TempDirCaseMixin, unittest.TestCase):
         target = self.path_for("prompt_libraries.json")
         corrupt = '{"active_library_id": "mine", "libraries": [OOPS'
         target.write_text(corrupt, encoding="utf-8")
-        with patch.object(main, "PROMPT_LIBRARY_PATH", str(target)), \
-                patch.object(_router_prompt_libraries, "PROMPT_LIBRARY_PATH", str(target)):
+        with patch.object(main, "PROMPT_LIBRARY_PATH", str(target)):
             for operation in (main.load_prompt_libraries, main.load_prompt_libraries,
                               lambda: _router_prompt_libraries.save_prompt_libraries({"libraries": []})):
                 with self.assertRaises(firefly_json_io.CorruptJSONFile):
@@ -278,7 +277,7 @@ class GlobalJsonSaverBehaviorTests(TempDirCaseMixin, unittest.TestCase):
         with self._guard([asset_library, prompt_libraries, shared_folders, storage_settings, projects_path, history_file, legacy_canvas]):
             with patch.object(main, "ASSET_LIBRARY_PATH", str(asset_library)):
                 main.save_asset_library({"version": 1, "libraries": []})
-            with patch.object(_router_prompt_libraries, "PROMPT_LIBRARY_PATH", str(prompt_libraries)):
+            with patch.object(main, "PROMPT_LIBRARY_PATH", str(prompt_libraries)):
                 _router_prompt_libraries.save_prompt_libraries({"active_library_id": "system", "libraries": []})
             with patch.object(_router_shared_folders, "SHARED_FOLDERS_FILE", str(shared_folders)):
                 _router_shared_folders.shared_folders_save({"folders": []})

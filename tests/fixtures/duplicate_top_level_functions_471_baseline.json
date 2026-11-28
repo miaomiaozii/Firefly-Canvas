@@ -850,22 +850,6 @@
         }
       ]
     },
-    "default_prompt_libraries": {
-      "category": "逻辑已经分叉",
-      "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
-      "members": [
-        {
-          "module": "app/routers/api_prompt_libraries.py",
-          "ordinal": 1,
-          "ast_sha256": "3432f27a1a1836f76571f874ec1a4406a15877aa545cde5ede27e8af6c6ec344"
-        },
-        {
-          "module": "app/services/assets.py",
-          "ordinal": 1,
-          "ast_sha256": "51ec7a1e81989e0179bb6c75743b0fac385447fb0271e663318a2286e1d2dbcc"
-        }
-      ]
-    },
     "delete": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -1694,22 +1678,6 @@
         }
       ]
     },
-    "load_prompt_libraries": {
-      "category": "逻辑已经分叉",
-      "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
-      "members": [
-        {
-          "module": "app/routers/api_prompt_libraries.py",
-          "ordinal": 1,
-          "ast_sha256": "b093a74bd8ad487130497accc6de4fd1fd6b4d82c4219c2bc2dbca968203307d"
-        },
-        {
-          "module": "app/services/assets.py",
-          "ordinal": 1,
-          "ast_sha256": "eda85b22ca8407f54ada0969addad081c41dce42d24a810b3890ded06152de5c"
-        }
-      ]
-    },
     "load_specs": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -2371,38 +2339,6 @@
         }
       ]
     },
-    "normalize_prompt_libraries": {
-      "category": "逻辑已经分叉",
-      "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
-      "members": [
-        {
-          "module": "app/routers/api_prompt_libraries.py",
-          "ordinal": 1,
-          "ast_sha256": "83e73024b4bd9d441aafc1a92cedb6614a364e8b983447f51bd3b92ed6ed7768"
-        },
-        {
-          "module": "app/services/assets.py",
-          "ordinal": 1,
-          "ast_sha256": "b6d2cb1809a9d61f5b0fe9b4eef8855398ff42a38d0e8c2d4e1e04b42967f12b"
-        }
-      ]
-    },
-    "normalize_prompt_library_item": {
-      "category": "逻辑已经分叉",
-      "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
-      "members": [
-        {
-          "module": "app/routers/api_prompt_libraries.py",
-          "ordinal": 1,
-          "ast_sha256": "cdc9ebee43d06264b83ed28595d7526de3f13d2ead71017e2a1b3938b4c83a48"
-        },
-        {
-          "module": "app/services/assets.py",
-          "ordinal": 1,
-          "ast_sha256": "0406d3a42a606941a8473fc3e10b3b454589c522bf92add0cbf7aad632589bc3"
-        }
-      ]
-    },
     "operation": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -2949,22 +2885,6 @@
           "module": "tests/test_gpt_image2_5_ratio_resolution.py",
           "ordinal": 1,
           "ast_sha256": "6059aacf15ff151c0dbd4fa9931059ea14a9472c395099dccfd72b5ab28688a3"
-        }
-      ]
-    },
-    "public_prompt_libraries": {
-      "category": "逻辑已经分叉",
-      "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
-      "members": [
-        {
-          "module": "app/routers/api_prompt_libraries.py",
-          "ordinal": 1,
-          "ast_sha256": "52bc756b23707e9597a6187ab4ea1438dc9790cedfb6372a70a6c912c43fae17"
-        },
-        {
-          "module": "app/services/assets.py",
-          "ordinal": 1,
-          "ast_sha256": "63d6225d6b09424351ee30d9c32ccc4b1b0eef041b5be5d52f0e43d3737debe0"
         }
       ]
     },
@@ -3555,22 +3475,6 @@
           "module": "app/services/providers.py",
           "ordinal": 1,
           "ast_sha256": "bce452e01b409b5759f6db972c2b1cf2f6f09d9af70704bae72225d7ca4f8304"
-        }
-      ]
-    },
-    "save_prompt_libraries": {
-      "category": "逻辑已经分叉",
-      "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
-      "members": [
-        {
-          "module": "app/routers/api_prompt_libraries.py",
-          "ordinal": 1,
-          "ast_sha256": "468e35638a7c11003d389cf0afad54a4fa5b25c8940d9c2cc1c824aa8085612e"
-        },
-        {
-          "module": "app/services/assets.py",
-          "ordinal": 1,
-          "ast_sha256": "2dccc13cf435d49bf7ed21bd30f85ead602fb90eadf3129b76f5d97b8c316bf5"
         }
       ]
     },

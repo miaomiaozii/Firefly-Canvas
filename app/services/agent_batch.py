@@ -116,9 +116,8 @@ def _thumb(project, asset):
 def _product_presets(canvas):
     if not any(node.get('promptPresetId') for node in canvas.get('nodes', [])):
         return frozenset()
-    from app.routers.api_prompt_libraries import PROMPT_LIBRARY_PATH
     try:
-        with open(PROMPT_LIBRARY_PATH, encoding='utf-8') as handle:
+        with open(_api()._app_main.PROMPT_LIBRARY_PATH, encoding='utf-8') as handle:
             data = json.load(handle)
     except (OSError, ValueError):
         return frozenset()

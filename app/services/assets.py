@@ -198,7 +198,7 @@ def normalize_prompt_libraries(data):
     return {'active_library_id': active, 'libraries': libraries, 'updated_at': int(data.get('updated_at') or _svc._main('now_ms')())}
 
 def public_prompt_libraries(data=None):
-    data = normalize_prompt_libraries(data or _svc._main('load_prompt_libraries')())
+    data = normalize_prompt_libraries(data or load_prompt_libraries())
     return {'active_library_id': data.get('active_library_id') or (data.get('libraries') or [{}])[0].get('id') or 'system', 'libraries': data.get('libraries') or [], 'updated_at': data.get('updated_at') or _svc._main('now_ms')()}
 
 def migrate_double_extension_uploads():
@@ -305,6 +305,7 @@ def load_prompt_libraries():
 def save_prompt_libraries(data):
     data = normalize_prompt_libraries(data)
     data['updated_at'] = _svc._main('now_ms')()
-    firefly_json_io.read_global_json(_svc._main('PROMPT_LIBRARY_PATH'), dict)
-    firefly_json_io.write_json_atomic(_svc._main('PROMPT_LIBRARY_PATH'), data)
+    path = _svc._main('PROMPT_LIBRARY_PATH')
+    firefly_json_io.read_global_json(path, dict)
+    firefly_json_io.write_json_atomic(path, data)
     return data

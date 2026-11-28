@@ -332,10 +332,9 @@ def test_batch_429_with_no_approved_retries_does_not_use_legacy_backoff(fx, monk
 
 
 def test_product_preset_metadata_and_allowed_unclassified_art(fx, tmp_path, monkeypatch):
-    from app.routers import api_prompt_libraries
     library = tmp_path / 'presets.json'
     library.write_text(json.dumps({'libraries': [{'items': [{'id': 'photo', 'category': 'product'}]}]}))
-    monkeypatch.setattr(api_prompt_libraries, 'PROMPT_LIBRARY_PATH', library)
+    monkeypatch.setattr(main, 'PROMPT_LIBRARY_PATH', library)
     patch_node(fx, 'b', promptPresetId='photo')
     assert rest(fx, 'preflight', {'node_ids': ['b']})[1]['blockers'] == [
         {'node_id': 'b', 'code': 'MISSING_PRODUCT_REF'}]
