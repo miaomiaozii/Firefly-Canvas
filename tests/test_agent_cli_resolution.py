@@ -312,9 +312,11 @@ class SpawnCliResolutionTests(unittest.TestCase):
                 os.environ["PATH"] = _stub_path(base)
                 fake_process = _FakeProcess()
                 version = agent_host.subprocess.CompletedProcess([], 0, stdout="1.6.1\n")
-                with (mock.patch.object(agent_host.subprocess, "run", return_value=version) as probe,
+                with (mock.patch.dict(os.environ, {"PI_PACKAGE_DIR": str(base / "parent-pi-package")}),
+                      mock.patch.object(agent_host.subprocess, "run", return_value=version) as probe,
                       mock.patch.object(agent_host.subprocess, "Popen", return_value=fake_process) as popen):
                     self._run(self.manager.spawn_session(session))
+                    self.assertEqual(os.environ["PI_PACKAGE_DIR"], str(base / "parent-pi-package"))
             finally:
                 os.environ["PATH"] = previous_path
         if session._reader_task is not None:
@@ -331,6 +333,8 @@ class SpawnCliResolutionTests(unittest.TestCase):
         self.assertIn("--mode", command)
         self.assertEqual(probe.call_args.args[0], command[:2] + ["--version"])
         self.assertEqual(probe.call_args.kwargs["cwd"], kwargs["cwd"])
+        self.assertNotIn("PI_PACKAGE_DIR", set(probe.call_args.kwargs["env"]))
+        self.assertNotIn("PI_PACKAGE_DIR", set(kwargs["env"]))
         self.assertEqual(probe.call_args.kwargs["env"], kwargs["env"])
 
 

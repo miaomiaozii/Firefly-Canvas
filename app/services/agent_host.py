@@ -828,6 +828,8 @@ class AgentHostManager:
                 return False
 
             env = os.environ.copy()
+            # Bind Pi's version and package resources to the resolved CLI, not its parent harness (#476).
+            env.pop("PI_PACKAGE_DIR", None)
             # #279：回连基址跟随实际监听端口（显式值 → FIREFLY_PORT → 默认 3000）
             env["FIREFLY_AGENT_API_BASE"] = resolve_agent_api_base(env)
             env["FIREFLY_AGENT_PROJECT_ID"] = session.project_id
