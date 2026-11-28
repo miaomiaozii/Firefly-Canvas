@@ -310,22 +310,6 @@
         }
       ]
     },
-    "_photoshop_prune_requests_locked": {
-      "category": "逻辑已经分叉",
-      "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
-      "members": [
-        {
-          "module": "app/routers/api_project_library.py",
-          "ordinal": 1,
-          "ast_sha256": "70a015ffc6703d76198231119f0c36f8d990489d39a73528fea18f82a64b4d16"
-        },
-        {
-          "module": "main.py",
-          "ordinal": 1,
-          "ast_sha256": "4f15f091168ae7218d3af76113ec14a51c83007650fd867a225bfeb52db9502a"
-        }
-      ]
-    },
     "_photoshop_request_snapshot": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",

@@ -982,34 +982,6 @@ def _agent_mark_recovered_uncertain(project_id: str, agent_id: str, plan: Mappin
 
 
 
-def _photoshop_prune_requests_locked(now: Optional[int] = None) -> None:
-    now_value = int(now if now is not None else now_ms())
-    changed_projects = set()
-    for request_id, record in list(PHOTOSHOP_ROUND_TRIP_REQUESTS.items()):
-        expires_at = int(record.get("expires_at_ms") or 0)
-        if record.get("state") == "pending" and now_value >= expires_at:
-            record["state"] = "expired"
-            changed_projects.add(str(record.get("project_id") or ""))
-        terminal_at = int(record.get("returned_at") or 0) * 1000 or expires_at
-        if record.get("state") in {"returned", "expired"} and now_value - terminal_at > PHOTOSHOP_ROUND_TRIP_RETENTION_MS:
-            PHOTOSHOP_ROUND_TRIP_REQUESTS.pop(request_id, None)
-            changed_projects.add(str(record.get("project_id") or ""))
-    overflow = max(0, len(PHOTOSHOP_ROUND_TRIP_REQUESTS) - PHOTOSHOP_ROUND_TRIP_MAX_REQUESTS)
-    if overflow > 0:
-        terminal = sorted(
-            ((int(record.get("returned_at") or 0) * 1000 or int(record.get("expires_at_ms") or 0), request_id)
-             for request_id, record in PHOTOSHOP_ROUND_TRIP_REQUESTS.items()
-             if record.get("state") in {"returned", "expired"}),
-        )
-        for _, request_id in terminal[:overflow]:
-            removed = PHOTOSHOP_ROUND_TRIP_REQUESTS.pop(request_id, None)
-            if removed:
-                changed_projects.add(str(removed.get("project_id") or ""))
-    # issue #95：状态变化（过期/清除/容量淘汰）后同步落盘，避免重启后状态回退。
-    for project_id in sorted(p for p in changed_projects if p):
-        _photoshop_persist_table_locked(project_id)
-
-
 def _photoshop_persist_table_locked(project_id: str) -> None:
     """把项目的当前往返请求表落盘（issue #95）。调用方必须持有 PHOTOSHOP_ROUND_TRIP_LOCK。"""
     with PROJECT_LIBRARY_SWITCH_LOCK:
