@@ -81,6 +81,7 @@ function Start-FireflyServer {
                 [Environment]::SetEnvironmentVariable($name, [NullString]::Value)
             }
         }
+        # Same entrypoint as run.bat -> launch-firefly.ps1.
         Start-Process -FilePath $py `
             -ArgumentList @('tools\run-server.py') `
             -WorkingDirectory $root `
