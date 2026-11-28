@@ -625,10 +625,16 @@
   const chatDockFetch = {mode:'same-origin', credentials:'same-origin', referrerPolicy:'same-origin'};
   const chatDockUi = Object.fromEntries([
     'Panel', 'Title', 'State', 'Versions', 'DetectionNote', 'FolderStatus', 'EnableNote', 'PreferenceFeedback',
+    'Guide', 'Installed', 'ManagerUrl', 'FolderPath', 'ReloadNote', 'ActionFeedback',
+    'CopyManager', 'OpenFolder', 'CopyFolder', 'Reload', 'Options', 'Uninstall',
   ].map(name => [name, document.getElementById(`chatDock${name}`)]));
   let chatDockFolder;
   let chatDockReceipt;
   let chatDockPolling = false;
+  let chatDockReloadedFrom = null;
+  let chatDockActionBusy = false;
+  // Web pages cannot open chrome:// or edge:// URLs, so the guide copies the address instead.
+  const chatDockManagerUrl = /\bEdg\//.test(navigator.userAgent) ? 'edge://extensions' : 'chrome://extensions';
 
   const dockText = suffix => tr(`globalSettings.chatDock${suffix}`);
   const versionTuple = version => typeof version === 'string' && /^\d+(?:\.\d+)*$/.test(version) ? version.split('.').map(Number) : null;
@@ -661,6 +667,10 @@
   function updateChatDockControls(){
     chatDockEnabled.disabled = !state || loading || lockSettings || !chatDockReceipt?.supported
       || pendingWrites.has(chatDockEnabled) || pendingWrites.has(savePreferences);
+    const available = chatDockFolder?.available === true;
+    chatDockUi.OpenFolder.disabled = !available || chatDockActionBusy;
+    chatDockUi.CopyFolder.disabled = !available;
+    for(const button of [chatDockUi.Reload, chatDockUi.Options, chatDockUi.Uninstall]) button.disabled = chatDockActionBusy;
   }
 
   function renderChatDock(){
@@ -681,6 +691,16 @@
     setDockText(chatDockUi.FolderStatus, folderMessage ? dockText(folderMessage) : '');
     setDockVisible(chatDockUi.FolderStatus, Boolean(folderMessage));
     setDockText(chatDockUi.EnableNote, dockText(!receipt ? 'EnableUndetected' : receipt.supported ? 'EnableNote' : 'EnableUnsupported'));
+    setDockVisible(chatDockUi.Guide, receipt === null);
+    setDockVisible(chatDockUi.Installed, Boolean(receipt));
+    setDockText(chatDockUi.ManagerUrl, chatDockManagerUrl);
+    setDockText(chatDockUi.FolderPath, available ? chatDockFolder.directory : '');
+    setDockVisible(chatDockUi.FolderPath, available);
+    chatDockUi.Reload.className = outdated ? 'primary-button' : 'quiet-button';
+    // reload() only rereads the folder the browser already remembers; still behind afterwards means another folder.
+    const staleAfterReload = outdated && chatDockReloadedFrom !== null && chatDockReloadedFrom === receipt.version;
+    setDockText(chatDockUi.ReloadNote, staleAfterReload ? dockText('ReloadStillOutdated') : '');
+    setDockVisible(chatDockUi.ReloadNote, staleAfterReload);
     updateChatDockControls();
   }
 
@@ -843,6 +863,58 @@
     } catch(error) { setStatus(error.message || localText('偏好保存失败', 'Failed to save preferences'), 'error'); }
     finally { finishWrite(savePreferences); }
   });
+  async function copyChatDockText(text){
+    try {
+      await navigator.clipboard.writeText(text);
+      dockFeedback(chatDockUi.ActionFeedback, 'Copied');
+    } catch { dockFeedback(chatDockUi.ActionFeedback, 'CopyFailed', 'error'); }
+  }
+  async function runChatDockAction(work, failed){
+    if(chatDockActionBusy) return;
+    chatDockActionBusy = true;
+    updateChatDockControls();
+    dockFeedback(chatDockUi.ActionFeedback, '');
+    try {
+      if(!(await work())) dockFeedback(chatDockUi.ActionFeedback, failed, 'error');
+    } catch { dockFeedback(chatDockUi.ActionFeedback, failed, 'error'); }
+    finally {
+      chatDockActionBusy = false;
+      updateChatDockControls();
+    }
+  }
+  chatDockUi.CopyManager.addEventListener('click', () => copyChatDockText(chatDockManagerUrl));
+  chatDockUi.CopyFolder.addEventListener('click', () => {
+    if(chatDockFolder?.available === true) void copyChatDockText(chatDockFolder.directory);
+  });
+  chatDockUi.OpenFolder.addEventListener('click', () => runChatDockAction(async () => {
+    await requestJson(`${chatDockUrl}/open-folder`, {...chatDockFetch, method:'POST'});
+    return true;
+  }, 'OpenFolderFailed'));
+  chatDockUi.Options.addEventListener('click', () => runChatDockAction(() => window.FireflyChatDockClient.options(), 'ActionFailed'));
+  chatDockUi.Reload.addEventListener('click', () => runChatDockAction(async () => {
+    const from = chatDockReceipt?.version ?? null;
+    if(!(await window.FireflyChatDockClient.reload())) return false;
+    chatDockReloadedFrom = from;
+    chatDockReceipt = undefined;
+    dockFeedback(chatDockUi.ActionFeedback, 'Reloading');
+    renderChatDock();
+    // The content script dies with the old runtime; wait for the reloaded one to answer.
+    for(let attempt = 0; attempt < 10 && !chatDockReceipt; attempt++){
+      await new Promise(resolve => setTimeout(resolve, 600));
+      await pollChatDock();
+    }
+    dockFeedback(chatDockUi.ActionFeedback, chatDockReceipt ? 'Reloaded' : 'ReloadPending');
+    return true;
+  }, 'ActionFailed'));
+  chatDockUi.Uninstall.addEventListener('click', () => runChatDockAction(async () => {
+    // Cancelling the browser dialog is not an error; the receipt simply stays.
+    await window.FireflyChatDockClient.uninstall();
+    chatDockReceipt = undefined;
+    await new Promise(resolve => setTimeout(resolve, 600));
+    await pollChatDock();
+    return true;
+  }, 'ActionFailed'));
+
   chatDockEnabled.addEventListener('change', async () => {
     if(!startWrite(chatDockEnabled)){
       chatDockEnabled.checked = state?.preferences?.chat_dock_enabled === true;

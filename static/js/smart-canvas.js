@@ -17941,6 +17941,7 @@ try {
         }
         if(event.data?.type === 'preferences-changed'){
             await refreshAutosavePreferences(event.data.preferences || null);
+            void refreshSmartChatDockEntry(event.data.preferences || null);
             if(event.data.preferences?.theme) applyTheme(event.data.preferences.theme);
             if(event.data.preferences?.language && window.StudioI18n) window.StudioI18n.set(event.data.preferences.language);
         }
@@ -17974,6 +17975,7 @@ window.addEventListener('message', event => {
     if(event.data?.type === 'providers-changed') refreshSmartConfigFromSettings();
     if(event.data?.type === 'preferences-changed'){
         refreshAutosavePreferences(event.data.preferences || null);
+        void refreshSmartChatDockEntry(event.data.preferences || null);
         if(event.data.preferences?.theme) applyTheme(event.data.preferences.theme);
         if(event.data.preferences?.language && window.StudioI18n) window.StudioI18n.set(event.data.preferences.language);
     }
@@ -18043,6 +18045,35 @@ window.FireflyChatCapture?.connect({
     addImageNode: ({x, y}, image) => createNode(x, y, [image]),
     redraw: render, save: scheduleSave,
 });
+// #519: the chat panel entry shows only when the user enabled it in global settings and the extension answers.
+// Inside the extension shell the canvas is a sub-frame and already sits next to the panel, so it never shows there.
+const smartChatDockButton = document.getElementById('smartChatDockOpen');
+let smartChatDockWanted = false;
+async function refreshSmartChatDockEntry(preferences=null){
+    if(!smartChatDockButton) return;
+    if(window !== window.top || !isProjectCanvasData()){
+        smartChatDockButton.hidden = true;
+        return;
+    }
+    if(preferences) smartChatDockWanted = preferences.chat_dock_enabled === true;
+    else {
+        try {
+            const response = await fetch('/api/global-settings/preferences', {cache:'no-store'});
+            if(response.ok) smartChatDockWanted = (await response.json()).preferences?.chat_dock_enabled === true;
+        } catch { smartChatDockWanted = false; }
+    }
+    const receipt = smartChatDockWanted ? await window.FireflyChatDockClient?.hello() : null;
+    smartChatDockButton.hidden = !(smartChatDockWanted && receipt?.supported === true);
+}
+smartChatDockButton?.addEventListener('click', async () => {
+    if(smartChatDockButton.disabled) return;
+    smartChatDockButton.disabled = true;
+    try {
+        // Open the shell only on a saved canvas: it loads the project from the server, not from this tab.
+        if(!(await manualSaveCanvas())) return;
+        if(!(await window.FireflyChatDockClient?.openDock())) toast(tr('smart.chatDockOpenFailed'));
+    } finally { smartChatDockButton.disabled = false; }
+});
 window.onload = async () => {
     applyTheme(localStorage.getItem('studio_theme') || localStorage.getItem('canvas_theme') || 'light');
     loadPromptPresets();
@@ -18061,5 +18092,8 @@ window.onload = async () => {
         if(window.parent === window || !window.parent){
             requestAnimationFrame(() => smartAgentViewport.ready());
         }
+        void refreshSmartChatDockEntry();
+        // The user may install or reload the extension in another tab and come back.
+        window.addEventListener('focus', () => { void refreshSmartChatDockEntry(); });
     }
 };

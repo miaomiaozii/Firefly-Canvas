@@ -27,7 +27,7 @@ INCLUDE_TOP = [
     'main.py', 'firefly_generation.py', 'firefly_diagnostics.py', 'firefly_opsdb.py',
     # issue #364：main.py 在 __main__ 里 import 它，漏了便携包直接起不来。
     'firefly_server_log.py',
-    'firefly_project_annotations.py', 'firefly_project_undo.py', 'firefly_project_versions.py',
+    'firefly_project_annotations.py', 'firefly_project_cover.py', 'firefly_project_undo.py', 'firefly_project_versions.py',
     'firefly_projects.py', 'firefly_projects_cleanup.py', 'firefly_projects_deletion.py',
     'firefly_withdrawn_refs.py',
     # 存量缺口：main.py 直接 `import firefly_json_io`（#345 原子写走它），
@@ -40,6 +40,11 @@ INCLUDE_TOP = [
 # app/ 与 static/ 内部剔除项
 PRUNE_DIRS = {'__pycache__', 'node_modules', 'tests', '.pytest_cache'}
 PRUNE_FILE_PATTERNS = ('.pyc', '.pyo', '.bak')
+
+# #519：对话扩展放进 env/chat-dock，和 python.exe、ffmpeg 同级；用户在浏览器里「加载已解压的扩展程序」选这个目录。
+# tests/ 只给开发用，不进包。
+CHAT_DOCK_SOURCE = REPO / 'extensions' / 'chat-dock'
+CHAT_DOCK_PRUNE_DIRS = PRUNE_DIRS | {'tests'}
 
 # 运行时数据种子：带配置（provider 模型清单/规格/提示词库），不带个人画布/会话/日志
 DATA_SEED_FILES = ['api_providers.json', 'model_specs.json', 'asset_library.json',
@@ -141,6 +146,14 @@ def copy_tree(rel: str, dest_root: Path) -> None:
             shutil.copy2(sp, dst / sp.relative_to(src))
 
 
+def stage_chat_dock(env_dir: Path) -> Path:
+    dest = env_dir / 'chat-dock'
+    shutil.copytree(CHAT_DOCK_SOURCE, dest,
+                    ignore=lambda _dir, names: [n for n in names if n in CHAT_DOCK_PRUNE_DIRS])
+    log('对话扩展就位：env/chat-dock')
+    return dest
+
+
 def stage_app(stage: Path) -> None:
     app = stage / 'app_root'
     for rel in INCLUDE_TOP:
@@ -166,6 +179,7 @@ rem Firefly-Canvas 便携版启动器（自带运行时，无需安装任何东�
 cd /d "%~dp0app"
 set "PATH=%~dp0env;%PATH%"
 set "FIREFLY_PROJECTS_ROOT=%~dp0projects"
+set "FIREFLY_CHAT_DOCK_EXTENSION_DIR=%~dp0env\\chat-dock"
 if not exist "%~dp0projects" mkdir "%~dp0projects"
 if not exist ".\\API\\.env" if exist ".\\API\\.env.example" copy ".\\API\\.env.example" ".\\API\\.env" >nul
 start "" /b "" "%~dp0env\\python.exe" -X utf8 main.py
@@ -201,6 +215,7 @@ def main() -> None:
     if not args.skip_deps:
         install_deps(stage_env)
     install_ffmpeg(stage_env)
+    stage_chat_dock(stage_env)
     stage_app(stage)
 
     # 组装最终布局: app/ + env/ + 启动bat + 说明
@@ -214,7 +229,9 @@ def main() -> None:
     (final / '使用说明.txt').write_text(
         'Firefly-Canvas 便携版\n\n1. 双击 启动Firefly.bat 即可，无需安装 Python 或任何环境。\n'
         '2. 服务商密钥：编辑 API\\.env.example 填入后另存为 .env（或首次启动后编辑自动生成的 API\\.env）。\n'
-        '3. 整个文件夹可以任意拷贝/改名，数据都在文件夹内部。\n', encoding='utf-8-sig')
+        '3. 整个文件夹可以任意拷贝/改名，数据都在文件夹内部。\n'
+        '4. 对话扩展在 env\\chat-dock：按「全局设置 → 对话扩展」里的步骤加载到 Chrome 或 Edge。'
+        '浏览器记住的是文件夹路径，移动或改名本文件夹后需要重新加载扩展。\n', encoding='utf-8-sig')
 
     zip_path = out_dir / f'Firefly-Canvas-Portable-{version}.zip'
     if zip_path.exists():

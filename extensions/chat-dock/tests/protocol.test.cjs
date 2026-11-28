@@ -81,7 +81,7 @@ function listeners() {
 }
 
 function sandboxChrome() {
-  const context = vm.createContext({URL, setTimeout, clearTimeout});
+  const context = vm.createContext({URL, URLSearchParams, setTimeout, clearTimeout});
   context.importScripts = (...names) => names.forEach(name => vm.runInContext(read(name), context));
   const state = {stored: {}, grants: new Set(manifest.host_permissions), sent: [], registrations: [], tabs: [], rules: [], failRules: false};
   context.chrome = {
@@ -183,7 +183,7 @@ test('#519 background hello answers only an exact configured settings sender', a
     {url: url.replace('.html', '.html.bak')}, {frameId: undefined}, {tab: undefined}]) {
     assert.equal((await receive(context, data, {...sender, ...changes}))?.ok, undefined);
   }
-  for (const changes of [{action: 'reload'}, {action: 'open-canvas'}, {extra: 'value'}]) {
+  for (const changes of [{action: 'open-canvas'}, {extra: 'value'}]) {
     assert.equal(await receive(context, {...data, ...changes}, sender), undefined);
   }
   state.stored = {[P.ORIGIN_KEY]: 'http://127.0.0.1:3201'};
@@ -193,6 +193,63 @@ test('#519 background hello answers only an exact configured settings sender', a
   assert.deepEqual(state.sent, []);
 });
 
+test('#519 lifecycle actions are split by page: settings manages, the top canvas only opens the shell', async () => {
+  const {context, state} = sandboxChrome();
+  const runtime = context.chrome.runtime;
+  const calls = [];
+  runtime.getManifest = () => manifest;
+  runtime.reload = () => calls.push(['reload']);
+  runtime.openOptionsPage = async () => { calls.push(['options']); };
+  let confirm = true;
+  context.chrome.management = {uninstallSelf: async options => {
+    calls.push(['uninstall', options]);
+    if (!confirm) throw new Error('cancelled');
+  }};
+  context.chrome.tabs.create = async options => { calls.push(['create', options]); return {id: 9}; };
+  vm.runInContext(read('background.js'), context);
+  const origin = P.DEFAULT_ORIGIN;
+  const settings = {url: `${origin}/static/global-settings.html`, origin, id: extensionId, frameId: 0, tab: {id: 1, index: 3}};
+  const canvas = {...settings, url: `${canvasURL}?id=c_1&project=p-2&project_mode=1&extra=x`};
+  const ask = action => ({channel: 'firefly.chat-dock.lifecycle.v1', action});
+
+  assert.deepEqual(await receive(context, ask('options'), settings), {ok: true});
+  assert.deepEqual(await receive(context, ask('reload'), settings), {ok: true});
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.deepEqual(await receive(context, ask('uninstall'), settings), {ok: true});
+  confirm = false;
+  assert.deepEqual(await receive(context, ask('uninstall'), settings), {ok: false});
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['options'], ['reload'],
+    ['uninstall', {showConfirmDialog: true}], ['uninstall', {showConfirmDialog: true}]]);
+  calls.length = 0;
+
+  // The canvas may not manage the extension, and settings may not open the shell.
+  for (const action of ['reload', 'uninstall', 'options']) assert.equal(await receive(context, ask(action), canvas), null);
+  assert.equal(await receive(context, ask('open-dock'), settings), null);
+  // Only the ordinary top-level canvas: the canvas inside the shell is a sub-frame.
+  assert.equal(await receive(context, ask('open-dock'), {...canvas, frameId: 4}), null);
+  assert.equal(calls.length, 0);
+
+  assert.deepEqual(await receive(context, ask('open-dock'), canvas), {ok: true});
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)), [['create', {
+    url: `chrome-extension://${extensionId}/canvas.html?id=c_1&project=p-2&project_mode=1`, index: 4, openerTabId: 1}]]);
+  for (const search of ['?project=p', '?id=a%2Fb', '?id=a&project_mode=2', `?id=${'x'.repeat(129)}`]) {
+    assert.deepEqual(await receive(context, ask('open-dock'), {...canvas, url: canvasURL + search}),
+      {ok: false, error: 'CANVAS_NOT_READY'}, search);
+  }
+  assert.equal(calls.length, 1);
+  assert.deepEqual(state.sent, []);
+});
+
+test('#519 the shell opens the requested canvas and falls back to the project list', () => {
+  const context = vm.createContext({URL, URLSearchParams});
+  context.chrome = {runtime: {id: extensionId}};
+  for (const name of ['protocol.js', 'settings-hello.js']) vm.runInContext(read(name), context);
+  const H = context.FireflyChatDockSettingsHello;
+  assert.equal(H.shellCanvasPath('?id=c1&project=p1&project_mode=1'), '/static/smart-canvas.html?id=c1&project=p1&project_mode=1');
+  assert.equal(H.shellCanvasPath('?id=c1'), '/static/smart-canvas.html?id=c1');
+  for (const search of ['', '?project=p1', '?id=..%2F..', '?id=c1&project=a b']) assert.equal(H.shellCanvasPath(search), '/', search);
+});
+
 test('isolated relay checks sender and exact origin before transferring a same-origin port', async () => {
   const {context, state} = sandboxChrome();
   context.window = {postMessage(data, targetOrigin, ports) {
@@ -200,11 +257,12 @@ test('isolated relay checks sender and exact origin before transferring a same-o
     ports[0].postMessage({ok: true, canAppend: true});
   }};
   context.window.top = context.window;
+  context.pageListeners = [];
+  context.window.addEventListener = (type, listener) => context.pageListeners.push(type);
   context.posts = [];
   context.location = new URL(canvasURL);
   context.MessageChannel = MessageChannel;
-  vm.runInContext(read('protocol.js'), context);
-  vm.runInContext(read('canvas-relay.js'), context);
+  for (const name of ['protocol.js', 'settings-hello.js', 'canvas-relay.js']) vm.runInContext(read(name), context);
   const serviceWorker = {id: extensionId, url: context.chrome.runtime.getURL('background.js')};
   assert.equal(await receive(context, capture(), chatSender), undefined);
   assert.equal(await receive(context, capture(), {...serviceWorker, id: 'wrong'}), undefined);
@@ -219,6 +277,8 @@ test('isolated relay checks sender and exact origin before transferring a same-o
   assert.deepEqual(context.posts[0].data, capture());
   assert.equal(context.posts[0].ports.length, 1);
   context.posts[0].ports[0].close();
+  // #519: the top-level canvas also answers lifecycle requests for the toolbar entry.
+  assert.deepEqual(context.pageListeners, ['message']);
 });
 
 test('framing rules exist only for switched-on sites, only for sub frames under this extension', async () => {

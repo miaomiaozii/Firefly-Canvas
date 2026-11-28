@@ -217,6 +217,8 @@ def main() -> None:
     app_dir = root / 'app'
     env = dict(os.environ)
     env.update({
+        # 启动器 set 的同一个变量；这里直跑 main.py，必须照抄，否则服务会退回仓库里的扩展目录。
+        'FIREFLY_CHAT_DOCK_EXTENSION_DIR': str(root / 'env' / 'chat-dock'),
         'FIREFLY_PORT': str(PORT),
         'FIREFLY_PROJECTS_ROOT': str(root / 'projects'),
         'PATH': str(root / 'env') + os.pathsep + env.get('PATH', ''),
@@ -304,6 +306,22 @@ def main() -> None:
             print('SKIP  真实生成（开发机无 MOSS 私钥）')
 
         log('ffmpeg 随包', (root / 'env' / 'ffmpeg.exe').exists(), '')
+
+        dock = root / 'env' / 'chat-dock'
+        repo_version = json.loads((REPO / 'extensions' / 'chat-dock' / 'manifest.json').read_text(encoding='utf-8'))['version']
+        try:
+            bundled_version = json.loads((dock / 'manifest.json').read_text(encoding='utf-8'))['version']
+        except (OSError, ValueError, KeyError):
+            bundled_version = None
+        log('对话扩展随包且版本与仓库一致', bundled_version == repo_version and not (dock / 'tests').exists(),
+            f'bundled={bundled_version} repo={repo_version}')
+        launcher = (root / '启动Firefly.bat').read_text(encoding='utf-8', errors='ignore')
+        log('启动器指向随包扩展目录', 'FIREFLY_CHAT_DOCK_EXTENSION_DIR=%~dp0env\\chat-dock' in launcher, '')
+        # 该接口要求同源来源头，get() 不带，用 _fetch。
+        st_dock, dock_body = _fetch('/api/global-settings/chat-dock')
+        dock_info = json.loads(dock_body) if st_dock == 200 else {'http': st_dock}
+        log('服务端读到随包扩展', dock_info.get('available') is True and dock_info.get('version') == repo_version
+            and Path(dock_info.get('directory') or '.').resolve() == dock.resolve(), json.dumps(dock_info, ensure_ascii=False))
     finally:
         proc.terminate()
         try:

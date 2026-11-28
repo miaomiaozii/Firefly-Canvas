@@ -2305,7 +2305,7 @@
         {
           "module": "tools/build_portable.py",
           "ordinal": 1,
-          "ast_sha256": "0b6acfa1ac87ccf4db234d6f7caecb948d6f82d2f3c43a27439fbb2d877ddb2a"
+          "ast_sha256": "a84b8fc79519bd0d7b3eb447136f3b39689a66114236eb7e4f55275fbbeba2dc"
         },
         {
           "module": "tools/canvas_coupling_report.py",
@@ -2405,7 +2405,7 @@
         {
           "module": "tools/verify_portable.py",
           "ordinal": 1,
-          "ast_sha256": "634dad3bca19112b344292eec177c982fe6acf5b7c41dccd0f492ec735b2233e"
+          "ast_sha256": "fb375f7c20b26ffe1d8a8510a3fa7d46c036ca146b09ca20e83e39e3cfa129b1"
         }
       ]
     },

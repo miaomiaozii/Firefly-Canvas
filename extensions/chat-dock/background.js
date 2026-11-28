@@ -29,7 +29,7 @@ importScripts('protocol.js', 'framing.js', 'dock-capture-router.js', 'settings-h
     if (relay) await chrome.scripting.unregisterContentScripts({ids: [P.RELAY_ID]});
     if (match) {
       await chrome.scripting.registerContentScripts([{
-        id: P.RELAY_ID, matches: [match], js: ['protocol.js', 'canvas-relay.js'], runAt: 'document_idle',
+        id: P.RELAY_ID, matches: [match], js: ['protocol.js', 'settings-hello.js', 'canvas-relay.js'], runAt: 'document_idle',
         allFrames: true, persistAcrossSessions: true, world: 'ISOLATED',
       }]);
     }
@@ -140,10 +140,39 @@ importScripts('protocol.js', 'framing.js', 'dock-capture-router.js', 'settings-h
     }
   }
 
+  async function openDock(sender) {
+    const query = hello.shellQuery(sender.url);
+    if (!query) return P.failure('CANVAS_NOT_READY');
+    await chrome.tabs.create({url: `${chrome.runtime.getURL('canvas.html')}?${query}`,
+      index: Number.isInteger(sender.tab.index) ? sender.tab.index + 1 : undefined, openerTabId: sender.tab.id});
+    return {ok: true};
+  }
+
+  async function lifecycle(data, sender) {
+    await settings;
+    const request = await hello.lifecycleRequest(data, sender, storedOrigin);
+    if (!request) return null;
+    switch (request.action) {
+      case 'hello': return hello.helloReceipt();
+      case 'open-dock': return openDock(sender);
+      case 'options':
+        await chrome.runtime.openOptionsPage();
+        return {ok: true};
+      case 'reload':
+        // Answer before the worker dies; the page re-detects the new runtime by itself.
+        setTimeout(() => chrome.runtime.reload(), 100);
+        return {ok: true};
+      case 'uninstall':
+        // The browser shows its own confirmation; cancelling rejects and leaves the extension installed.
+        return chrome.management.uninstallSelf({showConfirmDialog: true}).then(() => ({ok: true}), () => ({ok: false}));
+    }
+    return null;
+  }
+
   chrome.runtime.onMessage.addListener((data, sender, sendResponse) => {
     if (sender.id !== chrome.runtime.id) return;
-    if (hello.isHello(data)) {
-      settings.then(() => hello.getSettingsHello(data, sender, storedOrigin)).then(sendResponse, () => sendResponse(null));
+    if (hello.isLifecycle(data)) {
+      lifecycle(data, sender).then(sendResponse, () => sendResponse(null));
       return true;
     }
     if (dock.activeChild(sender)) {

@@ -126,7 +126,7 @@
   }
 
   globalThis.FireflyChatProtocol = Object.freeze({
-    CHANNEL, DEFAULT_ORIGIN, ORIGIN_KEY, RELAY_ID, SET_ORIGIN, MAX_TEXT, MAX_BYTES, DOCK_READY, DOCK_PROBE, DOCK_PROOF,
+    CHANNEL, DEFAULT_ORIGIN, ORIGIN_KEY, CANVAS_PATH, RELAY_ID, SET_ORIGIN, MAX_TEXT, MAX_BYTES, DOCK_READY, DOCK_PROBE, DOCK_PROOF,
     dockChild, listenForDockProof, dockCaptureSite: site => DOCK_CAPTURE_SITES.has(site),
     chatSite, parseOrigin, originSetting, isCanvasURL, canvasPatterns, chooseCanvas, exactKeys, validCapture,
     failure, response, supportedMime: mime => MIMES.has(mime), errorText: error => STRINGS[error] ?? STRINGS.CAPTURE_FAILED,

@@ -7,6 +7,7 @@
   if (docked && !P.dockChild()) return;
   globalThis.FireflyChatRelayInstalled = true;
   if (docked) P.listenForDockProof('canvas');
+  else FireflyChatDockSettingsHello.listenForPage(P.isCanvasURL);
 
   const RESPONSE_TIMEOUT = 15_000;
   function forward(data) {

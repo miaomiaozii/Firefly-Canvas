@@ -303,6 +303,20 @@ class PortableBundleTests(unittest.TestCase):
         missing = sorted(present - set(self.build_portable.INCLUDE_TOP))
         self.assertEqual(missing, [], f"便携包清单缺顶层模块：{missing}")
 
+    def test_chat_dock_extension_is_staged_without_tests_and_the_launcher_points_at_it(self):
+        # #519：设置页从 FIREFLY_CHAT_DOCK_EXTENSION_DIR 找扩展；启动器不 set，便携版就会退回 app/ 下不存在的仓库目录。
+        import tempfile
+
+        self.assertIn('set "FIREFLY_CHAT_DOCK_EXTENSION_DIR=%~dp0env\\chat-dock"', self.build_portable.LAUNCHER)
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = self.build_portable.stage_chat_dock(Path(tmp))
+            self.assertEqual(dest, Path(tmp) / "chat-dock")
+            self.assertTrue((dest / "manifest.json").is_file())
+            self.assertFalse((dest / "tests").exists())
+            source = self.build_portable.CHAT_DOCK_SOURCE
+            self.assertEqual(
+                (dest / "manifest.json").read_bytes(), (source / "manifest.json").read_bytes())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -206,7 +206,8 @@
     const frame = byId('firefly-frame');
     // Canvas clipboard and fullscreen support belongs only to the configured origin.
     frame.allow = ['clipboard-read', 'clipboard-write', 'fullscreen'].map(feature => `${feature} ${origin}`).join('; ');
-    frame.src = new URL('/', origin).href;
+    // The canvas entry opens the shell on its own project; anything malformed falls back to the project list.
+    frame.src = new URL(FireflyChatDockSettingsHello.shellCanvasPath(location.search), origin).href;
     frame.hidden = false;
     return true;
   }

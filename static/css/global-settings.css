@@ -380,6 +380,12 @@ input[type="checkbox"], input[type="radio"] { margin: 0; accent-color: var(--acc
 .chat-dock-state { margin: 0; }
 .chat-dock-preference { margin-top: var(--space-12); padding-top: var(--space-12); border-top: 1px solid var(--line); }
 .chat-dock-feedback { margin: 0; }
+.chat-dock-guide, .chat-dock-installed { margin-top: var(--space-12); }
+.chat-dock-guide h3 { margin: 0; font-size: var(--font-control); }
+.chat-dock-steps { margin: var(--space-8) 0 0; padding-inline-start: 1.4em; display: grid; gap: var(--space-8); }
+.chat-dock-steps .provider-actions { margin-top: var(--space-4); }
+.chat-dock-steps code { color: var(--muted); }
+.chat-dock-path { overflow-wrap: anywhere; font-family: ui-monospace, Consolas, monospace; }
 .chat-dock-feedback:not(:empty) { margin-top: var(--space-8); }
 
 .library-form { display: grid; align-items: end; gap: var(--space-12); }

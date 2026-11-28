@@ -135,9 +135,35 @@
             <p id="chatDockDetectionNote" class="status-detail" hidden></p>
             <p id="chatDockFolderStatus" class="status-detail" hidden></p>
           </div>
+          <div id="chatDockGuide" class="chat-dock-guide" hidden>
+            <h3 data-i18n="globalSettings.chatDockGuideTitle">安装对话扩展</h3>
+            <ol class="chat-dock-steps">
+              <li><span data-i18n="globalSettings.chatDockStepManager">在地址栏打开扩展管理页，并开启右上角的「开发者模式」。</span>
+                <div class="provider-actions"><button id="chatDockCopyManager" class="quiet-button" type="button"><span data-i18n="globalSettings.chatDockCopyManager">复制扩展管理页地址</span> <code id="chatDockManagerUrl">chrome://extensions</code></button></div></li>
+              <li><span data-i18n="globalSettings.chatDockStepLoad">点「加载已解压的扩展程序」，选择下面这个文件夹。</span>
+                <div class="provider-actions">
+                  <button id="chatDockOpenFolder" class="quiet-button" type="button" data-i18n="globalSettings.chatDockOpenFolder">打开扩展文件夹</button>
+                  <button id="chatDockCopyFolder" class="quiet-button" type="button" data-i18n="globalSettings.chatDockCopyFolder">复制文件夹路径</button>
+                </div>
+                <p id="chatDockFolderPath" class="status-detail chat-dock-path" hidden></p></li>
+              <li data-i18n="globalSettings.chatDockStepDetect">加载完成后回到这里，页面会自动重新检测。</li>
+            </ol>
+            <p class="status-detail" data-i18n="globalSettings.chatDockDevModeNote">开发者模式下加载的扩展，浏览器启动时可能弹出提示，这是正常的。浏览器记住的是文件夹路径：移动或改名 Firefly 文件夹后需要重新加载。</p>
+          </div>
+          <div id="chatDockInstalled" class="chat-dock-installed" hidden>
+            <div class="provider-actions">
+              <button id="chatDockReload" class="quiet-button" type="button" data-i18n="globalSettings.chatDockReload">重新加载扩展</button>
+              <button id="chatDockOptions" class="quiet-button" type="button" data-i18n="globalSettings.chatDockOptions">扩展选项</button>
+              <button id="chatDockUninstall" class="danger-button" type="button" data-i18n="globalSettings.chatDockUninstall">卸载</button>
+            </div>
+            <p id="chatDockReloadNote" class="status-detail" hidden></p>
+            <p class="status-detail" data-i18n="globalSettings.chatDockUpgradeNote">升级时把新文件覆盖到同一个文件夹，再点「重新加载扩展」，设置会保留。如果换了文件夹，需要在扩展管理页移除旧扩展再加载新文件夹，Firefly 地址、面板布局和逐站开关要重新设置。</p>
+          </div>
+          <p id="chatDockActionFeedback" class="page-status chat-dock-feedback" role="status"></p>
           <p class="status-detail" data-i18n="globalSettings.chatDockProtectionNote">部分站点禁止嵌入。降低这些限制可能削弱安全防护；建议在普通标签页打开。</p>
+          <p class="status-detail" data-i18n="globalSettings.chatDockFramingNote">ChatGPT、Gemini、DeepSeek、通义在面板内显示，需要到「扩展选项」里逐站开启，默认关闭；开启后这些站点在面板内的安全防护会降低。</p>
           <div class="chat-dock-preference">
-            <label class="inline-check"><input id="chatDockEnabled" type="checkbox" aria-describedby="chatDockEnableNote" disabled><span data-i18n="globalSettings.chatDockEnabled">保存对话面板偏好</span></label>
+            <label class="inline-check"><input id="chatDockEnabled" type="checkbox" aria-describedby="chatDockEnableNote" disabled><span data-i18n="globalSettings.chatDockEnabled">在画布显示对话面板入口</span></label>
             <p id="chatDockEnableNote" class="status-detail"></p>
             <p id="chatDockPreferenceFeedback" class="page-status chat-dock-feedback" role="status"></p>
           </div>

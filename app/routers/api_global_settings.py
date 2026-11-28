@@ -142,11 +142,42 @@ def get_chat_dock_bundle(request: Request):
     return {'available': True, 'version': version, 'directory': str(directory)}
 
 
+_LOOPBACK_CLIENTS = frozenset({'127.0.0.1', '::1'})
+
+
+def _open_in_file_manager(directory: Path) -> None:
+    if os.name == 'nt':
+        os.startfile(str(directory))
+    else:
+        import subprocess
+        subprocess.Popen(['open' if _sys.platform == 'darwin' else 'xdg-open', str(directory)])
+
+
+@router.post('/api/global-settings/chat-dock/open-folder')
+async def open_chat_dock_folder(request: Request):
+    ensure_same_origin_request(request)
+    # #519：打开的是运行 Firefly 那台机器的资源管理器。FIREFLY_ALLOWED_HOSTS 放行的局域网来源
+    # 也能过同源检查，但那会在别人的屏幕上弹窗，所以这里只认回环客户端。
+    client = str(getattr(request.client, 'host', '') or '').lower()
+    if client not in _LOOPBACK_CLIENTS:
+        raise HTTPException(status_code=403, detail='只有本机可以打开扩展文件夹')
+    bundle = _chat_dock_bundle()
+    if bundle is None:
+        raise HTTPException(status_code=404, detail='扩展文件缺失')
+    try:
+        await asyncio.to_thread(_open_in_file_manager, bundle[0])
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f'无法打开扩展文件夹: {exc}') from exc
+    return {'ok': True}
+
+
 @router.patch('/api/global-settings/preferences')
 async def update_global_preferences(payload: GlobalPreferencesPayload):
-    # #365：旧客户端仍可传 en；服务层统一存为 zh。
+    # #365：语言只认 zh；老页面/老缓存发的 'en' 照接（存下去会被迁成 zh），不能返回 400——
+    # 那会让用户只改个主题也存不了。其它值仍然拒。
     if payload.theme not in {'light', 'dark'} or payload.language not in {'zh', 'en'}:
         raise HTTPException(status_code=400, detail='主题或语言无效')
+    # #493：字段缺失 = 旧客户端，保留已存值；只有显式提供的严格 bool 才写入。
     provided = payload.model_fields_set
     preferences = await asyncio.to_thread(
         save_global_preferences,
