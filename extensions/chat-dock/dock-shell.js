@@ -27,28 +27,23 @@
     catch { return null; }
   }
   const stored = readLayout(SETTINGS);
-  const priorLayout = directMode ? readLayout(regularLayoutKey) : null;
-  const layouts = new Map();
-  const lastSite = stored?.site ?? priorLayout?.site;
-  let site = sites.includes(lastSite) ? lastSite : sites[0];
+  const source = stored ?? (directMode ? readLayout(regularLayoutKey) : null);
+  const lastSite = sites.includes(source?.site) ? source.site : undefined;
+  let site = lastSite ?? sites[0];
   let drag;
 
-  function layoutFor(key) {
-    if (layouts.has(key)) return layouts.get(key);
-    const saved = stored?.layouts?.[key];
-    const previous = saved ?? priorLayout?.layouts?.[key];
-    const number = (field, fallback) => Number.isFinite(previous?.[field]) ? previous[field] : fallback;
-    const value = {
-      mode: ['left', 'right', 'float'].includes(previous?.mode) ? previous.mode : 'right',
-      dockWidth: number('dockWidth', defaultDockWidth), x: number('x', 84), y: number('y', 24),
-      width: number('width', 460), height: number('height', 590), collapsed: saved ? saved.collapsed === true : directMode,
-    };
-    layouts.set(key, value);
-    return value;
-  }
+  // #521: migrate only the last selected site's geometry; a first direct visit borrows geometry, not visibility.
+  const saved = source?.layout ?? (lastSite ? source?.layouts?.[lastSite] : undefined);
+  const savedNumber = (field, fallback) => Number.isFinite(saved?.[field]) ? saved[field] : fallback;
+  const layout = {
+    mode: ['left', 'right', 'float'].includes(saved?.mode) ? saved.mode : 'right',
+    dockWidth: savedNumber('dockWidth', defaultDockWidth), x: savedNumber('x', 84), y: savedNumber('y', 24),
+    width: savedNumber('width', 460), height: savedNumber('height', 590),
+    collapsed: stored && saved ? saved.collapsed === true : directMode,
+  };
 
   function persist() {
-    try { localStorage.setItem(SETTINGS, JSON.stringify({site, layouts: Object.fromEntries(layouts)})); }
+    try { localStorage.setItem(SETTINGS, JSON.stringify({site, layout})); }
     catch { /* The layout still works if persistence is disabled. */ }
   }
 
@@ -73,23 +68,22 @@
   }
 
   function render() {
-    const value = layoutFor(site);
-    const floating = value.mode === 'float';
-    shell.dataset.mode = value.mode;
-    shell.toggleAttribute('data-collapsed', value.collapsed);
-    panel.hidden = value.collapsed;
-    divider.hidden = value.collapsed || floating;
-    reveal.hidden = !value.collapsed;
-    reveal.setAttribute('aria-expanded', String(!value.collapsed));
+    const floating = layout.mode === 'float';
+    shell.dataset.mode = layout.mode;
+    shell.toggleAttribute('data-collapsed', layout.collapsed);
+    panel.hidden = layout.collapsed;
+    divider.hidden = layout.collapsed || floating;
+    reveal.hidden = !layout.collapsed;
+    reveal.setAttribute('aria-expanded', String(!layout.collapsed));
     move.hidden = resize.hidden = !floating;
-    const b = bounds(value);
+    const b = bounds(layout);
     for (const [key, px] of Object.entries({
       'dock-width': b.dockWidth, 'float-width': b.width, 'float-height': b.height, 'float-x': b.x, 'float-y': b.y,
     })) shell.style.setProperty(`--${key}`, `${px}px`);
     divider.setAttribute('aria-valuemin', String(b.minDock));
     divider.setAttribute('aria-valuemax', String(b.maxDock));
     divider.setAttribute('aria-valuenow', String(b.dockWidth));
-    modeButtons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.mode === value.mode)));
+    modeButtons.forEach(button => button.setAttribute('aria-pressed', String(button.dataset.mode === layout.mode)));
   }
 
   const mounted = embed.mount({
@@ -99,21 +93,21 @@
   let framed = {};
   let shown;
   function showSite(key, reload = false) {
-    // The same-tab shell starts collapsed and must not load or reload a chat site the user is not looking at.
-    if (directMode && (layoutFor(key).collapsed || (shown === key && !reload))) return;
+    // A collapsed same-tab shell must not load or reload a chat site the user is not looking at.
+    if (directMode && (layout.collapsed || (shown === key && !reload))) return;
     // #515 "AC": the per-site framing switches apply to every shell entry, including the same-tab one (#520).
     mounted(key, framed);
     shown = key;
   }
   sites.forEach(key => sitePicker.add(new Option(embed.names[key], key)));
-  sites.forEach(layoutFor);
-  if (directMode && new URLSearchParams(location.search).get('expand') === '1') {
-    layoutFor(site).collapsed = false;
-    persist();
+  const expand = directMode && new URLSearchParams(location.search).get('expand') === '1';
+  if (expand) {
+    layout.collapsed = false;
     const clean = new URL(location.href);
     clean.searchParams.delete('expand');
     history.replaceState(null, '', clean.href);
   }
+  if (expand || stored && !stored.layout) persist();
   sitePicker.value = site;
   showSite(site);
   chrome.storage.local.get(FireflyChatFraming.KEY).then(stored => {
@@ -131,25 +125,20 @@
   sitePicker.addEventListener('change', () => {
     if (!sites.includes(sitePicker.value)) return;
     site = sitePicker.value;
-    if (directMode) collapse(false);
-    else {
-      showSite(site);
-      render();
-      persist();
-    }
+    showSite(site);
+    persist();
   });
   let modeChange = 0;
   const afterPaint = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
   async function changeMode(mode) {
-    const value = layoutFor(site);
-    if (drag || value.mode === mode && !shell.hasAttribute('data-layout-changing')) return;
+    if (drag || layout.mode === mode && !shell.hasAttribute('data-layout-changing')) return;
     const change = ++modeChange;
     // A cross-origin iframe can still own Chromium's native hit region after DOM geometry moves.
     // End its old hit region before moving the divider and restore it after the new layout paints.
     shell.setAttribute('data-layout-changing', '');
     await afterPaint();
     if (change !== modeChange) return;
-    value.mode = mode;
+    layout.mode = mode;
     render();
     persist();
     await afterPaint();
@@ -158,7 +147,7 @@
   modeButtons.forEach(button => button.addEventListener('click', () => { void changeMode(button.dataset.mode); }));
 
   function collapse(value, returnFocus) {
-    layoutFor(site).collapsed = value;
+    layout.collapsed = value;
     if (directMode && !value) showSite(site);
     render();
     persist();
@@ -190,22 +179,21 @@
   function bindGesture(handle, kind, {edge = '', keys = true} = {}) {
     handle.addEventListener('pointerdown', event => {
       if (!event.isPrimary || event.button !== 0 || drag) return;
-      if (handle === titleBar && (layoutFor(site).mode !== 'float' || event.target.closest('button, a'))) return;
+      if (handle === titleBar && (layout.mode !== 'float' || event.target.closest('button, a'))) return;
       // Native text/element dragging cancels pointer capture before the divider crosses an iframe.
       event.preventDefault();
       if (keys) handle.focus({preventScroll: true});
-      const value = layoutFor(site);
-      drag = {id: event.pointerId, value, original: {...value}, start: bounds(value), x: event.clientX, y: event.clientY};
+      drag = {id: event.pointerId, original: {...layout}, start: bounds(layout), x: event.clientX, y: event.clientY};
       handle.setPointerCapture(event.pointerId);
       shell.setAttribute('data-dragging', '');
     });
     handle.addEventListener('pointermove', event => {
       if (drag?.id !== event.pointerId) return;
-      applyDelta(kind, drag.value, drag.start, event.clientX - drag.x, event.clientY - drag.y, edge);
+      applyDelta(kind, layout, drag.start, event.clientX - drag.x, event.clientY - drag.y, edge);
     });
     function end(event, cancel) {
       if (drag?.id !== event.pointerId) return;
-      if (cancel) Object.assign(drag.value, drag.original);
+      if (cancel) Object.assign(layout, drag.original);
       else persist();
       drag = null;
       shell.removeAttribute('data-dragging');
@@ -219,15 +207,14 @@
       const delta = {ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1]}[event.key];
       if (!delta || (kind === 'dock' && !delta[0]) || event.altKey || event.ctrlKey || event.metaKey) return;
       event.preventDefault();
-      const value = layoutFor(site);
       const step = event.shiftKey ? 40 : 10;
-      applyDelta(kind, value, bounds(value), delta[0] * step, delta[1] * step, edge);
+      applyDelta(kind, layout, bounds(layout), delta[0] * step, delta[1] * step, edge);
       persist();
     });
   }
   bindGesture(divider, 'dock');
   divider.addEventListener('dblclick', () => {
-    layoutFor(site).dockWidth = defaultDockWidth;
+    layout.dockWidth = defaultDockWidth;
     render();
     persist();
   });
@@ -279,7 +266,7 @@
         respond(true);
       } else if (data.action === direct.request && data.nonce === proofNonce && direct.actions.has(data.command)) {
         proofNonce = undefined;
-        if (data.command === 'toggle-dock') collapse(!layoutFor(site).collapsed);
+        if (data.command === 'toggle-dock') collapse(!layout.collapsed);
         else location.replace(`${fireflyOrigin}/`);
         respond(true);
       }

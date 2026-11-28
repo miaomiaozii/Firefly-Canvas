@@ -307,7 +307,7 @@ test('native mouse resizes over the full divider and every floating edge across 
     assert.equal(await input.inputValue(), 'keep the cross-origin document alive');
   }));
 
-test('allowed mock stays loaded across docks and float drag/resize; restores each site and keeps the browser-denied page blocked', {timeout: 75_000}, () =>
+test('allowed mock survives layout changes; switching sites preserves the current layout and leaves browser denial intact', {timeout: 75_000}, () =>
   withDockBrowser(async ({page, context}) => {
     const panel = page.locator('#chat-dock-panel');
     const firefly = page.locator('#firefly-frame');
@@ -325,22 +325,6 @@ test('allowed mock stays loaded across docks and float drag/resize; restores eac
       await button.click();
       await page.locator(`#dock-shell[data-mode="${mode}"]:not([data-layout-changing])`).waitFor();
     };
-    const drag = async (locator, dx, dy) => {
-      const box = await locator.boundingBox();
-      const x = box.x + box.width / 2;
-      const y = box.y + box.height / 2;
-      // After a dock switch, DOM geometry can settle before native hit testing stops routing to the old iframe bounds.
-      const deadline = performance.now() + 3000;
-      for (;;) {
-        await page.mouse.move(x, y);
-        if (await locator.evaluate(handle => handle.matches(':hover'))) break;
-        assert.ok(performance.now() < deadline, 'Native pointer did not reach the drag handle');
-        await page.evaluate(() => new Promise(requestAnimationFrame));
-      }
-      await page.mouse.down();
-      await page.mouse.move(x + dx, y + dy, {steps: 5});
-      await page.mouse.up();
-    };
     const fit = async (width, height, mode) => {
       const box = await panel.boundingBox();
       const surface = await firefly.boundingBox();
@@ -352,13 +336,13 @@ test('allowed mock stays loaded across docks and float drag/resize; restores eac
     };
     await pressMode('左侧停靠');
     const beforeDock = await panel.boundingBox();
-    await drag(page.getByRole('separator'), 54, 0);
+    await dragPanel(page, page.getByRole('separator'), 54, 0);
     assert.equal((await panel.boundingBox()).width, beforeDock.width + 54);
     await pressMode('浮动');
-    await drag(page.getByRole('button', {name: '移动对话面板'}), -60, 40);
+    await dragPanel(page, page.getByRole('button', {name: '移动对话面板'}), -60, 40);
     let floating = await panel.boundingBox();
     assert.ok(floating.y > 30);
-    await drag(page.getByRole('button', {name: '调整浮动面板尺寸'}), 35, -40);
+    await dragPanel(page, page.getByRole('button', {name: '调整浮动面板尺寸'}), 35, -40);
     assert.ok((await panel.boundingBox()).width > floating.width);
     assert.ok((await panel.boundingBox()).height < floating.height);
     floating = await panel.boundingBox();
@@ -368,7 +352,7 @@ test('allowed mock stays loaded across docks and float drag/resize; restores eac
     const blocked = page.waitForEvent('console', {predicate: message =>
       /frame-ancestors|X-Frame-Options/i.test(message.text()) && message.type() === 'error'});
     await sites.selectOption('gemini.google.com');
-    await pressMode('右侧停靠');
+    assert.deepEqual(await panel.boundingBox(), floating);
     const open = page.getByRole('link', {name: '在新标签页打开'});
     assert.equal(await open.getAttribute('href'), 'https://gemini.google.com/');
     await page.waitForFunction(() => document.querySelector('#chat-view iframe')?.src.includes('gemini.google.com'));
@@ -386,7 +370,7 @@ test('allowed mock stays loaded across docks and float drag/resize; restores eac
     await input.waitFor();
     assert.deepEqual(await panel.boundingBox(), floating);
     await sites.selectOption('gemini.google.com');
-    assert.equal(await page.getByRole('button', {name: '右侧停靠', exact: true}).getAttribute('aria-pressed'), 'true');
+    assert.deepEqual(await panel.boundingBox(), floating);
     await sites.selectOption('chatgpt.com');
     for (const [width, height] of [[1440, 900], [1100, 800], [390, 844]]) {
       await page.setViewportSize({width, height});
@@ -401,3 +385,143 @@ test('allowed mock stays loaded across docks and float drag/resize; restores eac
       }
     }
   }, {mock: true}));
+
+async function dragPanel(page, locator, dx, dy) {
+  const box = await locator.boundingBox();
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height / 2;
+  // Native iframe hit regions can settle after the DOM reflects the new dock mode.
+  const deadline = performance.now() + 3000;
+  for (;;) {
+    await page.mouse.move(x, y);
+    if (await locator.evaluate(handle => handle.matches(':hover'))) break;
+    assert.ok(performance.now() < deadline, 'Native pointer did not reach the drag handle');
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+  }
+  await page.mouse.down();
+  await page.mouse.move(x + dx, y + dy, {steps: 5});
+  await page.mouse.up();
+}
+
+const layoutKey = 'firefly.chat-dock.layout.v1';
+const directLayoutKey = 'firefly.chat-dock.direct-layout.v1';
+const directShell = id => `${shell}?id=${id}&project=${id}&project_mode=1&direct=1`;
+const siteA = 'www.doubao.com';
+const siteB = 'www.kimi.com';
+const otherSite = 'yuanbao.tencent.com';
+
+async function setDockMode(page, name, mode) {
+  await page.getByRole('button', {name, exact: true}).click();
+  await page.locator(`#dock-shell[data-mode="${mode}"]:not([data-layout-changing])`).waitFor();
+}
+
+function shellGeometry(page) {
+  return page.locator('#chat-dock-panel').boundingBox();
+}
+
+async function selectDockSite(page, site) {
+  await page.getByLabel('对话站点').selectOption(site);
+  await page.frameLocator('#chat-view iframe').getByLabel('示例对话输入').waitFor();
+  assert.equal(await page.locator('#chat-view iframe').getAttribute('src'), nativeDocks.get(site));
+}
+
+test('#521 shell keeps the adjusted layout when switching sites and reloading in all three modes', {timeout: 60_000}, () =>
+  withDockBrowser(async ({page}) => {
+    await selectDockSite(page, siteA);
+    for (const [mode, name, width] of [['left', '左侧停靠', 460], ['right', '右侧停靠', 500], ['float', '浮动', 500]]) {
+      await setDockMode(page, name, mode);
+      if (mode === 'float') {
+        const move = page.getByRole('button', {name: '移动对话面板'});
+        await dragPanel(page, move, 40, 40);
+        const resize = page.getByRole('button', {name: '调整浮动面板尺寸'});
+        await dragPanel(page, resize, 40, 40);
+      } else {
+        await dragPanel(page, page.getByRole('separator'), mode === 'left' ? 40 : -40, 0);
+      }
+      const adjusted = await shellGeometry(page);
+      assert.equal(adjusted.width, width, mode);
+      if (mode === 'float') assert.deepEqual(adjusted, {x: 124, y: 64, width: 500, height: 630});
+      await selectDockSite(page, siteB);
+      assert.deepEqual(await shellGeometry(page), adjusted, `${mode}: switching to another site must preserve the geometry`);
+      await page.reload();
+      await page.getByLabel('对话站点').waitFor();
+      assert.equal(await page.getByLabel('对话站点').inputValue(), siteB);
+      assert.equal(await page.locator('#dock-shell').getAttribute('data-mode'), mode);
+      assert.deepEqual(await shellGeometry(page), adjusted, `${mode}: reload must preserve the geometry`);
+      await selectDockSite(page, siteA);
+    }
+    await setDockMode(page, '右侧停靠', 'right');
+    await page.getByRole('separator').dblclick();
+    await selectDockSite(page, siteB);
+    await page.reload();
+    assert.equal((await shellGeometry(page)).width, 420, 'reset also persists across sites and reload');
+  }));
+
+test('#521 migrates each saved layout independently and seeds first direct entry without preloading a site', {timeout: 60_000}, () =>
+  withDockBrowser(async ({page, requested}) => {
+    await page.evaluate(({regularKey, directKey, a, b}) => {
+      localStorage.setItem(regularKey, JSON.stringify({site: a, layouts: {
+        [a]: {mode: 'left', dockWidth: 560, collapsed: false}, [b]: {mode: 'right', dockWidth: 470},
+      }}));
+      localStorage.setItem(directKey, JSON.stringify({site: b, layouts: {
+        [a]: {mode: 'right', dockWidth: 430}, [b]: {mode: 'float', dockWidth: 600, x: 120, y: 90, width: 520, height: 480, collapsed: true},
+      }}));
+    }, {regularKey: layoutKey, directKey: directLayoutKey, a: siteA, b: siteB});
+    await page.reload();
+    assert.equal(await page.getByLabel('对话站点').inputValue(), siteA);
+    assert.equal((await shellGeometry(page)).width, 560);
+    await selectDockSite(page, siteB);
+    assert.equal((await shellGeometry(page)).width, 560, 'regular migration uses the site selected before migration');
+    await selectDockSite(page, siteA);
+    const requestCount = requested.length;
+    await page.goto(directShell('first'));
+    const reveal = page.getByRole('button', {name: '展开对话面板'});
+    await reveal.waitFor();
+    assert.equal(await page.locator('#chat-view iframe').count(), 0);
+    assert.ok(requested.slice(requestCount).every(url => ![...nativeDocks.values()].includes(url)));
+    await reveal.click();
+    await page.frameLocator('#chat-view iframe').getByLabel('示例对话输入').waitFor();
+    assert.equal(await page.getByLabel('对话站点').inputValue(), siteB);
+    const floating = {x: 120, y: 90, width: 520, height: 480};
+    assert.deepEqual(await shellGeometry(page), floating);
+    await selectDockSite(page, otherSite);
+    assert.deepEqual(await shellGeometry(page), floating);
+    await page.goto(directShell('first'));
+    assert.deepEqual(await shellGeometry(page), floating);
+    await page.goto(directShell('second'));
+    assert.equal(await page.getByLabel('对话站点').inputValue(), otherSite);
+    assert.deepEqual(await shellGeometry(page), floating);
+    await page.getByRole('button', {name: '收起对话面板'}).click();
+    await page.reload();
+    await reveal.waitFor();
+    assert.equal(await page.locator('#chat-view iframe').count(), 0);
+
+    await page.evaluate(({regularKey, directKey, a}) => {
+      localStorage.setItem(regularKey, JSON.stringify({site: a, layouts: {[a]: {mode: 'left', dockWidth: 560, collapsed: false}}}));
+      localStorage.removeItem(directKey);
+    }, {regularKey: layoutKey, directKey: directLayoutKey, a: siteA});
+    await page.goto(directShell('first'));
+    await reveal.waitFor();
+    assert.equal(await page.locator('#chat-view iframe').count(), 0);
+    await reveal.click();
+    assert.equal(await page.getByLabel('对话站点').inputValue(), siteA);
+    assert.equal((await shellGeometry(page)).width, 560, 'a new direct layout inherits regular geometry');
+    await page.getByRole('separator').press('ArrowRight');
+    assert.equal((await shellGeometry(page)).width, 570);
+    await page.getByRole('button', {name: '收起对话面板'}).click();
+    await page.goto(shell);
+    assert.equal((await shellGeometry(page)).width, 560, 'direct changes never change the regular layout');
+    await page.goto(`${directShell('second')}&expand=1`);
+    await page.frameLocator('#chat-view iframe').getByLabel('示例对话输入').waitFor();
+    assert.equal((await shellGeometry(page)).width, 570);
+    assert.equal(new URL(page.url()).searchParams.has('expand'), false);
+
+    await page.evaluate(({key, a, b}) => localStorage.setItem(key, JSON.stringify({site: b, layouts: {
+      [a]: {mode: 'left', dockWidth: 560},
+    }})), {key: directLayoutKey, a: siteA, b: siteB});
+    await page.goto(directShell('second'));
+    await reveal.click();
+    assert.equal(await page.getByLabel('对话站点').inputValue(), siteB);
+    assert.equal(await page.locator('#dock-shell').getAttribute('data-mode'), 'right');
+    assert.equal((await shellGeometry(page)).width, 420, 'missing legacy selected site uses defaults, not another layout');
+  }));
