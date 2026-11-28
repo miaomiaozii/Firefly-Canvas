@@ -12,6 +12,8 @@ const extensionId = 'ecbjgicacjhegoijmnkijlgeagafgogf';
 const shell = `chrome-extension://${extensionId}/canvas.html`;
 const options = `chrome-extension://${extensionId}/options.html`;
 const edge = process.env.FIREFLY_EDGE_EXECUTABLE;
+const captureChannel = 'firefly.chat-capture.v1';
+const sampleGif = 'R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==';
 
 // Playwright-fulfilled responses never pass through declarativeNetRequest, so the sites are served by a
 // real local HTTPS server and reached through host-resolver mapping.
@@ -35,7 +37,9 @@ function siteServer(dir) {
       }
       response.writeHead(200, {'content-type': 'text/html; charset=utf-8', ...(blocking[host] ?? {})});
       response.end(`<!doctype html><title>static</title><h1 id="ok">${host} fixture</h1>` +
-        "<script>document.title = 'scripted'</script>");
+        "<script>document.title = 'scripted'</script>" +
+        '<p id="capture-word" style="font: 24px sans-serif">Firefly</p>' +
+        `<img id="capture-image" width="100" height="70" src="data:image/gif;base64,${sampleGif}">`);
     });
     server.listen(0, '127.0.0.1', () => done(server));
   }));
@@ -55,6 +59,16 @@ async function withFramingBrowser(run) {
         `--host-resolver-rules=${[...mapped, 'MAP * ~NOTFOUND'].join(', ')}`,
         `--disable-extensions-except=${extension}`, `--load-extension=${extension}`],
     });
+    await context.addInitScript(channel => {
+      window.receivedCaptures = [];
+      window.addEventListener('message', event => {
+        if (!event.isTrusted || event.source !== window || event.origin !== location.origin ||
+            event.data?.channel !== channel || event.ports.length !== 1) return;
+        window.receivedCaptures.push(event.data);
+        event.ports[0].postMessage({ok: true, canAppend: true});
+        event.ports[0].close();
+      });
+    }, captureChannel);
     // Only the default Firefly origin is intercepted; it must never reach a real local service.
     await context.route('http://127.0.0.1:3000/**', route => route.fulfill({contentType: 'text/html; charset=utf-8',
       body: '<h1>Firefly · 离线测试工作区</h1>'}));
@@ -164,4 +178,51 @@ test('#520 same-tab shell honors the per-site switches and starts collapsed with
     await page.bringToFront();
     await page.locator('#chat-framing-hint').waitFor();
     assert.equal(await page.locator('#chat-view iframe').count(), 0, 'switching off removes the frame in the same-tab shell');
+  }));
+
+test('#515 switched-on framed sites capture into the shell canvas; switching off takes them out of the panel', {timeout: 90_000}, () =>
+  withFramingBrowser(async ({context, page}) => {
+    const settings = await context.newPage();
+    await settings.goto(options);
+    const result = settings.locator('#framing-result');
+    for (const name of ['ChatGPT', 'Gemini']) {
+      await settings.getByRole('checkbox', {name}).check();
+      await result.getByText(`已开启 ${name}`, {exact: false}).waitFor();
+    }
+
+    await page.bringToFront();
+    await page.goto(`${shell}?id=c1&project=p1&project_mode=1`);
+    const canvas = page.frameLocator('#firefly-frame');
+    await canvas.getByRole('heading', {name: 'Firefly · 离线测试工作区'}).waitFor();
+    const sites = page.getByLabel('对话站点');
+    const chat = page.frameLocator('#chat-view iframe');
+    const host = chat.locator('#firefly-chat-capture-host');
+    await sites.selectOption('chatgpt.com');
+    await chat.locator('#capture-word').dblclick({position: {x: 24, y: 12}});
+    await host.locator('#selection-chip').click();
+    await host.locator('#new-text').click();
+    await host.getByText('已复制到画布。').waitFor();
+
+    await sites.selectOption('gemini.google.com');
+    const image = chat.locator('#capture-image');
+    await image.waitFor();
+    const bounds = await image.boundingBox();
+    await page.mouse.move(bounds.x + 8, bounds.y + 8);
+    await host.locator('#image-chip').click();
+    await host.getByText('已复制到画布。').waitFor();
+    const received = () => canvas.locator('body').evaluate(() => window.receivedCaptures);
+    const expected = [
+      {site: 'chatgpt.com', action: 'status'},
+      {site: 'chatgpt.com', action: 'new-text', text: 'Firefly'},
+      {site: 'gemini.google.com', action: 'new-image', mime: 'image/gif', bytes: sampleGif},
+    ].map(data => ({channel: captureChannel, ...data}));
+    assert.deepEqual(await received(), expected);
+
+    await settings.getByRole('checkbox', {name: 'ChatGPT'}).uncheck();
+    await result.getByText('已关闭 ChatGPT', {exact: false}).waitFor();
+    await page.bringToFront();
+    await sites.selectOption('chatgpt.com');
+    await page.locator('#chat-framing-hint').waitFor();
+    assert.equal(await page.locator('#chat-view iframe').count(), 0, 'switched off: no panel frame to capture from');
+    assert.deepEqual(await received(), expected);
   }));

@@ -5,8 +5,8 @@
   const site = P.chatSite(location.href);
   if (!site) return;
   if (window !== window.top) {
-    if (!P.dockCaptureSite(site) || !P.dockChild() ||
-        !await chrome.runtime.sendMessage({action: P.DOCK_READY}).catch(() => false)) return;
+    // The background decides which sites may capture in the panel; framed sites depend on the stored switch.
+    if (!P.dockChild() || !await chrome.runtime.sendMessage({action: P.DOCK_READY}).catch(() => false)) return;
     P.listenForDockProof('chat');
   }
 

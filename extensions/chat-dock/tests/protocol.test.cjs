@@ -43,6 +43,18 @@ test('exact chat and canvas origins and exact canvas path', () => {
   }
 });
 
+test('#515 panel capture: three native sites always, the four framed sites only while their own switch is on', () => {
+  for (const site of ['www.doubao.com', 'www.kimi.com', 'yuanbao.tencent.com']) assert.equal(P.dockCaptureSite(site), true, site);
+  for (const site of framingSites) {
+    assert.equal(P.dockCaptureSite(site), false, `${site} off by default`);
+    assert.equal(P.dockCaptureSite(site, F.flags({[F.KEY]: {[site]: true}})), true, `${site} switched on`);
+    const others = Object.fromEntries(framingSites.filter(other => other !== site).map(other => [other, true]));
+    assert.equal(P.dockCaptureSite(site, F.flags({[F.KEY]: others})), false, `${site} needs its own switch`);
+    assert.equal(P.dockCaptureSite(site, F.flags({[F.KEY]: {[site]: 'true'}})), false, `${site} rejects a non-boolean switch`);
+  }
+  for (const site of [null, 'claude.ai', 'chatgpt.com.evil.test']) assert.equal(P.dockCaptureSite(site, {[site]: true}), false, String(site));
+});
+
 test('strict message keys, action, sender hostname, text and decoded byte cap', () => {
   assert.equal(P.validCapture(capture()), true);
   assert.equal(P.validCapture(capture('append-prompt', {text: '字'.repeat(20_000)})), true);

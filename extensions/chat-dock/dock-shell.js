@@ -233,7 +233,7 @@
     const chatFrame = byId('chat-view').querySelector('iframe');
     const canvasFrame = byId('firefly-frame');
     // The shell owns exactly these two direct frames. Do not pick a destination if another frame appears.
-    if (!P.dockCaptureSite(site) || data.site !== site || window.length !== 2 ||
+    if (!P.dockCaptureSite(site, framed) || data.site !== site || window.length !== 2 ||
         !chatFrame?.contentWindow || !canvasFrame.contentWindow) return false;
     for (const [role, frame, origin] of [
       ['chat', chatFrame, `https://${site}`], ['canvas', canvasFrame, data.origin],

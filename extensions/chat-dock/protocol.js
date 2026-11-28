@@ -14,6 +14,8 @@
     'www.doubao.com', 'www.kimi.com', 'yuanbao.tencent.com',
   ]);
   const DOCK_CAPTURE_SITES = new Set(['www.doubao.com', 'www.kimi.com', 'yuanbao.tencent.com']);
+  // #515: a site that only renders in the panel through the user's per-site framing switch may capture there
+  // exactly while that switch is on; `framed` is FireflyChatFraming.flags(), never page-supplied data.
   const DOCK_READY = 'firefly.chat-dock.capture-ready';
   const DOCK_PROBE = 'firefly.chat-dock.capture-probe';
   const DOCK_PROOF = 'firefly.chat-dock.capture-proof';
@@ -127,7 +129,7 @@
 
   globalThis.FireflyChatProtocol = Object.freeze({
     CHANNEL, DEFAULT_ORIGIN, ORIGIN_KEY, CANVAS_PATH, RELAY_ID, SET_ORIGIN, MAX_TEXT, MAX_BYTES, DOCK_READY, DOCK_PROBE, DOCK_PROOF,
-    dockChild, listenForDockProof, dockCaptureSite: site => DOCK_CAPTURE_SITES.has(site),
+    dockChild, listenForDockProof, dockCaptureSite: (site, framed) => DOCK_CAPTURE_SITES.has(site) || (SITES.has(site) && framed?.[site] === true),
     chatSite, parseOrigin, originSetting, isCanvasURL, canvasPatterns, chooseCanvas, exactKeys, validCapture,
     failure, response, supportedMime: mime => MIMES.has(mime), errorText: error => STRINGS[error] ?? STRINGS.CAPTURE_FAILED,
   });

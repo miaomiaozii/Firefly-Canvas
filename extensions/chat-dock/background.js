@@ -208,13 +208,17 @@ importScripts('protocol.js', 'framing.js', 'settings-hello.js', 'dock-direct.js'
         return;
       }
       const site = P.chatSite(sender.url);
-      if (!P.dockCaptureSite(site)) return;
-      if (data?.action === P.DOCK_READY && P.exactKeys(data, ['action'])) {
-        dock.shellContext(sender.tab.id).then(id => sendResponse(Boolean(id)), () => sendResponse(false));
-        return true;
-      }
-      if (!P.validCapture(data, site)) return;
-      routeDock(data, sender).then(sendResponse, () => sendResponse(P.failure('CANVAS_NOT_READY')));
+      if (!site) return;
+      const ready = data?.action === P.DOCK_READY && P.exactKeys(data, ['action']);
+      if (!ready && !P.validCapture(data, site)) return;
+      const refused = ready ? false : P.failure('CAPTURE_FAILED');
+      // Re-read the switch per message: turning it off must stop capture even before the frame is removed.
+      chrome.storage.local.get(F.KEY).then(stored => {
+        if (!P.dockCaptureSite(site, F.flags(stored))) return refused;
+        return ready
+          ? dock.shellContext(sender.tab.id).then(Boolean, () => false)
+          : routeDock(data, sender).catch(() => P.failure('CANVAS_NOT_READY'));
+      }, () => refused).then(sendResponse);
       return true;
     }
     if (sender.frameId !== 0 && sender.frameId !== undefined) return;
