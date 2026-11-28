@@ -170,10 +170,12 @@ function loadAgentTuiModule({
     location = { protocol: 'http:', host: 'example.test' },
     fetchResponse = undefined,
     layout = { x: 0, y: 0, width: 10, height: 10 },
+    storageSeed = {},
     // #323 票 E：加载真实 canvas-node-ops.js（createSmartGroupNode/toggleGroupRefFrame）及其依赖。
     withNodeOps = false,
 } = {}) {
     const { ctx, harness } = createCanvasContext();
+    for (const [key, value] of Object.entries(storageSeed)) ctx.localStorage.setItem(key, value);
     // 注意：harness.mjs:180 设 `ctx.window = ctx`（浏览器里 window === 全局对象）。
     // 绝不能替换 ctx.window——canvas-state.js 的 `window.canvasState = {...}` 会写到
     // 另一个对象上，vm 全局里就拿不到 canvasState。
@@ -2096,6 +2098,50 @@ const dockMemory = ctx => fromContext(evaluate(ctx,
 
 const dockEffects = renders => renders.filter(r =>
     ['render', 'scheduleSave', 'centerViewport'].includes(r.kind));
+
+const dockLayoutKey = 'ff.agentDock.layout.v1';
+
+test('#522 restored width is clamped for display without overwriting the browser preference', () => {
+    const node = { id: 'Beta', type: 'smart-agent', dock: 'right', w: 567 };
+    const saved = JSON.stringify({ width: 616, collapsed: false });
+    const { ctx, harness, renders } = loadAgentDockModule({ width: 1000, nodes: [node], storageSeed: { [dockLayoutKey]: saved } });
+    const width = fn(ctx, 'agentDockDisplayWidth');
+    fn(ctx, 'syncAgentDock')();
+    assert.equal(width(node), 520);
+    assert.equal(fn(ctx, 'agentDockIsCollapsed')(node.id), false);
+    ctx.innerWidth = 880;
+    fn(ctx, 'syncAgentDock')();
+    assert.equal(fn(ctx, 'agentDockIsCollapsed')(node.id), true);
+    ctx.innerWidth = 1440;
+    fn(ctx, 'syncAgentDock')();
+    assert.equal(width(node), 616);
+    assert.equal(fn(ctx, 'agentDockIsCollapsed')(node.id), true, 'widening does not auto-expand this page');
+    assert.equal(harness.store.get(dockLayoutKey), saved);
+    assert.equal(node.w, 567);
+    assert.deepEqual(dockEffects(renders), []);
+});
+
+test('#522 manual collapse is shared across projects and manual expansion does not bypass narrow reload', () => {
+    const alpha = { id: 'Alpha', type: 'smart-agent', dock: 'left', w: 432 };
+    const first = loadAgentDockModule({ nodes: [alpha], storageSeed: { [dockLayoutKey]: '{' } });
+    assert.equal(fn(first.ctx, 'agentDockDisplayWidth')(alpha), 432, 'malformed storage keeps the node fallback');
+    fn(first.ctx, 'agentDockCollapseToggle')(alpha.id);
+    const saved = first.harness.store.get(dockLayoutKey);
+    assert.deepEqual(JSON.parse(saved), { width: 432, collapsed: true });
+    const beta = { id: 'Beta', type: 'smart-agent', dock: 'right', w: 567 };
+    const second = loadAgentDockModule({ nodes: [beta], storageSeed: { [dockLayoutKey]: saved } });
+    assert.equal(fn(second.ctx, 'agentDockIsCollapsed')(beta.id), true);
+    assert.equal(fn(second.ctx, 'agentDockDisplayWidth')(beta), 432);
+    fn(second.ctx, 'agentDockCollapseToggle')(beta.id);
+    const expanded = second.harness.store.get(dockLayoutKey);
+    assert.deepEqual(JSON.parse(expanded), { width: 432, collapsed: false });
+    const narrow = loadAgentDockModule({ width: 880, nodes: [beta], storageSeed: { [dockLayoutKey]: expanded } });
+    fn(narrow.ctx, 'syncAgentDock')();
+    assert.equal(fn(narrow.ctx, 'agentDockIsCollapsed')(beta.id), true);
+    assert.equal(narrow.harness.store.get(dockLayoutKey), expanded);
+    assert.deepEqual([alpha.w, beta.w], [432, 567]);
+    for (const view of [first, second, narrow]) assert.deepEqual(dockEffects(view.renders), []);
+});
 
 test('#407 D1-v2 agentDockState / ShouldAutoCollapse：左右状态、窄视口与中央留白边界不变', () => {
     const { ctx } = loadAgentDockModule();

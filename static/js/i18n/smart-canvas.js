@@ -1,6 +1,8 @@
 (function(){
     if(!window.StudioI18n) return;
     window.StudioI18n.register({
+        "smart.agentDockResize": { zh: "调整 Agent 停靠面板宽度", en: "Resize the Agent dock" },
+        "smart.agentDockResizeHint": { zh: "拖动或按左右方向键调整宽度，双击恢复默认宽度", en: "Drag or press the arrow keys to resize. Double-click to reset." },
         "smart.agentPresentEmpty": { zh: "暂无内容", en: "No content" },
         "smart.agentPresentProposal": { zh: "提议，尚未执行", en: "Proposal; not executed" },
         "smart.agentPresentReadonly": { zh: "历史记录只读", en: "Read-only history" },

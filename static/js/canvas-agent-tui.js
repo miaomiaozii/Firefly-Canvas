@@ -4540,7 +4540,28 @@ function bindAgentTaskNodeControls(el, node){
 const AGENT_DOCK_GAP = 12;              // 收起窄条与屏幕边缘的间距（CSS .agent-dock-node left/right）
 const AGENT_DOCK_COLLAPSED_W = 44;      // 窄条态宽度
 const AGENT_DOCK_NARROW_VW = 900;       // 视口宽低于此值 → 自动收起（只收不展，展开由用户手动）
-const AGENT_DOCK_CLEAR_VW = 480;        // 面板宽 + 此值 > 视口宽 → 自动收起（给中央内容留位置）
+const AGENT_DOCK_CLEAR_VW = 480;        // 保留给画布的中央空间
+const AGENT_DOCK_MIN_W = 330;
+const AGENT_DOCK_DEFAULT_W = 480;
+const AGENT_DOCK_LAYOUT_KEY = 'ff.agentDock.layout.v1';
+let agentDockLayout = readAgentDockLayout();
+let agentDockResizePreview = null;
+
+function readAgentDockLayout(){
+    try {
+        const value = JSON.parse(localStorage.getItem(AGENT_DOCK_LAYOUT_KEY));
+        if(Number.isSafeInteger(value?.width) && value.width >= AGENT_DOCK_MIN_W && typeof value.collapsed === 'boolean') return value;
+    } catch (_error) { /* #348: unavailable or malformed browser storage keeps the legacy layout. */ }
+    return null;
+}
+
+function rememberAgentDockLayout(width, collapsed){
+    if(agentDockLayout?.width === width && agentDockLayout.collapsed === collapsed) return;
+    agentDockLayout = {width, collapsed};
+    try {
+        localStorage.setItem(AGENT_DOCK_LAYOUT_KEY, JSON.stringify(agentDockLayout));
+    } catch (_error) { /* #348: an unavailable store must not undo the current page's layout. */ }
+}
 
 function agentDockState(node){
     return node && (node.dock === 'left' || node.dock === 'right') ? node.dock : null;
@@ -4550,7 +4571,7 @@ const agentDockCollapsed = new Set();
 const agentDockUserExpanded = new Set();
 
 function agentDockIsCollapsed(nodeId){
-    return agentDockCollapsed.has(nodeId);
+    return agentDockLayout?.collapsed === true || agentDockCollapsed.has(nodeId);
 }
 
 function agentDockForget(nodeId){
@@ -4574,11 +4595,25 @@ function normalizeAgentDockNodes(nodes){
     });
 }
 
-// 停靠宽度与画布内布局同公式（imageLayout 的 Agent 特判：node.w 有效则用，否则 480；下限 330）
 function agentDockNodeWidth(node){
     const w = Number(node && node.w);
-    const base = (Number.isFinite(w) && w > 24) ? w : 480;
-    return Math.max(330, Math.round(base));
+    const base = Number.isFinite(w) && w > 24 ? w : AGENT_DOCK_DEFAULT_W;
+    return Math.max(AGENT_DOCK_MIN_W, Math.round(base));
+}
+
+function agentDockMaxWidth(){
+    return Math.max(AGENT_DOCK_MIN_W, window.innerWidth - AGENT_DOCK_CLEAR_VW);
+}
+
+function clampAgentDockWidth(width){
+    return Math.min(agentDockMaxWidth(), Math.max(AGENT_DOCK_MIN_W, Math.round(width)));
+}
+
+function agentDockDisplayWidth(node, element){
+    const preview = agentDockResizePreview;
+    const wanted = preview && preview.element === element && preview.side === node.dock ? preview.width : agentDockLayout?.width;
+    // Preserve the existing node-based fallback until the first local layout change.
+    return wanted === undefined ? agentDockNodeWidth(node) : clampAgentDockWidth(wanted);
 }
 
 function agentDockElement(nodeId){
@@ -4616,14 +4651,74 @@ function agentDockNodeHtml(node){
     const scale = nodeScale(node);
     const layout = imageLayout(node.images || [], scale, node) || { width: 480, height: 360 };
     const title = node.title || 'Agent';
-    return `<div class="image-node agent-smart-node agent-dock-node dock-${node.dock}${agentDockIsCollapsed(nodeId) ? ' dock-collapsed' : ''}${isNodeSelected(nodeId) ? ' selected' : ''}" data-id="${escapeHtml(nodeId)}" style="width:${agentDockNodeWidth(node)}px">
+    const bodyId = `agent-dock-body-${escapeAttr(nodeId)}`;
+    return `<div class="image-node agent-smart-node agent-dock-node dock-${node.dock}${agentDockIsCollapsed(nodeId) ? ' dock-collapsed' : ''}${isNodeSelected(nodeId) ? ' selected' : ''}" data-id="${escapeHtml(nodeId)}">
         <div class="node-head"><div class="node-title"><span class="agent-title-kind">Agent</span>${escapeHtml(title)}</div><div class="node-head-meta">${agentCardStatusHtml(nodeId)}</div><div class="node-actions">${agentHeadActionButtonsHtml(node)}</div></div>
-        <div class="node-body">${nodeBodyHtml(node, layout)}</div>
+        <div class="node-body" id="${bodyId}">${nodeBodyHtml(node, layout)}</div>
+        <div class="agent-dock-resize" data-agent-dock-resize role="separator" tabindex="0" aria-orientation="vertical" aria-controls="${bodyId}" aria-label="${escapeAttr(tr('smart.agentDockResize'))}" title="${escapeAttr(tr('smart.agentDockResizeHint'))}"></div>
         <button type="button" class="dock-collapse-strip" data-agent-dock-expand="${escapeAttr(nodeId)}" title="展开停靠面板" aria-label="展开停靠面板"><svg class="ico" aria-hidden="true"><use href="#i-generate"/></svg><span class="dock-strip-title">${escapeHtml(title)}</span></button>
     </div>`;
 }
 
-// 停靠节点的事件绑定（bindNodeEvents 只覆盖 world 内节点，停靠槽自己绑）
+// Width gestures have no canvas history or save hooks; only presentation and local storage change.
+function bindAgentDockWidth(el, nodeId){
+    const handle = el.querySelector('[data-agent-dock-resize]');
+    if(!handle) return;
+    let gesture = null;
+    const activeNode = () => !el.classList.contains('drag-out') && agentDockElement(nodeId) === el && !agentDockIsCollapsed(nodeId)
+        ? canvasState.nodes.find(node => node.id === nodeId && agentDockState(node)) : null;
+    const commit = width => {
+        rememberAgentDockLayout(clampAgentDockWidth(width), false);
+        syncAgentDock();
+    };
+    const widthAt = event => gesture.startWidth + (event.clientX - gesture.startX) * (gesture.side === 'left' ? 1 : -1);
+    handle.addEventListener('pointerdown', event => {
+        const node = activeNode();
+        if(!node || gesture || event.button !== 0 || !event.isPrimary) return;
+        event.preventDefault();
+        event.stopPropagation();
+        handle.setPointerCapture(event.pointerId);
+        gesture = {id:event.pointerId, side:node.dock, startX:event.clientX, startWidth:agentDockDisplayWidth(node, el)};
+    });
+    handle.addEventListener('pointermove', event => {
+        if(gesture?.id !== event.pointerId || activeNode()?.dock !== gesture.side || event.clientX === gesture.startX && !agentDockResizePreview) return;
+        agentDockResizePreview = {element:el, side:gesture.side, width:widthAt(event)};
+        syncAgentDock();
+    });
+    const finish = event => {
+        if(gesture?.id !== event.pointerId) return;
+        const width = widthAt(event);
+        const changed = event.type === 'pointerup' && activeNode()?.dock === gesture.side && event.clientX !== gesture.startX;
+        gesture = null;
+        if(agentDockResizePreview?.element === el) agentDockResizePreview = null;
+        if(changed) commit(width);
+        else syncAgentDock();
+    };
+    ['pointerup', 'pointercancel', 'lostpointercapture'].forEach(type => handle.addEventListener(type, finish));
+    handle.addEventListener('click', event => event.stopPropagation());
+    handle.addEventListener('dblclick', event => {
+        event.stopPropagation();
+        if(activeNode()) commit(AGENT_DOCK_DEFAULT_W);
+    });
+    handle.addEventListener('keydown', event => {
+        const node = activeNode();
+        if(!node || gesture || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+        const direction = node.dock === 'left' ? 1 : -1;
+        const width = agentDockDisplayWidth(node, el);
+        let next;
+        switch(event.key){
+            case 'Home': next = AGENT_DOCK_MIN_W; break;
+            case 'End': next = agentDockMaxWidth(); break;
+            case 'ArrowLeft': next = width - 16 * direction; break;
+            case 'ArrowRight': next = width + 16 * direction; break;
+            default: return;
+        }
+        event.preventDefault();
+        event.stopPropagation();
+        commit(next);
+    });
+}
+
 function bindAgentDockNodeControls(el, node){
     if(!el || !node) return;
     bindAgentNodeControls(el, node);
@@ -4643,6 +4738,7 @@ function bindAgentDockNodeControls(el, node){
     el.querySelectorAll('[data-agent-dock-expand]').forEach(btn => {
         btn.addEventListener('click', e => { e.preventDefault(); e.stopPropagation(); agentDockCollapseToggle(node.id); });
     });
+    bindAgentDockWidth(el, node.id);
     bindAgentDockDragOut(el, node.id);
 }
 
@@ -4762,20 +4858,23 @@ function agentDockSet(nodeId, dockSide, {actor=null}={}){
 function agentDockCollapseToggle(nodeId){
     const node = canvasState.nodes.find(n => n.id === nodeId);
     if(!node || !agentDockState(node)) return;
-    if(agentDockIsCollapsed(nodeId)){
-        agentDockCollapsed.delete(nodeId);
-        agentDockUserExpanded.add(nodeId); // 手动展开：本次页面中不再被自动收起覆盖
-    } else {
+    const collapsed = !agentDockIsCollapsed(nodeId);
+    if(collapsed){
         agentDockCollapsed.add(nodeId);
         agentDockUserExpanded.delete(nodeId);
+    } else {
+        agentDockCollapsed.delete(nodeId);
+        agentDockUserExpanded.add(nodeId); // 手动展开只在本页覆盖窄视口判定。
     }
+    rememberAgentDockLayout(agentDockLayout?.width ?? agentDockNodeWidth(node), collapsed);
     syncAgentDock();
 }
 
 function agentDockShouldAutoCollapse(node){
     const vw = window.innerWidth;
     if(vw < AGENT_DOCK_NARROW_VW) return true;
-    return agentDockNodeWidth(node) + AGENT_DOCK_CLEAR_VW > vw;
+    // User-chosen widths clamp to available space instead of triggering a collapse.
+    return !agentDockLayout && agentDockNodeWidth(node) + AGENT_DOCK_CLEAR_VW > vw;
 }
 
 // 停靠槽同步（每次全量 render() 尾部调用）：挂载/卸载停靠元素、宽度/收起态/选中态、
@@ -4785,15 +4884,9 @@ function syncAgentDock(){
     const dock = document.getElementById('agentDock');
     if(!dock) return;
     const dockedNodes = (canvasState.nodes || []).filter(n => agentDockState(n));
-    // 不再停靠的节点 → 卸载停靠元素（world 里由 render() 重新出现）
     dock.querySelectorAll('.agent-dock-node').forEach(el => {
-        if(!dockedNodes.some(n => n.id === el.dataset.id)) {
-            const state = agentTuiState.get(el.dataset.id);
-            if (state && state.scrollBinding?.body === el.querySelector('[data-agent-tui-body]')) disposeAgentScroll(state);
-            el.remove();
-        }
+        if(!dockedNodes.some(n => n.id === el.dataset.id)) removeAgentDockElement(el);
     });
-    // 新停靠的节点 → 挂载（元素是新建的，草稿/消息由模板从 agentTuiState 注入）
     dockedNodes.forEach(node => {
         if(agentDockElement(node.id)) return;
         const wrap = document.createElement('div');
@@ -4803,21 +4896,23 @@ function syncAgentDock(){
         dock.appendChild(nodeEl);
         bindAgentDockNodeControls(nodeEl, node);
     });
-    // 现有元素同步宽度/收起/选中（render 后 world 里的类不同步到停靠元素，这里补）；
-    // 窄视口自动收起（只收不展：收起态是用户/自动选择，宽视口恢复后不自动展开）
+    // 自动收起只锁存于本页；扩宽视口不能替用户展开面板。
     let leftReserve = 0, rightReserve = 0;
     dockedNodes.forEach(node => {
         if(!agentDockUserExpanded.has(node.id) && agentDockShouldAutoCollapse(node)) agentDockCollapsed.add(node.id);
         const collapsed = agentDockIsCollapsed(node.id);
         const el = agentDockElement(node.id);
+        const width = agentDockDisplayWidth(node, el);
         if(el){
             el.classList.toggle('dock-collapsed', collapsed);
             el.classList.toggle('dock-left', node.dock === 'left');
             el.classList.toggle('dock-right', node.dock === 'right');
             el.classList.toggle('selected', isNodeSelected(node.id));
-            // 收起态宽度用 CSS 类的 44px——但挂载时写了内联 width（同画布节点模板），内联优先，
-            // 所以收起时把内联改成 44，展开时改回节点宽。
-            el.style.width = (collapsed ? AGENT_DOCK_COLLAPSED_W : agentDockNodeWidth(node)) + 'px';
+            el.style.width = (collapsed ? AGENT_DOCK_COLLAPSED_W : width) + 'px';
+            const handle = el.querySelector('[data-agent-dock-resize]');
+            handle?.setAttribute('aria-valuemin', String(AGENT_DOCK_MIN_W));
+            handle?.setAttribute('aria-valuemax', String(agentDockMaxWidth()));
+            handle?.setAttribute('aria-valuenow', String(width));
             el.querySelectorAll('[data-agent-dock-collapse]').forEach(btn => {
                 btn.textContent = collapsed ? '展开' : '收起';
                 btn.title = collapsed ? '展开停靠面板' : '收起为窄条';
@@ -4825,7 +4920,7 @@ function syncAgentDock(){
             });
         }
         // 展开态贴边（CSS left/right:0），只有收起窄条离边 AGENT_DOCK_GAP；展开时再加 GAP 会让小地图与面板间距变成双份。
-        const reserve = collapsed ? AGENT_DOCK_GAP + AGENT_DOCK_COLLAPSED_W : agentDockNodeWidth(node);
+        const reserve = collapsed ? AGENT_DOCK_GAP + AGENT_DOCK_COLLAPSED_W : width;
         if(node.dock === 'left') leftReserve = reserve;
         else rightReserve = reserve;
     });
@@ -4853,16 +4948,17 @@ window.addEventListener('resize', () => {
     }, 200);
 });
 
-// 清理节点时同步卸载停靠元素（deleteNode 路径兜底：render() 后的 syncAgentDock 也会处理，
-// 这里保证删除帧里停靠槽不残留一帧）
+function removeAgentDockElement(el){
+    if(agentDockResizePreview?.element === el) agentDockResizePreview = null;
+    const state = agentTuiState.get(el.dataset.id);
+    if(state && state.scrollBinding?.body === el.querySelector('[data-agent-tui-body]')) disposeAgentScroll(state);
+    el.remove();
+}
+
 function agentDockUnmount(nodeId){
     if(!document.getElementById('agentDock')) return;
     const el = agentDockElement(nodeId);
-    if(el) {
-        const state = agentTuiState.get(nodeId);
-        if (state && state.scrollBinding?.body === el.querySelector('[data-agent-tui-body]')) disposeAgentScroll(state);
-        el.remove();
-    }
+    if(el) removeAgentDockElement(el);
 }
 
 function cleanupAgentTuiState(nodeId) {
