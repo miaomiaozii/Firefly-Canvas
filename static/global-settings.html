@@ -39,6 +39,7 @@
         <div class="settings-nav-group" role="group" aria-labelledby="settingsConnections">
           <p id="settingsConnections" class="eyebrow" data-i18n="globalSettings.groupConnections">连接与运行</p>
           <button class="quiet-button" type="button" aria-controls="photoshopPanel" aria-labelledby="navPhotoshop"><span id="navPhotoshop">Photoshop</span><span class="settings-nav-dot" hidden></span></button>
+          <button class="quiet-button" type="button" aria-controls="chatDockPanel"><span data-i18n="globalSettings.chatDock">对话扩展</span></button>
           <button class="quiet-button" type="button" aria-controls="tasksPanel" aria-labelledby="navTasks"><span id="navTasks" data-i18n="globalSettings.navTasks">任务总控台</span><span class="settings-nav-dot" hidden></span></button>
         </div>
       </nav>
@@ -123,6 +124,26 @@
         <div id="photoshopStatus" class="settings-card connection-card"></div>
       </section>
 
+      <section id="chatDockPanel" class="settings-section" data-settings-panel aria-labelledby="chatDockTitle" hidden>
+        <div class="section-heading">
+          <h2 id="chatDockTitle" tabindex="-1" data-i18n="globalSettings.chatDock">对话扩展</h2>
+        </div>
+        <div class="settings-card connection-card chat-dock-card">
+          <div role="status" aria-live="polite" aria-atomic="true">
+            <p id="chatDockState" class="chat-dock-state"></p>
+            <p id="chatDockVersions" class="status-detail" hidden></p>
+            <p id="chatDockDetectionNote" class="status-detail" hidden></p>
+            <p id="chatDockFolderStatus" class="status-detail" hidden></p>
+          </div>
+          <p class="status-detail" data-i18n="globalSettings.chatDockProtectionNote">部分站点禁止嵌入。降低这些限制可能削弱安全防护；建议在普通标签页打开。</p>
+          <div class="chat-dock-preference">
+            <label class="inline-check"><input id="chatDockEnabled" type="checkbox" aria-describedby="chatDockEnableNote" disabled><span data-i18n="globalSettings.chatDockEnabled">保存对话面板偏好</span></label>
+            <p id="chatDockEnableNote" class="status-detail"></p>
+            <p id="chatDockPreferenceFeedback" class="page-status chat-dock-feedback" role="status"></p>
+          </div>
+        </div>
+      </section>
+
       <section id="tasksPanel" class="settings-section" data-settings-panel aria-labelledby="tasksTitle" hidden>
         <div class="section-heading">
           <h2 id="tasksTitle" tabindex="-1" data-i18n="globalSettings.tasksConsole">全局任务总控台</h2>
@@ -144,6 +165,7 @@
       </section>
     </main>
   </div>
+  <script src="/static/js/chat-dock-client.js?v=20261119.001800"></script>
   <script src="/static/js/global-settings.js?v=20261119.001800"></script>
 </body>
 </html>

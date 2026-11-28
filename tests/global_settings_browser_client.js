@@ -91,7 +91,7 @@
     const visiblePanels = () => [...document.querySelectorAll('[data-settings-panel]')].filter(panel => getComputedStyle(panel).display !== 'none');
     const groups = [...document.querySelectorAll('.settings-nav-group')].map(group => group.querySelectorAll('button').length);
     const widthFits = () => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1;
-    record('seven categories, grouped 3/2/2, with Appearance selected initially', categories.length === 7 && groups.join() === '3,2,2' && visiblePanels()[0]?.id === 'preferencesPanel', groups);
+    record('eight categories, grouped 3/2/3, with Appearance selected initially', categories.length === 8 && groups.join() === '3,2,3' && visiblePanels()[0]?.id === 'preferencesPanel', groups);
     let categoryChecks = true;
     for (const button of categories) {
       button.click();

@@ -1335,9 +1335,8 @@ class FireflyProjectCreateRequest(BaseModel):
 class GlobalPreferencesPayload(BaseModel):
     theme: str = 'dark'
     language: str = 'zh'
-    # #493：严格 bool；路由用 model_fields_set 区分“没传”与“传了”，
-    # 旧页面只改主题时不能把已关的直连开关默默重新打开。null/字符串 → 422。
     upstream_direct: bool = Field(default=True, strict=True)
+    chat_dock_enabled: bool = Field(default=False, strict=True)
 
 class ProjectLibraryChangeRequest(BaseModel):
     path: str = Field(min_length=1, max_length=1024)

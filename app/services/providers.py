@@ -594,13 +594,13 @@ _GLOBAL_PREFERENCES_LOCK = Lock()
 
 
 def _public_global_preferences(raw):
-    theme = raw.get('theme') if isinstance(raw, dict) else None
-    direct = raw.get('upstream_direct') if isinstance(raw, dict) else None
+    raw = raw if isinstance(raw, dict) else {}
+    theme = raw.get('theme')
     # #365、#423：旧语言和未验证的文件访问模式只以安全值生效。
-    # #493：upstream_direct 只认 bool；缺失/其它值一律按默认开（True）生效。
     return {'theme': theme if theme in ('light', 'dark') else 'dark',
             'language': 'zh', 'agent_file_access': 'read-only',
-            'upstream_direct': direct if isinstance(direct, bool) else True}
+            'upstream_direct': raw.get('upstream_direct') is not False,
+            'chat_dock_enabled': raw.get('chat_dock_enabled') is True}
 
 
 def load_global_preferences():
@@ -609,23 +609,24 @@ def load_global_preferences():
         return _public_global_preferences(raw)
 
 
-def save_global_preferences(theme: str, language: str, autosave_interval_minutes: Optional[int]=None, upstream_direct: Optional[bool]=None):
+def save_global_preferences(theme: Optional[str], language: str, autosave_interval_minutes: Optional[int]=None,
+                            upstream_direct: Optional[bool]=None, *, chat_dock_enabled: Optional[bool]=None):
     # #365：保留旧客户端的 language 参数，但始终写入中文。
-    # #493：upstream_direct=None 表示旧客户端没提供这个字段，必须保留已存值，
-    # 不能让“只改主题”把关掉的代理又默默打开。
+    # #493、#519：未提供的字段保留已存值，读改写必须在同一把锁内完成。
     with _GLOBAL_PREFERENCES_LOCK:
         path = _svc._main('GLOBAL_SETTINGS_FILE')
         raw = firefly_json_io.read_global_json(path, dict, encoding='utf-8-sig')
         preferences = dict(raw) if isinstance(raw, dict) else {}
-        preferences.update({'theme': theme if theme in ('light', 'dark') else 'dark',
-                            'language': 'zh', 'agent_file_access': 'read-only'})
-        # 保存时把解析后的严格 bool 写盘：旧字段缺失就落默认 True，
-        # 和 theme 等默认值“只在保存时落地”的既有语义一致。
-        stored_direct = raw.get('upstream_direct') if isinstance(raw, dict) else None
-        preferences['upstream_direct'] = upstream_direct if isinstance(upstream_direct, bool) else (
-            stored_direct if isinstance(stored_direct, bool) else True)
+        if theme is not None:
+            preferences['theme'] = theme
+        if isinstance(upstream_direct, bool):
+            preferences['upstream_direct'] = upstream_direct
+        if isinstance(chat_dock_enabled, bool):
+            preferences['chat_dock_enabled'] = chat_dock_enabled
+        public = _public_global_preferences(preferences)
+        preferences.update(public)
         firefly_json_io.write_json_atomic(path, preferences)
-        return _public_global_preferences(preferences)
+        return public
 
 def load_upstream_direct() -> bool:
     # #493：上游请求直连开关的窄访问器；调用方在发起处读取并显式传给工厂。

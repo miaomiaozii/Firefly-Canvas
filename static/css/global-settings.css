@@ -377,6 +377,11 @@ input[type="checkbox"], input[type="radio"] { margin: 0; accent-color: var(--acc
 .status-card .settings-chip, .status-detail { margin: var(--space-8) 0 0; }
 .status-detail { color: var(--muted); }
 
+.chat-dock-state { margin: 0; }
+.chat-dock-preference { margin-top: var(--space-12); padding-top: var(--space-12); border-top: 1px solid var(--line); }
+.chat-dock-feedback { margin: 0; }
+.chat-dock-feedback:not(:empty) { margin-top: var(--space-8); }
+
 .library-form { display: grid; align-items: end; gap: var(--space-12); }
 .library-form button { justify-self: start; }
 .safety-note { margin: 0; padding: 0 var(--space-16) var(--space-16); }

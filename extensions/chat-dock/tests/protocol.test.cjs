@@ -106,9 +106,9 @@ function sandboxChrome() {
       sendMessage: async (...args) => { state.sent.push(args); return {ok: true, canAppend: false, extra: 'strip'}; },
     },
     scripting: {
-      getRegisteredContentScripts: async () => state.registrations,
-      registerContentScripts: async items => { state.registrations = items; },
-      unregisterContentScripts: async () => { state.registrations = []; },
+      getRegisteredContentScripts: async ({ids}) => state.registrations.filter(item => ids.includes(item.id)),
+      registerContentScripts: async items => { state.registrations.push(...items); },
+      unregisterContentScripts: async ({ids}) => { state.registrations = state.registrations.filter(item => !ids.includes(item.id)); },
     },
   };
   return {context, state};
@@ -152,6 +152,8 @@ test('custom relay requires options sender and a grant; revoked grant does not f
   state.grants.add(permission);
   assert.deepEqual(await receive(context, command, option), {ok: true});
   assert.deepEqual([...state.registrations[0].matches], ['https://canvas.example/static/smart-canvas.html*']);
+  assert.deepEqual([...state.registrations[1].matches], ['https://canvas.example/static/global-settings.html*']);
+  assert.equal(state.registrations[1].allFrames, true);
   state.tabs = [{id: 1, url: canvasURL}, {id: 2, url: `${origin}/static/smart-canvas.html`}];
   assert.equal((await receive(context, capture(), chatSender)).ok, true);
   assert.equal(state.sent[0][0], 2);
@@ -160,6 +162,35 @@ test('custom relay requires options sender and a grant; revoked grant does not f
   assert.deepEqual(await receive(context, capture(), chatSender), {ok: false, error: 'PERMISSION_DENIED'});
   assert.equal(state.sent.length, 1);
   assert.equal(state.registrations.length, 0);
+});
+
+test('#519 background hello answers only an exact configured settings sender', async () => {
+  const {context, state} = sandboxChrome();
+  const runtime = context.chrome.runtime;
+  runtime.getManifest = () => manifest;
+  runtime.getContexts = async () => [];
+  vm.runInContext(read('background.js'), context);
+  const origin = P.DEFAULT_ORIGIN;
+  const url = `${origin}/static/global-settings.html?embedded=1`;
+  const sender = {url, origin, id: extensionId, frameId: 5, tab: {id: 1}};
+  const data = {channel: 'firefly.chat-dock.lifecycle.v1', action: 'hello'};
+  const expected = {ok: true, version: '0.2.0', supported: true};
+  assert.deepEqual(await receive(context, data, sender), expected);
+  assert.deepEqual(await receive(context, data, {...sender, frameId: 0}), expected);
+  delete runtime.getContexts;
+  assert.deepEqual(await receive(context, data, sender), {...expected, supported: false});
+  for (const changes of [{origin: 'null'}, {id: 'other'}, {url: canvasURL}, {url: url.replace('3000', '3001')},
+    {url: url.replace('.html', '.html.bak')}, {frameId: undefined}, {tab: undefined}]) {
+    assert.equal((await receive(context, data, {...sender, ...changes}))?.ok, undefined);
+  }
+  for (const changes of [{action: 'reload'}, {action: 'open-canvas'}, {extra: 'value'}]) {
+    assert.equal(await receive(context, {...data, ...changes}, sender), undefined);
+  }
+  state.stored = {[P.ORIGIN_KEY]: 'http://127.0.0.1:3201'};
+  assert.equal(await receive(context, data, sender), null);
+  assert.deepEqual(await receive(context, data, {...sender, origin: state.stored[P.ORIGIN_KEY],
+    url: url.replace('3000', '3201')}), {...expected, supported: false});
+  assert.deepEqual(state.sent, []);
 });
 
 test('isolated relay checks sender and exact origin before transferring a same-origin port', async () => {

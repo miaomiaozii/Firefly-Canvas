@@ -3693,12 +3693,12 @@
         {
           "module": "app/routers/api_global_settings.py",
           "ordinal": 1,
-          "ast_sha256": "10473a215de97f1802ca56c84f8f4fe953b9de602dc21b4966fd3c3d820ec78c"
+          "ast_sha256": "a90ca9917bfb79ae9221de6f87aa14b10b30b36ff0aa6b445dddebd802cc7336"
         },
         {
           "module": "app/services/providers.py",
           "ordinal": 1,
-          "ast_sha256": "fb1057cb0a0f1ce293945b53f545e72208f689fd9bc2e784508baeffb1304c88"
+          "ast_sha256": "bce452e01b409b5759f6db972c2b1cf2f6f09d9af70704bae72225d7ca4f8304"
         }
       ]
     },

@@ -1,11 +1,13 @@
 'use strict';
 
-importScripts('protocol.js', 'framing.js', 'dock-capture-router.js');
+importScripts('protocol.js', 'framing.js', 'dock-capture-router.js', 'settings-hello.js');
 
 (() => {
   const P = FireflyChatProtocol;
   const F = FireflyChatFraming;
   const dock = FireflyDockCaptureRouter;
+  const hello = FireflyChatDockSettingsHello;
+  const detectorId = 'firefly-chat-dock-settings';
   // Serialize settings writes with grant-revocation reconciliation.
   let settings = Promise.resolve();
   function updateSettings(work) {
@@ -33,14 +35,33 @@ importScripts('protocol.js', 'framing.js', 'dock-capture-router.js');
     }
   }
 
+  async function syncSettingsDetector(origin) {
+    const [detector] = await chrome.scripting.getRegisteredContentScripts({ids: [detectorId]});
+    const {protocol, hostname} = new URL(origin);
+    const match = origin === P.DEFAULT_ORIGIN ? null : `${protocol}//${hostname}${hello.path}*`;
+    if (detector?.id === detectorId && match && detector.matches.length === 1 && detector.matches[0] === match) return;
+    if (detector?.id === detectorId) await chrome.scripting.unregisterContentScripts({ids: [detectorId]});
+    if (match) {
+      await chrome.scripting.registerContentScripts([{
+        id: detectorId, matches: [match], js: ['protocol.js', 'settings-hello.js', 'settings-detector.js'],
+        runAt: 'document_idle', allFrames: true, persistAcrossSessions: true, world: 'ISOLATED',
+      }]);
+    }
+  }
+
+  async function syncFireflyScripts(origin) {
+    await syncRelay(origin);
+    await syncSettingsDetector(origin);
+  }
+
   async function setOrigin(origin) {
     const previous = await storedOrigin();
     if (!(await permitted(origin))) return P.failure('PERMISSION_DENIED');
     try {
-      await syncRelay(origin);
+      await syncFireflyScripts(origin);
       await chrome.storage.local.set({[P.ORIGIN_KEY]: origin});
     } catch (error) {
-      await syncRelay(await permitted(previous) ? previous : P.DEFAULT_ORIGIN).catch(() => {});
+      await syncFireflyScripts(await permitted(previous) ? previous : P.DEFAULT_ORIGIN).catch(() => {});
       throw error;
     }
     // Release grants for former custom hosts. Chrome's required default grant cannot be removed.
@@ -83,7 +104,7 @@ importScripts('protocol.js', 'framing.js', 'dock-capture-router.js');
     updateSettings(async () => {
       const origin = await storedOrigin();
       // Do not silently redirect captures to a different machine if a grant is revoked.
-      await syncRelay(await permitted(origin) ? origin : P.DEFAULT_ORIGIN);
+      await syncFireflyScripts(await permitted(origin) ? origin : P.DEFAULT_ORIGIN);
     }).catch(() => {});
     updateSettings(syncFraming).catch(() => {});
   }
@@ -121,6 +142,10 @@ importScripts('protocol.js', 'framing.js', 'dock-capture-router.js');
 
   chrome.runtime.onMessage.addListener((data, sender, sendResponse) => {
     if (sender.id !== chrome.runtime.id) return;
+    if (hello.isHello(data)) {
+      settings.then(() => hello.getSettingsHello(data, sender, storedOrigin)).then(sendResponse, () => sendResponse(null));
+      return true;
+    }
     if (dock.activeChild(sender)) {
       if (data?.action === P.DOCK_PROOF) {
         dock.acceptProof(data, sender);

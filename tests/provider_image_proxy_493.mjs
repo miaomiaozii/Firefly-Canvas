@@ -49,6 +49,13 @@ class Element {
     append(...children) { children.forEach(child => this.appendChild(child)); }
     replaceChildren(...children) { for (const child of [...this.children]) child.remove(); this.append(...children); }
     get options() { return this.children; }
+    get classList() {
+        return {toggle: (name, on) => {
+            const classes = new Set(this.className.split(/\s+/).filter(Boolean));
+            if (on) classes.add(name); else classes.delete(name);
+            this.className = [...classes].join(' ');
+        }};
+    }
     get root() { return this.parentNode?.root || this; }
     get nextElementSibling() { return this.parentNode?.children[this.parentNode.children.indexOf(this) + 1]; }
     get previousElementSibling() { return this.parentNode?.children[this.parentNode.children.indexOf(this) - 1]; }
@@ -97,6 +104,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 async function boot(language = 'zh', receipts = {}) {
     const document = new Element('document');
     document.innerHTML = html;
+    document.body = document.querySelector('body');
     const elements = new Proxy({}, {get: (_, id) => document.getElementById(id)});
     const calls = [];
     let providers = [
@@ -110,24 +118,32 @@ async function boot(language = 'zh', receipts = {}) {
         chat_models: ['chat-one'], video_models: ['video-one'], key_preview: '****6789', has_key: true, ...item}));
     const dictionary = {};
     const messages = [];
-    let preferences = {theme: 'dark', upstream_direct: true};
+    const dockCalls = [], timers = new Map();
+    let timerId = 0, now = 0;
+    let preferences = {theme: 'dark', upstream_direct: true, ...receipts.preferences};
     let library = {path: 'D:/fake-original', project_count: 1};
     document.createElement = tag => new Element(tag);
     const context = vm.createContext({
         document,
         URL, URLSearchParams,
+        Date: class extends Date { static now() { return now; } },
         scrollTo() {},
-        setInterval: () => 1,
-        clearInterval() {},
+        setInterval(fn) { timers.set(++timerId, fn); return timerId; },
+        clearInterval(id) { timers.delete(id); },
         StudioI18n: {register: value => Object.assign(dictionary, value), t: key => dictionary[key]?.[language] || key, lang: () => language},
-        location: {origin: 'http://private-qa.invalid'},
+        location: new URL(receipts.origin || 'http://private-qa.invalid'),
+        FireflyChatDockClient: {async hello() {
+            dockCalls.push('hello');
+            return receipts.dockHello ?? null;
+        }},
         addEventListener() {},
         BroadcastChannel: class { postMessage(message) { messages.push(message); } },
         async fetch(url, options = {}) {
             const body = options.body ? JSON.parse(options.body) : null;
-            calls.push({url, method: options.method || 'GET', body});
+            calls.push({url, method: options.method || 'GET', body, options});
             let data;
-            if (url === '/api/global-settings') {
+            if (url === '/api/global-settings/chat-dock') data = receipts.dockFolder || {available: false};
+            else if (url === '/api/global-settings') {
                 data = {providers: structuredClone(providers), cli: receipts.cli, photoshop: receipts.photoshop,
                     preferences: structuredClone(preferences), project_library: structuredClone(library)};
                 if (receipts.recovery) data = {storage_recovery: {message: receipts.recovery}};
@@ -135,7 +151,8 @@ async function boot(language = 'zh', receipts = {}) {
             else if (url.startsWith('/api/global-tasks?')) data = {tasks: structuredClone(receipts.tasks || []), projects: []};
             else if (url === '/api/project-library/p/image-generation-tasks/t/cancel' && options.method === 'POST') data = {ok: true};
             else if (url === '/api/global-settings/preferences' && options.method === 'PATCH') {
-                preferences = body;
+                if (receipts.preferenceError) return {ok: false, json: async () => ({detail: 'test save failure'})};
+                preferences = {...preferences, ...body};
                 data = {preferences: {...preferences, language: 'zh', agent_file_access: 'read-only'}};
             } else if (url === '/api/global-settings/project-library' && options.method === 'POST') {
                 library.path = body.path;
@@ -159,7 +176,14 @@ async function boot(language = 'zh', receipts = {}) {
     await settle();
     assert.equal(elements.pageStatus.dataset.kind, receipts.recovery ? 'error' : 'success', elements.pageStatus.textContent);
     const nav = panel => elements.settingsNav.querySelectorAll('button').find(button => button.getAttribute('aria-controls') === panel);
-    return {document, elements, calls, messages, nav, card: id => elements.providerList.children.find(card => card.dataset.providerId === id)};
+    const tick = async (ms = 2000) => {
+        await settle();
+        now += ms;
+        for (const timer of [...timers.values()]) timer();
+        await settle();
+    };
+    return {document, elements, calls, messages, nav, tick, dockCalls,
+        card: id => elements.providerList.children.find(card => card.dataset.providerId === id)};
 }
 
 for (const language of ['zh', 'en']) {
@@ -222,7 +246,7 @@ test('#504: grouped navigation shows exactly one panel and keeps drafts across s
         assert.deepEqual(elements.settingsNav.querySelectorAll('button').filter(el => el.getAttribute('aria-current') === 'true'), [nav(panel)]);
     };
     assert.deepEqual(elements.settingsNav.children.map(group => group.querySelectorAll('button').map(button => button.getAttribute('aria-controls'))), [
-        ['preferencesPanel', 'providersPanel', 'libraryPanel'], ['agentFileAccessPanel', 'cliPanel'], ['photoshopPanel', 'tasksPanel'],
+        ['preferencesPanel', 'providersPanel', 'libraryPanel'], ['agentFileAccessPanel', 'cliPanel'], ['photoshopPanel', 'chatDockPanel', 'tasksPanel'],
     ]);
     assertPanel('preferencesPanel');
     await nav('preferencesPanel').fire('keydown', {key: 'ArrowDown'});
@@ -348,4 +372,76 @@ test('#504: storage recovery leaves category navigation and embedded return usab
     await elements.refreshAll.fire('click');
     assert.equal(elements.savePreferences.disabled, false);
     assert.equal(elements.themeSelect.disabled, false);
+});
+
+const dockFolder = {available: true, version: '0.10.0', directory: 'D:/portable/env/chat-dock'};
+const dockHello = (version, supported = true) => ({ok: true, version, supported});
+
+test('#519: visits detect receipt-only states and compare numeric versions', async () => {
+    const receipts = {dockFolder};
+    const {elements, document, nav, tick, dockCalls, calls} = await boot('en', receipts);
+    assert.deepEqual(dockCalls, []);
+    await nav('chatDockPanel').fire('click');
+    await settle();
+    assert.equal(document.activeElement, elements.chatDockTitle);
+    assert.match(elements.chatDockState.textContent, /not detected/);
+    assert.equal(elements.chatDockEnabled.disabled, true);
+    assert.equal(elements.chatDockEnabled.checked, false);
+    assert.match(elements.chatDockDetectionNote.textContent, /Older versions may not respond/);
+    for (const id of ['chatDockGuide', 'chatDockOpenFolder', 'chatDockReload', 'chatDockOptions', 'chatDockUninstall']) {
+        assert.equal(elements[id], null, id);
+    }
+    receipts.dockHello = dockHello('0.9.12');
+    await tick();
+    assert.match(elements.chatDockState.textContent, /installed but outdated/);
+    assert.match(elements.chatDockVersions.textContent, /0\.9\.12.*0\.10\.0/);
+    receipts.dockHello = dockHello('0.9', false);
+    await tick();
+    assert.match(elements.chatDockState.textContent, /browser does not support/);
+    assert.equal(elements.chatDockEnabled.disabled, true);
+    receipts.dockHello = dockHello('0.10');
+    await tick();
+    assert.match(elements.chatDockState.textContent, /up to date/);
+    assert.equal(elements.chatDockEnabled.disabled, false);
+    receipts.dockHello = dockHello('0.11.0');
+    await tick();
+    assert.match(elements.chatDockState.textContent, /up to date/);
+    elements.chatDockEnabled.focus();
+    receipts.dockHello = null;
+    await tick();
+    assert.equal(document.activeElement, elements.chatDockTitle);
+    assert.match(elements.chatDockState.textContent, /not detected/);
+    receipts.dockFolder = {available: false};
+    await elements.refreshAll.fire('click');
+    await settle();
+    assert.match(elements.chatDockFolderStatus.textContent, /files are missing/);
+    assert.ok(!calls.some(call => call.url.startsWith('/api/global-settings/chat-dock/')));
+});
+
+test('#519: embedded preference write is strict, isolated from Appearance drafts, and rolls back on failure', async () => {
+    const receipts = {embedded: true, dockHello: dockHello('0.10.0'), preferences: {chat_dock_enabled: 'true', autosave_interval_minutes: 5}};
+    const {elements, calls, messages, nav} = await boot('en', receipts);
+    await nav('chatDockPanel').fire('click');
+    await settle();
+    assert.equal(elements.chatDockEnabled.checked, false);
+    assert.match(elements.chatDockState.textContent, /installed$/);
+    assert.match(elements.chatDockFolderStatus.textContent, /files are missing/);
+    assert.equal(elements.chatDockEnabled.disabled, false);
+    elements.themeSelect.value = 'light';
+    elements.upstreamDirect.checked = false;
+    elements.chatDockEnabled.checked = true;
+    await elements.chatDockEnabled.fire('change');
+    assert.deepEqual(calls.find(call => call.method === 'PATCH').body, {chat_dock_enabled: true});
+    assert.equal(elements.themeSelect.value, 'light');
+    assert.equal(elements.upstreamDirect.checked, false);
+    assert.equal(messages[0].type, 'preferences-changed');
+    assert.equal(messages[0].source, 'global-settings');
+    assert.equal(messages[0].preferences.chat_dock_enabled, true);
+    assert.equal(messages[0].preferences.autosave_interval_minutes, 5);
+    receipts.preferenceError = true;
+    elements.chatDockEnabled.checked = false;
+    await elements.chatDockEnabled.fire('change');
+    assert.equal(elements.chatDockEnabled.checked, true);
+    assert.equal(elements.chatDockPreferenceFeedback.dataset.kind, 'error');
+    assert.equal(messages.length, 1);
 });

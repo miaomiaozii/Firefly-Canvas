@@ -16,6 +16,7 @@
   const addProvider = document.getElementById('addProvider');
   const saveProviders = document.getElementById('saveProviders');
   const savePreferences = document.getElementById('savePreferences');
+  const chatDockEnabled = document.getElementById('chatDockEnabled');
   const libraryForm = document.getElementById('libraryForm');
   const switchLibrary = libraryForm.querySelector('button');
   const writeButtons = [saveProviders, savePreferences, switchLibrary];
@@ -65,6 +66,7 @@
     }
     document.getElementById(panelId).querySelector('h2').focus({preventScroll:true});
     window.scrollTo(0, 0);
+    if(panelId === 'chatDockPanel') void pollChatDock();
   }
 
   for(const button of navButtons){
@@ -596,6 +598,7 @@
     renderCli(data.cli);
     if(!previous || themeSelect.value === savedTheme(previous.preferences)) themeSelect.value = savedTheme(data.preferences);
     if(!previous || upstreamDirect.checked === savedDirect(previous.preferences)) upstreamDirect.checked = savedDirect(data.preferences);
+    chatDockEnabled.checked = data.preferences?.chat_dock_enabled === true;
     if(!previous || libraryPath.value === savedLibraryPath(previous.project_library)) libraryPath.value = savedLibraryPath(data.project_library);
     document.getElementById('librarySummary').textContent = librarySummaryText(data.project_library);
     renderPhotoshop(data.photoshop);
@@ -618,6 +621,90 @@
     return data;
   }
 
+  const chatDockUrl = '/api/global-settings/chat-dock';
+  const chatDockFetch = {mode:'same-origin', credentials:'same-origin', referrerPolicy:'same-origin'};
+  const chatDockUi = Object.fromEntries([
+    'Panel', 'Title', 'State', 'Versions', 'DetectionNote', 'FolderStatus', 'EnableNote', 'PreferenceFeedback',
+  ].map(name => [name, document.getElementById(`chatDock${name}`)]));
+  let chatDockFolder;
+  let chatDockReceipt;
+  let chatDockPolling = false;
+
+  const dockText = suffix => tr(`globalSettings.chatDock${suffix}`);
+  const versionTuple = version => typeof version === 'string' && /^\d+(?:\.\d+)*$/.test(version) ? version.split('.').map(Number) : null;
+  function compareChatDockVersions(installed, bundled){
+    const a = versionTuple(installed), b = versionTuple(bundled);
+    if(!a || !b) return null;
+    for(let i = 0; i < Math.max(a.length, b.length); i++){
+      const delta = (a[i] ?? 0) - (b[i] ?? 0);
+      if(delta) return Math.sign(delta);
+    }
+    return 0;
+  }
+
+  function setDockText(element, text){
+    if(element.textContent !== text) element.textContent = text;
+  }
+
+  function setDockVisible(element, visible){
+    if(!visible && !element.hidden && !chatDockUi.Panel.hidden && element.contains(document.activeElement)){
+      chatDockUi.Title.focus({preventScroll:true});
+    }
+    element.hidden = !visible;
+  }
+
+  function dockFeedback(element, key, kind = ''){
+    setDockText(element, key ? dockText(key) : '');
+    element.dataset.kind = kind;
+  }
+
+  function updateChatDockControls(){
+    chatDockEnabled.disabled = !state || loading || lockSettings || !chatDockReceipt?.supported
+      || pendingWrites.has(chatDockEnabled) || pendingWrites.has(savePreferences);
+  }
+
+  function renderChatDock(){
+    const receipt = chatDockReceipt;
+    const available = chatDockFolder?.available === true;
+    const comparison = available ? compareChatDockVersions(receipt?.version, chatDockFolder.version) : null;
+    const outdated = receipt?.supported === true && comparison === -1;
+    const status = receipt === undefined ? 'Checking' : !receipt ? 'NotDetected' : !receipt.supported ? 'Unsupported' : outdated ? 'Outdated'
+      : comparison === null ? 'Installed' : 'Current';
+    setDockText(chatDockUi.State, dockText(status));
+    const versions = [receipt && `${dockText('RuntimeVersion')} ${receipt.version}`,
+      available && `${dockText('FolderVersion')} ${chatDockFolder.version}`].filter(Boolean).join(' · ');
+    setDockText(chatDockUi.Versions, versions);
+    setDockVisible(chatDockUi.Versions, Boolean(versions));
+    setDockText(chatDockUi.DetectionNote, receipt === null ? dockText('NotDetectedNote') : '');
+    setDockVisible(chatDockUi.DetectionNote, receipt === null);
+    const folderMessage = chatDockFolder === null ? 'FolderUnknown' : chatDockFolder?.available === false ? 'FolderMissing' : '';
+    setDockText(chatDockUi.FolderStatus, folderMessage ? dockText(folderMessage) : '');
+    setDockVisible(chatDockUi.FolderStatus, Boolean(folderMessage));
+    setDockText(chatDockUi.EnableNote, dockText(!receipt ? 'EnableUndetected' : receipt.supported ? 'EnableNote' : 'EnableUnsupported'));
+    updateChatDockControls();
+  }
+
+  async function loadChatDockFolder(){
+    try {
+      const folder = await requestJson(chatDockUrl, chatDockFetch);
+      chatDockFolder = folder?.available === false || (folder?.available === true && versionTuple(folder.version)
+        && typeof folder.directory === 'string' && folder.directory) ? folder : null;
+    } catch { chatDockFolder = null; }
+    renderChatDock();
+  }
+
+  async function pollChatDock(){
+    if(chatDockPolling || document.hidden || chatDockUi.Panel.hidden) return;
+    chatDockPolling = true;
+    try {
+      const result = await window.FireflyChatDockClient?.hello();
+      const restoreFocus = document.activeElement === chatDockEnabled;
+      chatDockReceipt = result?.ok === true && typeof result.supported === 'boolean' && versionTuple(result.version) ? result : null;
+      if(restoreFocus && !chatDockReceipt?.supported) chatDockUi.Title.focus({preventScroll:true});
+      renderChatDock();
+    } finally { chatDockPolling = false; }
+  }
+
   // #345：只报文件名，不展示可能含密钥的配置内容。
   async function dataFaultText(){
     const data = await requestJson('/api/config/data-diagnostics');
@@ -633,7 +720,9 @@
     refreshAll.disabled = loading || pendingWrites.size > 0;
     const blocked = lockSettings || !state || loading;
     for(const button of writeButtons) button.disabled = blocked || pendingWrites.has(button);
+    savePreferences.disabled ||= pendingWrites.has(chatDockEnabled);
     addProvider.disabled = lockSettings || !state || pendingWrites.has(saveProviders);
+    updateChatDockControls();
   }
 
   function startWrite(button){
@@ -708,6 +797,8 @@
   });
   refreshAll.addEventListener('click', async () => {
     await load();
+    void loadChatDockFolder();
+    void pollChatDock();
     void refreshConsoleTasks();
     startConsoleTimer();
   });
@@ -751,6 +842,25 @@
       setStatus(localText('外观已保存', 'Appearance saved'), 'success');
     } catch(error) { setStatus(error.message || localText('偏好保存失败', 'Failed to save preferences'), 'error'); }
     finally { finishWrite(savePreferences); }
+  });
+  chatDockEnabled.addEventListener('change', async () => {
+    if(!startWrite(chatDockEnabled)){
+      chatDockEnabled.checked = state?.preferences?.chat_dock_enabled === true;
+      return;
+    }
+    dockFeedback(chatDockUi.PreferenceFeedback, 'EnableSaving');
+    try {
+      // Keep any unsaved Appearance edits out of this independently saved preference.
+      const body = {chat_dock_enabled:chatDockEnabled.checked === true};
+      const saved = await requestJson('/api/global-settings/preferences', {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+      state.preferences = saved.preferences;
+      chatDockEnabled.checked = state.preferences?.chat_dock_enabled === true;
+      notifyCanvas('preferences-changed', {preferences:state.preferences});
+      dockFeedback(chatDockUi.PreferenceFeedback, 'EnableSaved');
+    } catch {
+      chatDockEnabled.checked = state.preferences?.chat_dock_enabled === true;
+      dockFeedback(chatDockUi.PreferenceFeedback, 'EnableFailed', 'error');
+    } finally { finishWrite(chatDockEnabled); }
   });
   libraryForm.addEventListener('submit', async event => {
     event.preventDefault();
@@ -965,6 +1075,12 @@
   consoleProjectFilter.addEventListener('change', changeConsoleFilter);
   consoleProviderFilter.addEventListener('change', renderConsoleRows);
   consoleAutoRefresh.addEventListener('change', startConsoleTimer);
+  renderChatDock();
+  void loadChatDockFolder();
+  void pollChatDock();
+  window.addEventListener('focus', () => { void pollChatDock(); });
+  document.addEventListener('visibilitychange', () => { void pollChatDock(); });
+  setInterval(() => { void pollChatDock(); }, 2000);
   void load().then(() => {
     void refreshConsoleTasks();
     startConsoleTimer();

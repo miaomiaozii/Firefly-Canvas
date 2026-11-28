@@ -9,6 +9,7 @@ _app_main = _sys.modules.get(_os.environ.get('FIREFLY_MAIN_MODULE', '')) or _sys
 import asyncio
 import os
 import json
+import re
 import shutil
 import uuid
 from typing import Any, Optional
@@ -29,8 +30,10 @@ def load_global_preferences():
     return _svc.providers.load_global_preferences()
 
 
-def save_global_preferences(theme: str, language: str, autosave_interval_minutes: Optional[int]=None, upstream_direct: Optional[bool]=None):
-    return _svc.providers.save_global_preferences(theme, language, autosave_interval_minutes, upstream_direct)
+def save_global_preferences(theme: Optional[str], language: str, autosave_interval_minutes: Optional[int]=None,
+                            upstream_direct: Optional[bool]=None, *, chat_dock_enabled: Optional[bool]=None):
+    return _svc.providers.save_global_preferences(theme, language, autosave_interval_minutes, upstream_direct,
+                                                  chat_dock_enabled=chat_dock_enabled)
 
 
 def photoshop_connection_status():
@@ -109,15 +112,50 @@ async def global_settings(request: Request):
     library = await asyncio.to_thread(project_library_status)
     return {'providers': public_api_providers(), 'cli': {'codex': codex, 'gemini': gemini}, 'project_library': library, 'preferences': load_global_preferences(), 'photoshop': photoshop_connection_status()}
 
+def _chat_dock_bundle() -> tuple[Path, str] | None:
+    override = os.environ.get('FIREFLY_CHAT_DOCK_EXTENSION_DIR')
+    if override is not None and not override.strip():
+        return None
+    directory = Path(override) if override is not None else Path(__file__).resolve().parents[2] / 'extensions' / 'chat-dock'
+    try:
+        directory = directory.resolve(strict=True)
+        manifest = json.loads((directory / 'manifest.json').read_text(encoding='utf-8-sig'))
+    except (OSError, ValueError, RuntimeError):
+        return None
+    version = manifest.get('version') if isinstance(manifest, dict) else None
+    # Chromium 版本最多四段，每段 0–65535，不允许前导零或全零。
+    if not isinstance(version, str) or not re.fullmatch(r'(?:0|[1-9][0-9]{0,4})(?:\.(?:0|[1-9][0-9]{0,4})){0,3}', version):
+        return None
+    parts = [int(part) for part in version.split('.')]
+    if not any(parts) or max(parts) > 65535:
+        return None
+    return directory, version
+
+
+@router.get('/api/global-settings/chat-dock')
+def get_chat_dock_bundle(request: Request):
+    ensure_same_origin_request(request)
+    bundle = _chat_dock_bundle()
+    if bundle is None:
+        return {'available': False, 'version': None, 'directory': None}
+    directory, version = bundle
+    return {'available': True, 'version': version, 'directory': str(directory)}
+
+
 @router.patch('/api/global-settings/preferences')
 async def update_global_preferences(payload: GlobalPreferencesPayload):
-    # #365：语言只认 zh；老页面/老缓存发的 'en' 照接（存下去会被迁成 zh），不能返回 400——
-    # 那会让用户只改个主题也存不了。其它值仍然拒。
+    # #365：旧客户端仍可传 en；服务层统一存为 zh。
     if payload.theme not in {'light', 'dark'} or payload.language not in {'zh', 'en'}:
         raise HTTPException(status_code=400, detail='主题或语言无效')
-    # #493：字段缺失 = 旧客户端，保留已存值；只有显式提供的严格 bool 才写入。
-    direct = payload.upstream_direct if 'upstream_direct' in payload.model_fields_set else None
-    return {'preferences': await asyncio.to_thread(save_global_preferences, payload.theme, payload.language, None, direct)}
+    provided = payload.model_fields_set
+    preferences = await asyncio.to_thread(
+        save_global_preferences,
+        payload.theme if 'theme' in provided else None,
+        payload.language,
+        upstream_direct=payload.upstream_direct if 'upstream_direct' in provided else None,
+        chat_dock_enabled=payload.chat_dock_enabled if 'chat_dock_enabled' in provided else None,
+    )
+    return {'preferences': preferences}
 
 @router.get('/api/global-settings/preferences')
 async def get_global_preferences():
