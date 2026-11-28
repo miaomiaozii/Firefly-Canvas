@@ -531,22 +531,6 @@
         }
       ]
     },
-    "api_key_from_payload": {
-      "category": "逻辑已经分叉",
-      "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
-      "members": [
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "e5bab379ef945addeb44f69b4b32591e61657b77d39c04399353ff5d849337ea"
-        },
-        {
-          "module": "app/services/providers.py",
-          "ordinal": 1,
-          "ast_sha256": "7d4e60292f0c3dd4454482a90606ee7c1a1cfbd9d8096e9ccdff60ec758b7228"
-        }
-      ]
-    },
     "approve": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -3398,22 +3382,6 @@
         }
       ]
     },
-    "runninghub_models_payload": {
-      "category": "逻辑已经分叉",
-      "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
-      "members": [
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "31f02efc2f8ce10832c3709b3d776a4239c90bdadcd03c41835d081cd0f44b53"
-        },
-        {
-          "module": "app/services/providers.py",
-          "ordinal": 1,
-          "ast_sha256": "88d57e7e73c4be1f5f202472005fd7d53d042a0892409d8b7a8b78a57dd3b4c1"
-        }
-      ]
-    },
     "save_api_providers": {
       "category": "逻辑已经分叉",
       "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
@@ -4465,22 +4433,6 @@
           "module": "app/services/providers.py",
           "ordinal": 1,
           "ast_sha256": "eadc4bc687a27811a091d71bd418c1f9c156da3832fd907e842cf4bd4751b96d"
-        }
-      ]
-    },
-    "volcengine_provider_api_key": {
-      "category": "逻辑已经分叉",
-      "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
-      "members": [
-        {
-          "module": "app/routers/api_providers.py",
-          "ordinal": 1,
-          "ast_sha256": "0a2e2da8921b29ae6310f2ab0d764f8372460c14dce0c6191b80c0fde1930b4e"
-        },
-        {
-          "module": "app/services/providers.py",
-          "ordinal": 1,
-          "ast_sha256": "e1ba7994a3ab12d4e653da1a2ed50b867ada02f3212012a4edcdcc7411b853b6"
         }
       ]
     },

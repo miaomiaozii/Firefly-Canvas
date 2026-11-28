@@ -14,9 +14,14 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from app.core import (AGNES_DEFAULT_VIDEO_MODELS, COMFYUI_DEFAULT_BASE_URL, Any, ApiProviderPayload, BaseModel, CHAT_MODEL, CODEX_DEFAULT_CHAT_MODELS, CODEX_DEFAULT_IMAGE_MODELS, Dict, Field, GEMINI_CLI_DEFAULT_CHAT_MODELS, GEMINI_CLI_DEFAULT_IMAGE_MODELS, GLOBAL_CONFIG_LOCK, HTTPException, IMAGE_MODEL, List, MODELSCOPE_DEFAULT_CHAT_MODELS, Optional, REMOVED_PROVIDER_IDS, RUNNINGHUB_DEFAULT_BASE_URL, RUNNINGHUB_DEFAULT_IMAGE_MODELS, RUNNINGHUB_DEFAULT_VIDEO_MODELS, RUNNINGHUB_FALLBACK_CHAT_MODELS, RUNNINGHUB_THUMBNAIL_EXTS, STATIC_DIR, STATIC_RUNNINGHUB_API_PROVIDERS_FILE, STATIC_RUNNINGHUB_DIR, STATIC_RUNNINGHUB_THUMBNAIL_DIR, SUPPORTED_PROVIDER_PROTOCOLS, TestConnectionPayload, VOLCENGINE_DEFAULT_PROJECT_NAME, VOLCENGINE_DEFAULT_REGION, _os, _sys, apply_agnes_model_defaults, apply_locked_recommended_model_rules, apply_runninghub_system_thumbnails, bearer_auth_value, codex_models_payload, detect_image_request_mode, ensure_same_origin_request, gemini_cli_models_payload, httpx, is_codex_provider, is_gemini_cli_provider, json, load_static_runninghub_provider, locked_recommended_provider_rule, looks_like_html_response, model_list, model_list_from_values, normalize_available_models, normalize_image_request_mode, normalize_provider, normalize_runninghub_entries, normalize_runninghub_entry, openai_compat_root_for_probe, os, parse_upstream_models, preserve_runninghub_hidden_overrides, probe_openai_compat_bearer_endpoint, probe_openai_models_endpoint, probe_volcengine_auto_detect, probe_volcengine_task_endpoint, protocol_from_payload, provider_key_env, provider_protocol, re, recommend_upstream_models, reload_env_globals, runninghub_entry_id, runninghub_model_display_name, runninghub_model_id, runninghub_openapi_url, runninghub_registry_payload, runninghub_wallet_key_env, static_runninghub_thumbnail_url, upstream_model_headers, upstream_models_url, urllib, volcengine_access_key_env, volcengine_default_model_payload, volcengine_secret_key_env, volcengine_task_probe_url)
-_from_main_names = ['API_PROVIDERS_FILE', 'DATA_DIR', 'api_key_from_payload', 'fetch_models_from_upstream', 'fetch_runninghub_model_registry', 'get_api_provider_exact', 'provider_env_key_value', 'public_api_providers', 'public_provider', 'runninghub_models_payload', 'save_api_providers', 'update_env_values', 'volcengine_provider_api_key']
+_from_main_names = ['API_PROVIDERS_FILE', 'DATA_DIR', 'fetch_models_from_upstream', 'fetch_runninghub_model_registry', 'get_api_provider_exact', 'provider_env_key_value', 'public_api_providers', 'public_provider', 'save_api_providers', 'update_env_values']
 import app.services as _svc
-from app.services.providers import load_upstream_direct
+from app.services.providers import (
+    api_key_from_payload,
+    load_upstream_direct,
+    runninghub_models_payload,
+    volcengine_provider_api_key,
+)
 from app.services.upstream_http import create_upstream_async_client as _create_upstream_async_client
 for _nm in _from_main_names:
     _v = getattr(_app_main, _nm, None)
@@ -39,12 +44,6 @@ def reload_env_globals():
     VIDEO_MODELS = model_list('VIDEO_MODELS', 'veo3-fast', ['veo2', 'veo2-fast', 'veo2-pro', 'veo3', 'veo3-fast', 'veo3-pro', 'veo3.1', 'veo3.1-fast', 'veo3.1-quality', 'veo3.1-lite', 'sora-2', 'sora-2-pro', 'wan2.6-t2v', 'wan2.6-i2v', 'wan2.5-t2v-preview', 'wan2.5-i2v-preview', 'wan2.2-t2v-plus', 'wan2.2-i2v-plus', 'wan2.2-i2v-flash', 'doubao-seedance-2-0-260128', 'doubao-seedance-2-0-fast-260128', 'doubao-seedance-1-5-pro-251215', 'doubao-seedance-1-0-pro-250528', 'doubao-seedance-1-0-lite-t2v-250428', 'doubao-seedance-1-0-lite-i2v-250428'])
     _configured = [m.strip() for m in os.getenv('MODELSCOPE_CHAT_MODELS', '').split(',') if m.strip()]
     MODELSCOPE_CHAT_MODELS = list(dict.fromkeys([m for m in [*MODELSCOPE_DEFAULT_CHAT_MODELS, *_configured] if m]))
-
-def volcengine_provider_api_key(explicit_key: str='') -> str:
-    explicit_key = str(explicit_key or '').strip()
-    if explicit_key:
-        return explicit_key
-    return _app_main.provider_env_key_value('volcengine')
 
 def load_static_runninghub_provider():
     if not os.path.exists(STATIC_RUNNINGHUB_API_PROVIDERS_FILE):
@@ -94,16 +93,6 @@ def _encrypt_provider_secrets(provider):
             provider[key] = _svc.secret_store.encrypt_secret(provider[key])
     return provider
 
-
-async def runninghub_models_payload(provider=None):
-    registry, meta = await _app_main.fetch_runninghub_model_registry(provider, include_fallback=True, include_meta=True)
-    payload = runninghub_registry_payload(registry)
-    payload['raw'] = {'registry_count': len(registry), **meta}
-    if meta.get('source') == 'fallback':
-        payload['message'] = 'RunningHub 模型接口未返回完整列表，当前显示内置兜底模型。'
-    else:
-        payload['message'] = f"RunningHub 模型列表来自 {meta.get('source')}"
-    return payload
 
 @router.get('/api/providers')
 async def api_providers():
@@ -165,24 +154,6 @@ async def save_providers(payload: List[ApiProviderPayload]):
         reload_env_globals()
     return {'providers': [public_provider(p) for p in providers]}
 
-
-def api_key_from_payload(payload, protocol: str=''):
-    explicit = str(getattr(payload, 'api_key', '') or '').strip()
-    provider_id = str(getattr(payload, 'provider_id', '') or '').strip().lower()
-    protocol = str(protocol or protocol_from_payload(payload) or '').strip().lower()
-    if explicit:
-        return explicit
-    if provider_id:
-        if provider_id == 'runninghub':
-            value = os.getenv(runninghub_wallet_key_env(), '')
-            if value:
-                return value
-        value = _app_main.provider_env_key_value(provider_id)
-        if value:
-            return value
-    if protocol == 'volcengine':
-        return volcengine_provider_api_key('')
-    return ''
 
 async def comfyui_test_connection(payload):
     """探测可达性和生图能力，不修改服务商配置（#472）。"""
