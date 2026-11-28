@@ -2455,22 +2455,6 @@
         }
       ]
     },
-    "photoshop_connection_status": {
-      "category": "逻辑已经分叉",
-      "basis": "存在 2 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",
-      "members": [
-        {
-          "module": "app/routers/api_global_settings.py",
-          "ordinal": 1,
-          "ast_sha256": "02bc20f066ad96f5cf86765f30ae06952ac8d4d92318ea122ead853c0bbbd626"
-        },
-        {
-          "module": "app/services/photoshop.py",
-          "ordinal": 1,
-          "ast_sha256": "1073ac5c860ed2cb3e6bbc78640de8a4e03566e18d292255aaeb4e7fd4624fbc"
-        }
-      ]
-    },
     "png": {
       "category": "逻辑已经分叉",
       "basis": "存在 9 种不同函数 AST；未证明差异仅为已知全局访问归一化，保守归为结构分叉，不断言运行时语义不同。",

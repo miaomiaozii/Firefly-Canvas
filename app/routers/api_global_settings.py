@@ -16,7 +16,8 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 from app.core import (BaseModel, Field, GlobalPreferencesPayload, HTTPException, Optional, PROJECT_LIBRARY_MIGRATION_ACTIVE, PROJECT_LIBRARY_SWITCH_LOCK, PROJECT_MEDIA_IMPORT_FUTURES, PROJECT_MEDIA_IMPORT_TASKS_LOCK, Path, ProjectLibraryChangeRequest, ProjectStore, ProjectStoreError, _os, _sys, asyncio, ensure_same_origin_request, json, os, shutil, uuid)
-_from_main_names = ['FIREFLY_PROJECT_STORE', 'GLOBAL_SETTINGS_FILE', 'load_global_preferences', 'manager', 'photoshop_connection_status', 'project_library_status', 'public_api_providers', 'save_global_preferences', 'switch_project_library', 'update_env_values']
+from app.services.photoshop import photoshop_connection_status
+_from_main_names = ['FIREFLY_PROJECT_STORE', 'GLOBAL_SETTINGS_FILE', 'load_global_preferences', 'project_library_status', 'public_api_providers', 'save_global_preferences', 'switch_project_library', 'update_env_values']
 import app.services as _svc
 for _nm in _from_main_names:
     _v = getattr(_app_main, _nm, None)
@@ -35,11 +36,6 @@ def save_global_preferences(theme: Optional[str], language: str, autosave_interv
     return _svc.providers.save_global_preferences(theme, language, autosave_interval_minutes, upstream_direct,
                                                   chat_dock_enabled=chat_dock_enabled)
 
-
-def photoshop_connection_status():
-    connected_clients = [client_id for client_id in manager.connection_clients.values() if str(client_id or '').lower().startswith('ps_')]
-    connected = bool(connected_clients)
-    return {'connected': connected, 'connection_count': len(connected_clients), 'message': 'Photoshop 连接器已连接' if connected else 'Photoshop 连接器未连接'}
 
 def switch_project_library(path: str, move_existing: bool):
     global FIREFLY_PROJECT_STORE, PROJECT_LIBRARY_MIGRATION_ACTIVE
