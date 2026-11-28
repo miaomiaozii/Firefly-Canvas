@@ -81,6 +81,7 @@ class AgentWorkspaceTests(unittest.TestCase):
         self.addCleanup(lambda: self.run_async(self.manager.cleanup_project(self.project_id)))
         self.enterContext(patch.dict(os.environ, {"FIREFLY_PI_CLI": "fixture-pi.exe"}))
         self.launches = []
+        self.enterContext(patch.object(agent_host, "verify_pi_launch_version", return_value=None))
         self.enterContext(patch.object(agent_host.subprocess, "Popen", side_effect=self.launch))
 
     def run_async(self, operation):

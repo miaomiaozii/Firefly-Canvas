@@ -146,6 +146,10 @@ def submissions(request, tmp_path, monkeypatch):
         processes.append(process)
         return process
 
+    async def accept_fixture_pi(*args, **kwargs):
+        pass
+
+    monkeypatch.setattr(ah, "verify_pi_launch_version", accept_fixture_pi)
     monkeypatch.setattr(ah.subprocess, "Popen", spawn)
 
     async def submit():

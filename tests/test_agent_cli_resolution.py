@@ -227,6 +227,72 @@ class SpawnCliResolutionTests(unittest.TestCase):
         self.assertEqual(session.status, "crashed")
         self.assertIn("npm", session.last_error)
 
+    def test_incompatible_pi_is_rejected_before_session_process_creation(self):
+        session = self._run(self.manager.get_or_create_session(self.project_id, "node-incompatible"))
+        result = agent_host.subprocess.CompletedProcess(["fixture-pi.exe", "--version"], 0, stdout="1.5.1\n")
+        with mock.patch.dict(os.environ, {"FIREFLY_PI_CLI": "fixture-pi.exe"}), \
+             mock.patch.object(agent_host.subprocess, "run", return_value=result) as probe, \
+             mock.patch.object(agent_host.subprocess, "Popen", return_value=_FakeProcess()) as launch:
+            self.assertFalse(self._run(self.manager.spawn_session(session)))
+        if session._reader_task is not None:
+            self._run(session._reader_task)
+        launch.assert_not_called()
+        self.assertEqual(probe.call_args.args[0], ["fixture-pi.exe", "--version"])
+        self.assertEqual(session.status, "crashed")
+        self.assertIsNone(session.process)
+        self.assertIn("1.5.1", session.last_error)
+        self.assertIn("1.6.1", session.last_error)
+
+    def test_unverified_pi_never_starts_a_session(self):
+        version_command = ["fixture-pi.exe", "--version"]
+        for label, result, error in (
+            ("malformed", agent_host.subprocess.CompletedProcess(version_command, 0, stdout="private text\n1.6.1\n"), None),
+            ("nonzero", agent_host.subprocess.CompletedProcess(version_command, 1, stdout="1.6.1\n"), None),
+            ("timeout", None, agent_host.subprocess.TimeoutExpired(version_command, 10)),
+            ("unavailable", None, FileNotFoundError("private text")),
+        ):
+            with self.subTest(label=label), \
+                 mock.patch.dict(os.environ, {"FIREFLY_PI_CLI": "fixture-pi.exe"}), \
+                 mock.patch.object(agent_host.subprocess, "run", return_value=result, side_effect=error) as probe, \
+                 mock.patch.object(agent_host.subprocess, "Popen") as launch:
+                session = self._run(self.manager.get_or_create_session(self.project_id, f"node-{label}"))
+                self.assertFalse(self._run(self.manager.spawn_session(session)))
+                launch.assert_not_called()
+                self.assertEqual(probe.call_args.args[0], version_command)
+                self.assertGreater(probe.call_args.kwargs["timeout"], 0)
+                self.assertLessEqual(probe.call_args.kwargs["timeout"], 10)
+                self.assertEqual(session.status, "crashed")
+                self.assertIsNone(session.process)
+                self.assertIn("无法验证 CLI 版本", session.last_error)
+                self.assertNotIn("private text", session.last_error)
+
+    def test_stop_while_version_check_is_pending_does_not_restart_pi(self):
+        async def scenario():
+            session = await self.manager.get_or_create_session(self.project_id, "node-stop-probe")
+            entered, release = asyncio.Event(), asyncio.Event()
+
+            async def gated_probe(*args, **kwargs):
+                entered.set()
+                await release.wait()
+
+            with (mock.patch.dict(os.environ, {"FIREFLY_PI_CLI": "fixture-pi.exe"}),
+                  mock.patch.object(agent_host, "verify_pi_launch_version", gated_probe),
+                  mock.patch.object(agent_host.subprocess, "Popen") as launch):
+                task = asyncio.create_task(self.manager.spawn_session(session))
+                try:
+                    await asyncio.wait_for(entered.wait(), 2)
+                    await self.manager.stop_session(session)
+                    release.set()
+                    self.assertFalse(await task)
+                finally:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                launch.assert_not_called()
+                self.assertIsNone(session.process)
+                self.assertEqual(session.status, "stopped")
+
+        self._run(scenario())
+
     def test_npm_cmd_wrapper_spawn_launches_node_not_cmd(self):
         """#343：npm 规范包装器 → Popen 收到 [node.exe, 脚本, ...]，cmd[0] 不是 cmd。"""
         session = self._run(self.manager.get_or_create_session(self.project_id, "node-npm"))
@@ -245,9 +311,9 @@ class SpawnCliResolutionTests(unittest.TestCase):
                 agent_host.PI_CLI = "pi"
                 os.environ["PATH"] = _stub_path(base)
                 fake_process = _FakeProcess()
-                with mock.patch.object(
-                    agent_host.subprocess, "Popen", return_value=fake_process
-                ) as popen:
+                version = agent_host.subprocess.CompletedProcess([], 0, stdout="1.6.1\n")
+                with (mock.patch.object(agent_host.subprocess, "run", return_value=version) as probe,
+                      mock.patch.object(agent_host.subprocess, "Popen", return_value=fake_process) as popen):
                     self._run(self.manager.spawn_session(session))
             finally:
                 os.environ["PATH"] = previous_path
@@ -263,6 +329,9 @@ class SpawnCliResolutionTests(unittest.TestCase):
         self.assertTrue(command[0].lower().endswith("node.exe"))
         self.assertEqual(os.path.normpath(command[1]), os.path.normpath(str(script)))
         self.assertIn("--mode", command)
+        self.assertEqual(probe.call_args.args[0], command[:2] + ["--version"])
+        self.assertEqual(probe.call_args.kwargs["cwd"], kwargs["cwd"])
+        self.assertEqual(probe.call_args.kwargs["env"], kwargs["env"])
 
 
 if __name__ == "__main__":

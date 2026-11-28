@@ -154,6 +154,7 @@ class RuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.enterContext(patch.object(ah._app_main, "FIREFLY_PROJECT_STORE", None))
         self.enterContext(patch.object(ah, "maybe_warm_codex", return_value=False))
         self.enterContext(patch.object(ah, "MAX_CONSECUTIVE_RESPAWNS", 0))
+        self.enterContext(patch.object(ah, "verify_pi_launch_version", return_value=None))
         self.enterContext(patch.object(ah.subprocess, "Popen", side_effect=AssertionError("real spawn forbidden")))
         self.addAsyncCleanup(self.manager.stop_session, self.session)
 
@@ -836,8 +837,9 @@ class BindingTests(unittest.TestCase):
             finally:
                 await self.manager.stop_session(self.session)
 
-        with patch.object(ah, "resolve_pi_cli", return_value="fake-pi.exe"), \
-                patch.object(ah.subprocess, "Popen", side_effect=spawn):
+        with (patch.object(ah, "resolve_pi_cli", return_value="fake-pi.exe"),
+              patch.object(ah, "verify_pi_launch_version", return_value=None),
+              patch.object(ah.subprocess, "Popen", side_effect=spawn)):
             asyncio.run(run())
         self.assertNotIn("--continue", argv)
         self.assertNotIn(old_id, argv)

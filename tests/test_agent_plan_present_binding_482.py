@@ -256,6 +256,10 @@ def binding_http(tmp_path, monkeypatch):
     original_which = agent_host.shutil.which
     monkeypatch.setattr(agent_host.shutil, 'which',
                         lambda name: sys.executable if name == 'codex' else original_which(name))
+    async def accept_fixture_pi(*args, **kwargs):
+        pass
+
+    monkeypatch.setattr(agent_host, 'verify_pi_launch_version', accept_fixture_pi)
     monkeypatch.setattr(agent_host.subprocess, 'Popen', Process)
     store = ProjectStore(Path(os.environ['FIREFLY_PROJECTS_ROOT']) / tmp_path.name, snapshot_delay=0)
     manager = agent_host.AgentHostManager()

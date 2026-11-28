@@ -9,7 +9,7 @@ from app.core import ensure_agent_same_origin, ensure_same_origin_request, origi
 from app.constants import NODE_TYPE_AGENT
 from app.services.agent_host import (
     agent_host_manager, InvalidEventsCursor, StaleEventsCursor, CorruptEventsLog,
-    validate_events_identifiers,
+    PI_VERSION_ERROR_PREFIX, validate_events_identifiers,
 )
 from app.services.agent_errors import agent_error, translate_detail
 from app.services.agent_message_refs import resolve_node_refs
@@ -30,6 +30,11 @@ router = APIRouter(prefix="/api/projects/{project_id}/agent-nodes", tags=["agent
 
 # #335: 未知 agentCli 不得静默回落 pi——create 入口直接 400 拒绝。
 AGENT_CLI_WHITELIST = ("pi", "codex")
+
+
+def _pi_start_error(session) -> str:
+    error = getattr(session, "last_error", "")
+    return error if isinstance(error, str) and error.startswith(PI_VERSION_ERROR_PREFIX) else ""
 
 
 def _validated_agent_cli(node: dict) -> str:
@@ -242,7 +247,7 @@ async def _create_agent_node_locked(project_id: str, node_id: str, model: str,
     if not session.is_running:
         success = await agent_host_manager.spawn_session(session, session.model, session.autonomy)
         if not success:
-            raise HTTPException(status_code=500, detail="Failed to start agent session")
+            raise HTTPException(status_code=500, detail=_pi_start_error(session) or "Failed to start agent session")
 
     return {
         "success": True,
@@ -316,6 +321,7 @@ async def get_agent_status(
         "model": session.model,
         "autonomy": session.autonomy,
         "is_running": session.is_running,
+        "last_error": _pi_start_error(session),
         "started_at": session._started_at,
         "last_activity": session._last_activity,
         "host": session.agent_cli,
@@ -515,7 +521,7 @@ async def _send_input_admitted(project_id: str, node_id: str, input_type: str, b
             _apply_node_host(project_id, node_id, session)
             if not session.is_running:
                 if not await agent_host_manager.spawn_session(session):
-                    raise agent_error(500, "INTERNAL_ERROR", "Failed to start agent session")
+                    raise agent_error(500, "INTERNAL_ERROR", _pi_start_error(session) or "Failed to start agent session")
             await agent_host_manager.send_prompt(session, body["message"], body.get("images", []), **metadata)
         else:
             if not session.is_running:

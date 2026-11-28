@@ -111,7 +111,8 @@ class SpawnApiBaseInjectionTests(unittest.TestCase):
     def _spawn_with_fake(self, session) -> mock.MagicMock:
         fake_process = _FakeProcess()
         popen = mock.MagicMock(return_value=fake_process)
-        with mock.patch.object(agent_host.subprocess, "Popen", popen):
+        with (mock.patch.object(agent_host, "verify_pi_launch_version", return_value=None),
+              mock.patch.object(agent_host.subprocess, "Popen", popen)):
             self._run(self.manager.spawn_session(session))
         # 在本测试事件循环内跑完 reader 任务，避免悬挂任务
         if session._reader_task is not None:

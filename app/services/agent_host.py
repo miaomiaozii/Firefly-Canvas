@@ -138,7 +138,11 @@ def normalize_result(status: str, error_kind: str = "") -> dict:
     return {"status": status, "error_kind": error_kind}
 
 
-# Pi CLI path
+# #476: keep in sync with the guarded extension's exact SDK contract.
+PI_REQUIRED_VERSION = "1.6.1"
+PI_VERSION_ERROR_PREFIX = "Pi 启动被拒绝："
+PI_VERSION_PROBE_TIMEOUT = 10.0
+
 PI_CLI = os.environ.get("FIREFLY_PI_CLI", "pi")
 
 # #278：pi 可执行解析——Windows 上 npm 安装只有 pi.cmd 包装器，CreateProcess
@@ -357,6 +361,25 @@ def build_pi_launch_command(resolved_cli: Optional[str], args: List[str]) -> Opt
         return [*base, *args]
     argv = [resolved_cli, *args]
     return argv
+
+
+async def verify_pi_launch_version(command: List[str], *, cwd: str, env: Dict[str, str]) -> None:
+    # Use the resolved launch prefix, including the exact Node entry for an npm shim.
+    prefix = command[:command.index("--mode")]
+    guidance = f"需要 fork Pi {PI_REQUIRED_VERSION}。请检查 FIREFLY_PI_CLI 或 PATH。"
+    try:
+        probe = await asyncio.to_thread(
+            subprocess.run, [*prefix, "--version"], cwd=cwd, env=env,
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            encoding="utf-8", errors="replace", timeout=PI_VERSION_PROBE_TIMEOUT, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise RuntimeError(f"{PI_VERSION_ERROR_PREFIX}无法验证 CLI 版本。{guidance}") from None
+    version = probe.stdout.strip()
+    if probe.returncode != 0 or not re.fullmatch(r"[0-9]{1,8}(?:\.[0-9]{1,8}){2}", version):
+        raise RuntimeError(f"{PI_VERSION_ERROR_PREFIX}无法验证 CLI 版本。{guidance}")
+    if version != PI_REQUIRED_VERSION:
+        raise RuntimeError(f"{PI_VERSION_ERROR_PREFIX}检测到 {version}。{guidance}")
 
 
 # #279：画布工具回连基址的默认端口（与 main.py uvicorn 默认监听端口一致）。
@@ -722,8 +745,9 @@ class AgentHostManager:
             raise RuntimeError("Agent runtime is stopping")
         if session.is_running:
             return True
-        # Snapshot before any await/adapter callback; requests may change later.
+        # A stop or replacement can retire this admission while the version probe runs.
         spawn_model, spawn_effort = model or session.model, session.reasoning_effort
+        observed_generation = session.generation
 
         # Codex remains per-turn and read-only (ADR 0024); no Pi workspace setup.
         if session.agent_cli == "codex":
@@ -809,6 +833,17 @@ class AgentHostManager:
             env["FIREFLY_AGENT_NODE_ID"] = session.node_id
             # The extension root is server-owned, never inherited or inferred from mutable cwd (#445).
             env["FIREFLY_AGENT_WORKSPACE_ROOT"] = session_dir
+
+            # --tools explicitly selects same-named built-ins when guarded registration fails (#476).
+            version_error = None
+            try:
+                await verify_pi_launch_version(cmd, cwd=session_dir, env=env)
+            except RuntimeError as exc:
+                version_error = exc
+            if session._stopping or session.generation != observed_generation or session.agent_cli != "pi":
+                return False
+            if version_error is not None:
+                raise version_error
 
             logger.info(f"Spawning pi subprocess for agent {session.node_id}: {' '.join(cmd[:6])}...")
 
