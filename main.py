@@ -59,8 +59,8 @@ if (_os_boot.environ.get("FIREFLY_RUNTIME_ROOT", "").strip()
         "FIREFLY_PROJECTS_ROOT=<隔离路径> 再启动（Refs #329）。\n")
     _sys_boot.exit(2)
 
-import app.services as _svc
-from app.services import assets as _asset_services  # W1c services layer
+import app.services as _svc  # W1c services layer
+from app.services import assets as _asset_services
 from app.services import *
 from app.services import agent_host as _agent_host_boot
 
