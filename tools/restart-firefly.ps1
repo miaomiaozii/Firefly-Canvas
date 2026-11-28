@@ -66,13 +66,32 @@ function Start-FireflyServer {
     $env:PYTHONUTF8 = '1'
     $env:PYTHONIOENCODING = 'utf-8'
     $env:FIREFLY_BOOT_REDIRECT = '1'
-    # Same entrypoint as run.bat -> launch-firefly.ps1.
-    Start-Process -FilePath $py `
-        -ArgumentList @('tools\run-server.py') `
-        -WorkingDirectory $root `
-        -WindowStyle Hidden `
-        -RedirectStandardOutput $stdout `
-        -RedirectStandardError $stderr | Out-Null
+    # Windows PowerShell 5.1 cannot set a child-only environment on Start-Process.
+    # Temporarily remove the harness overrides so only the server gets the filtered copy (#476).
+    $harnessVariables = @(
+        'PI_PACKAGE_DIR', 'PI_CODING_AGENT_DIR', 'PI_SESSION_FILE', 'PI_SESSION_ID',
+        'PI_PROVIDER', 'PI_MODEL', 'PI_REASONING_LEVEL', 'BILLION_CONTEXT_NATIVE', 'BILLION_CONTEXT_PROXY'
+    )
+    $saved = @{}
+    try {
+        foreach ($name in $harnessVariables) {
+            $value = [Environment]::GetEnvironmentVariable($name)
+            if ($null -ne $value) {
+                $saved[$name] = $value
+                [Environment]::SetEnvironmentVariable($name, [NullString]::Value)
+            }
+        }
+        Start-Process -FilePath $py `
+            -ArgumentList @('tools\run-server.py') `
+            -WorkingDirectory $root `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $stdout `
+            -RedirectStandardError $stderr | Out-Null
+    } finally {
+        foreach ($name in $saved.Keys) {
+            [Environment]::SetEnvironmentVariable($name, $saved[$name])
+        }
+    }
     Write-Host "[RESTART] Server starting via tools\run-server.py ... log: $stdout"
 }
 

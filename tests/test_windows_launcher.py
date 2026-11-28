@@ -1,3 +1,6 @@
+import json
+import os
+import shutil
 import subprocess
 import sys
 import unittest
@@ -36,6 +39,67 @@ class WindowsLauncherTests(unittest.TestCase):
         self.assertIn("wait-for-local-server.ps1", detached)
         self.assertIn("Invoke-WebRequest", helper)
         self.assertIn("Start-Process $uri", helper)
+
+
+@unittest.skipUnless(sys.platform == "win32", "Windows restart tool")
+class RestartEnvironmentTests(unittest.TestCase):
+    def test_development_restart_excludes_only_the_harness_variables_from_server(self):
+        import tempfile
+
+        injected = {
+            key: f"fixture-{key}"
+            for key in (
+                "PI_PACKAGE_DIR", "PI_CODING_AGENT_DIR", "PI_SESSION_FILE", "PI_SESSION_ID",
+                "PI_PROVIDER", "PI_MODEL", "PI_REASONING_LEVEL", "BILLION_CONTEXT_NATIVE",
+                "BILLION_CONTEXT_PROXY",
+            )
+        }
+        preserved = {"FIREFLY_PI_CLI": "fixture-cli", "PI_OFFLINE": "1", "BILLION_CONTEXT_OTHER": "keep"}
+        with tempfile.TemporaryDirectory(prefix="firefly-restart-env-") as directory:
+            root = Path(directory)
+            tools = root / "tools"
+            tools.mkdir()
+            for name in ("restart-firefly.ps1", "firefly-boot-logs.ps1"):
+                shutil.copyfile(ROOT / "tools" / name, tools / name)
+            # Use real process creation and redirection, without touching the running service or opening a browser.
+            (tools / "run-server.py").write_text(
+                "import json, os\n"
+                f"print(json.dumps({{key: os.environ[key] for key in {list(injected | preserved)!r} if key in os.environ}}), flush=True)\n",
+                encoding="utf-8",
+            )
+            (tools / "wait-for-local-server.ps1").write_text("exit 0\n", encoding="ascii")
+            (root / "check.ps1").write_text(
+                "param([string]$PythonPath)\n"
+                "$ErrorActionPreference = 'Stop'\n"
+                "function Get-NetTCPConnection { [CmdletBinding()] param($LocalPort, $State) }\n"
+                "function Get-CimInstance { [CmdletBinding()] param($ClassName, $Filter) }\n"
+                "function Stop-Process { throw 'test must not stop a process' }\n"
+                "$children = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()\n"
+                "function Start-Process {\n"
+                "  param($FilePath, $ArgumentList, $WorkingDirectory, $WindowStyle,\n"
+                "        $RedirectStandardOutput, $RedirectStandardError)\n"
+                "  $children.Add((Microsoft.PowerShell.Management\\Start-Process @PSBoundParameters -PassThru))\n"
+                "}\n"
+                "try { & (Join-Path $PSScriptRoot 'tools/restart-firefly.ps1') -PythonPath $PythonPath }\n"
+                "finally {\n"
+                "  foreach ($child in $children) {\n"
+                "    if (-not $child.WaitForExit(5000)) { $child.Kill(); $child.WaitForExit(); throw 'fixture child timed out' }\n"
+                "    $child.Dispose()\n"
+                "  }\n"
+                "}\n"
+                + "\n".join(f"if ($env:{key} -cne '{value}') {{ throw 'parent {key} changed' }}"
+                            for key, value in (injected | preserved).items()),
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                ["powershell.exe", "-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
+                 str(root / "check.ps1"), "-PythonPath", sys.executable],
+                cwd=root, env={**os.environ, **injected, **preserved, "FIREFLY_RUNTIME_ROOT": str(root)},
+                capture_output=True, timeout=20,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            stdout, = (root / "logs").glob("boot-*.stdout.log")
+            self.assertEqual(json.loads(stdout.read_text(encoding="utf-8")), preserved)
 
 
 if __name__ == "__main__":
