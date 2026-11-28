@@ -66,27 +66,6 @@ function createPromptNode(x, y, options={}){
     return node;
 }
 
-function createConversationNode(x, y, options={}){
-    const ownership = canvasCore.smartNewNodeOwnership({}, options.creation);
-    if(!options.skipUndo) pushUndo();
-    const node = {
-        ...ownership,
-        id:uid('conversation'),
-        type:NODE_TYPE_CONVERSATION,
-        x,
-        y,
-        w:390,
-        h:430,
-        title:'Conversation',
-        messages:[]
-    };
-    canvasState.nodes.push(node);
-    if(options.select !== false) canvasState.selectedId = node.id;
-    canvasCore.render();
-    canvasCore.scheduleSave();
-    return node;
-}
-
 function createAgentNode(x, y, options={}){
     const ownership = canvasCore.smartNewNodeOwnership({}, options.creation);
     if(!options.skipUndo) pushUndo();
@@ -507,7 +486,6 @@ const LOCAL_EDIT_NODE_W = 400;
 const LOCAL_EDIT_NODE_H = 520;
 const CREATE_MENU_NODE_SIZE = {
     prompt: { w: 316, h: 240 },            // 与 createPromptNode 一致
-    conversation: { w: 390, h: 430 },      // 与 createConversationNode 一致
     agent: { w: 480, h: 360 },             // 与 createAgentNode 一致
     'local-edit': { w: LOCAL_EDIT_NODE_W, h: LOCAL_EDIT_NODE_H },
     loop: { w: 340, h: 168 },              // 与 createLoopNode 一致
@@ -530,7 +508,6 @@ function createNodeFromMenu(type){
     if(type === 'group'){ const s = spot(p.x - 170, p.y - 110, createMenuNodeSizeFor('group')); return createSmartGroupNode(s.x, s.y); }
     let created = null;
     if(type === 'prompt'){ const s = spot(p.x - 158, p.y - 97, CREATE_MENU_NODE_SIZE.prompt); created = createPromptNode(s.x, s.y); }
-    else if(type === 'conversation'){ const s = spot(p.x - 195, p.y - 215, CREATE_MENU_NODE_SIZE.conversation); created = createConversationNode(s.x, s.y); }
     else if(type === 'agent'){ const s = spot(p.x - 191, p.y - 180, CREATE_MENU_NODE_SIZE.agent); created = createAgentNode(s.x, s.y); }
     else if(type === 'local-edit'){ const s = spot(p.x - 180, p.y - 165, CREATE_MENU_NODE_SIZE['local-edit']); created = createLocalEditNode(s.x, s.y); }
     else if(type === 'loop'){ const s = spot(p.x - 135, p.y - 95, CREATE_MENU_NODE_SIZE.loop); created = createLoopNode(s.x, s.y); }

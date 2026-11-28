@@ -31,7 +31,7 @@
     },
     {
       "matches": ["http://127.0.0.1/static/smart-canvas.html*"],
-      "js": ["protocol.js", "settings-hello.js", "canvas-relay.js"],
+      "js": ["protocol.js", "settings-hello.js", "dock-direct.js", "canvas-relay.js"],
       "all_frames": true
     },
     {

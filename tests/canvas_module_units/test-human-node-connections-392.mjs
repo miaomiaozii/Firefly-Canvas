@@ -264,9 +264,9 @@ test('automatic shared connection/reroute/layout helpers and invalid/cancelled U
     assert.equal(evaluate(ctx, 'undoStack.length'), 0);
 });
 
-test('image/prompt/conversation/Agent constructors retain explicit new identities, without stamping their source', () => {
+test('image/prompt/Agent constructors retain explicit new identities, without stamping their source', () => {
     const {ctx, node} = nodeEditor([imageNode('source')]);
-    const created = [ctx.createNode(20, 30), ctx.createPromptNode(40, 50), ctx.createConversationNode(60, 70), ctx.createAgentNode(80, 90)];
+    const created = [ctx.createNode(20, 30), ctx.createPromptNode(40, 50), ctx.createAgentNode(80, 90)];
     for(const item of created){
         assert.equal(item.createdBy, 'user');
         assert.equal(item.agentNodeId, null);

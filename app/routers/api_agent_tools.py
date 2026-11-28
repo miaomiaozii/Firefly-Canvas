@@ -946,6 +946,9 @@ async def create_node_core(project_id: str, node: dict, agent_node_id: str = "")
         raise agent_error(400, "INVALID_ARGUMENT", "node must be an object",
                           "canvas.create_node 的 node 参数需是对象。")
 
+    if node.get("type") in ("smart-conversation", "conversation"):
+        raise agent_error(410, "CONVERSATION_NODE_RETIRED", "对话节点已停用",
+                          "请使用画布的对话面板；已有对话节点仍可读取。")
     if "layoutFrame" in node:
         raise agent_layout.invalid("layoutFrame is assigned only by canvas.group_create")
     reserved = sorted(key for key in ownership_fields() if key in node)

@@ -209,33 +209,62 @@ test('prompt-node flow entry/exit are negative and flow typing reuses the durabl
     assert.equal(e.stored()[0].w,316);assert.equal(e.stored()[0].h,200,'flow geometry is not a persisted edit');
 });
 
-test('conversation collapse is durable T-only; a fresh manual send captures intent on the original pending request without claiming T',async()=>{
-    const e=editor([{id:'conversation',type:'smart-conversation',...identity,messages:[],conversation_collapsed:false}]);
-    const {ctx}=e;const input=e.harness.makeElement();input.value='manual message';const send=e.harness.makeElement();const collapse=e.harness.makeElement();
-    ctx.bindConversationNodeControls(e.form({'[data-conversation-input]':[input],'[data-conversation-send]':[send],'[data-conversation-collapse]':[collapse]}),e.node());
-    collapse.dispatchEvent(event(collapse,{type:'click'}));
-    assert.equal(e.stored()[0].conversation_collapsed,true);assert.equal(e.stored()[0].userTouchedAt,1234);assert.equal(e.stored()[0].promptEditedByUser,false);
-    const fresh=editor([{id:'conversation',type:'smart-conversation',...identity,messages:[]}]);
-    fresh.node().title='unsaved title';fresh.ctx.scheduleSave();
-    fresh.ctx.fetch=async()=>{throw Error('offline boundary');};
-    const freshInput=fresh.harness.makeElement();freshInput.value='manual message';const freshSend=fresh.harness.makeElement();
-    fresh.ctx.bindConversationNodeControls(fresh.form({'[data-conversation-input]':[freshInput],'[data-conversation-send]':[freshSend]}),fresh.node());
-    freshSend.dispatchEvent(event(freshSend,{type:'click'}));
+test('legacy conversation collapse is durable T-only; Dock opens without changing history or creating an intent',async()=>{
+    const messages=[{id:'old',role:'assistant',text:'Prior reply',status:'completed'}];
+    const e=editor([{id:'conversation',type:'smart-conversation',...identity,messages,conversation_collapsed:false}]);
+    const {ctx}=e;
+    const dock=e.harness.makeElement('button'),collapse=e.harness.makeElement('button');
+    const input=e.harness.makeElement('textarea'),send=e.harness.makeElement('button');
+    input.value='old draft';
+    let toggles=0,requests=0;
+    Object.assign(ctx,{top:{},smartChatDockBusy:false,FireflyChatDockClient:{async toggleDock(){toggles++;return true;}},
+        fetch:async()=>{requests++;throw new Error('unexpected request');}});
+    ctx.bindConversationNodeControls(e.form({'[data-conversation-dock]':[dock],'[data-conversation-collapse]':[collapse],
+        '[data-conversation-input]':[input],'[data-conversation-send]':[send]}),e.node());
+    const before=e.stored();
+    dock.dispatchEvent(event(dock,{type:'click'}));
+    send.dispatchEvent(event(send,{type:'click'}));
+    input.dispatchEvent(event(input,{type:'keydown',key:'Enter'}));
     await new Promise(resolve=>setImmediate(resolve));
-    const pending=fresh.stored()[0].pendingActionResumes?.[0];
-    assert.equal(pending?.kind,'conversation',JSON.stringify({stored:fresh.stored(),toasts:fresh.harness.toasts}));assert.equal(pending?.payload.humanIntent,true);
-    assert.equal(pending.payload.requestId,fresh.stored()[0].messages[0].request_id);
-    assert.equal(fresh.stored()[0].userTouchedAt,null,'a local save is not server registration');
-    const firstId=pending.payload.requestId;freshSend.dispatchEvent(event(freshSend,{type:'click'}));
-    for(let i=0;i<5;i++) await Promise.resolve();
-    assert.equal(fresh.stored()[0].pendingActionResumes.length,1);assert.equal(fresh.stored()[0].pendingActionResumes[0].payload.requestId,firstId);
-    assert.deepEqual(pending.payload,{conversationProtocol:1,projectId:'unit-392',nodeId:'conversation',
-        requestId:firstId,text:'manual message',humanIntent:true});
-    assert.equal(fresh.stored()[0].messages.length,1);assert.equal(fresh.stored()[0].userTouchedAt,null);
-    // This DOM test owns click -> immutable original intent. The protocol suite
-    // exercises the real queue/persister/receiver on replay and formal ACK, rather
-    // than calling the rebuilder with a storage record lacking its runtime nodeId.
-    assert.deepEqual(fresh.stored()[0].pendingActionResumes[0].payload,pending.payload);
+    assert.equal(toggles,1);
+    assert.equal(requests,0);
+    assert.deepEqual(e.stored(),before);
+    collapse.dispatchEvent(event(collapse,{type:'click'}));
+    assert.deepEqual(e.stored(),[{...before[0],conversation_collapsed:true,userTouchedAt:1234}]);
+});
+
+test('legacy conversation selection extracts a prompt with the original node and message provenance',()=>{
+    const e=editor([{id:'conversation',type:'smart-conversation',...identity,x:0,y:0,w:390,h:430,
+        messages:[{id:'assistant-1',role:'assistant',text:'A reusable phrase in context',status:'completed'}]}]);
+    const {ctx,harness}=e;
+    loadModules(ctx,['canvas-node-ops.js']);
+    const message=harness.makeElement(),source=harness.makeElement();
+    source.dataset.id='conversation';
+    message.dataset.messageId='assistant-1';
+    message.closest=selector=>selector==='.image-node'?source:null;
+    message.contains=value=>value===message;
+    let cleared=false;
+    Object.assign(ctx,{conversationSelection:null,conversationSelectionCandidate:null,conversationExtractionReturnFocus:null,innerWidth:800,innerHeight:600,
+        getSelection:()=>({rangeCount:1,getRangeAt:()=>({commonAncestorContainer:message}),toString:()=> 'reusable phrase',removeAllRanges(){cleared=true;}})});
+    ctx.bindConversationNodeControls(e.form({'.conversation-node-message-text':[message]}),e.node());
+    const before=e.stored()[0];
+    message.dispatchEvent(event(message,{type:'keydown',shiftKey:true,key:'F10'}));
+    const menu=ctx.document.body.children.find(el=>el.dataset.extractPromptSelection==='');
+    assert.ok(menu);
+    assert.equal(menu.getAttribute('aria-hidden'),'false');
+    harness.querySelectorAll('[data-extract-prompt-selection]',[menu]);
+    menu.contains=()=>false;
+    menu.dispatchEvent(event({closest:selector=>selector==='[data-extract-prompt-action]'},{type:'click'}));
+    const [original,prompt]=e.stored();
+    assert.deepEqual(original,before);
+    assert.equal(prompt.type,'smart-prompt');
+    assert.equal(prompt.text,'reusable phrase');
+    assert.equal(prompt.source_node_id,'conversation');
+    assert.equal(prompt.source_message_id,'assistant-1');
+    assert.equal(prompt.createdBy,'user');
+    assert.equal(evaluate(ctx,'undoStack.length'),1);
+    assert.equal(cleared,true);
+    assert.equal(menu.getAttribute('aria-hidden'),'true');
 });
 
 test('engine and API kind DOM switches stamp persisted mode snapshots before render without prompt protection',()=>{

@@ -13,9 +13,13 @@ from fastapi.testclient import TestClient
 
 import main
 from firefly_projects import ProjectStore
+from tests.conversation_legacy_admission import with_legacy_conversation_admission
 
 
-class ConversationNodeApiContractTests(unittest.TestCase):
+class _ConversationNodeTests(unittest.TestCase):
+    def _client_app(self):
+        return main.app
+
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.store = ProjectStore(Path(self.temp_dir.name) / "projects", snapshot_delay=0.01)
@@ -24,7 +28,7 @@ class ConversationNodeApiContractTests(unittest.TestCase):
         self.static_version_patch = patch.object(main, "sync_static_html_versions")
         self.static_version_patch.start()
         self.client = TestClient(
-            main.app,
+            self._client_app(),
             base_url="http://127.0.0.1",
             headers={"origin": "http://127.0.0.1"},
         )
@@ -96,6 +100,47 @@ class ConversationNodeApiContractTests(unittest.TestCase):
         self.store.apply_mutations(project["id"], mutations, base_revision=0)
         self.store.flush(project["id"])
         return project, media, conversation, prompt
+
+
+class ConversationNodePublicRouteTests(_ConversationNodeTests):
+    def test_retired_post_preserves_legacy_history_and_does_not_admit_new_work(self):
+        project, _, conversation, _ = self._seed_conversation_canvas()
+        identifier = project['id']
+        node_id = conversation['id']
+        history = [
+            {'id': 'old-user', 'request_id': 'old', 'role': 'user', 'status': 'completed', 'text': 'Previous question'},
+            {'id': 'old-answer', 'request_id': 'old', 'role': 'assistant', 'text': 'Previous answer'},
+        ]
+        revision = self.store.canvas(identifier)['revision']
+        self.store.apply_mutations(
+            identifier, [{'op': 'upsert_node', 'node': {**conversation, 'messages': history}}], base_revision=revision,
+        )
+        self.store.flush(identifier)
+        before = self.store.canvas(identifier)
+        endpoint = f'/api/project-library/{identifier}/conversation/{node_id}/messages'
+        with patch.object(main, 'project_conversation_adapter') as adapter:
+            for body in ({'text': 'new', 'request_id': 'new'}, {'text': 'Previous question', 'request_id': 'old'}, {}):
+                with self.subTest(request_id=body.get('request_id')):
+                    response = self.client.post(endpoint, json=body)
+                    self.assertEqual(response.status_code, 410, response.text)
+                    self.assertEqual(response.json()['detail']['code'], 'CONVERSATION_NODE_RETIRED')
+            response = self.client.get(f'{endpoint}/old')
+            self.assertEqual(response.status_code, 200, response.text)
+            task = response.json()
+            self.assertEqual(task['status'], 'completed')
+            self.assertEqual(task['message'], history[0])
+            self.assertEqual(task['assistant'], history[1])
+            self.assertEqual(self.client.get(f'{endpoint}/new').status_code, 404)
+            adapter.assert_not_called()
+        canvas = self.store.canvas(identifier)
+        self.assertEqual(next(node for node in canvas['nodes'] if node['id'] == node_id)['messages'], history)
+        self.assertEqual(len(canvas['connections']), 3)
+        self.assertEqual(canvas, before)
+
+
+class ConversationNodeApiContractTests(_ConversationNodeTests):
+    def _client_app(self):
+        return with_legacy_conversation_admission(super()._client_app())
 
     def _wait_for_task(self, endpoint, request_id, *, timeout=3.0):
         deadline = time.monotonic() + timeout

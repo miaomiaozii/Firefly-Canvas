@@ -189,7 +189,7 @@ REVERSE_REFERENCE_CEILINGS = {
     # apiImageAllowedAspectRatios / alignRatioToModel）整簇从核心抽出后应回落。
     "canvas-image-editor.js": 70,  # 87 -> 89 -> 87：#236 即梦退役删 jimengImageEditMode 等
     # 即梦编辑态引用，净 -2 核心引用（2026-10-29 实测），棘轮随之收紧。
-    "canvas-node-ops.js": 76,  # #200 实测持平；2026-10-28 实测 60->68：#260 批量重命名（单件复用 + 模板批量）
+    "canvas-node-ops.js": 74,  # #520：停用对话节点的构造路径，减少两处接口引用。
     # 新增核心引用 +8，方向为「核心调模块」。棘轮不能低于实测。2026-10-29 实测 68->71：#246 freeSpot
     # 落点接线（createNodeFromMenu 扫描锚点 + 碰撞盒），canvasCore.mediaNodeDefaultScale×1 /
     # canvasCore.nodeRect×2 接口引用净 +3，全走 canvasCore 接口，无新自由全局。

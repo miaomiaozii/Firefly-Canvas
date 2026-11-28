@@ -7,9 +7,10 @@
   // Each Firefly page may only ask for its own lifecycle actions; the canvas cannot reload or uninstall the extension.
   const ACTIONS = Object.freeze({
     settings: Object.freeze(['hello', 'reload', 'uninstall', 'options']),
-    canvas: Object.freeze(['hello', 'open-dock']),
+    canvas: Object.freeze(['hello', 'open-dock', 'enter-dock', 'open-direct']),
+    docked: Object.freeze(['toggle-dock', 'leave-dock']),
   });
-  const KNOWN = new Set([...ACTIONS.settings, ...ACTIONS.canvas]);
+  const KNOWN = new Set([...ACTIONS.settings, ...ACTIONS.canvas, ...ACTIONS.docked]);
   const SHELL_PARAMS = Object.freeze(['id', 'project', 'project_mode']);
   const ID = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -29,8 +30,8 @@
 
   function pageOf(sender, origin) {
     if (isSettingsPage(sender.url, origin)) return 'settings';
-    // Only the ordinary top-level canvas gets the entry; the canvas inside the shell is a sub-frame.
-    if (sender.frameId === 0 && P.isCanvasURL(sender.url, origin)) return 'canvas';
+    // A child is only a candidate here. Mutating the shell additionally requires its direct-frame proof.
+    if (P.isCanvasURL(sender.url, origin)) return sender.frameId === 0 ? 'canvas' : 'docked';
     return null;
   }
 
@@ -53,11 +54,14 @@
   }
 
   function shellQuery(canvasURL) {
+    if (typeof canvasURL !== 'string' || !URL.canParse(canvasURL)) return null;
     const source = new URL(canvasURL).searchParams;
     const query = new URLSearchParams();
     for (const name of SHELL_PARAMS) {
-      const value = source.get(name);
-      if (value === null) continue;
+      const values = source.getAll(name);
+      if (!values.length) continue;
+      if (values.length !== 1) return null;
+      const [value] = values;
       if (name === 'project_mode' ? value !== '1' : !ID.test(value)) return null;
       query.set(name, value);
     }

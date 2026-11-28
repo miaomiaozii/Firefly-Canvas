@@ -258,14 +258,13 @@ test('human action requires an explicit durable projector instead of guessing ru
 
 constructorContract('createNode');
 constructorContract('createPromptNode');
-constructorContract('createConversationNode');
 constructorContract('createAgentNode');
 constructorContract('createLocalEditNode');
 constructorContract('createLoopNode');
 constructorContract('createSmartGroupNode');
 
 test('constructors reject non-object creation context rather than silently treating it as user authorship', () => {
-    for(const name of ['createNode', 'createPromptNode', 'createConversationNode', 'createAgentNode', 'createLocalEditNode', 'createLoopNode', 'createSmartGroupNode']) {
+    for(const name of ['createNode', 'createPromptNode', 'createAgentNode', 'createLocalEditNode', 'createLoopNode', 'createSmartGroupNode']) {
         for(const creation of [false, true, 0, 1, '', 'agent', []]) {
             const { ctx, effects } = nodeOps();
             const invoke = () => name === 'createNode' ? ctx.createNode(0, 0, [], { creation }) : ctx[name](0, 0, { creation });

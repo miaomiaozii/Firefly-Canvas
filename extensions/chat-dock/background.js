@@ -1,12 +1,13 @@
 'use strict';
 
-importScripts('protocol.js', 'framing.js', 'dock-capture-router.js', 'settings-hello.js');
+importScripts('protocol.js', 'framing.js', 'settings-hello.js', 'dock-direct.js', 'dock-capture-router.js');
 
 (() => {
   const P = FireflyChatProtocol;
   const F = FireflyChatFraming;
   const dock = FireflyDockCaptureRouter;
   const hello = FireflyChatDockSettingsHello;
+  const direct = FireflyChatDockDirect;
   const detectorId = 'firefly-chat-dock-settings';
   // Serialize settings writes with grant-revocation reconciliation.
   let settings = Promise.resolve();
@@ -29,7 +30,7 @@ importScripts('protocol.js', 'framing.js', 'dock-capture-router.js', 'settings-h
     if (relay) await chrome.scripting.unregisterContentScripts({ids: [P.RELAY_ID]});
     if (match) {
       await chrome.scripting.registerContentScripts([{
-        id: P.RELAY_ID, matches: [match], js: ['protocol.js', 'settings-hello.js', 'canvas-relay.js'], runAt: 'document_idle',
+        id: P.RELAY_ID, matches: [match], js: ['protocol.js', 'settings-hello.js', 'dock-direct.js', 'canvas-relay.js'], runAt: 'document_idle',
         allFrames: true, persistAcrossSessions: true, world: 'ISOLATED',
       }]);
     }
@@ -148,6 +149,19 @@ importScripts('protocol.js', 'framing.js', 'dock-capture-router.js', 'settings-h
     return {ok: true};
   }
 
+  async function enterDirectDock(sender, expand) {
+    const query = direct.shellQuery(sender.url);
+    if (!query || sender.documentLifecycle !== 'active' || typeof chrome.runtime.getContexts !== 'function') return {ok: false};
+    const origin = await storedOrigin();
+    if (sender.origin !== origin || !(await permitted(origin))) return {ok: false};
+    const tab = await chrome.tabs.get(sender.tab.id);
+    if (tab.url !== sender.url || (tab.pendingUrl && tab.pendingUrl !== tab.url)) return {ok: false};
+    query.set('direct', '1');
+    if (expand) query.set('expand', '1');
+    await chrome.tabs.update(tab.id, {url: `${chrome.runtime.getURL('canvas.html')}?${query}`});
+    return {ok: true};
+  }
+
   async function lifecycle(data, sender) {
     await settings;
     const request = await hello.lifecycleRequest(data, sender, storedOrigin);
@@ -155,6 +169,15 @@ importScripts('protocol.js', 'framing.js', 'dock-capture-router.js', 'settings-h
     switch (request.action) {
       case 'hello': return hello.helloReceipt();
       case 'open-dock': return openDock(sender);
+      case 'enter-dock':
+      case 'open-direct': return enterDirectDock(sender, request.action === 'open-direct');
+      case 'toggle-dock':
+      case 'leave-dock': {
+        const origin = await storedOrigin();
+        const stillPermitted = async () => origin === await storedOrigin() && await permitted(origin);
+        return {ok: sender.origin === origin && await stillPermitted() &&
+          await direct.command(request.action, sender, origin, stillPermitted)};
+      }
       case 'options':
         await chrome.runtime.openOptionsPage();
         return {ok: true};
@@ -171,6 +194,10 @@ importScripts('protocol.js', 'framing.js', 'dock-capture-router.js', 'settings-h
 
   chrome.runtime.onMessage.addListener((data, sender, sendResponse) => {
     if (sender.id !== chrome.runtime.id) return;
+    if (data?.action === direct.probe) {
+      direct.acceptProof(data, sender);
+      return;
+    }
     if (hello.isLifecycle(data)) {
       lifecycle(data, sender).then(sendResponse, () => sendResponse(null));
       return true;

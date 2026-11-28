@@ -182,6 +182,7 @@
         <aside id="smartRetrievalPanel" class="retrieval-panel" aria-label="本项目待取回" hidden></aside>
         <nav class="smart-top-left smart-toolbar" role="toolbar" aria-label="画布工具栏">
             <button class="smart-back" type="button" onclick="backToProjectList()" aria-label="返回项目列表" title="返回项目列表"><svg class="ico" aria-hidden="true"><use href="#i-arrow-left"/></svg><span data-i18n="canvas.backToList">返回项目列表</span></button>
+            <button id="smartChatDockOpen" class="smart-chat-dock" type="button" title="对话面板" aria-label="对话面板" data-i18n-title="smart.chatDockOpen"><svg class="ico" aria-hidden="true"><use href="#i-messages-square"/></svg><span data-i18n="smart.chatDockOpen">对话面板</span></button>
             <button id="smartUndoButton" class="smart-undo" type="button" aria-label="撤销" aria-keyshortcuts="Control+Z" data-i18n-title="smart.undoShortcut" title="撤销（Ctrl+Z）" disabled><svg class="ico" aria-hidden="true"><use href="#i-undo-2"/></svg><span data-i18n="smart.undo">撤销</span></button>
             <button id="smartRetrievalToggle" class="retrieval-toggle" type="button" aria-label="原结果取回状态" title="原结果取回状态" aria-expanded="false" aria-controls="smartRetrievalPanel" hidden><svg class="ico" aria-hidden="true"><use href="#i-download"/></svg><span id="smartRetrievalCount" class="retrieval-count">0 张待取回</span></button>
             <button id="smartRedoButton" class="smart-redo" type="button" aria-label="重做" aria-keyshortcuts="Control+Shift+Z" data-i18n-title="smart.redoShortcut" title="重做（Ctrl+Shift+Z）" disabled><svg class="ico" aria-hidden="true"><use href="#i-redo-2"/></svg><span data-i18n="smart.redo">重做</span></button>
@@ -196,8 +197,15 @@
             <button id="smartMarkedToggle" class="smart-arrange" type="button" title="已标记图片" aria-label="已标记图片"><svg class="ico" aria-hidden="true"><use href="#i-star"/></svg><span data-i18n="smart.markedImages">已标记</span><b id="smartMarkedCount" class="smart-marked-count" hidden>0</b></button>
             <button id="smartAgentFollowToggle" type="button" aria-pressed="false" aria-label="跟随 Agent 视角：关" title="跟随 Agent 视角：关（仅跟随新的操作）"><svg class="ico" aria-hidden="true"><use href="#i-focus"/></svg><span>跟随 Agent</span></button>
             <button id="smartSearchToggle" class="smart-search-toggle" type="button" title="跨项目搜索" aria-label="跨项目搜索" aria-haspopup="dialog" aria-expanded="false" aria-controls="canvasSearchPanel"><svg class="ico" aria-hidden="true"><use href="#i-search"/></svg><span data-i18n="smart.search">跨项目搜索</span></button>
-            <button id="smartChatDockOpen" class="smart-chat-dock" type="button" title="对话面板" aria-label="对话面板" data-i18n-title="smart.chatDockOpen" hidden><svg class="ico" aria-hidden="true"><use href="#i-messages-square"/></svg><span data-i18n="smart.chatDockOpen">对话面板</span></button>
         </nav>
+        <dialog id="smartChatDockHelp" class="smart-chat-dock-help" aria-labelledby="smartChatDockHelpTitle">
+            <h2 id="smartChatDockHelpTitle" data-i18n="smart.chatDockOpen">对话面板</h2>
+            <p data-i18n="smart.chatDockOpenFailed">无法打开对话面板。请在全局设置的「对话扩展」里检查扩展状态。</p>
+            <form method="dialog">
+                <button type="submit" autofocus data-i18n="common.close">关闭</button>
+                <a id="smartChatDockInstall" href="/static/global-settings.html?panel=chat-dock" data-i18n="smart.chatDockInstall">去设置安装</a>
+            </form>
+        </dialog>
         <div id="agentUndoNotice" class="agent-undo-notice" role="status" hidden>
             <span id="agentUndoNoticeText"></span>
             <button id="agentUndoNoticeSettings" type="button">查看节点设置</button>
@@ -271,11 +279,11 @@
                         <div class="create-card-sub" data-i18n="smart.createPromptSub">手写或用 LLM 生成文本</div>
                     </span>
                 </button>
-                <button class="create-card" type="button" data-create-type="conversation">
+                <button class="create-card" type="button" data-create-type="chat-dock">
                     <span class="create-card-icon"><svg class="ico" aria-hidden="true"><use href="#i-messages-square"/></svg></span>
                     <span>
-                        <div class="create-card-title" data-i18n="smart.createConversationTitle">对话</div>
-                        <div class="create-card-sub" data-i18n="smart.createConversationSub">保存项目内多轮文本与多模态交流</div>
+                        <div class="create-card-title" data-i18n="smart.chatDockOpen">对话</div>
+                        <div class="create-card-sub" data-i18n="smart.chatDockMenuHint">打开对话面板，不创建节点</div>
                     </span>
                 </button>
                 <button class="create-card" type="button" data-create-type="agent">

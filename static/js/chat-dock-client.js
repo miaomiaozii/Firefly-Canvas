@@ -37,6 +37,9 @@
     reload: () => act('reload'),
     uninstall: () => act('uninstall'),
     options: () => act('options'),
-    openDock: () => act('open-dock'),
+    enterDock: () => act('enter-dock'),
+    openDirect: () => act('open-direct'),
+    toggleDock: () => act('toggle-dock'),
+    leaveDock: () => act('leave-dock'),
   });
 })();

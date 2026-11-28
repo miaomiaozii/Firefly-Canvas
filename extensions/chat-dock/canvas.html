@@ -9,6 +9,7 @@
   <script src="protocol.js" defer></script>
   <script src="framing.js" defer></script>
   <script src="settings-hello.js" defer></script>
+  <script src="dock-direct.js" defer></script>
   <script src="dock-embed.js" defer></script>
   <script src="dock-shell.js" defer></script>
 </head>
@@ -56,7 +57,14 @@
         </div>
         <p id="chat-frame-note" hidden>如果站点拒绝在此显示，或显示未登录，请在新标签页打开或登录后，回到这里重新选择站点。</p>
       </div>
-      <button id="resize-panel" type="button" title="调整浮动面板尺寸" aria-label="调整浮动面板尺寸" hidden><svg aria-hidden="true"><use href="#dock-resize"/></svg></button>
+      <span class="dock-resize" data-resize="n" aria-hidden="true"></span>
+      <span class="dock-resize" data-resize="ne" aria-hidden="true"></span>
+      <span class="dock-resize" data-resize="e" aria-hidden="true"></span>
+      <button class="dock-resize" data-resize="se" id="resize-panel" type="button" title="调整浮动面板尺寸" aria-label="调整浮动面板尺寸" hidden><svg aria-hidden="true"><use href="#dock-resize"/></svg></button>
+      <span class="dock-resize" data-resize="s" aria-hidden="true"></span>
+      <span class="dock-resize" data-resize="sw" aria-hidden="true"></span>
+      <span class="dock-resize" data-resize="w" aria-hidden="true"></span>
+      <span class="dock-resize" data-resize="nw" aria-hidden="true"></span>
     </aside>
     <button id="show-panel" type="button" aria-controls="chat-dock-panel" aria-expanded="false" aria-label="展开对话面板" hidden>展开对话</button>
   </main>

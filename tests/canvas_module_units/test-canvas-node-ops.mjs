@@ -2,7 +2,7 @@
 // 之后的下一个模块；耦合报告：60 处 / 27 独立名 / 自由 17 处 / 14 名 / 可注入 11）。
 //
 // canvas-node-ops.js 是画布节点操作模块（#160 P2c 从 smart-canvas.js 抽离）：节点创建
-// （image/prompt/conversation/agent/local-edit/loop/智能分组）、deleteNode（#147 分组解散委托、
+// （image/prompt/agent/local-edit/loop/智能分组）、deleteNode（#147 分组解散委托、
 // #188 历史候选池降级、#74/#146 延迟归档）、clearNodeMediaBeforeDelete、deleteNodeFromButton
 // （#65 生成中禁删）、renameSmartNodeImage、createNodeFromMenu、rAF 交互层刷新调度。
 // 本文件只含函数定义与少量模块级 let/const，加载期不触碰外部名。
@@ -57,7 +57,7 @@
 //   - deleteNodeFromButton（#65）：生成中节点禁止删除（toast + 零副作用）；
 //   - createLocalEditNodeFromImage：节点缺失/无素材 toast 且零副作用、正常路径位置公式
 //     （源节点右缘 +140、y 下限 40）、角色 original、connectInputNode 调用与 toast 分支；
-//   - createNodeFromMenu：七种类型的偏移矩阵、closeCreateMenu、createMenuGroupId 读-还原-清零、
+//   - createNodeFromMenu：六种类型的偏移矩阵、closeCreateMenu、createMenuGroupId 读-还原-清零、
 //     分组入组触发 arrangeSmartGroupMembers(skipUndo)、createMenuPoint=null 回退 viewportCenter；
 //   - scheduleInteractionLayerRefresh：rAF 合并、flush 后双刷新、token 清零可重排。
 //
@@ -181,7 +181,7 @@ test('loads canvas-node-ops.js standalone: all top-level functions exist, real m
     const { ctx } = loadNodeOpsModule();
     // 顶层 function 都在（模块加载成功且无 SyntaxError 的前置证据）。
     for (const name of [
-        'createImageNodeAt', 'createNode', 'createPromptNode', 'createConversationNode',
+        'createImageNodeAt', 'createNode', 'createPromptNode',
         'createAgentNode', 'createLocalEditNode', 'createLocalEditNodeFromImage',
         'createLoopNode', 'createSmartGroupNode', 'moveNodeElementsDuringDrag',
         'updateNodeElementDuringResize', 'deleteNode', 'clearNodeMediaBeforeDelete',
@@ -325,17 +325,16 @@ test('createPromptNode: 形状 + 聊天 provider/model 经 canvasCore 接口 + s
     assert.equal(evaluate(ctx, 'canvasState.selectedId'), node.id, '默认选中');
 });
 
-test('createConversationNode / createAgentNode: 形状与选中', () => {
-    const { ctx } = loadNodeOpsModule();
-    const conv = fromContext(globalFunction(ctx, 'createConversationNode')(10, 20));
-    assert.ok(conv.id.startsWith('conversation_'));
-    assert.equal(conv.type, 'smart-conversation');
-    assert.equal(conv.w, 390);
-    assert.equal(conv.h, 430);
-    assert.equal(conv.title, 'Conversation');
-    assert.deepEqual(conv.messages, []);
-    assert.equal(evaluate(ctx, 'canvasState.selectedId'), conv.id);
+test('retired conversation nodes have no constructor or creation menu dispatch', () => {
+    const legacy = {id: 'prior-chat', type: 'smart-conversation', messages: [{id: 'prior-message', text: 'keep history'}]};
+    const { ctx } = loadNodeOpsModule({nodes: [legacy]});
+    assert.equal(evaluate(ctx, 'typeof createConversationNode'), 'undefined');
+    globalFunction(ctx, 'createNodeFromMenu')('conversation');
+    assert.deepEqual(fromContext(evaluate(ctx, 'canvasState.nodes.filter(node => node.type === "smart-conversation")')), [legacy]);
+});
 
+test('createAgentNode: 形状与选中', () => {
+    const { ctx } = loadNodeOpsModule();
     const agent = fromContext(globalFunction(ctx, 'createAgentNode')(30, 40));
     assert.ok(agent.id.startsWith('agent_'));
     assert.equal(agent.type, 'smart-agent');
@@ -711,13 +710,12 @@ test('createLocalEditNodeFromImage: rejects explicit mask/non-image picks, defau
 
 // ---------- 新建节点菜单 ----------
 
-test('createNodeFromMenu: 七种类型偏移矩阵（逐类型独立 harness：无碰撞 → 固定偏移不变）+ closeCreateMenu + groupId 清零', () => {
+test('createNodeFromMenu: 六种类型偏移矩阵（逐类型独立 harness：无碰撞 → 固定偏移不变）+ closeCreateMenu + groupId 清零', () => {
     // #246 后每次创建都会避让既有节点（含刚建的），故偏移矩阵用逐类型独立 harness
     // （空画布 → 无碰撞 → 锚点 = 原固定偏移位）验证；碰撞扫描行为见下方 freeSpot 用例。
     const expected = {
         group: { x: 500 - 170, y: 400 - 110, type: 'smart-group' },
         prompt: { x: 500 - 158, y: 400 - 97, type: 'smart-prompt' },
-        conversation: { x: 500 - 195, y: 400 - 215, type: 'smart-conversation' },
         agent: { x: 500 - 191, y: 400 - 180, type: 'smart-agent' },
         'local-edit': { x: 500 - 180, y: 400 - 165, type: 'local-edit' },
         loop: { x: 500 - 135, y: 400 - 95, type: 'smart-loop' },

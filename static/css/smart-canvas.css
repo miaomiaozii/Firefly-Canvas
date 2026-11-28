@@ -179,11 +179,8 @@ body.smart-node-drag-settling .composer { pointer-events:none !important; }
 .conversation-node-message-status { color:var(--faint); font-size:var(--font-micro, 10px); font-weight:800; }
 .conversation-node-message-status[data-status="failed"] { color:#dc2626; }
 .conversation-node-empty { color:var(--faint); font-size:10px; line-height:1.5; text-align:center; padding:24px 12px; }
-.conversation-node-composer { display:flex; align-items:flex-end; gap:6px; flex:0 0 auto; }
-.conversation-node-composer textarea { min-width:0; flex:1 1 auto; height:44px; resize:none; border:1px solid var(--line); border-radius:10px; background:var(--card); color:var(--text); outline:none; padding:8px 8px; font:inherit; font-size:10px; line-height:1.35; }
-.conversation-node-composer textarea:focus { border-color:var(--strong); }
-.conversation-node-composer button { flex:0 0 auto; height:30px; padding:0 10px; border:0; border-radius:8px; background:var(--strong); color:var(--strong-text); font-size:10px; font-weight:850; cursor:pointer; }
-.conversation-node-composer button:disabled { opacity:.55; cursor:wait; }
+.conversation-node-dock { align-self:flex-start; flex:0 0 auto; min-height:var(--space-30); padding:0 var(--space-10); border:1px solid var(--line); border-radius:var(--radius-control); background:var(--soft); color:var(--text); font:inherit; font-size:var(--font-control); cursor:pointer; }
+.conversation-node-dock:focus-visible { outline:2px solid var(--strong); outline-offset:2px; }
 .image-node.agent-smart-node { display:flex; flex-direction:column; padding:0; max-width:calc(100vw - 24px); background:var(--surface, var(--card)); border:1px solid var(--line); border-radius:var(--agent-panel-radius); box-shadow:var(--agent-panel-shadow); overflow:visible; }
 .image-node.agent-smart-node:hover { border-color:var(--line-strong); box-shadow:var(--agent-panel-shadow); }
 .image-node.agent-smart-node.selected { border-color:var(--accent); box-shadow:var(--agent-panel-shadow); }
@@ -3835,7 +3832,16 @@ button.prompt-flow-context-image { cursor:pointer; }
     font-family:var(--font-sans);
 }
 .agent-fork-dialog::backdrop,
-.agent-cli-dialog::backdrop { background:var(--modal-backdrop); }
+.agent-cli-dialog::backdrop,
+.smart-chat-dock-help::backdrop { background:var(--modal-backdrop); }
+.smart-chat-dock-help {
+    width:min(380px, calc(100% - 32px)); padding:var(--space-16);
+    color:var(--text); background:var(--panel); border:1px solid var(--line);
+    border-radius:var(--radius-card);
+}
+.smart-chat-dock-help h2 { margin:0; font-size:var(--font-control); }
+.smart-chat-dock-help form { display:flex; align-items:center; justify-content:flex-end; gap:var(--space-8); }
+.smart-chat-dock-help a { color:var(--accent); }
 .agent-fork-dialog h3,
 .agent-cli-dialog h3 { margin:0 0 10px; font-size:16px; color:inherit; font-weight:600; }
 .agent-fork-dialog .agent-fork-list { max-height:240px; overflow:auto; display:flex; flex-direction:column; gap:4px; margin-bottom:12px; }

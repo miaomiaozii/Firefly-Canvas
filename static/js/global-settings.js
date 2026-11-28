@@ -16,7 +16,6 @@
   const addProvider = document.getElementById('addProvider');
   const saveProviders = document.getElementById('saveProviders');
   const savePreferences = document.getElementById('savePreferences');
-  const chatDockEnabled = document.getElementById('chatDockEnabled');
   const libraryForm = document.getElementById('libraryForm');
   const switchLibrary = libraryForm.querySelector('button');
   const writeButtons = [saveProviders, savePreferences, switchLibrary];
@@ -598,7 +597,6 @@
     renderCli(data.cli);
     if(!previous || themeSelect.value === savedTheme(previous.preferences)) themeSelect.value = savedTheme(data.preferences);
     if(!previous || upstreamDirect.checked === savedDirect(previous.preferences)) upstreamDirect.checked = savedDirect(data.preferences);
-    chatDockEnabled.checked = data.preferences?.chat_dock_enabled === true;
     if(!previous || libraryPath.value === savedLibraryPath(previous.project_library)) libraryPath.value = savedLibraryPath(data.project_library);
     document.getElementById('librarySummary').textContent = librarySummaryText(data.project_library);
     renderPhotoshop(data.photoshop);
@@ -624,7 +622,7 @@
   const chatDockUrl = '/api/global-settings/chat-dock';
   const chatDockFetch = {mode:'same-origin', credentials:'same-origin', referrerPolicy:'same-origin'};
   const chatDockUi = Object.fromEntries([
-    'Panel', 'Title', 'State', 'Versions', 'DetectionNote', 'FolderStatus', 'EnableNote', 'PreferenceFeedback',
+    'Panel', 'Title', 'State', 'Versions', 'DetectionNote', 'FolderStatus',
     'Guide', 'Installed', 'ManagerUrl', 'FolderPath', 'ReloadNote', 'ActionFeedback',
     'CopyManager', 'OpenFolder', 'CopyFolder', 'Reload', 'Options', 'Uninstall',
   ].map(name => [name, document.getElementById(`chatDock${name}`)]));
@@ -665,8 +663,6 @@
   }
 
   function updateChatDockControls(){
-    chatDockEnabled.disabled = !state || loading || lockSettings || !chatDockReceipt?.supported
-      || pendingWrites.has(chatDockEnabled) || pendingWrites.has(savePreferences);
     const available = chatDockFolder?.available === true;
     chatDockUi.OpenFolder.disabled = !available || chatDockActionBusy;
     chatDockUi.CopyFolder.disabled = !available;
@@ -690,7 +686,6 @@
     const folderMessage = chatDockFolder === null ? 'FolderUnknown' : chatDockFolder?.available === false ? 'FolderMissing' : '';
     setDockText(chatDockUi.FolderStatus, folderMessage ? dockText(folderMessage) : '');
     setDockVisible(chatDockUi.FolderStatus, Boolean(folderMessage));
-    setDockText(chatDockUi.EnableNote, dockText(!receipt ? 'EnableUndetected' : receipt.supported ? 'EnableNote' : 'EnableUnsupported'));
     setDockVisible(chatDockUi.Guide, receipt === null);
     setDockVisible(chatDockUi.Installed, Boolean(receipt));
     setDockText(chatDockUi.ManagerUrl, chatDockManagerUrl);
@@ -718,9 +713,7 @@
     chatDockPolling = true;
     try {
       const result = await window.FireflyChatDockClient?.hello();
-      const restoreFocus = document.activeElement === chatDockEnabled;
       chatDockReceipt = result?.ok === true && typeof result.supported === 'boolean' && versionTuple(result.version) ? result : null;
-      if(restoreFocus && !chatDockReceipt?.supported) chatDockUi.Title.focus({preventScroll:true});
       renderChatDock();
     } finally { chatDockPolling = false; }
   }
@@ -740,7 +733,6 @@
     refreshAll.disabled = loading || pendingWrites.size > 0;
     const blocked = lockSettings || !state || loading;
     for(const button of writeButtons) button.disabled = blocked || pendingWrites.has(button);
-    savePreferences.disabled ||= pendingWrites.has(chatDockEnabled);
     addProvider.disabled = lockSettings || !state || pendingWrites.has(saveProviders);
     updateChatDockControls();
   }
@@ -915,25 +907,6 @@
     return true;
   }, 'ActionFailed'));
 
-  chatDockEnabled.addEventListener('change', async () => {
-    if(!startWrite(chatDockEnabled)){
-      chatDockEnabled.checked = state?.preferences?.chat_dock_enabled === true;
-      return;
-    }
-    dockFeedback(chatDockUi.PreferenceFeedback, 'EnableSaving');
-    try {
-      // Keep any unsaved Appearance edits out of this independently saved preference.
-      const body = {chat_dock_enabled:chatDockEnabled.checked === true};
-      const saved = await requestJson('/api/global-settings/preferences', {method:'PATCH', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
-      state.preferences = saved.preferences;
-      chatDockEnabled.checked = state.preferences?.chat_dock_enabled === true;
-      notifyCanvas('preferences-changed', {preferences:state.preferences});
-      dockFeedback(chatDockUi.PreferenceFeedback, 'EnableSaved');
-    } catch {
-      chatDockEnabled.checked = state.preferences?.chat_dock_enabled === true;
-      dockFeedback(chatDockUi.PreferenceFeedback, 'EnableFailed', 'error');
-    } finally { finishWrite(chatDockEnabled); }
-  });
   libraryForm.addEventListener('submit', async event => {
     event.preventDefault();
     const draft = libraryPath.value;
@@ -1149,7 +1122,13 @@
   consoleAutoRefresh.addEventListener('change', startConsoleTimer);
   renderChatDock();
   void loadChatDockFolder();
-  void pollChatDock();
+  if(new URLSearchParams(location.search).get('panel') === 'chat-dock') selectPanel('chatDockPanel');
+  else void pollChatDock();
+  if(embedded) window.addEventListener('message', event => {
+    if(event.source === window.parent && event.origin === location.origin && event.data?.type === 'settings-open-chat-dock'){
+      selectPanel('chatDockPanel');
+    }
+  });
   window.addEventListener('focus', () => { void pollChatDock(); });
   document.addEventListener('visibilitychange', () => { void pollChatDock(); });
   setInterval(() => { void pollChatDock(); }, 2000);

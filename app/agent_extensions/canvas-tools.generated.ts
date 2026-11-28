@@ -68,8 +68,8 @@ export const CANVAS_TOOL_DEFS: CanvasToolDef[] = [
     },
     {
         name: "canvas.create_node",
-        description: "创建节点：type 必填（smart-prompt/smart-image/smart-video/smart-agent/conversation）；title/text/prompt 可选；x/y 省略时由服务端按发起 agent 的会话 frame 网格自动落位，显式给值则尊重；节点 id 一律服务端铸造。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
-        parameters: Type.Object({ type: Type.String({description: "节点类型：smart-prompt/smart-image/smart-video/smart-agent/conversation"}), title: Type.Optional(Type.String({description: "节点标题"})), x: Type.Optional(Type.Number({description: "X 位置（省略=服务端自动落位）"})), y: Type.Optional(Type.Number({description: "Y 位置（省略=服务端自动落位）"})), text: Type.Optional(Type.String({description: "正文（prompt 类节点）"})), prompt: Type.Optional(Type.String({description: "提示词（image/video 节点）"})) }),
+        description: "创建节点：type 必填（smart-prompt/smart-image/smart-video/smart-agent）；title/text/prompt 可选；x/y 省略时由服务端按发起 agent 的会话 frame 网格自动落位，显式给值则尊重；节点 id 一律服务端铸造。仅外部 MCP：可在 URL 查询参数中提供 turn_id（非 JSON 工具参数）；同一轮的写调用可共用该 ID，turn_id 不得复用到其他轮次。",
+        parameters: Type.Object({ type: Type.String({description: "节点类型：smart-prompt/smart-image/smart-video/smart-agent"}), title: Type.Optional(Type.String({description: "节点标题"})), x: Type.Optional(Type.Number({description: "X 位置（省略=服务端自动落位）"})), y: Type.Optional(Type.Number({description: "Y 位置（省略=服务端自动落位）"})), text: Type.Optional(Type.String({description: "正文（prompt 类节点）"})), prompt: Type.Optional(Type.String({description: "提示词（image/video 节点）"})) }),
     },
     {
         name: "canvas.update_node",

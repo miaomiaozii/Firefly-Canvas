@@ -1006,11 +1006,15 @@ function smartHumanSettingKeys(key){
     };
     return [key, ...(related[key] || []), 'outpaintResolutionLocked'];
 }
+async function goToProjectList(){
+    if(window !== window.top && await window.FireflyChatDockClient?.leaveDock()) return;
+    window.location.href = '/';
+}
 async function backToProjectList(){
     savePromptDraftForCurrent();
     if(canvasProjectGone){
         // #377：没地方可存了。以前这里会先 saveCanvas，失败就 return，结栗是把人困在页面上。
-        window.location.href = '/';
+        await goToProjectList();
         return;
     }
     if(canvas?.format === 'firefly-canvas-v1' || params.get('project_mode') === '1'){
@@ -1021,10 +1025,8 @@ async function backToProjectList(){
         clearTimeout(debouncedSaveTimer);
         debouncedSaveTimer = null;
         if(await saveCanvas() === false) return;
-        window.location.href = '/';
-        return;
     }
-    window.location.href = '/';
+    await goToProjectList();
 }
 function promptPlainText(){
     return originalPromptTextFromParts(collectPromptParts());
@@ -7206,24 +7208,8 @@ registerSmartPendingActionPersister(async (entry) => {
     }
     return true;
 });
-// Rebuilders: after a reload the queued closure is gone; rebuild each gate's replay from
-// the serializable payload persisted on the node. Conversation carries text+requestId
-// (the server dedupes by request_id); photoshop carries projectId+assetId; local-edit
-// carries nothing (all state is node fields, read from the live node); video carries
-// prompt/refs/runSettings.
-registerSmartPendingActionRebuilder('conversation', (entry, live) => async (target) => {
-    if(entry.registrationConfirmed) return;
-    try {
-        await sendConversationMessageRequest(target, entry.payload.text, entry.payload.requestId, entry.payload.humanIntent === true, entry);
-    } catch(replayError){
-        const fresh = canvasState.nodes.find(n => n.id === target.id);
-        if(fresh) fresh.conversationSending = false;
-        const failInput = document.querySelector(`.image-node[data-id="${target.id}"] [data-conversation-input]`);
-        if(failInput) failInput.value = entry.payload.text;
-        render();
-        throw replayError;
-    }
-});
+// Legacy outboxes may reconcile a server receipt, but may no longer submit a request.
+registerSmartPendingActionRebuilder('conversation', () => () => {});
 registerSmartPendingActionRebuilder('photoshop', (entry, live) => (target) => psSendRoundTrip(target, (entry.payload || {}).assetId, (entry.payload || {}).projectId));
 registerSmartPendingActionRebuilder('local-edit', (entry, live) => (target) => submitLocalEditRequest(target, entry.payload?.originalAssetId));
 // #197: shared video-result apply, used by BOTH pending-action replay paths:
@@ -7800,8 +7786,8 @@ function rejectSmartHumanCopy(nodes){
         toast(tr('smart.layoutFrameCopyUnsupported'));
         return true;
     }
-    if(!nodes.some(node => canvasCore.smartConversationPendingIntents(node).length)) return false;
-    toast('包含未决执行意图的对话，暂不能复制；请等待对话完成后重试。');
+    if(!nodes.some(isSmartConversationNode)) return false;
+    toast(tr('smart.conversationRetired'));
     return true;
 }
 function copySelectedNodes(){
@@ -8854,11 +8840,14 @@ function closeSmartCanvasLog(){
     smartHistoryModal?.classList.remove('open');
     updateSmartHistoryDrawerCollapseUi();
 }
-function openSmartSettings(){
+function openSmartSettings(panel = ''){
     if(!smartSettingsModal) return;
     smartSettingsLastFocus = document.activeElement;
     if(smartSettingsFrame && !smartSettingsFrame.getAttribute('src')){
-        smartSettingsFrame.setAttribute('src', '/static/global-settings.html?embedded=1');
+        const settingsURL = '/static/global-settings.html?embedded=1';
+        smartSettingsFrame.setAttribute('src', panel === 'chat-dock' ? `${settingsURL}&panel=chat-dock` : settingsURL);
+    } else if(panel === 'chat-dock'){
+        smartSettingsFrame?.contentWindow?.postMessage({type:'settings-open-chat-dock'}, location.origin);
     }
     smartSettingsModal.classList.add('open');
     // #249：Escape 栈——设置弹窗打开期间 Escape 只关它，不再连带关 popover/穿透画布。
@@ -8971,7 +8960,6 @@ function conversationReferenceHtml(reference){
 }
 function conversationNodeBodyHtml(node){
     const messages = (Array.isArray(node.messages) ? node.messages : []).filter(item => item && typeof item === 'object');
-    const hasPendingMessage = hasPendingConversationRequest(node);
     const collapsed = node.conversation_collapsed === true;
     const panelId = `conversation-panel-${String(node.id || '').replace(/[^A-Za-z0-9_-]/g, '-')}`;
     const references = conversationConnectedReferences(node);
@@ -8984,27 +8972,22 @@ function conversationNodeBodyHtml(node){
             const messageId = String(message.id || `${node.id}-${role}-${index}`);
             const status = String(message.status || 'completed');
             const statusLabel = status === 'pending' ? tr('smart.processing') : status === 'failed' ? tr('smart.failed') : '';
-            const retryButton = status === 'failed' ? `<button type="button" class="conversation-node-message-retry" data-conversation-retry="${escapeHtml(messageId)}" title="${escapeHtml(tr('smart.resendMessage'))}">↻ ${escapeHtml(tr('smart.retry'))}</button>` : '';
             return `<article class="conversation-node-message" data-role="${role}" data-status="${escapeHtml(status)}" data-message-id="${escapeHtml(messageId)}">
                 <div class="conversation-node-message-role">${role === 'assistant' ? tr('smart.assistant') : tr('smart.you')}</div>
                 <div class="conversation-node-message-text" data-message-id="${escapeHtml(messageId)}" tabindex="0" aria-haspopup="menu" aria-label="${escapeHtml(tr('smart.conversationMessageAria'))}">${escapeHtml(message.text || message.content || '')}</div>
                 ${statusLabel ? `<div class="conversation-node-message-status" data-status="${escapeHtml(status)}" role="status">${escapeHtml(statusLabel)}</div>` : ''}
-                ${retryButton}
             </article>`;
         }).join('')
         : '<div class="conversation-node-empty">' + escapeHtml(tr('smart.conversationEmpty')) + '</div>';
     return `<div class="conversation-node-card ${collapsed ? 'collapsed' : ''}">
         <div class="conversation-node-heading">
-            <div class="conversation-node-subtitle">${escapeHtml(tr('smart.conversationSubtitle'))}</div>
+            <div class="conversation-node-subtitle">${escapeHtml(tr('smart.conversationRetired'))}</div>
             <button type="button" class="conversation-node-collapse conversation-node-control" data-conversation-collapse aria-expanded="${collapsed ? 'false' : 'true'}" aria-controls="${escapeHtml(panelId)}" aria-label="${escapeHtml(collapsed ? tr('smart.conversationExpand') : tr('smart.conversationCollapse'))}">${collapsed ? tr('smart.historyExpand') : tr('smart.historyCollapse')}</button>
         </div>
+        <button type="button" class="conversation-node-dock conversation-node-control" data-conversation-dock>${escapeHtml(tr('smart.openConversationDock'))}</button>
         <div class="conversation-node-panel" id="${escapeHtml(panelId)}" data-conversation-panel ${collapsed ? 'hidden' : ''}>
             ${referenceHtml}
             <div class="conversation-node-messages">${messagesHtml}</div>
-            <div class="conversation-node-composer conversation-node-control">
-                <textarea data-conversation-input rows="2" placeholder="${escapeHtml(tr('smart.conversationInputPlaceholder'))}"></textarea>
-                <button type="button" data-conversation-send ${hasPendingMessage ? 'disabled aria-disabled="true"' : ''}>${escapeHtml(tr('smart.sendMessage'))}</button>
-            </div>
         </div>
     </div>`;
 }
@@ -10905,20 +10888,6 @@ function pickMediaForSmartNode(nodeId){
 function conversationProjectId(){
     return canvas?.project_id || canvas?.project || sourceProjectId || '';
 }
-function conversationRequestId(){
-    const prefix = `conversation-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-    const used = new Set();
-    for(const node of canvasState.nodes){
-        for(const message of node.messages || []) if(message?.request_id) used.add(String(message.request_id));
-        for(const record of node.pendingActionResumes || []) if(record?.kind === 'conversation' && record.payload?.requestId) used.add(String(record.payload.requestId));
-    }
-    let requestId;
-    do {
-        conversationRequestId.sequence = (conversationRequestId.sequence || 0) + 1;
-        requestId = `${prefix}-${conversationRequestId.sequence}`;
-    } while(used.has(requestId));
-    return requestId;
-}
 function conversationTaskUrl(projectId, nodeId, requestId){
     return `/api/project-library/${encodeURIComponent(projectId)}/conversation/${encodeURIComponent(nodeId)}/messages/${encodeURIComponent(requestId)}`;
 }
@@ -10930,27 +10899,9 @@ function isRegisteredConversationMessage(message, requestId=message?.request_id)
     return message?.role === 'user' && Boolean(requestId) && message.request_id === requestId
         && !String(message.id || '').startsWith('local-');
 }
-function hasPendingConversationRequest(node){
-    // Keep old orphan bubbles as data and retain lifecycle protection, but they
-    // are not registered work. Original outboxes still gate a new identity.
-    return (node?.messages || []).some(message => message?.status === 'pending' && isRegisteredConversationMessage(message))
-        || (node?.pendingActionResumes || []).some(entry => entry?.kind === 'conversation');
-}
 function conversationMessageForRequest(node, requestId){
     const matches = (node?.messages || []).filter(item => String(item?.request_id || '') === String(requestId) && item.role === 'user');
     return matches.find(item => isRegisteredConversationMessage(item, requestId)) || matches[0] || null;
-}
-function ensureLocalPendingConversationMessage(node, text, requestId){
-    if(!node || conversationMessageForRequest(node, requestId)) return;
-    node.messages = [...(node.messages || []), {
-        id:`local-${requestId}`,
-        role:'user',
-        status:'pending',
-        request_id:requestId,
-        text,
-        references:conversationConnectedReferences(node),
-        created_at:Date.now(),
-    }].slice(-500);
 }
 function abandonUnregisteredConversationTask(node, requestId){
     const liveNode = canvasState.nodes.find(item => item.id === node?.id) || node;
@@ -11235,46 +11186,9 @@ async function prepareConversationAction(entry){
         error.conversationConflict = true;
         throw error;
     }
-    // Mutation acknowledgements may carry a reconstructed local canvas. Read
-    // the actual server outbox/receipt even on the first normal send.
-    let context = conversationActionContext(entry);
+    const context = conversationActionContext(entry);
     assertConversationActionContext(entry, context);
-    const registered = await queryConversationRegistration(entry, context);
-    assertConversationActionContext(entry, context);
-    if(registered){
-        entry.registrationConfirmed = true;
-        entry.preparedConversationContext = context;
-        return true;
-    }
-    if(!v1){
-        const live = canvasState.nodes.find(node => node.id === entry.nodeId);
-        const record = live?.pendingActionResumes?.find(record => conversationEntryRecordMatches(record, entry));
-        if(!record) return false;
-        observeSmartCanvasPending();
-        entry.payload = {conversationProtocol:1, projectId:conversationProjectId(), nodeId:entry.nodeId,
-            requestId:payload.requestId, text:payload.text, humanIntent:payload.humanIntent === true};
-        record.payload = entry.payload;
-        context = conversationActionContext(entry); // explicit legacy protocol migration, same request key
-        scheduleSave();
-        const saved = await flushProjectCanvasBeforeGeneration();
-        assertConversationActionContext(entry, context);
-        if(saved !== true) return false;
-        const registered = await queryConversationRegistration(entry, context);
-        assertConversationActionContext(entry, context);
-        if(registered){
-            entry.registrationConfirmed = true;
-            entry.preparedConversationContext = context;
-            return true;
-        }
-    }
-    // Only this pure server anchor, not the merged view or a successful save call,
-    // is evidence that the exact original intent reached durable storage.
-    const savedNode = smartCanvasPendingState().server.nodes.find(node => node.id === entry.nodeId);
-    const saved = savedNode !== undefined && canvasCore.smartConversationPendingIntents(savedNode)
-        .some(intent => intent.source === 'outbox' && intent.actionId === entry.actionId
-            && smartCanvasDataEqual(intent.payload, entry.payload));
-    if(saved) entry.preparedConversationContext = context;
-    return saved;
+    return queryConversationRegistration(entry, context);
 }
 function conversationEntryRecordMatches(record, entry){
     return record?.kind === 'conversation' && record.actionId === entry.actionId
@@ -11325,8 +11239,6 @@ function acceptConversationRegistration(data, entry){
     }
     confirmConversationAction(entry);
     const fresh = canvasState.nodes.find(node => node.id === entry.nodeId);
-    const input = document.querySelector(`.image-node[data-id="${entry.nodeId}"] [data-conversation-input]`);
-    if(input) input.value = '';
     if((data.status || message.status) === 'pending' && fresh) startConversationTaskPolling(fresh, payload.requestId);
     render();
     return true;
@@ -11354,74 +11266,12 @@ async function queryConversationRegistration(entry, context){
     }
     return false;
 }
-async function sendConversationMessageRequest(live, text, requestId, humanIntent=false, entry){
-    const projectId = conversationProjectId();
-    if(!projectId || !entry) throw new Error(tr('smart.conversationMissingProject'));
-    const context = entry.preparedConversationContext;
-    assertConversationActionContext(entry, context);
-    if(live.id !== context.nodeId || text !== context.payload.text || requestId !== context.payload.requestId
-        || (humanIntent === true) !== (context.payload.humanIntent === true)){
-        const error = new Error(tr('smart.canvasConflict'));
-        error.conversationConflict = true;
-        throw error;
-    }
-    if(entry.registrationConfirmed) return;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 15000);
-    try {
-        assertConversationActionContext(entry, context);
-        const response = await fetch(`/api/project-library/${encodeURIComponent(projectId)}/conversation/${encodeURIComponent(live.id)}/messages`, {
-            method:'POST', headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({text, request_id:requestId, user_edit:humanIntent === true}), signal:controller.signal,
-        });
-        assertConversationActionContext(entry, context);
-        const data = await response.json();
-        assertConversationActionContext(entry, context);
-        if(data.canvas && acceptConversationRegistration(data, entry)) return;
-        throw new Error(tr('smart.conversationSendFailed'));
-    } catch(error){
-        // HTTP errors (including post-registration 429) and lost ACKs both need
-        // the original key checked before any retry. Never restore a server mark.
-        if(await queryConversationRegistration(entry, context)) return;
-        throw error;
-    } finally {
-        clearTimeout(timeoutId);
-    }
-}
-async function sendConversationMessage(node, input, button, {human=false}={}){
-    const text = String(input?.value || '').trim();
-    const liveNode = canvasState.nodes.find(item => item.id === node?.id);
-    const hasPendingMessage = hasPendingConversationRequest(liveNode);
-    if(!liveNode || !text || liveNode.conversationSending || hasPendingMessage) return;
-    node = liveNode;
-    node.conversationSending = true;
-    if(button) button.disabled = true;
-    const requestId = conversationRequestId();
-    const payload = {conversationProtocol:1, projectId:conversationProjectId(), nodeId:node.id,
-        requestId, text, humanIntent:human === true};
-    // Every new intent is durable before POST, including the normal happy path.
-    // Only server registration owns T; local bubbles and outbox saves never stamp it.
-    ensureLocalPendingConversationMessage(node, text, requestId);
-    queueSmartPendingActionResume('conversation', node.id, null, payload);
-    try {
-        if(await flushProjectCanvasBeforeGeneration() !== true){
-            toast(tr('smart.canvasMessagePendingAfterSave'));
-        } else {
-            await canvasCore.resumeSmartPendingActionResumes(canvasState.nodes);
-        }
-    } catch(error){
-        toast(error.message || tr('smart.conversationSendFailed'));
-    } finally {
-        render();
-    }
-}
 function bindConversationNodeControls(el, node){
     el.querySelectorAll('.conversation-node-control').forEach(control => {
         control.addEventListener('mousedown', event => event.stopPropagation());
         control.addEventListener('click', event => event.stopPropagation());
     });
-    const input = el.querySelector('[data-conversation-input]');
-    const send = el.querySelector('[data-conversation-send]');
+    el.querySelector('[data-conversation-dock]')?.addEventListener('click', openSmartChatDock);
     const collapse = el.querySelector('[data-conversation-collapse]');
     collapse?.addEventListener('click', event => {
         event.preventDefault();
@@ -11432,34 +11282,6 @@ function bindConversationNodeControls(el, node){
         render();
         scheduleSave();
         flushImportantProjectMutation();
-    });
-    send?.addEventListener('click', event => {
-        event.preventDefault();
-        event.stopPropagation();
-        sendConversationMessage(node, input, send, {human:true});
-    });
-    input?.addEventListener('keydown', event => {
-        if(event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !imeComposing(event)){
-            event.preventDefault();
-            sendConversationMessage(node, input, send, {human:true});
-        }
-    });
-    el.querySelectorAll('[data-conversation-retry]').forEach(retryEl => {
-        retryEl.addEventListener('click', event => {
-            event.preventDefault();
-            event.stopPropagation();
-            const messageId = retryEl.getAttribute('data-conversation-retry');
-            const liveNode = canvasState.nodes.find(item => item.id === node?.id) || node;
-            const failedMessage = (liveNode?.messages || []).find(item => String(item.id || '') === String(messageId));
-            const retryText = String(failedMessage?.text || failedMessage?.content || '').trim();
-            if(!retryText) return;
-            const liveInput = el.querySelector('[data-conversation-input]');
-            const liveSend = el.querySelector('[data-conversation-send]');
-            if(liveInput) liveInput.value = retryText;
-            const hasPending = hasPendingConversationRequest(liveNode);
-            if(hasPending) return;
-            sendConversationMessage(liveNode, liveInput, liveSend, {human:true});
-        });
     });
     el.querySelectorAll('.conversation-node-message-text').forEach(messageEl => {
         messageEl.addEventListener('pointerdown', event => event.stopPropagation());
@@ -17495,6 +17317,7 @@ createMenu?.addEventListener('click', event => {
         toggleGroupRefFrame(refGroupId);
         return;
     }
+    if(type === 'chat-dock'){ closeCreateMenu(); void openSmartChatDock(); return; }
     if(type === 'ocr') return createPromptNodeFromOcr(); // #256：图片节点右键「提取文字」在本文件内接线（不跨文件引用）
     if(type === 'rename') return quickEditFromMenu(); // #253：右键「重命名」→ 就地快速编辑
     if(type === 'tidy'){ closeCreateMenu(); arrangeSelectedSmartNodes(); return; } // #253：右键「整理排版」→ 复用现有 arrangeSelectedSmartNodes
@@ -17941,7 +17764,6 @@ try {
         }
         if(event.data?.type === 'preferences-changed'){
             await refreshAutosavePreferences(event.data.preferences || null);
-            void refreshSmartChatDockEntry(event.data.preferences || null);
             if(event.data.preferences?.theme) applyTheme(event.data.preferences.theme);
             if(event.data.preferences?.language && window.StudioI18n) window.StudioI18n.set(event.data.preferences.language);
         }
@@ -17975,7 +17797,6 @@ window.addEventListener('message', event => {
     if(event.data?.type === 'providers-changed') refreshSmartConfigFromSettings();
     if(event.data?.type === 'preferences-changed'){
         refreshAutosavePreferences(event.data.preferences || null);
-        void refreshSmartChatDockEntry(event.data.preferences || null);
         if(event.data.preferences?.theme) applyTheme(event.data.preferences.theme);
         if(event.data.preferences?.language && window.StudioI18n) window.StudioI18n.set(event.data.preferences.language);
     }
@@ -18045,35 +17866,39 @@ window.FireflyChatCapture?.connect({
     addImageNode: ({x, y}, image) => createNode(x, y, [image]),
     redraw: render, save: scheduleSave,
 });
-// #519: the chat panel entry shows only when the user enabled it in global settings and the extension answers.
-// Inside the extension shell the canvas is a sub-frame and already sits next to the panel, so it never shows there.
 const smartChatDockButton = document.getElementById('smartChatDockOpen');
-let smartChatDockWanted = false;
-async function refreshSmartChatDockEntry(preferences=null){
-    if(!smartChatDockButton) return;
-    if(window !== window.top || !isProjectCanvasData()){
-        smartChatDockButton.hidden = true;
-        return;
-    }
-    if(preferences) smartChatDockWanted = preferences.chat_dock_enabled === true;
-    else {
-        try {
-            const response = await fetch('/api/global-settings/preferences', {cache:'no-store'});
-            if(response.ok) smartChatDockWanted = (await response.json()).preferences?.chat_dock_enabled === true;
-        } catch { smartChatDockWanted = false; }
-    }
-    const receipt = smartChatDockWanted ? await window.FireflyChatDockClient?.hello() : null;
-    smartChatDockButton.hidden = !(smartChatDockWanted && receipt?.supported === true);
-}
-smartChatDockButton?.addEventListener('click', async () => {
-    if(smartChatDockButton.disabled) return;
-    smartChatDockButton.disabled = true;
+const smartChatDockHelp = document.getElementById('smartChatDockHelp');
+let smartChatDockBusy = false;
+async function openSmartChatDock(){
+    if(smartChatDockBusy) return;
+    smartChatDockBusy = true;
     try {
-        // Open the shell only on a saved canvas: it loads the project from the server, not from this tab.
-        if(!(await manualSaveCanvas())) return;
-        if(!(await window.FireflyChatDockClient?.openDock())) toast(tr('smart.chatDockOpenFailed'));
-    } finally { smartChatDockButton.disabled = false; }
+        const client = window.FireflyChatDockClient;
+        if(window !== window.top){
+            if(await client?.toggleDock()) return;
+        } else if(isProjectCanvasData() && (await client?.hello())?.supported){
+            // The shell fetches the project afresh; do not replace a tab whose edits could not be saved.
+            if(!(await manualSaveCanvas())) return;
+            if(await client.openDirect()) return;
+        }
+        if(smartChatDockHelp && !smartChatDockHelp.open) smartChatDockHelp.showModal();
+    } finally { smartChatDockBusy = false; }
+}
+smartChatDockButton?.addEventListener('click', openSmartChatDock);
+document.getElementById('smartChatDockInstall')?.addEventListener('click', event => {
+    if(!smartSettingsModal || !smartSettingsFrame) return;
+    event.preventDefault();
+    smartChatDockHelp?.close();
+    openSmartSettings('chat-dock');
 });
+
+function enterSmartChatDock(){
+    if(window !== window.top || !isProjectCanvasData() || params.get('project_mode') !== '1') return;
+    // The privileged update keeps the tab but may create a history entry. A restored canvas must not re-enter.
+    if(performance.getEntriesByType('navigation')[0]?.type === 'back_forward') return;
+    if(debouncedSaveTimer || canvasSyncInFlight) return;
+    void window.FireflyChatDockClient?.enterDock();
+}
 window.onload = async () => {
     applyTheme(localStorage.getItem('studio_theme') || localStorage.getItem('canvas_theme') || 'light');
     loadPromptPresets();
@@ -18092,8 +17917,6 @@ window.onload = async () => {
         if(window.parent === window || !window.parent){
             requestAnimationFrame(() => smartAgentViewport.ready());
         }
-        void refreshSmartChatDockEntry();
-        // The user may install or reload the extension in another tab and come back.
-        window.addEventListener('focus', () => { void refreshSmartChatDockEntry(); });
+        enterSmartChatDock();
     }
 };

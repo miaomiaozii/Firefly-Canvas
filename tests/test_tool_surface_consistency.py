@@ -452,6 +452,41 @@ class DualPathEquivalenceTests(unittest.TestCase):
             with self.subTest(tool=name):
                 run_case()
 
+    def test_create_node_rejects_retired_conversation_types_without_mutating_canvas(self):
+        client, store, project, _ = self._fixture()
+        retired_node = {
+            "id": "legacy-conversation",
+            "type": "smart-conversation",
+            "messages": [
+                {"id": "question", "role": "user", "text": "Prior question"},
+                {"id": "answer", "role": "assistant", "text": "Prior answer"},
+            ],
+        }
+        store.apply_mutations(
+            project, [{"op": "upsert_node", "node": retired_node}], base_revision=store.canvas(project)["revision"],
+        )
+        store.flush(project)
+        before = store.canvas(project)
+        self.assertIn(retired_node, before["nodes"])
+
+        with patch.object(store, "apply_mutations", side_effect=AssertionError("retired creation wrote canvas")) as mutate:
+            for node_type in ("smart-conversation", "conversation"):
+                args = {"type": node_type, "title": "Rejected"}
+                with self.subTest(transport="REST", node_type=node_type):
+                    rest = client.post(
+                        f"/api/projects/{project}/canvas/nodes",
+                        json={"node": args, "agent_node_id": self.ACTOR},
+                        headers={"X-Agent-Project": project},
+                    )
+                    self.assertEqual(rest.status_code, 410, rest.text)
+                    self.assertEqual(rest.json()["detail"]["code"], "CONVERSATION_NODE_RETIRED")
+                with self.subTest(transport="MCP", node_type=node_type):
+                    mcp = self._mcp_call(client, project, "canvas.create_node", args)
+                    self.assertFalse(mcp["ok"], mcp)
+                    self.assertEqual(mcp.get("error", {}).get("code"), "CONVERSATION_NODE_RETIRED", mcp)
+            mutate.assert_not_called()
+        self.assertEqual(store.canvas(project), before)
+
     def test_media_ref_mcp_dispatch_uses_binding_and_payload_only(self):
         client, _, project, _ = self._fixture()
         cases = {

@@ -1,36 +1,47 @@
 (() => {
   'use strict';
 
-  const SETTINGS = 'firefly.chat-dock.layout.v1';
+  const regularLayoutKey = 'firefly.chat-dock.layout.v1';
+  const direct = FireflyChatDockDirect;
+  const directMode = direct.isDirect(location.search);
+  const SETTINGS = directMode ? 'firefly.chat-dock.direct-layout.v1' : regularLayoutKey;
   const P = FireflyChatProtocol;
   const embed = FireflyChatEmbed;
   const byId = id => document.getElementById(id);
   const shell = byId('dock-shell');
+  shell.toggleAttribute('data-direct', directMode);
   const panel = byId('chat-dock-panel');
   const divider = byId('dock-divider');
   const move = byId('move-panel');
+  const titleBar = panel.querySelector('.dock-heading');
   const resize = byId('resize-panel');
+  const resizeHandles = [...panel.querySelectorAll('[data-resize]')];
+  const defaultDockWidth = 420;
   const hide = byId('hide-panel');
   const reveal = byId('show-panel');
   const sitePicker = byId('chat-site');
   const modeButtons = [...panel.querySelectorAll('button[data-mode]')];
   const sites = Object.keys(embed.names);
-  let stored;
-  try { stored = JSON.parse(localStorage.getItem(SETTINGS) ?? 'null'); }
-  catch { stored = null; }
+  function readLayout(key) {
+    try { return JSON.parse(localStorage.getItem(key) ?? 'null'); }
+    catch { return null; }
+  }
+  const stored = readLayout(SETTINGS);
+  const priorLayout = directMode ? readLayout(regularLayoutKey) : null;
   const layouts = new Map();
-  const lastSite = stored?.site;
+  const lastSite = stored?.site ?? priorLayout?.site;
   let site = sites.includes(lastSite) ? lastSite : sites[0];
   let drag;
 
   function layoutFor(key) {
     if (layouts.has(key)) return layouts.get(key);
-    const previous = stored?.layouts?.[key];
+    const saved = stored?.layouts?.[key];
+    const previous = saved ?? priorLayout?.layouts?.[key];
     const number = (field, fallback) => Number.isFinite(previous?.[field]) ? previous[field] : fallback;
     const value = {
       mode: ['left', 'right', 'float'].includes(previous?.mode) ? previous.mode : 'right',
-      dockWidth: number('dockWidth', 420), x: number('x', 84), y: number('y', 24),
-      width: number('width', 460), height: number('height', 590), collapsed: previous?.collapsed === true,
+      dockWidth: number('dockWidth', defaultDockWidth), x: number('x', 84), y: number('y', 24),
+      width: number('width', 460), height: number('height', 590), collapsed: saved ? saved.collapsed === true : directMode,
     };
     layouts.set(key, value);
     return value;
@@ -49,9 +60,12 @@
     const maxDock = Math.max(0, w - divider.offsetWidth - Math.min(144, Math.floor(w * .39)));
     const minDock = Math.min(232, maxDock);
     const margin = Math.min(8, Math.floor(Math.min(w, h) / 4));
-    const fw = clamp(value.width, Math.min(256, w - 2 * margin), w - 2 * margin);
-    const fh = clamp(value.height, Math.min(220, h - 2 * margin), h - 2 * margin);
+    const minWidth = Math.min(256, w - 2 * margin);
+    const minHeight = Math.min(220, h - 2 * margin);
+    const fw = clamp(value.width, minWidth, w - 2 * margin);
+    const fh = clamp(value.height, minHeight, h - 2 * margin);
     return {
+      w, h, margin, minWidth, minHeight,
       minDock, maxDock, dockWidth: clamp(value.dockWidth, minDock, maxDock),
       x: clamp(value.x, margin, w - fw - margin), y: clamp(value.y, margin, h - fh - margin),
       width: fw, height: fh,
@@ -83,59 +97,104 @@
     heading: byId('chat-site-heading'), note: byId('chat-frame-note'), framingHint: byId('chat-framing-hint'),
   });
   let framed = {};
-  const showSite = key => mounted(key, framed);
+  let shown;
+  function showSite(key) {
+    if (directMode && (layoutFor(key).collapsed || shown === key)) return;
+    // Same-tab project navigation uses only sites the browser already permits embedding.
+    mounted(key, directMode ? {} : framed);
+    shown = key;
+  }
   sites.forEach(key => sitePicker.add(new Option(embed.names[key], key)));
   sites.forEach(layoutFor);
+  if (directMode && new URLSearchParams(location.search).get('expand') === '1') {
+    layoutFor(site).collapsed = false;
+    persist();
+    const clean = new URL(location.href);
+    clean.searchParams.delete('expand');
+    history.replaceState(null, '', clean.href);
+  }
   sitePicker.value = site;
   showSite(site);
-  chrome.storage.local.get(FireflyChatFraming.KEY).then(stored => {
-    framed = FireflyChatFraming.flags(stored);
-    if (framed[site] === true) showSite(site);
-  }, () => {});
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'local' || !Object.hasOwn(changes, FireflyChatFraming.KEY)) return;
-    const next = FireflyChatFraming.flags({[FireflyChatFraming.KEY]: changes[FireflyChatFraming.KEY].newValue});
-    const changed = (framed[site] === true) !== (next[site] === true);
-    framed = next;
-    // Reloading an unaffected site would discard the conversation the user is looking at.
-    if (changed) showSite(site);
-  });
+  if (!directMode) {
+    chrome.storage.local.get(FireflyChatFraming.KEY).then(stored => {
+      framed = FireflyChatFraming.flags(stored);
+      if (framed[site] === true) showSite(site);
+    }, () => {});
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area !== 'local' || !Object.hasOwn(changes, FireflyChatFraming.KEY)) return;
+      const next = FireflyChatFraming.flags({[FireflyChatFraming.KEY]: changes[FireflyChatFraming.KEY].newValue});
+      const changed = (framed[site] === true) !== (next[site] === true);
+      framed = next;
+      // Reloading an unaffected site would discard the conversation the user is looking at.
+      if (changed) showSite(site);
+    });
+  }
   sitePicker.addEventListener('change', () => {
     if (!sites.includes(sitePicker.value)) return;
     site = sitePicker.value;
-    showSite(site);
-    render();
-    persist();
+    if (directMode) collapse(false);
+    else {
+      showSite(site);
+      render();
+      persist();
+    }
   });
-  modeButtons.forEach(button => button.addEventListener('click', () => {
-    layoutFor(site).mode = button.dataset.mode;
+  let modeChange = 0;
+  const afterPaint = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  async function changeMode(mode) {
+    const value = layoutFor(site);
+    if (drag || value.mode === mode && !shell.hasAttribute('data-layout-changing')) return;
+    const change = ++modeChange;
+    // A cross-origin iframe can still own Chromium's native hit region after DOM geometry moves.
+    // End its old hit region before moving the divider and restore it after the new layout paints.
+    shell.setAttribute('data-layout-changing', '');
+    await afterPaint();
+    if (change !== modeChange) return;
+    value.mode = mode;
     render();
     persist();
-  }));
+    await afterPaint();
+    if (change === modeChange) shell.removeAttribute('data-layout-changing');
+  }
+  modeButtons.forEach(button => button.addEventListener('click', () => { void changeMode(button.dataset.mode); }));
 
   function collapse(value, returnFocus) {
     layoutFor(site).collapsed = value;
+    if (directMode && !value) showSite(site);
     render();
     persist();
-    returnFocus.focus();
+    returnFocus?.focus();
   }
   hide.addEventListener('click', () => collapse(true, reveal));
   reveal.addEventListener('click', () => collapse(false, hide));
 
-  function applyDelta(kind, value, start, dx, dy) {
-    if (kind === 'dock') value.dockWidth = start.dockWidth + (value.mode === 'left' ? dx : -dx);
-    if (kind === 'move') Object.assign(value, {x: start.x + dx, y: start.y + dy});
-    if (kind === 'resize') Object.assign(value, {width: start.width + dx, height: start.height + dy});
-    const b = bounds(value);
-    if (kind === 'dock') value.dockWidth = b.dockWidth;
-    else if (kind === 'move') Object.assign(value, {x: b.x, y: b.y});
-    else Object.assign(value, {width: b.width, height: b.height, x: b.x, y: b.y});
+  function applyDelta(kind, value, start, dx, dy, edge = '') {
+    if (kind === 'dock') {
+      value.dockWidth = clamp(start.dockWidth + (value.mode === 'left' ? dx : -dx), start.minDock, start.maxDock);
+    } else if (kind === 'move') {
+      value.x = clamp(start.x + dx, start.margin, start.w - start.width - start.margin);
+      value.y = clamp(start.y + dy, start.margin, start.h - start.height - start.margin);
+    } else {
+      // Resize from the starting rectangle so that clamping one edge never moves its opposite edge.
+      let {x, y} = start;
+      let right = x + start.width;
+      let bottom = y + start.height;
+      if (edge.includes('w')) x = clamp(x + dx, start.margin, right - start.minWidth);
+      if (edge.includes('e')) right = clamp(right + dx, x + start.minWidth, start.w - start.margin);
+      if (edge.includes('n')) y = clamp(y + dy, start.margin, bottom - start.minHeight);
+      if (edge.includes('s')) bottom = clamp(bottom + dy, y + start.minHeight, start.h - start.margin);
+      Object.assign(value, {x, y, width: right - x, height: bottom - y});
+    }
     render();
   }
 
-  function bindGesture(handle, kind) {
+  function bindGesture(handle, kind, {edge = '', keys = true} = {}) {
     handle.addEventListener('pointerdown', event => {
       if (!event.isPrimary || event.button !== 0 || drag) return;
+      if (handle === titleBar && (layoutFor(site).mode !== 'float' || event.target.closest('button, a'))) return;
+      // Native text/element dragging cancels pointer capture before the divider crosses an iframe.
+      event.preventDefault();
+      if (keys) handle.focus({preventScroll: true});
       const value = layoutFor(site);
       drag = {id: event.pointerId, value, original: {...value}, start: bounds(value), x: event.clientX, y: event.clientY};
       handle.setPointerCapture(event.pointerId);
@@ -143,7 +202,7 @@
     });
     handle.addEventListener('pointermove', event => {
       if (drag?.id !== event.pointerId) return;
-      applyDelta(kind, drag.value, drag.start, event.clientX - drag.x, event.clientY - drag.y);
+      applyDelta(kind, drag.value, drag.start, event.clientX - drag.x, event.clientY - drag.y, edge);
     });
     function end(event, cancel) {
       if (drag?.id !== event.pointerId) return;
@@ -156,19 +215,26 @@
     handle.addEventListener('pointerup', event => end(event, false));
     handle.addEventListener('pointercancel', event => end(event, true));
     handle.addEventListener('lostpointercapture', event => end(event, true));
+    if (!keys) return;
     handle.addEventListener('keydown', event => {
       const delta = {ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1]}[event.key];
       if (!delta || (kind === 'dock' && !delta[0]) || event.altKey || event.ctrlKey || event.metaKey) return;
       event.preventDefault();
       const value = layoutFor(site);
       const step = event.shiftKey ? 40 : 10;
-      applyDelta(kind, value, bounds(value), delta[0] * step, delta[1] * step);
+      applyDelta(kind, value, bounds(value), delta[0] * step, delta[1] * step, edge);
       persist();
     });
   }
   bindGesture(divider, 'dock');
+  divider.addEventListener('dblclick', () => {
+    layoutFor(site).dockWidth = defaultDockWidth;
+    render();
+    persist();
+  });
   bindGesture(move, 'move');
-  bindGesture(resize, 'resize');
+  bindGesture(titleBar, 'move', {keys: false});
+  for (const handle of resizeHandles) bindGesture(handle, 'resize', {edge: handle.dataset.resize, keys: handle === resize});
 
   const color = matchMedia('(prefers-color-scheme: dark)');
   const setTheme = () => document.documentElement.classList.toggle('studio-theme-dark', color.matches);
@@ -191,24 +257,45 @@
     return true;
   }
 
-  chrome.tabs.getCurrent().then(tab => {
+  const fireflyFrame = byId('firefly-frame');
+  let fireflyOrigin;
+  let proofNonce;
+  fireflyFrame.addEventListener('load', () => { proofNonce = undefined; });
+
+  chrome.tabs.getCurrent().then(async tab => {
     if (!tab || window !== window.top) return;
+    const contexts = directMode && typeof chrome.runtime.getContexts === 'function' ? await chrome.runtime.getContexts({
+      contextTypes: ['TAB'], tabIds: [tab.id], frameIds: [0],
+    }) : [];
+    const documentId = contexts.find(context => direct.isShellURL(context.documentUrl))?.documentId;
     chrome.runtime.onMessage.addListener((data, sender, respond) => {
       if (sender.id !== chrome.runtime.id || sender.tab || sender.url !== chrome.runtime.getURL('background.js') ||
-          data?.action !== P.DOCK_PROBE || data.tabId !== tab.id) return;
-      respond(probeCapture(data));
+          data?.tabId !== tab.id) return;
+      if (data.action === P.DOCK_PROBE) return respond(probeCapture(data));
+      if (!directMode || !documentId || data.documentId !== documentId || data.origin !== fireflyOrigin ||
+          typeof data.nonce !== 'string') return;
+      if (data.action === direct.probe) {
+        proofNonce = data.nonce;
+        fireflyFrame.contentWindow.postMessage({action: direct.probe, nonce: data.nonce}, fireflyOrigin);
+        respond(true);
+      } else if (data.action === direct.request && data.nonce === proofNonce && direct.actions.has(data.command)) {
+        proofNonce = undefined;
+        if (data.command === 'toggle-dock') collapse(!layoutFor(site).collapsed);
+        else location.replace(`${fireflyOrigin}/`);
+        respond(true);
+      }
     });
-  });
+  }).catch(() => { /* Unsupported browsers keep the ordinary page entry available. */ });
 
   async function openFirefly() {
     const origin = P.originSetting(await chrome.storage.local.get(P.ORIGIN_KEY));
     if (!(await chrome.permissions.contains({origins: [P.canvasPatterns(origin).permission]}))) return false;
-    const frame = byId('firefly-frame');
+    fireflyOrigin = origin;
     // Canvas clipboard and fullscreen support belongs only to the configured origin.
-    frame.allow = ['clipboard-read', 'clipboard-write', 'fullscreen'].map(feature => `${feature} ${origin}`).join('; ');
+    fireflyFrame.allow = ['clipboard-read', 'clipboard-write', 'fullscreen'].map(feature => `${feature} ${origin}`).join('; ');
     // The canvas entry opens the shell on its own project; anything malformed falls back to the project list.
-    frame.src = new URL(FireflyChatDockSettingsHello.shellCanvasPath(location.search), origin).href;
-    frame.hidden = false;
+    fireflyFrame.src = new URL(FireflyChatDockSettingsHello.shellCanvasPath(location.search), origin).href;
+    fireflyFrame.hidden = false;
     return true;
   }
   openFirefly().then(opened => { byId('firefly-problem').hidden = opened; }, () => { byId('firefly-problem').hidden = false; });

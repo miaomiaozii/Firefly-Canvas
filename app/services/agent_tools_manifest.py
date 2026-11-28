@@ -147,8 +147,8 @@ TOOLS = [
     {"name": "canvas.get_node", "description": "获取单个节点详情", "inputSchema": {"type": "object", "properties": {"node_id": {"type": "string"}}, "required": ["node_id"], "additionalProperties": False}},
     # #356 D11：平铺形状；x/y 缺省=服务端 frame 自动布局；id 服务端铸造。#355 将在
     # 此条目收紧 properties（字段白名单）。
-    {"name": "canvas.create_node", "description": "创建节点：type 必填（smart-prompt/smart-image/smart-video/smart-agent/conversation）；title/text/prompt 可选；x/y 省略时由服务端按发起 agent 的会话 frame 网格自动落位，显式给值则尊重；节点 id 一律服务端铸造。", "inputSchema": {"type": "object", "properties": {
-        "type": {"type": "string", "description": "节点类型：smart-prompt/smart-image/smart-video/smart-agent/conversation"},
+    {"name": "canvas.create_node", "description": "创建节点：type 必填（smart-prompt/smart-image/smart-video/smart-agent）；title/text/prompt 可选；x/y 省略时由服务端按发起 agent 的会话 frame 网格自动落位，显式给值则尊重；节点 id 一律服务端铸造。", "inputSchema": {"type": "object", "properties": {
+        "type": {"type": "string", "description": "节点类型：smart-prompt/smart-image/smart-video/smart-agent"},
         "title": {"type": "string", "description": "节点标题"},
         "x": {"type": "number", "description": "X 位置（省略=服务端自动落位）"},
         "y": {"type": "number", "description": "Y 位置（省略=服务端自动落位）"},

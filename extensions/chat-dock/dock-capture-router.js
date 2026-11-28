@@ -10,9 +10,10 @@
 
   async function shellContext(tabId) {
     const contexts = await chrome.runtime.getContexts({
-      contextTypes: ['TAB'], tabIds: [tabId], frameIds: [0], documentUrls: [chrome.runtime.getURL('canvas.html')],
+      contextTypes: ['TAB'], tabIds: [tabId], frameIds: [0],
     });
-    return contexts.length === 1 ? contexts[0].documentId : null;
+    const matching = contexts.filter(context => FireflyChatDockDirect.isShellURL(context.documentUrl));
+    return matching.length === 1 ? matching[0].documentId : null;
   }
 
   function acceptProof(data, sender) {

@@ -1,4 +1,4 @@
-"""Conversation ownership protocol through REST and the real isolated project store."""
+"""Legacy admission and live status handling against the real isolated project store."""
 import asyncio
 import os
 import tempfile
@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 import main
 from app.routers import api_project_library
 from firefly_projects import ProjectStore
+from tests.conversation_legacy_admission import with_legacy_conversation_admission
 
 
 @pytest.fixture
@@ -41,7 +42,11 @@ def api():
         with patch.object(main, "FIREFLY_PROJECT_STORE", store), \
              patch.object(main, "PROJECT_CONVERSATION_RUNNER", runner), \
              patch.object(main, "project_conversation_adapter", side_effect=offline_provider):
-            with TestClient(app, base_url="http://127.0.0.1", headers={"origin": "http://127.0.0.1"}) as client:
+            with TestClient(
+                with_legacy_conversation_admission(app),
+                base_url="http://127.0.0.1",
+                headers={"origin": "http://127.0.0.1"},
+            ) as client:
                 yield client, store, runner
         store.close()
 

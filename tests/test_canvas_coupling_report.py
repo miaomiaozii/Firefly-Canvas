@@ -186,7 +186,8 @@ class CanvasCouplingReportTests(unittest.TestCase):
 
     def test_reviewed_resume_reference_is_included(self):
         rows = {row["name"]: row for row in _cached_reverse()["reverse_rows"]}
-        self.assertEqual(rows["resumeSmartPendingActionResumes"]["core_refs"], 3)
+        self.assertEqual(rows["resumeSmartPendingActionResumes"]["core_refs"], 2)
+        self.assertEqual(rows["queueSmartPendingActionResume"]["core_refs"], 2)
 
     def test_activity_bridge_remains_measured_and_classified(self):
         rows = {row["name"]: row for row in _cached_reverse()["reverse_rows"]}
@@ -222,11 +223,11 @@ class CanvasCouplingReportTests(unittest.TestCase):
         # 两个引用方向必须独立实测；合法调用也须同步 ADR 0020 和精确计数，不能豁免。
         rev = _cached_reverse()
         self.assertEqual(rev["reverse_names"], 275)
-        self.assertEqual(rev["reverse_core_refs"], 1029)
+        self.assertEqual(rev["reverse_core_refs"], 1026)
         self.assertEqual(rev["core_dominant_names"], 182)
-        self.assertEqual(rev["core_dominant_core_refs"], 835)
+        self.assertEqual(rev["core_dominant_core_refs"], 832)
         rows = {(row["owner"], row["name"]): row for row in rev["reverse_rows"]}
-        self.assertEqual(rows[("canvas-generation-cascade.js", "composer")]["core_refs"], 66)
+        self.assertEqual(rows[("canvas-generation-cascade.js", "composer")]["core_refs"], 65)
         self.assertEqual(rows[("canvas-node-types.js", "NODE_TYPE_IMAGE")], {
             "name": "NODE_TYPE_IMAGE", "owner": "canvas-node-types.js",
             "core_refs": 19, "owner_refs": 1, "category": "unclassified",

@@ -140,8 +140,12 @@ for(const change of ['reordered','replaced','ambiguous','recreated','project']){
     });
 }
 
-test('human copy rejects the entire unresolved outbox or formal pending request before undo or clipboard changes',()=>{
-    for(const intent of [{pendingActionResumes:[{kind:'conversation',actionId:'a',payload:{requestId:'r',text:'send'}}]}, {messages:[{id:'receipt',role:'user',status:'pending',request_id:'r',text:'send'}]}]){
+test('retired conversation nodes cannot be copied even after completion, without changing undo or clipboard',()=>{
+    for(const intent of [
+        {pendingActionResumes:[{kind:'conversation',actionId:'a',payload:{requestId:'r',text:'send'}}]},
+        {messages:[{id:'receipt',role:'user',status:'pending',request_id:'r',text:'send'}]},
+        {messages:[{id:'receipt',role:'user',status:'completed',request_id:'r',text:'history'}]},
+    ]){
         for(const operation of ['copy','paste','duplicate','alt']){
             const pending={...original(),type:'smart-conversation',...intent};
             const e=editor([pending,{...original(),id:'completed'}]);
@@ -155,7 +159,7 @@ test('human copy rejects the entire unresolved outbox or formal pending request 
             assert.deepEqual(e.stored(),before,operation);
             assert.deepEqual(fromContext(evaluate(e.ctx,'nodeClipboard')),clipboard,operation);
             assert.equal(evaluate(e.ctx,'undoStack.length'),0,operation);
-            assert.match(e.harness.toasts.at(-1),/未决.*对话/);
+            assert.equal(e.harness.toasts.at(-1),'smart.conversationRetired',operation);
         }
     }
 });
@@ -383,7 +387,7 @@ test('pointer resize and drag touch geometry with same-action undo; click and re
         assert.equal(e.node().x,before[0].x);
         assert.equal(e.node().w,before[0].w);
     }
-    const e=pointerEditor([{id:'photo',type:'smart-image',...identity,images:[],pendingActionResumes:[{kind:'conversation',actionId:'a',payload:{requestId:'r',text:'send'}}]}]);
+    const e=pointerEditor([{id:'chat',type:'smart-conversation',...identity,messages:[],x:0,y:0,w:390,h:430}]);
     e.el.onmousedown(e.pointer({altKey:true}));
     e.ctx.onmousemove(e.pointer({altKey:true,clientX:20}));
     e.ctx.onmouseup(e.pointer({altKey:true,clientX:20}));
@@ -613,40 +617,15 @@ test('conversation preparation revalidates the original intent after each regist
     }
 });
 
-test('conversation POST rejects malformed present outboxes even when a registered message matches',async()=>{
+test('conversation reconciliation rejects malformed present outboxes even when a registered message matches',async()=>{
     for(const bad of [null,false,{},[null],[{kind:'conversation',actionId:'a',payload:null}]]){
         const e=conversationEditor();let externalCalls=0;
-        e.entry.preparedConversationContext=e.ctx.conversationActionContext(e.entry);
         e.node().pendingActionResumes=bad;
         e.node().messages=[{id:'receipt',role:'user',request_id:'r',text:'hello',status:'pending',user_edit:true}];
         e.ctx.fetch=async()=>{externalCalls++;throw new Error('request reached external boundary');};
-        await assert.rejects(e.ctx.sendConversationMessageRequest(e.node(),'hello','r',true,e.entry),
+        await assert.rejects(e.ctx.prepareConversationAction(e.entry),
             /Invalid (pendingActionResumes|pending action record|conversation intent payload)/);
         assert.equal(externalCalls,0);
-    }
-});
-
-test('conversation POST checks the prepared packet and original live intent, while same-key reload remains valid',async()=>{
-    for(const change of ['outbox','packet','project','reload']){
-        const e=conversationEditor();let posts=0;
-        e.ctx.fetch=async(url,options={})=>{
-            if(options.method==='POST'){
-                posts++;
-                const accepted=structuredClone(e.server);accepted.revision=2;
-                accepted.nodes[0].pendingActionResumes=[];
-                accepted.nodes[0].messages=[{id:'receipt',role:'user',request_id:'r',text:'hello',status:'completed',user_edit:true}];
-                return {ok:true,status:200,json:async()=>({canvas:accepted})};
-            }
-            return {ok:true,status:200,json:async()=>url.endsWith('/messages/r')?{detail:'not registered'}:{canvas:e.server}};
-        };
-        assert.equal(await e.ctx.prepareConversationAction(e.entry),true);
-        if(change==='outbox')e.node().pendingActionResumes=[];
-        if(change==='packet')e.entry.payload={...e.payload,text:'different'};
-        if(change==='project')evaluate(e.ctx,"canvas.project_id='other'");
-        if(change==='reload')e.ctx.applyMergedServerCanvas({...e.server,revision:1});
-        const sending=e.ctx.sendConversationMessageRequest(e.node(),'hello','r',true,e.entry);
-        if(change==='reload')await sending;else await assert.rejects(sending,/smart.canvasConflict/);
-        assert.equal(posts,change==='reload'?1:0,change);
     }
 });
 

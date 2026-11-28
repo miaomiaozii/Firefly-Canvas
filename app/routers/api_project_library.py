@@ -3960,7 +3960,12 @@ async def finalize_visible_project_conversation_terminal(project_id: str, node_i
     await asyncio.to_thread(_app_main.forget_project_conversation_durable, project_id, node_id, request_id)
 
 @router.post('/api/project-library/{project_id}/conversation/{node_id}/messages')
+async def reject_retired_conversation_post(project_id: str, node_id: str):
+    raise agent_error(410, 'CONVERSATION_NODE_RETIRED', '对话节点已停用', '请在画布工具栏打开对话面板。')
+
+
 async def append_project_conversation_message(project_id: str, node_id: str, payload: ProjectConversationMessageRequest):
+    """Legacy admission contract kept until the conversation module is retired separately."""
     text = str(payload.text or '').strip()
     if not text:
         raise HTTPException(status_code=400, detail='对话消息不能为空')

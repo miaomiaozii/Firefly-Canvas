@@ -249,6 +249,64 @@ test('manual dock capture stays in its one Firefly document, including after a s
     assert.deepEqual(await outside.evaluate(() => window.receivedCaptures), []);
   }));
 
+test('native mouse resizes over the full divider and every floating edge across iframe content', {timeout: 60_000}, () =>
+  withDockBrowser(async ({page}) => {
+    const panel = page.locator('#chat-dock-panel');
+    const divider = page.getByRole('separator');
+    const input = page.frameLocator('#chat-view iframe').getByLabel('示例对话输入');
+    await page.getByLabel('对话站点').selectOption('www.doubao.com');
+    await input.fill('keep the cross-origin document alive');
+    const mode = key => page.locator(`.dock-modes button[data-mode="${key}"]`).click();
+    const nextPaint = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    const drag = async (handle, x, y, dx, dy) => {
+      // Geometry updates before Chromium commits native hit regions across the iframe boundary.
+      const deadline = performance.now() + 3000;
+      for (;;) {
+        await page.mouse.move(x, y);
+        if (await handle.evaluate(element => element.matches(':hover'))) break;
+        assert.ok(performance.now() < deadline, `Native pointer did not reach ${handle} at ${x},${y}`);
+        await page.evaluate(() => new Promise(requestAnimationFrame));
+      }
+      await page.mouse.down();
+      await page.mouse.move(x + dx, y + dy, {steps: 8});
+      await page.mouse.up();
+    };
+    for (const [key, delta] of [['left', 60], ['right', -60]]) {
+      await mode(key);
+      await page.waitForFunction(mode => document.querySelector('#dock-shell').dataset.mode === mode, key);
+      const before = await panel.boundingBox();
+      const split = await divider.boundingBox();
+      assert.ok(split.width >= 12, `${key} divider must reserve a 12px hit area`);
+      await drag(divider, split.x + (key === 'left' ? split.width - 1 : 1), 390, delta, 0);
+      assert.equal((await panel.boundingBox()).width, before.width + 60, key);
+      await divider.dblclick();
+      assert.equal((await panel.boundingBox()).width, 420);
+      await divider.focus();
+      await page.keyboard.press(key === 'left' ? 'ArrowRight' : 'ArrowLeft');
+      assert.equal((await panel.boundingBox()).width, 430);
+    }
+    await mode('float');
+    await page.waitForFunction(() => document.querySelector('#dock-shell').dataset.mode === 'float');
+    await nextPaint();
+    const header = await page.locator('#chat-dock-heading').boundingBox();
+    const origin = await panel.boundingBox();
+    await drag(page.locator('.dock-heading'), header.x + 15, header.y + header.height / 2, 130, 110);
+    const moved = await panel.boundingBox();
+    assert.deepEqual(moved, {...origin, x: origin.x + 130, y: origin.y + 110});
+    for (const [horizontal, vertical] of [[0,-1],[1,-1],[1,0],[1,1],[0,1],[-1,1],[-1,0],[-1,-1]]) {
+      const b = await panel.boundingBox();
+      const edge = `${vertical < 0 ? 'n' : vertical > 0 ? 's' : ''}${horizontal < 0 ? 'w' : horizontal > 0 ? 'e' : ''}`;
+      const handle = page.locator(`[data-resize="${edge}"]`);
+      const hit = await handle.boundingBox();
+      await drag(handle, hit.x + hit.width / 2, hit.y + hit.height / 2, 20 * horizontal, 20 * vertical);
+      assert.deepEqual(await panel.boundingBox(), {
+        x: b.x + Math.min(horizontal, 0) * 20, y: b.y + Math.min(vertical, 0) * 20,
+        width: b.width + Math.abs(horizontal) * 20, height: b.height + Math.abs(vertical) * 20,
+      }, `float direction ${horizontal}, ${vertical}`);
+    }
+    assert.equal(await input.inputValue(), 'keep the cross-origin document alive');
+  }));
+
 test('allowed mock stays loaded across docks and float drag/resize; restores each site and keeps the browser-denied page blocked', {timeout: 75_000}, () =>
   withDockBrowser(async ({page, context}) => {
     const panel = page.locator('#chat-dock-panel');
@@ -261,7 +319,12 @@ test('allowed mock stays loaded across docks and float drag/resize; restores eac
     await word.dblclick({position: {x: 24, y: 12}});
     assert.equal(await word.evaluate(element => element.ownerDocument.getSelection().toString()), 'Firefly');
     assert.equal(await mock.locator('#firefly-chat-capture-host').count(), 0);
-    const pressMode = name => page.getByRole('button', {name, exact: true}).click();
+    const pressMode = async name => {
+      const button = page.getByRole('button', {name, exact: true});
+      const mode = await button.getAttribute('data-mode');
+      await button.click();
+      await page.locator(`#dock-shell[data-mode="${mode}"]:not([data-layout-changing])`).waitFor();
+    };
     const drag = async (locator, dx, dy) => {
       const box = await locator.boundingBox();
       const x = box.x + box.width / 2;

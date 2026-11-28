@@ -378,7 +378,6 @@ input[type="checkbox"], input[type="radio"] { margin: 0; accent-color: var(--acc
 .status-detail { color: var(--muted); }
 
 .chat-dock-state { margin: 0; }
-.chat-dock-preference { margin-top: var(--space-12); padding-top: var(--space-12); border-top: 1px solid var(--line); }
 .chat-dock-feedback { margin: 0; }
 .chat-dock-guide, .chat-dock-installed { margin-top: var(--space-12); }
 .chat-dock-guide h3 { margin: 0; font-size: var(--font-control); }
